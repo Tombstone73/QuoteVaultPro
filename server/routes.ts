@@ -2,7 +2,13 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, isAdmin } from "./replitAuth";
-import { insertProductSchema, updateProductSchema, insertQuoteSchema } from "@shared/schema";
+import {
+  insertProductSchema,
+  updateProductSchema,
+  insertQuoteSchema,
+  insertProductOptionSchema,
+  updateProductOptionSchema
+} from "@shared/schema";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -78,6 +84,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting product:", error);
       res.status(500).json({ message: "Failed to delete product" });
+    }
+  });
+
+  // Product Options routes
+  app.get("/api/products/:id/options", isAuthenticated, async (req, res) => {
+    try {
+      const options = await storage.getProductOptions(req.params.id);
+      res.json(options);
+    } catch (error) {
+      console.error("Error fetching product options:", error);
+      res.status(500).json({ message: "Failed to fetch product options" });
+    }
+  });
+
+  app.post("/api/products/:id/options", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const optionData = insertProductOptionSchema.parse({
+        ...req.body,
+        productId: req.params.id,
+      });
+      const option = await storage.createProductOption(optionData);
+      res.json(option);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating product option:", error);
+      res.status(500).json({ message: "Failed to create product option" });
+    }
+  });
+
+  app.patch("/api/products/:productId/options/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const optionData = updateProductOptionSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const option = await storage.updateProductOption(req.params.id, optionData);
+      res.json(option);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating product option:", error);
+      res.status(500).json({ message: "Failed to update product option" });
+    }
+  });
+
+  app.delete("/api/products/:productId/options/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      await storage.deleteProductOption(req.params.id);
+      res.json({ message: "Product option deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting product option:", error);
+      res.status(500).json({ message: "Failed to delete product option" });
     }
   });
 

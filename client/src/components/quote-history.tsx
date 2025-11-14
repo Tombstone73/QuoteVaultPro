@@ -13,7 +13,7 @@ import type { Quote, Product, QuoteWithRelations } from "@shared/schema";
 
 export default function QuoteHistory() {
   const [searchCustomer, setSearchCustomer] = useState("");
-  const [searchProduct, setSearchProduct] = useState("");
+  const [searchProduct, setSearchProduct] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [minPrice, setMinPrice] = useState("");
@@ -27,7 +27,7 @@ export default function QuoteHistory() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (searchCustomer) params.set("searchCustomer", searchCustomer);
-      if (searchProduct) params.set("searchProduct", searchProduct);
+      if (searchProduct && searchProduct !== "all") params.set("searchProduct", searchProduct);
       if (startDate) params.set("startDate", startDate);
       if (endDate) params.set("endDate", endDate);
       if (minPrice) params.set("minPrice", minPrice);
@@ -51,7 +51,7 @@ export default function QuoteHistory() {
 
   const handleClearFilters = () => {
     setSearchCustomer("");
-    setSearchProduct("");
+    setSearchProduct("all");
     setStartDate("");
     setEndDate("");
     setMinPrice("");
@@ -97,7 +97,7 @@ export default function QuoteHistory() {
                   <SelectValue placeholder="All products" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="" data-testid="option-filter-all-products">All products</SelectItem>
+                  <SelectItem value="all" data-testid="option-filter-all-products">All products</SelectItem>
                   {products?.map((product) => (
                     <SelectItem key={product.id} value={product.id} data-testid={`option-filter-product-${product.id}`}>
                       {product.name}

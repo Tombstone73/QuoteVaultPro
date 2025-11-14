@@ -160,7 +160,14 @@ export class DatabaseStorage implements IStorage {
 
   // Quote operations
   async createQuote(quote: InsertQuote): Promise<Quote> {
-    const [newQuote] = await db.insert(quotes).values(quote).returning();
+    const quoteData = {
+      ...quote,
+      width: quote.width.toString(),
+      height: quote.height.toString(),
+      calculatedPrice: quote.calculatedPrice.toString(),
+    } as typeof quotes.$inferInsert;
+    
+    const [newQuote] = await db.insert(quotes).values(quoteData).returning();
     return newQuote;
   }
 
