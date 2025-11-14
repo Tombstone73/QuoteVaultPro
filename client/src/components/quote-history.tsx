@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import { FileText, Search } from "lucide-react";
 import { format } from "date-fns";
 import type { Quote, Product, QuoteWithRelations } from "@shared/schema";
@@ -190,6 +191,7 @@ export default function QuoteHistory() {
                     <TableHead data-testid="header-product">Product</TableHead>
                     <TableHead data-testid="header-dimensions">Dimensions</TableHead>
                     <TableHead data-testid="header-quantity">Quantity</TableHead>
+                    <TableHead data-testid="header-options">Options</TableHead>
                     <TableHead data-testid="header-price" className="text-right">Price</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -212,6 +214,28 @@ export default function QuoteHistory() {
                       </TableCell>
                       <TableCell data-testid={`cell-quantity-${quote.id}`}>
                         {quote.quantity}
+                      </TableCell>
+                      <TableCell data-testid={`cell-options-${quote.id}`}>
+                        {quote.selectedOptions && quote.selectedOptions.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {quote.selectedOptions.map((opt: any, idx: number) => {
+                              const cost = opt.calculatedCost ?? 0;
+                              const displayValue = typeof opt.value === 'boolean' ? (opt.value ? 'Yes' : 'No') : opt.value;
+                              return (
+                                <Badge 
+                                  key={idx} 
+                                  variant="secondary" 
+                                  className="text-xs"
+                                  data-testid={`badge-option-${quote.id}-${idx}`}
+                                >
+                                  {opt.optionName}: {displayValue} (+${cost.toFixed(2)})
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground text-sm italic">None</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right font-mono" data-testid={`cell-price-${quote.id}`}>
                         ${parseFloat(quote.calculatedPrice).toFixed(2)}

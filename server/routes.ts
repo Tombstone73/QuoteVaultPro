@@ -370,7 +370,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const quotes = await storage.getAllQuotes();
 
-      const csvHeader = "Date,User Email,Customer Name,Product,Width,Height,Quantity,Price\n";
+      const csvHeader = "Date,User Email,Customer Name,Product,Width,Height,Quantity,Selected Options,Options Cost,Price\n";
       const csvRows = quotes.map(quote => {
         const date = new Date(quote.createdAt).toISOString().split('T')[0];
         const userEmail = quote.user.email || "N/A";
@@ -380,8 +380,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const height = quote.height;
         const quantity = quote.quantity;
         const price = parseFloat(quote.calculatedPrice).toFixed(2);
+        
+        // Format selected options for CSV
+        let optionsText = "None";
+        let optionsCost = "0.00";
+        if (quote.selectedOptions && Array.isArray(quote.selectedOptions) && quote.selectedOptions.length > 0) {
+          optionsText = quote.selectedOptions.map((opt: any) => {
+            const value = typeof opt.value === 'boolean' ? (opt.value ? 'Yes' : 'No') : opt.value;
+            const cost = opt.calculatedCost ?? 0;
+            return `${opt.optionName}: ${value} (+$${cost.toFixed(2)})`;
+          }).join('; ');
+          
+          const totalOptionsCost = quote.selectedOptions.reduce((sum: number, opt: any) => {
+            return sum + (opt.calculatedCost ?? 0);
+          }, 0);
+          optionsCost = totalOptionsCost.toFixed(2);
+        }
 
-        return `${date},"${userEmail}","${customerName}","${product}",${width},${height},${quantity},${price}`;
+        return `${date},"${userEmail}","${customerName}","${product}",${width},${height},${quantity},"${optionsText}",${optionsCost},${price}`;
       }).join("\n");
 
       const csv = csvHeader + csvRows;

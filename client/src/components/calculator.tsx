@@ -98,7 +98,7 @@ export default function CalculatorComponent() {
         quantity: parseInt(quantity),
         selectedOptions: optionValues,
       });
-      return response;
+      return await response.json();
     },
     onSuccess: (data: any) => {
       setCalculatedPrice(data.price);
@@ -129,7 +129,8 @@ export default function CalculatorComponent() {
         priceBreakdown,
       };
 
-      return await apiRequest("POST", "/api/quotes", quoteData);
+      const response = await apiRequest("POST", "/api/quotes", quoteData);
+      return await response.json();
     },
     onSuccess: () => {
       toast({
