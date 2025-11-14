@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import { evaluate } from "mathjs";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, isAdmin } from "./replitAuth";
 import {
@@ -144,9 +145,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/quotes/calculate", isAuthenticated, async (req, res) => {
     try {
-      const { productId, width, height, quantity, addOns = [] } = req.body;
+      const { productId, width, height, quantity, selectedOptions = {} } = req.body;
 
-      if (!productId || !width || !height || !quantity) {
+      if (!productId || width == null || height == null || quantity == null) {
         return res.status(400).json({ message: "Missing required fields" });
       }
 
@@ -155,40 +156,149 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Product not found" });
       }
 
-      const widthNum = parseFloat(width);
-      const heightNum = parseFloat(height);
-      const quantityNum = parseInt(quantity);
+      // Coerce inputs to numbers (handles both string and number inputs)
+      const widthNum = Number(width);
+      const heightNum = Number(height);
+      const quantityNum = Number(quantity);
 
+      // Validate input parameters
+      if (!Number.isFinite(widthNum) || widthNum <= 0) {
+        return res.status(400).json({ message: "Invalid width value" });
+      }
+      if (!Number.isFinite(heightNum) || heightNum <= 0) {
+        return res.status(400).json({ message: "Invalid height value" });
+      }
+      if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
+        return res.status(400).json({ message: "Invalid quantity value" });
+      }
+
+      // Safely evaluate base price using mathjs
       let basePrice = 0;
       try {
         const formula = product.pricingFormula;
-        basePrice = eval(formula.replace(/width/g, widthNum.toString())
-          .replace(/height/g, heightNum.toString())
-          .replace(/quantity/g, quantityNum.toString()));
+        basePrice = evaluate(formula, { 
+          width: widthNum, 
+          height: heightNum, 
+          quantity: quantityNum 
+        });
+
+        // Validate base price is a finite number
+        if (!Number.isFinite(basePrice)) {
+          console.error("Base pricing formula produced invalid result:", basePrice);
+          return res.status(400).json({ message: "Product pricing formula produced an invalid result" });
+        }
       } catch (error) {
         console.error("Error evaluating formula:", error);
-        return res.status(500).json({ message: "Invalid pricing formula" });
+        return res.status(400).json({ message: "Invalid pricing formula" });
       }
 
-      const ADD_ON_PRICES: Record<string, number> = {
-        rush: 25,
-        glossy: 15,
-        premium: 20,
-      };
+      // Fetch product options and calculate option costs
+      const productOptions = await storage.getProductOptions(productId);
+      let optionsPrice = 0;
+      const selectedOptionsArray: Array<{
+        optionId: string;
+        optionName: string;
+        value: string | number | boolean;
+        setupCost: number;
+        calculatedCost: number;
+      }> = [];
 
-      const addOnsPrice = addOns.reduce((sum: number, addOn: string) => {
-        return sum + (ADD_ON_PRICES[addOn] || 0);
-      }, 0);
+      // Build parent-child map to enforce parent toggle states
+      const parentChildMap = new Map<string, string[]>();
+      productOptions.forEach(opt => {
+        if (opt.parentOptionId) {
+          if (!parentChildMap.has(opt.parentOptionId)) {
+            parentChildMap.set(opt.parentOptionId, []);
+          }
+          parentChildMap.get(opt.parentOptionId)!.push(opt.id);
+        }
+      });
 
-      const total = basePrice + addOnsPrice;
+      for (const optionId in selectedOptions) {
+        const option = productOptions.find(opt => opt.id === optionId);
+        if (!option || !option.isActive) continue;
+
+        const value = selectedOptions[optionId];
+        
+        // Skip if toggle is false or value is null/undefined
+        if (option.type === "toggle" && !value) continue;
+        if (value === null || value === undefined) continue;
+
+        // For number type, validate that value is finite
+        if (option.type === "number") {
+          const numValue = parseFloat(value as string);
+          if (!Number.isFinite(numValue)) continue;
+        }
+
+        // Check if this option has a parent, and if so, verify parent is enabled
+        if (option.parentOptionId) {
+          const parent = productOptions.find(p => p.id === option.parentOptionId);
+          if (parent && parent.type === "toggle") {
+            const parentValue = selectedOptions[option.parentOptionId];
+            if (!parentValue) continue; // Skip child if parent toggle is off
+          }
+        }
+
+        // Parse setup cost safely with default to 0
+        const setupCost = option.setupCost ? parseFloat(option.setupCost) : 0;
+        let calculatedCost = Number.isFinite(setupCost) ? setupCost : 0;
+
+        // Evaluate price formula if provided
+        if (option.priceFormula) {
+          try {
+            const optionCost = evaluate(option.priceFormula, {
+              width: widthNum,
+              height: heightNum,
+              quantity: quantityNum,
+              value: option.type === "number" ? parseFloat(value as string) : value,
+            });
+            
+            // Validate result is a finite number
+            if (!Number.isFinite(optionCost)) {
+              console.error(`Formula for option ${option.name} produced invalid result: ${optionCost}`);
+              return res.status(400).json({ message: `Invalid formula result for option ${option.name}` });
+            }
+            
+            calculatedCost += optionCost;
+          } catch (error) {
+            console.error(`Error evaluating formula for option ${option.name}:`, error);
+            return res.status(400).json({ message: `Invalid formula for option ${option.name}` });
+          }
+        }
+
+        // Final validation of calculated cost
+        if (!Number.isFinite(calculatedCost)) {
+          console.error(`Calculated cost for option ${option.name} is invalid: ${calculatedCost}`);
+          return res.status(400).json({ message: `Invalid cost calculation for option ${option.name}` });
+        }
+
+        optionsPrice += calculatedCost;
+        selectedOptionsArray.push({
+          optionId: option.id,
+          optionName: option.name,
+          value,
+          setupCost: Number.isFinite(setupCost) ? setupCost : 0,
+          calculatedCost,
+        });
+      }
+
+      const total = basePrice + optionsPrice;
+
+      // Final validation of total price
+      if (!Number.isFinite(total)) {
+        console.error("Total price is invalid:", total);
+        return res.status(400).json({ message: "Total price calculation produced an invalid result" });
+      }
 
       res.json({
         price: total,
         breakdown: {
           basePrice,
-          addOnsPrice,
+          addOnsPrice: 0, // Deprecated - keeping for backwards compatibility
+          optionsPrice,
           total,
           formula: product.pricingFormula,
+          selectedOptions: selectedOptionsArray,
         },
       });
     } catch (error) {

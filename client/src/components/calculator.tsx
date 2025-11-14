@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -6,17 +6,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Calculator as CalcIcon, ExternalLink, Save } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product, InsertQuote } from "@shared/schema";
-
-const ADD_ON_OPTIONS = [
-  { id: "rush", label: "Rush Processing (+$25)" },
-  { id: "glossy", label: "Glossy Finish (+$15)" },
-  { id: "premium", label: "Premium Paper (+$20)" },
-];
+import type { Product, InsertQuote, ProductOption } from "@shared/schema";
 
 export default function CalculatorComponent() {
   const { toast } = useToast();
@@ -25,7 +19,7 @@ export default function CalculatorComponent() {
   const [height, setHeight] = useState<string>("");
   const [quantity, setQuantity] = useState<string>("");
   const [customerName, setCustomerName] = useState<string>("");
-  const [selectedAddOns, setSelectedAddOns] = useState<string[]>([]);
+  const [optionValues, setOptionValues] = useState<Record<string, any>>({});
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [priceBreakdown, setPriceBreakdown] = useState<any>(null);
 
@@ -33,7 +27,67 @@ export default function CalculatorComponent() {
     queryKey: ["/api/products"],
   });
 
+  const { data: productOptions } = useQuery<ProductOption[]>({
+    queryKey: ["/api/products", selectedProductId, "options"],
+    enabled: !!selectedProductId,
+  });
+
   const selectedProduct = products?.find(p => p.id === selectedProductId);
+
+  // Reset option values when product changes
+  useEffect(() => {
+    setOptionValues({});
+  }, [selectedProductId]);
+
+  // Set default values when product options load
+  useEffect(() => {
+    if (productOptions && productOptions.length > 0) {
+      const defaults: Record<string, any> = {};
+      
+      // Build parent-child map
+      const childrenByParent = new Map<string, ProductOption[]>();
+      productOptions.forEach(opt => {
+        if (opt.parentOptionId) {
+          if (!childrenByParent.has(opt.parentOptionId)) {
+            childrenByParent.set(opt.parentOptionId, []);
+          }
+          childrenByParent.get(opt.parentOptionId)!.push(opt);
+        }
+      });
+      
+      // Set defaults for top-level options first
+      productOptions.forEach(option => {
+        if (!option.parentOptionId) {
+          if (option.type === "toggle") {
+            defaults[option.id] = option.isDefaultEnabled ?? false;
+          } else if (option.type === "number" && option.defaultValue) {
+            defaults[option.id] = parseFloat(option.defaultValue);
+          } else if (option.defaultValue) {
+            defaults[option.id] = option.defaultValue;
+          }
+        }
+      });
+      
+      // Only set defaults for child options if parent toggle is enabled
+      productOptions.forEach(option => {
+        if (option.parentOptionId) {
+          const parent = productOptions.find(p => p.id === option.parentOptionId);
+          // Only set child default if parent is toggle and enabled, or parent is not a toggle
+          if (parent && (parent.type !== "toggle" || defaults[parent.id] === true)) {
+            if (option.type === "toggle") {
+              defaults[option.id] = option.isDefaultEnabled ?? false;
+            } else if (option.type === "number" && option.defaultValue) {
+              defaults[option.id] = parseFloat(option.defaultValue);
+            } else if (option.defaultValue) {
+              defaults[option.id] = option.defaultValue;
+            }
+          }
+        }
+      });
+      
+      setOptionValues(defaults);
+    }
+  }, [productOptions]);
 
   const calculateMutation = useMutation({
     mutationFn: async () => {
@@ -42,7 +96,7 @@ export default function CalculatorComponent() {
         width: parseFloat(width),
         height: parseFloat(height),
         quantity: parseInt(quantity),
-        addOns: selectedAddOns,
+        selectedOptions: optionValues,
       });
       return response;
     },
@@ -66,11 +120,12 @@ export default function CalculatorComponent() {
       const quoteData: Omit<InsertQuote, 'userId'> = {
         productId: selectedProductId,
         customerName: customerName || undefined,
-        width: width,
-        height: height,
-        quantity: quantity,
-        addOns: selectedAddOns,
-        calculatedPrice: calculatedPrice.toString(),
+        width: parseFloat(width),
+        height: parseFloat(height),
+        quantity: parseInt(quantity),
+        addOns: [],
+        selectedOptions: priceBreakdown.selectedOptions || [],
+        calculatedPrice: calculatedPrice,
         priceBreakdown,
       };
 
@@ -94,7 +149,7 @@ export default function CalculatorComponent() {
   });
 
   const handleCalculate = () => {
-    if (!selectedProductId || !width || !height || !quantity) {
+    if (!selectedProductId || width.trim() === "" || height.trim() === "" || quantity.trim() === "") {
       toast({
         title: "Missing Information",
         description: "Please fill in all required fields.",
@@ -102,16 +157,132 @@ export default function CalculatorComponent() {
       });
       return;
     }
+    const widthNum = parseFloat(width);
+    const heightNum = parseFloat(height);
+    const quantityNum = parseInt(quantity);
+    if (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0 || !Number.isFinite(quantityNum) || quantityNum <= 0) {
+      toast({
+        title: "Invalid Values",
+        description: "Please enter valid positive numbers for all fields.",
+        variant: "destructive",
+      });
+      return;
+    }
     calculateMutation.mutate();
   };
 
-  const handleAddOnToggle = (addOnId: string) => {
-    setSelectedAddOns(prev =>
-      prev.includes(addOnId)
-        ? prev.filter(id => id !== addOnId)
-        : [...prev, addOnId]
-    );
+  const handleOptionChange = (optionId: string, value: any, option: ProductOption) => {
+    // Coerce number-type options to actual numbers
+    let processedValue = value;
+    if (option.type === "number" && typeof value === "string") {
+      processedValue = value === "" ? null : parseFloat(value);
+    }
+    
+    setOptionValues(prev => {
+      const newValues = { ...prev };
+
+      // If this is a toggle being turned off, remove it and all child option values
+      if (option.type === "toggle" && !value) {
+        delete newValues[optionId];
+        if (childOptionsMap[optionId]) {
+          childOptionsMap[optionId].forEach(childOption => {
+            delete newValues[childOption.id];
+          });
+        }
+      } else {
+        // Set the value normally
+        newValues[optionId] = processedValue;
+      }
+
+      return newValues;
+    });
   };
+
+  const renderOption = (option: ProductOption) => {
+    const value = optionValues[option.id];
+
+    switch (option.type) {
+      case "toggle":
+        return (
+          <div key={option.id} className="flex items-center justify-between gap-4 p-3 rounded-md border">
+            <div className="space-y-0.5 flex-1">
+              <Label htmlFor={`option-${option.id}`} data-testid={`label-option-${option.id}`}>
+                {option.name}
+              </Label>
+              {option.description && (
+                <p className="text-xs text-muted-foreground">{option.description}</p>
+              )}
+            </div>
+            <Switch
+              id={`option-${option.id}`}
+              checked={value ?? false}
+              onCheckedChange={(checked) => handleOptionChange(option.id, checked, option)}
+              data-testid={`switch-option-${option.id}`}
+            />
+          </div>
+        );
+
+      case "number":
+        return (
+          <div key={option.id} className="space-y-2">
+            <Label htmlFor={`option-${option.id}`} data-testid={`label-option-${option.id}`}>
+              {option.name}
+            </Label>
+            {option.description && (
+              <p className="text-xs text-muted-foreground">{option.description}</p>
+            )}
+            <Input
+              id={`option-${option.id}`}
+              type="number"
+              step="0.01"
+              min="0"
+              value={value ?? ""}
+              onChange={(e) => handleOptionChange(option.id, e.target.value, option)}
+              placeholder={option.defaultValue || "0"}
+              data-testid={`input-option-${option.id}`}
+            />
+          </div>
+        );
+
+      case "select":
+        const selectOptions = option.defaultValue?.split(",").map(opt => opt.trim()).filter(Boolean) || [];
+        return (
+          <div key={option.id} className="space-y-2">
+            <Label htmlFor={`option-${option.id}`} data-testid={`label-option-${option.id}`}>
+              {option.name}
+            </Label>
+            {option.description && (
+              <p className="text-xs text-muted-foreground">{option.description}</p>
+            )}
+            <Select value={value || ""} onValueChange={(val) => handleOptionChange(option.id, val, option)}>
+              <SelectTrigger id={`option-${option.id}`} data-testid={`select-option-${option.id}`}>
+                <SelectValue placeholder="Select an option" />
+              </SelectTrigger>
+              <SelectContent>
+                {selectOptions.map((opt) => (
+                  <SelectItem key={opt} value={opt} data-testid={`option-${option.id}-${opt}`}>
+                    {opt}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  // Group options by parent
+  const topLevelOptions = productOptions?.filter(opt => !opt.parentOptionId && opt.isActive) || [];
+  const childOptionsMap = productOptions?.reduce((acc, opt) => {
+    if (opt.parentOptionId && opt.isActive) {
+      if (!acc[opt.parentOptionId]) acc[opt.parentOptionId] = [];
+      acc[opt.parentOptionId].push(opt);
+    }
+    return acc;
+  }, {} as Record<string, ProductOption[]>) || {};
 
   if (productsLoading) {
     return (
@@ -206,28 +377,30 @@ export default function CalculatorComponent() {
               />
             </div>
 
-            <div className="space-y-2">
-              <Label data-testid="label-addons">Add-ons (Optional)</Label>
+            {topLevelOptions.length > 0 && (
               <div className="space-y-3">
-                {ADD_ON_OPTIONS.map((addOn) => (
-                  <div key={addOn.id} className="flex items-center gap-2">
-                    <Checkbox
-                      id={addOn.id}
-                      checked={selectedAddOns.includes(addOn.id)}
-                      onCheckedChange={() => handleAddOnToggle(addOn.id)}
-                      data-testid={`checkbox-addon-${addOn.id}`}
-                    />
-                    <Label
-                      htmlFor={addOn.id}
-                      className="text-sm font-normal cursor-pointer"
-                      data-testid={`label-addon-${addOn.id}`}
-                    >
-                      {addOn.label}
-                    </Label>
-                  </div>
-                ))}
+                <Label data-testid="label-options">Product Options</Label>
+                {topLevelOptions
+                  .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
+                  .map((option) => {
+                    // For toggle parent options, only show children if parent is enabled
+                    const showChildren = option.type !== "toggle" || optionValues[option.id] === true;
+                    
+                    return (
+                      <div key={option.id} className="space-y-2">
+                        {renderOption(option)}
+                        {childOptionsMap[option.id] && showChildren && (
+                          <div className="ml-6 space-y-2" data-testid={`child-options-${option.id}`}>
+                            {childOptionsMap[option.id]
+                              .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
+                              .map((childOption) => renderOption(childOption))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
               </div>
-            </div>
+            )}
 
             <Button
               onClick={handleCalculate}
@@ -264,14 +437,33 @@ export default function CalculatorComponent() {
                       ${priceBreakdown.basePrice.toFixed(2)}
                     </span>
                   </div>
-                  {priceBreakdown.addOnsPrice > 0 && (
+                  
+                  {priceBreakdown.selectedOptions && priceBreakdown.selectedOptions.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium text-muted-foreground">Options:</div>
+                      {priceBreakdown.selectedOptions.map((opt: any) => (
+                        <div key={opt.optionId} className="flex justify-between text-sm pl-4">
+                          <span className="text-muted-foreground">
+                            {opt.optionName}
+                            {typeof opt.value === 'boolean' ? '' : ` (${opt.value})`}:
+                          </span>
+                          <span className="font-mono" data-testid={`text-option-cost-${opt.optionId}`}>
+                            ${opt.calculatedCost.toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {priceBreakdown.optionsPrice > 0 && (
                     <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Add-ons:</span>
-                      <span className="font-mono" data-testid="text-addons-price">
-                        ${priceBreakdown.addOnsPrice.toFixed(2)}
+                      <span className="text-muted-foreground">Total Options:</span>
+                      <span className="font-mono" data-testid="text-options-price">
+                        ${priceBreakdown.optionsPrice.toFixed(2)}
                       </span>
                     </div>
                   )}
+                  
                   <div className="pt-2 border-t">
                     <div className="flex justify-between font-medium">
                       <span>Total:</span>
