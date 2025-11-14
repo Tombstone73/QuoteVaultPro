@@ -1,6 +1,7 @@
 import {
   users,
   products,
+  productOptions,
   quotes,
   pricingRules,
   type User,
@@ -8,6 +9,9 @@ import {
   type Product,
   type InsertProduct,
   type UpdateProduct,
+  type ProductOption,
+  type InsertProductOption,
+  type UpdateProductOption,
   type Quote,
   type InsertQuote,
   type QuoteWithRelations,
@@ -29,6 +33,12 @@ export interface IStorage {
   createProduct(product: InsertProduct): Promise<Product>;
   updateProduct(id: string, product: UpdateProduct): Promise<Product>;
   deleteProduct(id: string): Promise<void>;
+
+  // Product options operations
+  getProductOptions(productId: string): Promise<ProductOption[]>;
+  createProductOption(option: InsertProductOption): Promise<ProductOption>;
+  updateProductOption(id: string, option: Partial<InsertProductOption>): Promise<ProductOption>;
+  deleteProductOption(id: string): Promise<void>;
 
   // Quote operations
   createQuote(quote: InsertQuote): Promise<Quote>;
@@ -105,6 +115,47 @@ export class DatabaseStorage implements IStorage {
 
   async deleteProduct(id: string): Promise<void> {
     await db.delete(products).where(eq(products.id, id));
+  }
+
+  // Product options operations
+  async getProductOptions(productId: string): Promise<ProductOption[]> {
+    return await db
+      .select()
+      .from(productOptions)
+      .where(eq(productOptions.productId, productId))
+      .orderBy(productOptions.displayOrder);
+  }
+
+  async createProductOption(option: InsertProductOption): Promise<ProductOption> {
+    const optionData = {
+      ...option,
+      setupCost: option.setupCost.toString(),
+    } as typeof productOptions.$inferInsert;
+    
+    const [newOption] = await db.insert(productOptions).values(optionData).returning();
+    return newOption;
+  }
+
+  async updateProductOption(id: string, optionData: Partial<InsertProductOption>): Promise<ProductOption> {
+    const updateData: Record<string, any> = {
+      ...optionData,
+      updatedAt: new Date(),
+    };
+    
+    if (optionData.setupCost !== undefined) {
+      updateData.setupCost = optionData.setupCost.toString();
+    }
+    
+    const [updated] = await db
+      .update(productOptions)
+      .set(updateData)
+      .where(eq(productOptions.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteProductOption(id: string): Promise<void> {
+    await db.delete(productOptions).where(eq(productOptions.id, id));
   }
 
   // Quote operations

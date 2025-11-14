@@ -98,6 +98,7 @@ export const insertProductOptionSchema = createInsertSchema(productOptions).omit
   createdAt: true,
   updatedAt: true,
 }).extend({
+  type: z.enum(["toggle", "number", "select"]),
   setupCost: z.coerce.number().min(0),
   displayOrder: z.coerce.number().int(),
 });
