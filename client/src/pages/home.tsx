@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Calculator, FileText, LogOut, Settings, User } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Calculator, FileText, LogOut, Settings, User, Eye } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
 import QuoteHistory from "@/components/quote-history";
 import AdminDashboard from "@/components/admin-dashboard";
@@ -15,6 +17,10 @@ export default function Home() {
   const { user, isLoading, isAuthenticated, isAdmin } = useAuth();
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("calculator");
+  const [viewMode, setViewMode] = useState<"admin" | "customer">(() => {
+    const saved = localStorage.getItem("viewMode");
+    return saved === "customer" ? "customer" : "admin";
+  });
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -29,6 +35,20 @@ export default function Home() {
       return;
     }
   }, [isAuthenticated, isLoading, toast]);
+
+  useEffect(() => {
+    localStorage.setItem("viewMode", viewMode);
+  }, [viewMode]);
+
+  const handleViewModeChange = (checked: boolean) => {
+    const newMode = checked ? "admin" : "customer";
+    setViewMode(newMode);
+    if (newMode === "customer" && (activeTab === "admin" || activeTab === "settings")) {
+      setActiveTab("calculator");
+    }
+  };
+
+  const showAdminFeatures = isAdmin && viewMode === "admin";
 
   if (isLoading || !user) {
     return (
@@ -49,13 +69,29 @@ export default function Home() {
     <div className="min-h-screen bg-background">
       <header className="border-b sticky top-0 bg-background z-50">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <Calculator className="w-6 h-6 text-primary" data-testid="logo-calculator" />
               <h1 className="text-xl font-semibold" data-testid="text-app-title">Pricing Calculator</h1>
             </div>
 
-            <DropdownMenu>
+            <div className="flex items-center gap-4">
+              {isAdmin && (
+                <div className="flex items-center gap-2" data-testid="container-view-toggle">
+                  <Eye className="w-4 h-4 text-muted-foreground" />
+                  <Label htmlFor="view-mode" className="text-sm text-muted-foreground cursor-pointer" data-testid="label-view-mode">
+                    {viewMode === "admin" ? "Admin View" : "Customer View"}
+                  </Label>
+                  <Switch
+                    id="view-mode"
+                    checked={viewMode === "admin"}
+                    onCheckedChange={handleViewModeChange}
+                    data-testid="switch-view-mode"
+                  />
+                </div>
+              )}
+
+              <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="relative h-9 w-9 rounded-full" data-testid="button-user-menu">
                   <Avatar className="h-9 w-9">
@@ -91,13 +127,14 @@ export default function Home() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            </div>
           </div>
         </div>
       </header>
 
       <main className="container mx-auto px-4 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-main">
-          <TabsList className="grid w-full max-w-2xl mx-auto" style={{ gridTemplateColumns: isAdmin ? 'repeat(4, 1fr)' : 'repeat(2, 1fr)' }}>
+          <TabsList className="grid w-full max-w-2xl mx-auto" style={{ gridTemplateColumns: showAdminFeatures ? 'repeat(4, 1fr)' : 'repeat(2, 1fr)' }}>
             <TabsTrigger value="calculator" data-testid="tab-calculator">
               <Calculator className="w-4 h-4 mr-2" />
               Calculator
@@ -106,7 +143,7 @@ export default function Home() {
               <FileText className="w-4 h-4 mr-2" />
               My Quotes
             </TabsTrigger>
-            {isAdmin && (
+            {showAdminFeatures && (
               <>
                 <TabsTrigger value="admin" data-testid="tab-admin">
                   <User className="w-4 h-4 mr-2" />
@@ -129,7 +166,7 @@ export default function Home() {
               <QuoteHistory />
             </TabsContent>
 
-            {isAdmin && (
+            {showAdminFeatures && (
               <>
                 <TabsContent value="admin" data-testid="content-admin">
                   <AdminDashboard />
