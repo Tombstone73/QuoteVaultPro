@@ -63,41 +63,60 @@ Preferred communication style: Simple, everyday language.
 
 1. **Users**: Authenticated users with profile information and admin flags
 2. **Products**: Print product definitions with pricing formulas and descriptions
-3. **Quotes**: Generated price quotes with customer info, dimensions, quantities, and calculated prices
-4. **Pricing Rules**: Configurable pricing formulas and discount tiers (admin-managed)
-5. **Sessions**: Server-side session storage for authentication state
+3. **Product Options**: Configurable add-on options for products (e.g., grommets, pole pockets, lamination)
+4. **Quotes**: Generated price quotes with customer info, dimensions, quantities, selected options, and calculated prices
+5. **Pricing Rules**: Configurable pricing formulas and discount tiers (admin-managed)
+6. **Sessions**: Server-side session storage for authentication state
 
 **Key Relationships**:
 - Users → Quotes (one-to-many): Each user can generate multiple quotes
 - Products → Quotes (one-to-many): Each product can appear in multiple quotes
-- Quotes include denormalized product/user data for historical accuracy
+- Products → Product Options (one-to-many): Each product can have multiple configurable options
+- Product Options → Product Options (one-to-many): Parent-child hierarchy for nested options (max 2 layers)
+- Quotes include denormalized product/user data and selected options for historical accuracy
 
 **Pricing Calculation Engine**:
 - Formula-based pricing stored as strings in product records
-- Runtime evaluation of formulas with dimension and quantity inputs
-- Support for add-on pricing modifiers
-- Admin-configurable formulas without code deployment
+- Runtime evaluation of formulas with dimension and quantity inputs using mathjs
+- Dynamic product options system with three option types:
+  - **Toggle options**: Boolean on/off switches (e.g., "Add Grommets")
+  - **Number options**: Numeric inputs for quantities (e.g., "Number of Pole Pockets")
+  - **Select options**: Dropdown menus for predefined choices (e.g., "Lamination Type: Matte/Gloss")
+- Each option supports:
+  - Setup costs (one-time charges)
+  - JavaScript pricing formulas with access to dimensions (width, height) and quantities
+  - Default enabled/disabled state and default values
+  - 2-layer parent-child hierarchy (child options only appear when parent is active)
+- Safe formula evaluation with mathjs library prevents code injection
+- Admin-configurable products, options, and formulas without code deployment
 
 ### Application Features
 
 **User Capabilities**:
-- Calculate quotes: Select product, enter dimensions/quantity, apply add-ons
-- View quote history: Filter by customer, product, date range, price range
-- Save and retrieve quotes for repeat customers
+- Calculate quotes: Select product, enter dimensions/quantity, configure dynamic product options
+- View quote history: Filter by customer, product, date range, price range, view selected options
+- Save and retrieve quotes for repeat customers with option selections preserved
 - Email quotes to customers
 
 **Admin Capabilities**:
-- View all quotes across all users system-wide
+- View all quotes across all users system-wide with selected options visible
 - Advanced filtering: by user/salesperson, customer, product, quantity ranges
 - Product management: CRUD operations on product catalog
+- Product options management: Create/edit/delete configurable options per product
+  - Define option types (toggle/number/select)
+  - Set default values and enabled states
+  - Configure setup costs and pricing formulas
+  - Organize options in 2-layer hierarchy
 - Formula management: Edit pricing formulas and discount rules
-- Analytics: User activity tracking and CSV export for production planning
+- Analytics: User activity tracking and CSV export for production planning including option details
 
 **UI Components**:
-- Calculator interface: Two-column layout (product selection | price display)
-- Quote history table: Searchable/filterable data grid
-- Admin dashboard: Multi-column metrics and system-wide quote table
-- Admin settings: Tabbed interface for product and formula management
+- Calculator interface: Two-column layout (product selection + dynamic options | price display with breakdown)
+- Quote history table: Searchable/filterable data grid with selected options displayed as badges
+- Admin dashboard: Multi-column metrics and system-wide quote table with option visibility
+- Admin settings: Tabbed interface for product, product options, and formula management
+  - Product options tree view showing parent-child relationships
+  - Inline editing and deletion with confirmation dialogs
 
 ## External Dependencies
 
@@ -131,6 +150,7 @@ Preferred communication style: Simple, everyday language.
 - `passport`: Authentication middleware
 - `express-session`: Session management
 - `connect-pg-simple`: PostgreSQL session store
+- `mathjs`: Safe mathematical expression evaluation for pricing formulas
 
 **Shared/Build Tools**:
 - `typescript`: Type system
@@ -151,6 +171,46 @@ Required environment variables:
 
 **Email**: Quote email functionality requires SMTP integration (implementation pending)
 
-**CSV Export**: Server-side CSV generation for quote data export
+**CSV Export**: Server-side CSV generation for quote data export with columns for:
+- Date, User Email, Customer Name, Product, Width, Height, Quantity
+- Selected Options (semicolon-delimited list of option names, values, and costs)
+- Options Cost (total additional cost from selected options)
+- Total Price
 
 **Product Store Links**: Each product can link to an external online store URL for direct ordering
+
+## Recent Changes
+
+### Product Options System (November 2025)
+
+Implemented comprehensive product options functionality allowing dynamic configuration of add-on features for print products:
+
+**Database Schema:**
+- Added `product_options` table with support for 3 option types (toggle/number/select)
+- Fields include: name, description, type, defaultValue, isDefaultEnabled, setupCost, priceFormula, parentOptionId, displayOrder, isActive
+- Updated `quotes` table to store selectedOptions as JSONB array
+
+**Admin Features:**
+- Product Options management UI in Admin Settings
+- Tree-structured display showing parent-child option relationships
+- CRUD operations with inline editing
+- Formula editor for dynamic pricing based on dimensions and quantities
+
+**Calculator Enhancements:**
+- Dynamic option rendering based on product selection
+- Toggle switches, number inputs, and select dropdowns
+- Automatic default value population
+- Real-time price calculation with option costs
+- Price breakdown showing base price, option costs, and total
+- Safe formula evaluation using mathjs library
+
+**Quote History Updates:**
+- Options column displaying selected options as badges
+- Format: "OptionName: value (+$cost)"
+- CSV export includes "Selected Options" and "Options Cost" columns
+
+**Technical Implementation:**
+- Shared TypeScript schemas with Zod validation
+- Safe formula evaluation preventing code injection
+- Field mapping: optionName, value, calculatedCost
+- Null-safe rendering with default cost values
