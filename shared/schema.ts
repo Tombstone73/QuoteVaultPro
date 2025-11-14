@@ -72,6 +72,44 @@ export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type UpdateProduct = z.infer<typeof updateProductSchema>;
 export type Product = typeof products.$inferSelect;
 
+// Product Options table
+export const productOptions = pgTable("product_options", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  type: varchar("type", { length: 50 }).notNull().$type<"toggle" | "number" | "select">(),
+  defaultValue: text("default_value"),
+  isDefaultEnabled: boolean("is_default_enabled").default(false).notNull(),
+  setupCost: decimal("setup_cost", { precision: 10, scale: 2 }).default("0").notNull(),
+  priceFormula: text("price_formula"),
+  parentOptionId: varchar("parent_option_id").references((): any => productOptions.id, { onDelete: 'cascade' }),
+  displayOrder: integer("display_order").default(0).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("product_options_product_id_idx").on(table.productId),
+  index("product_options_parent_id_idx").on(table.parentOptionId),
+]);
+
+export const insertProductOptionSchema = createInsertSchema(productOptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  setupCost: z.coerce.number().min(0),
+  displayOrder: z.coerce.number().int(),
+});
+
+export const updateProductOptionSchema = insertProductOptionSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertProductOption = z.infer<typeof insertProductOptionSchema>;
+export type UpdateProductOption = z.infer<typeof updateProductOptionSchema>;
+export type ProductOption = typeof productOptions.$inferSelect;
+
 // Quotes table
 export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -82,10 +120,18 @@ export const quotes = pgTable("quotes", {
   height: decimal("height", { precision: 10, scale: 2 }).notNull(),
   quantity: integer("quantity").notNull(),
   addOns: jsonb("add_ons").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+  selectedOptions: jsonb("selected_options").$type<Array<{
+    optionId: string;
+    optionName: string;
+    value: string | number | boolean;
+    setupCost: number;
+    calculatedCost: number;
+  }>>().default(sql`'[]'::jsonb`).notNull(),
   calculatedPrice: decimal("calculated_price", { precision: 10, scale: 2 }).notNull(),
   priceBreakdown: jsonb("price_breakdown").$type<{
     basePrice: number;
     addOnsPrice: number;
+    optionsPrice: number;
     total: number;
     formula: string;
   }>().notNull(),
@@ -136,6 +182,19 @@ export const usersRelations = relations(users, ({ many }) => ({
 
 export const productsRelations = relations(products, ({ many }) => ({
   quotes: many(quotes),
+  options: many(productOptions),
+}));
+
+export const productOptionsRelations = relations(productOptions, ({ one, many }) => ({
+  product: one(products, {
+    fields: [productOptions.productId],
+    references: [products.id],
+  }),
+  parentOption: one(productOptions, {
+    fields: [productOptions.parentOptionId],
+    references: [productOptions.id],
+  }),
+  childOptions: many(productOptions),
 }));
 
 export const quotesRelations = relations(quotes, ({ one }) => ({
