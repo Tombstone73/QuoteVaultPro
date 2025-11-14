@@ -18,8 +18,11 @@ export default function Home() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("calculator");
   const [viewMode, setViewMode] = useState<"admin" | "customer">(() => {
-    const saved = localStorage.getItem("viewMode");
-    return saved === "customer" ? "customer" : "admin";
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("viewMode");
+      return saved === "customer" ? "customer" : "admin";
+    }
+    return "admin";
   });
 
   useEffect(() => {
@@ -37,7 +40,9 @@ export default function Home() {
   }, [isAuthenticated, isLoading, toast]);
 
   useEffect(() => {
-    localStorage.setItem("viewMode", viewMode);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("viewMode", viewMode);
+    }
   }, [viewMode]);
 
   const handleViewModeChange = (checked: boolean) => {
