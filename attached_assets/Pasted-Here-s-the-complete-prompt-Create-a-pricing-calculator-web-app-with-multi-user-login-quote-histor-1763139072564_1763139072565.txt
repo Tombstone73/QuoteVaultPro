@@ -1,0 +1,76 @@
+Here's the complete prompt:
+
+Create a pricing calculator web app with multi-user login, quote history, admin dashboard, and product management.
+Requirements:
+
+Simple, clean interface that works on mobile and desktop
+Dropdown to select product type (e.g., business cards, postcards, flyers, brochures, banners, etc.)
+Input fields for dimensions (width x height in inches) and quantity
+Optional checkboxes for add-ons or special options (if applicable)
+Calculate button that applies pricing formulas and returns the price
+Display the calculated price clearly with any relevant details (base cost, rounding applied if significant)
+Product description displayed below or next to the product dropdown so users understand what each product is for
+Optional link to the product in the online store (if the user wants to order/view more details immediately)
+
+User Authentication & Quote History:
+
+Self-signup page: users can create an account with email and password
+After login, users see "My Quote History" - a list of all quotes they've generated, searchable/filterable by:
+
+Customer name
+Date range
+Product type
+Price range (optional)
+
+
+Users can only view their own quote history, NOT other users' quotes
+Ability to view, copy, or resend a previous quote to a customer
+"Email Quote" button to send selected quote to customer
+"Save Quote" button to store the quote locally
+
+Admin Dashboard:
+
+Admin login (separate from user signup - only authorized admins can access)
+View ALL quotes from all users across the entire system
+Filter by: user/salesperson, customer name, date range, product type, quantity range
+See which users are most active and what they're quoting
+Export quote data (CSV) for production planning and analysis
+
+Admin Settings & Configuration Panel:
+
+Admin-only configuration area to manage all system data without touching code
+Formulas Editor: View and edit all pricing formulas (cost per square foot, minimum orders, quantity discount tiers, etc.)
+Product Management:
+
+Add new products with name, description, pricing formula, and store link
+Edit existing products (update description, formula, or store link)
+Delete products from the system
+Each product includes fields for: product name, description, pricing formula, store URL link
+
+
+Special Rules Editor: Update rounding rules, rush fees, add-ons, volume discounts, etc.
+All changes take effect immediately across the calculator for all users
+Optional audit trail: log when and what was changed for reference
+
+Quote Logging:
+
+Every quote generated logs: product type, dimensions, quantity, calculated price, timestamp, user who generated it, customer name (optional field they enter)
+Repeat customers: if they log in with the same email, they see all quotes previously generated for them
+
+Pricing Formulas & Products:
+[NOTE: User will provide complete product list with formulas and descriptions shortly. Each product should have: product name, description, pricing formula, and optional store link URL]
+Special rules:
+[User will provide any rounding rules, volume discounts, rush fees, or other pricing logic]
+Design notes:
+
+Clean, professional interface
+Login page upfront
+After login, prominently display quote calculator with product description visible
+Product dropdown shows both name and brief description
+Store link (if available) displays as a clickable button or link near the product info
+"My Quote History" tab next to calculator
+Admin panel accessible only to admin users
+Admin settings panel easy to navigate with clear sections for formulas, products, and special rules
+Mobile-friendly throughout
+
+Tech stack: React frontend, Node/Express (or similar) backend with authentication. Use Supabase for database and user management—it handles auth, data storage, and multi-user access. All pricing formulas, products, and special rules stored in database tables so they can be edited via the UI. Each user's quotes isolated by user ID, admin can query across all records.
