@@ -2,9 +2,7 @@
 
 ## Overview
 
-A professional pricing calculator web application for generating quotes on print products (business cards, postcards, flyers, brochures, banners, etc.). The system supports multi-user authentication, quote history tracking, and admin capabilities for managing products and viewing system-wide analytics.
-
-**Core Purpose**: Enable sales teams to quickly generate accurate pricing quotes for custom print products based on dimensions, quantities, and add-on options, while maintaining a centralized quote history and administrative oversight.
+A professional web application designed to generate pricing quotes for print products (e.g., business cards, postcards, flyers, banners). The system supports multi-user authentication, tracks quote history, and provides administrative capabilities for product management and analytics. Its core purpose is to empower sales teams with a tool for quick and accurate quote generation based on product dimensions, quantities, and customizable add-on options, while centralizing data and offering administrative oversight.
 
 ## User Preferences
 
@@ -12,255 +10,84 @@ Preferred communication style: Simple, everyday language.
 
 ## System Architecture
 
-### Frontend Architecture
+### Frontend
 
-**Framework**: React 18 with TypeScript using Vite as the build tool
+The frontend is built with React 18 and TypeScript, using Vite for bundling. It leverages Shadcn/ui (New York style) on Radix UI primitives and Tailwind CSS for a Material Design-inspired interface. State management is handled by TanStack Query for server state and React Hook Form with Zod for form validation. Wouter provides lightweight client-side routing. The design system uses Inter and JetBrains Mono fonts, an 8-point grid, and a mobile-first responsive approach with a light mode theme.
 
-**UI Component System**: 
-- Shadcn/ui component library (New York style variant) built on Radix UI primitives
-- Tailwind CSS for styling with custom design tokens
-- Material Design-inspired approach prioritizing clarity and data density for B2B productivity
+### Backend
 
-**State Management**:
-- TanStack Query (React Query) for server state management and data fetching
-- React Hook Form with Zod validation for form state
-- Local component state with React hooks
-
-**Routing**: Wouter for lightweight client-side routing
-
-**Design System**:
-- Typography: Inter font for UI elements, JetBrains Mono for pricing/numerical data
-- Spacing: Tailwind's 8-point grid system (units of 2, 4, 6, 8)
-- Responsive: Mobile-first with breakpoints for desktop layouts
-- Theme: Light mode with customizable HSL color system via CSS variables
-
-### Backend Architecture
-
-**Runtime**: Node.js with Express.js server
-
-**API Pattern**: RESTful JSON API with session-based authentication
-
-**Database Access**: 
-- Drizzle ORM for type-safe database operations
-- PostgreSQL as the primary database (via Neon serverless)
-- Schema-first approach with TypeScript types derived from Drizzle schemas
-
-**Authentication Strategy**:
-- Replit OIDC-based authentication using OpenID Connect
-- Session management with connect-pg-simple for PostgreSQL-backed sessions
-- Passport.js for authentication middleware
-- Role-based access control (standard users vs. admin users)
+The backend uses Node.js with Express.js, exposing a RESTful JSON API. PostgreSQL (via Neon serverless) is the primary database, accessed through Drizzle ORM for type-safe operations. Authentication is OIDC-based via Replit, utilizing Passport.js and `connect-pg-simple` for session management with role-based access control.
 
 **Key Architectural Decisions**:
-1. **Monorepo Structure**: Single repository with `client/`, `server/`, and `shared/` directories for code organization and type sharing
-2. **Type Safety**: Shared TypeScript schemas between frontend and backend using Zod for runtime validation
-3. **Session Storage**: PostgreSQL-backed sessions for scalability and persistence across server restarts
-4. **Path Aliases**: TypeScript path mapping (`@/`, `@shared/`, `@assets/`) for cleaner imports
+- **Monorepo Structure**: Organizes `client/`, `server/`, and `shared/` directories to facilitate code and type sharing.
+- **Type Safety**: Achieved through shared TypeScript schemas and Zod for runtime validation.
+- **Session Storage**: PostgreSQL-backed sessions ensure scalability and persistence.
+- **Path Aliases**: Enhances import clarity within the codebase.
 
 ### Data Models
 
-**Core Entities**:
-
-1. **Users**: Authenticated users with profile information and admin flags
-2. **Products**: Print product definitions with pricing formulas and descriptions
-3. **Product Options**: Configurable add-on options for products (e.g., grommets, pole pockets, lamination)
-4. **Quotes**: Generated price quotes with customer info, dimensions, quantities, selected options, and calculated prices
-5. **Pricing Rules**: Configurable pricing formulas and discount tiers (admin-managed)
-6. **Sessions**: Server-side session storage for authentication state
-
-**Key Relationships**:
-- Users → Quotes (one-to-many): Each user can generate multiple quotes
-- Products → Quotes (one-to-many): Each product can appear in multiple quotes
-- Products → Product Options (one-to-many): Each product can have multiple configurable options
-- Product Options → Product Options (one-to-many): Parent-child hierarchy for nested options (max 2 layers)
-- Quotes include denormalized product/user data and selected options for historical accuracy
+Core entities include Users, Products, Product Options, Quotes, Pricing Rules, and Sessions. Relationships link users to quotes, products to quotes, and products to their configurable options, including a 2-layer hierarchy for nested options.
 
 **Pricing Calculation Engine**:
-- Formula-based pricing stored as strings in product records
-- Runtime evaluation of formulas with dimension and quantity inputs using mathjs
-- Dynamic product options system with three option types:
-  - **Toggle options**: Boolean on/off switches (e.g., "Add Grommets")
-  - **Number options**: Numeric inputs for quantities (e.g., "Number of Pole Pockets")
-  - **Select options**: Dropdown menus for predefined choices (e.g., "Lamination Type: Matte/Gloss")
-- Each option supports:
-  - Setup costs (one-time charges)
-  - JavaScript pricing formulas with access to dimensions (width, height) and quantities
-  - Default enabled/disabled state and default values
-  - 2-layer parent-child hierarchy (child options only appear when parent is active)
-- Safe formula evaluation with mathjs library prevents code injection
-- Admin-configurable products, options, and formulas without code deployment
+- Utilizes formula-based pricing stored in product records, evaluated at runtime with `mathjs`.
+- Supports dynamic product options (Toggle, Number, Select types) with configurable setup costs, JavaScript pricing formulas, and default states.
+- Admin users can configure products, options, and formulas without code deployments.
 
 ### Application Features
 
 **User Capabilities**:
-- Calculate quotes: Select product, enter dimensions/quantity, configure dynamic product options
-- View quote history: Filter by customer, product, date range, price range, view selected options
-- Save and retrieve quotes for repeat customers with option selections preserved
-- Email quotes to customers
+- Generate quotes by selecting products, entering dimensions/quantities, and configuring options.
+- View and filter quote history, including options, and save/retrieve quotes.
+- Email quotes to customers.
 
 **Admin Capabilities**:
-- View all quotes across all users system-wide with selected options visible
-- Advanced filtering: by user/salesperson, customer, product, quantity ranges
-- Product management: CRUD operations on product catalog
-- Product options management: Create/edit/delete configurable options per product
-  - Define option types (toggle/number/select)
-  - Set default values and enabled states
-  - Configure setup costs and pricing formulas
-  - Organize options in 2-layer hierarchy
-- Formula management: Edit pricing formulas and discount rules
-- Analytics: User activity tracking and CSV export for production planning including option details
+- System-wide view and advanced filtering of all quotes.
+- CRUD operations for product and product options management, including defining option types, costs, formulas, and hierarchies.
+- Manage pricing formulas and access analytics with CSV export capabilities.
 
 **UI Components**:
-- Calculator interface: Two-column layout (product selection + dynamic options | price display with breakdown)
-- Quote history table: Searchable/filterable data grid with selected options displayed as badges
-- Admin dashboard: Multi-column metrics and system-wide quote table with option visibility
-- Admin settings: Tabbed interface for product, product options, and formula management
-  - Product options tree view showing parent-child relationships
-  - Inline editing and deletion with confirmation dialogs
+- Calculator interface with dynamic options and price breakdown.
+- Searchable/filterable quote history table.
+- Admin dashboard with metrics and a system-wide quote table.
+- Admin settings interface for product, option, and formula management, featuring a tree view for options and inline editing.
 
 ## External Dependencies
 
 ### Third-Party Services
 
-**Authentication**: 
-- Replit OIDC (OpenID Connect) for user authentication
-- Issuer URL: `https://replit.com/oidc` (configurable via environment)
-
-**Database**:
-- Neon PostgreSQL serverless database
-- Connection via WebSocket for serverless compatibility
-- Required environment variable: `DATABASE_URL`
+- **Authentication**: Replit OIDC (OpenID Connect), with a configurable issuer URL.
+- **Database**: Neon PostgreSQL serverless database, requiring `DATABASE_URL` environment variable.
 
 ### Key NPM Packages
 
 **Frontend**:
-- `@tanstack/react-query`: Server state management and caching
-- `wouter`: Lightweight routing
-- `react-hook-form`: Form state management
-- `zod`: Runtime schema validation
-- `@radix-ui/*`: Headless UI component primitives
-- `tailwindcss`: Utility-first CSS framework
-- `date-fns`: Date manipulation and formatting
+- `@tanstack/react-query`: Server state management.
+- `wouter`: Routing.
+- `react-hook-form`: Form management.
+- `zod`: Schema validation.
+- `@radix-ui/*`: Headless UI components.
+- `tailwindcss`: CSS framework.
+- `date-fns`: Date utilities.
 
 **Backend**:
-- `express`: Web server framework
-- `drizzle-orm`: Type-safe ORM
-- `@neondatabase/serverless`: Neon PostgreSQL client
-- `openid-client`: OpenID Connect client
-- `passport`: Authentication middleware
-- `express-session`: Session management
-- `connect-pg-simple`: PostgreSQL session store
-- `mathjs`: Safe mathematical expression evaluation for pricing formulas
+- `express`: Web server.
+- `drizzle-orm`: ORM.
+- `@neondatabase/serverless`: Neon client.
+- `openid-client`: OIDC client.
+- `passport`: Authentication middleware.
+- `express-session`: Session management.
+- `connect-pg-simple`: PostgreSQL session store.
+- `mathjs`: Mathematical expression evaluation.
 
 **Shared/Build Tools**:
-- `typescript`: Type system
-- `vite`: Frontend build tool and dev server
-- `esbuild`: Backend bundler for production
-- `tsx`: TypeScript execution for development
+- `typescript`, `vite`, `esbuild`, `tsx`.
 
 ### Environment Configuration
 
-Required environment variables:
-- `DATABASE_URL`: PostgreSQL connection string
-- `SESSION_SECRET`: Secret for session encryption
-- `REPL_ID`: Replit workspace identifier (for OIDC)
-- `ISSUER_URL`: OIDC issuer URL (defaults to Replit)
-- `NODE_ENV`: Environment mode (development/production)
+Required environment variables: `DATABASE_URL`, `SESSION_SECRET`, `REPL_ID`, `ISSUER_URL`, `NODE_ENV`.
 
 ### Integration Points
 
-**Email**: Quote email functionality requires SMTP integration (implementation pending)
-
-**CSV Export**: Server-side CSV generation for quote data export with columns for:
-- Date, User Email, Customer Name, Product, Width, Height, Quantity
-- Selected Options (semicolon-delimited list of option names, values, and costs)
-- Options Cost (total additional cost from selected options)
-- Total Price
-
-**Product Store Links**: Each product can link to an external online store URL for direct ordering
-
-## Recent Changes
-
-### Product Options System (November 2025)
-
-Implemented comprehensive product options functionality allowing dynamic configuration of add-on features for print products:
-
-**Database Schema:**
-- Added `product_options` table with support for 3 option types (toggle/number/select)
-- Fields include: name, description, type, defaultValue, isDefaultEnabled, setupCost, priceFormula, parentOptionId, displayOrder, isActive
-- Updated `quotes` table to store selectedOptions as JSONB array
-
-**Admin Features:**
-- Product Options management UI in Admin Settings
-- Tree-structured display showing parent-child option relationships
-- CRUD operations with inline editing
-- Formula editor for dynamic pricing based on dimensions and quantities
-
-**Calculator Enhancements:**
-- Dynamic option rendering based on product selection
-- Toggle switches, number inputs, and select dropdowns
-- Automatic default value population
-- Real-time price calculation with option costs
-- Price breakdown showing base price, option costs, and total
-- Safe formula evaluation using mathjs library
-
-**Quote History Updates:**
-- Options column displaying selected options as badges
-- Format: "OptionName: value (+$cost)"
-- CSV export includes "Selected Options" and "Options Cost" columns
-
-**Technical Implementation:**
-- Shared TypeScript schemas with Zod validation
-- Safe formula evaluation preventing code injection
-- Field mapping: optionName, value, calculatedCost
-- Null-safe rendering with default cost values
-
-### Form Prepopulation & UI Enhancements (November 15, 2025)
-
-Fixed critical UX issues in Admin Settings forms:
-
-**Variant Edit Dialog Fix:**
-- **Problem**: Edit variant dialog was not prepopulating fields when editing existing variants
-- **Root Cause**: Dialog form fields bound to `variantForm` but `handleEditVariant()` populated `editVariantForm`
-- **Solution**: Updated all FormFields in edit variant dialog to use `editVariantForm.control`
-- **Impact**: Editing variants now correctly shows existing name, description, base price, display order, and default flag values
-
-**Select Option Multi-Choice UI:**
-- **Problem**: No intuitive UI for managing dropdown choices in select-type options; only confusing single text input
-- **Solution**: Created `SelectChoicesInput` component with tag-based interface
-  - Shows existing choices as removable badges with × buttons
-  - Input field + button for adding new choices
-  - Enter key support for quick entry
-  - Duplicate prevention
-  - Stores choices as comma-separated string in `defaultValue` field (compatible with calculator rendering)
-- **Impact**: Admin users can easily manage dropdown options (e.g., "Matte, Gloss, Satin" for lamination types)
-
-**Authentication Robustness:**
-- **Problem**: OIDC callback crashed on duplicate email when same email used with different OIDC sub
-- **Solution**: Enhanced `upsertUser()` to catch unique constraint violations on email and gracefully update existing user profile
-- **Impact**: Prevents server crashes during login, handles edge cases like OIDC provider changes
-
-### Nested Dialog Fix (November 15, 2025)
-
-Fixed critical UX issue where product dialog would close unexpectedly when saving variant changes:
-
-**Problem:** When editing a product variant from within the product edit dialog, clicking "Update Material/Variant" would close BOTH dialogs (variant and product), forcing the user to reopen the product dialog to continue editing.
-
-**Root Cause:** The variant edit form was nested inside the product form in the DOM. When the "Update Material" button was clicked, the submit event was bubbling up and triggering BOTH form submissions - updating both the variant AND the product. The product update invalidated the `/api/products` query which caused the product dialog to close.
-
-**Solutions Attempted:**
-1. Removing query invalidations from variant mutation - failed, product was still being updated
-2. setTimeout delay and manual cache updates - failed, still had two PATCH requests
-3. **Final Solution:** Prevent event bubbling from nested variant form
-
-**Implementation:**
-- Added `e.stopPropagation()` to both the variant form and product options form onSubmit handlers
-- This prevents the submit event from bubbling up to the parent product form
-- Now only the nested form mutation runs (variant or option), not the parent product form
-- Product form remains untouched, so product dialog stays open
-
-**Server Log Evidence:**
-- Before fix: Two simultaneous PATCH requests (variant + product) followed by GET /api/products
-- After fix: Only one PATCH request (variant only), no product update
-
-**Impact:** Product dialog now stays open when editing variants, allowing admin users to edit multiple variants without repeatedly reopening the product dialog
+- **Email**: Pending SMTP integration for quote emails.
+- **CSV Export**: Server-side generation of quote data, including detailed option information.
+- **Product Store Links**: Products can link to external online store URLs.
