@@ -119,18 +119,25 @@ export class DatabaseStorage implements IStorage {
   async upsertUser(userData: UpsertUser): Promise<User> {
     // Try to insert, and if there's a conflict on either id or email, update the user
     try {
+      const updateFields: any = {
+        email: userData.email,
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        profileImageUrl: userData.profileImageUrl,
+        updatedAt: new Date(),
+      };
+      
+      // Only include isAdmin if it's explicitly provided
+      if (userData.isAdmin !== undefined) {
+        updateFields.isAdmin = userData.isAdmin;
+      }
+      
       const [user] = await db
         .insert(users)
         .values(userData)
         .onConflictDoUpdate({
           target: users.id,
-          set: {
-            email: userData.email,
-            firstName: userData.firstName,
-            lastName: userData.lastName,
-            profileImageUrl: userData.profileImageUrl,
-            updatedAt: new Date(),
-          },
+          set: updateFields,
         })
         .returning();
       return user;
@@ -144,14 +151,21 @@ export class DatabaseStorage implements IStorage {
         
         if (existingUser) {
           // Update the existing user's profile, keep their original id
+          const updateFields: any = {
+            firstName: userData.firstName,
+            lastName: userData.lastName,
+            profileImageUrl: userData.profileImageUrl,
+            updatedAt: new Date(),
+          };
+          
+          // Only include isAdmin if it's explicitly provided
+          if (userData.isAdmin !== undefined) {
+            updateFields.isAdmin = userData.isAdmin;
+          }
+          
           const [updatedUser] = await db
             .update(users)
-            .set({
-              firstName: userData.firstName,
-              lastName: userData.lastName,
-              profileImageUrl: userData.profileImageUrl,
-              updatedAt: new Date(),
-            })
+            .set(updateFields)
             .where(eq(users.id, existingUser.id))
             .returning();
           return updatedUser;

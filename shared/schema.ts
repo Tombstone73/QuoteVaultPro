@@ -43,6 +43,7 @@ export const upsertUserSchema = createInsertSchema(users).pick({
   firstName: true,
   lastName: true,
   profileImageUrl: true,
+  isAdmin: true,
 });
 
 export type UpsertUser = z.infer<typeof upsertUserSchema>;

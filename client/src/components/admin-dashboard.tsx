@@ -351,7 +351,7 @@ export default function AdminDashboard() {
                           ${parseFloat(quote.totalPrice || "0").toFixed(2)}
                         </TableCell>
                         <TableCell className="text-right" data-testid={`cell-actions-${quote.id}`}>
-                          <Link href={`/quote/${quote.id}`}>
+                          <Link href={`/quotes/${quote.id}/edit`}>
                             <Button size="sm" variant="ghost" data-testid={`button-edit-quote-${quote.id}`}>
                               <Edit className="w-4 h-4" />
                             </Button>
