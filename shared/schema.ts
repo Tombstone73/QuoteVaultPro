@@ -147,6 +147,7 @@ export const productOptions = pgTable("product_options", {
   description: text("description"),
   type: varchar("type", { length: 50 }).notNull().$type<"toggle" | "number" | "select">(),
   defaultValue: text("default_value"),
+  defaultSelection: text("default_selection"),
   isDefaultEnabled: boolean("is_default_enabled").default(false).notNull(),
   setupCost: decimal("setup_cost", { precision: 10, scale: 2 }).default("0").notNull(),
   priceFormula: text("price_formula"),

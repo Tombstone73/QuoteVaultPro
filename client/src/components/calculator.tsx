@@ -91,6 +91,8 @@ export default function CalculatorComponent() {
             defaults[option.id] = option.isDefaultEnabled ?? false;
           } else if (option.type === "number" && option.defaultValue) {
             defaults[option.id] = parseFloat(option.defaultValue);
+          } else if (option.type === "select" && option.defaultSelection) {
+            defaults[option.id] = option.defaultSelection;
           } else if (option.defaultValue) {
             defaults[option.id] = option.defaultValue;
           }
@@ -107,6 +109,8 @@ export default function CalculatorComponent() {
               defaults[option.id] = option.isDefaultEnabled ?? false;
             } else if (option.type === "number" && option.defaultValue) {
               defaults[option.id] = parseFloat(option.defaultValue);
+            } else if (option.type === "select" && option.defaultSelection) {
+              defaults[option.id] = option.defaultSelection;
             } else if (option.defaultValue) {
               defaults[option.id] = option.defaultValue;
             }
