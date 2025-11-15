@@ -384,10 +384,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Evaluate price formula if provided
         if (option.priceFormula) {
           try {
-            const optionCost = evaluate(option.priceFormula, {
-              ...formulaContext,
-              value: option.type === "number" ? parseFloat(value as string) : value,
-            });
+            let optionCost = 0;
+            
+            // For select options with string values, use simple conditional parsing
+            // This is secure (no code execution) but limited to simple ternary patterns
+            if (option.type === "select" && typeof value === "string") {
+              // Parse formula pattern: value == "string" ? expr : ... : defaultExpr
+              // Extract all condition-expression pairs
+              const conditions: Array<{ compareValue: string; expression: string }> = [];
+              const pattern = /eqstr\(value,\s*"([^"]+)"\)\s*\?\s*([^:]+?)(?=\s*:\s*eqstr\(value|$)/g;
+              
+              let match;
+              while ((match = pattern.exec(option.priceFormula)) !== null) {
+                conditions.push({
+                  compareValue: match[1],
+                  expression: match[2].trim()
+                });
+              }
+              
+              // Find matching condition
+              let matched = false;
+              for (const condition of conditions) {
+                if (value === condition.compareValue) {
+                  optionCost = evaluate(condition.expression, formulaContext);
+                  matched = true;
+                  break;
+                }
+              }
+              
+              // If no match, extract and evaluate default (after last colon)
+              if (!matched) {
+                const lastColonPos = option.priceFormula.lastIndexOf(':');
+                if (lastColonPos !== -1) {
+                  const defaultExpr = option.priceFormula.substring(lastColonPos + 1).trim();
+                  optionCost = evaluate(defaultExpr, formulaContext);
+                } else {
+                  optionCost = 0;
+                }
+              }
+            } else {
+              // For number and toggle options, evaluate with mathjs
+              optionCost = evaluate(option.priceFormula, {
+                ...formulaContext,
+                value: option.type === "number" ? parseFloat(value as string) : value,
+              });
+            }
             
             // Validate result is a finite number
             if (!Number.isFinite(optionCost)) {
