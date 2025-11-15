@@ -261,13 +261,31 @@ export default function AdminSettings() {
       if (!products) return [];
       const variantsData = await Promise.all(
         products.map(async (product) => {
-          const response = await fetch(`/api/products/${product.id}/variants`);
-          const variants = await response.json();
-          return {
-            productId: product.id,
-            productName: product.name,
-            variants: variants || [],
-          };
+          try {
+            const response = await fetch(`/api/products/${product.id}/variants`);
+            if (!response.ok) {
+              console.error(`Failed to fetch variants for product ${product.id}:`, response.status);
+              return {
+                productId: product.id,
+                productName: product.name,
+                variants: [],
+              };
+            }
+            const variants = await response.json();
+            // Ensure variants is an array
+            return {
+              productId: product.id,
+              productName: product.name,
+              variants: Array.isArray(variants) ? variants : [],
+            };
+          } catch (error) {
+            console.error(`Error fetching variants for product ${product.id}:`, error);
+            return {
+              productId: product.id,
+              productName: product.name,
+              variants: [],
+            };
+          }
         })
       );
       return variantsData;
