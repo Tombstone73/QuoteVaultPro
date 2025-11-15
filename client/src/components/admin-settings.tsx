@@ -127,7 +127,7 @@ export default function AdminSettings() {
       description: "",
       pricingFormula: "width * height * 0.05 * quantity",
       storeUrl: "",
-      showStoreLink: false,
+      showStoreLink: true,
       isActive: true,
     },
   });
