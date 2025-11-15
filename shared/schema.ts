@@ -55,6 +55,7 @@ export const products = pgTable("products", {
   description: text("description").notNull(),
   pricingFormula: text("pricing_formula").notNull(),
   variantLabel: varchar("variant_label", { length: 100 }).default("Variant"),
+  category: varchar("category", { length: 100 }),
   storeUrl: varchar("store_url", { length: 512 }),
   showStoreLink: boolean("show_store_link").default(true).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
@@ -177,18 +178,29 @@ export type InsertProductOption = z.infer<typeof insertProductOptionSchema>;
 export type UpdateProductOption = z.infer<typeof updateProductOptionSchema>;
 export type ProductOption = typeof productOptions.$inferSelect;
 
-// Quotes table
+// Quotes table (parent quote)
 export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  customerName: varchar("customer_name", { length: 255 }),
+  totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull().default("0"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("quotes_user_id_idx").on(table.userId),
+  index("quotes_created_at_idx").on(table.createdAt),
+]);
+
+// Quote Line Items table
+export const quoteLineItems = pgTable("quote_line_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: 'cascade' }),
   productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+  productName: varchar("product_name", { length: 255 }).notNull(),
   variantId: varchar("variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
   variantName: varchar("variant_name", { length: 255 }),
-  customerName: varchar("customer_name", { length: 255 }),
   width: decimal("width", { precision: 10, scale: 2 }).notNull(),
   height: decimal("height", { precision: 10, scale: 2 }).notNull(),
   quantity: integer("quantity").notNull(),
-  addOns: jsonb("add_ons").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
   selectedOptions: jsonb("selected_options").$type<Array<{
     optionId: string;
     optionName: string;
@@ -196,35 +208,43 @@ export const quotes = pgTable("quotes", {
     setupCost: number;
     calculatedCost: number;
   }>>().default(sql`'[]'::jsonb`).notNull(),
-  calculatedPrice: decimal("calculated_price", { precision: 10, scale: 2 }).notNull(),
+  linePrice: decimal("line_price", { precision: 10, scale: 2 }).notNull(),
   priceBreakdown: jsonb("price_breakdown").$type<{
     basePrice: number;
-    addOnsPrice: number;
     optionsPrice: number;
     total: number;
     formula: string;
     variantInfo?: string;
   }>().notNull(),
+  displayOrder: integer("display_order").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
-  index("quotes_user_id_idx").on(table.userId),
-  index("quotes_product_id_idx").on(table.productId),
-  index("quotes_variant_id_idx").on(table.variantId),
-  index("quotes_created_at_idx").on(table.createdAt),
+  index("quote_line_items_quote_id_idx").on(table.quoteId),
+  index("quote_line_items_product_id_idx").on(table.productId),
 ]);
 
 export const insertQuoteSchema = createInsertSchema(quotes).omit({
   id: true,
   createdAt: true,
 }).extend({
+  totalPrice: z.coerce.number().min(0),
+});
+
+export const insertQuoteLineItemSchema = createInsertSchema(quoteLineItems).omit({
+  id: true,
+  createdAt: true,
+}).extend({
   width: z.coerce.number().positive(),
   height: z.coerce.number().positive(),
   quantity: z.coerce.number().int().positive(),
-  calculatedPrice: z.coerce.number().positive(),
+  linePrice: z.coerce.number().positive(),
+  displayOrder: z.coerce.number().int(),
 });
 
 export type InsertQuote = z.infer<typeof insertQuoteSchema>;
 export type Quote = typeof quotes.$inferSelect;
+export type InsertQuoteLineItem = z.infer<typeof insertQuoteLineItemSchema>;
+export type QuoteLineItem = typeof quoteLineItems.$inferSelect;
 
 // Pricing rules table
 export const pricingRules = pgTable("pricing_rules", {
@@ -252,7 +272,7 @@ export const usersRelations = relations(users, ({ many }) => ({
 }));
 
 export const productsRelations = relations(products, ({ many }) => ({
-  quotes: many(quotes),
+  lineItems: many(quoteLineItems),
   options: many(productOptions),
   variants: many(productVariants),
 }));
@@ -262,7 +282,7 @@ export const productVariantsRelations = relations(productVariants, ({ one, many 
     fields: [productVariants.productId],
     references: [products.id],
   }),
-  quotes: many(quotes),
+  lineItems: many(quoteLineItems),
 }));
 
 export const productOptionsRelations = relations(productOptions, ({ one, many }) => ({
@@ -277,17 +297,25 @@ export const productOptionsRelations = relations(productOptions, ({ one, many })
   childOptions: many(productOptions),
 }));
 
-export const quotesRelations = relations(quotes, ({ one }) => ({
+export const quotesRelations = relations(quotes, ({ one, many }) => ({
   user: one(users, {
     fields: [quotes.userId],
     references: [users.id],
   }),
+  lineItems: many(quoteLineItems),
+}));
+
+export const quoteLineItemsRelations = relations(quoteLineItems, ({ one }) => ({
+  quote: one(quotes, {
+    fields: [quoteLineItems.quoteId],
+    references: [quotes.id],
+  }),
   product: one(products, {
-    fields: [quotes.productId],
+    fields: [quoteLineItems.productId],
     references: [products.id],
   }),
   variant: one(productVariants, {
-    fields: [quotes.variantId],
+    fields: [quoteLineItems.variantId],
     references: [productVariants.id],
   }),
 }));
@@ -295,5 +323,8 @@ export const quotesRelations = relations(quotes, ({ one }) => ({
 // Extended quote type with relations
 export type QuoteWithRelations = Quote & {
   user: User;
-  product: Product;
+  lineItems: (QuoteLineItem & {
+    product: Product;
+    variant?: ProductVariant | null;
+  })[];
 };
