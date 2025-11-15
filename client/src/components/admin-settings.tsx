@@ -127,6 +127,7 @@ export default function AdminSettings() {
       description: "",
       pricingFormula: "width * height * 0.05 * quantity",
       storeUrl: "",
+      showStoreLink: false,
       isActive: true,
     },
   });
@@ -501,6 +502,7 @@ export default function AdminSettings() {
       description: product.description,
       pricingFormula: product.pricingFormula,
       storeUrl: product.storeUrl || "",
+      showStoreLink: product.showStoreLink,
       isActive: product.isActive,
     });
   };
@@ -674,6 +676,29 @@ export default function AdminSettings() {
                                 />
                               </FormControl>
                               <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={addProductForm.control}
+                          name="showStoreLink"
+                          render={({ field }) => (
+                            <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
+                              <div className="space-y-0.5">
+                                <FormLabel className="text-base" data-testid="label-show-store-link">
+                                  Show Store Link
+                                </FormLabel>
+                                <FormDescription>
+                                  Display "View in Store" button in calculator
+                                </FormDescription>
+                              </div>
+                              <FormControl>
+                                <Switch
+                                  checked={field.value}
+                                  onCheckedChange={field.onChange}
+                                  data-testid="switch-show-store-link"
+                                />
+                              </FormControl>
                             </FormItem>
                           )}
                         />
@@ -854,6 +879,27 @@ export default function AdminSettings() {
                                               <Input {...field} value={field.value || ""} data-testid={`input-edit-url-${product.id}`} />
                                             </FormControl>
                                             <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editProductForm.control}
+                                        name="showStoreLink"
+                                        render={({ field }) => (
+                                          <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
+                                            <div className="space-y-0.5">
+                                              <FormLabel className="text-base">Show Store Link</FormLabel>
+                                              <FormDescription>
+                                                Display "View in Store" button in calculator
+                                              </FormDescription>
+                                            </div>
+                                            <FormControl>
+                                              <Switch
+                                                checked={field.value}
+                                                onCheckedChange={field.onChange}
+                                                data-testid={`switch-edit-show-store-link-${product.id}`}
+                                              />
+                                            </FormControl>
                                           </FormItem>
                                         )}
                                       />
