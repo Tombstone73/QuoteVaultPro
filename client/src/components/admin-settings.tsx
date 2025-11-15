@@ -125,6 +125,7 @@ export default function AdminSettings() {
     defaultValues: {
       name: "",
       description: "",
+      category: "",
       pricingFormula: "width * height * 0.05 * quantity",
       storeUrl: "",
       showStoreLink: true,
@@ -500,6 +501,7 @@ export default function AdminSettings() {
     editProductForm.reset({
       name: product.name,
       description: product.description,
+      category: product.category || "",
       pricingFormula: product.pricingFormula,
       storeUrl: product.storeUrl || "",
       showStoreLink: product.showStoreLink,
@@ -616,6 +618,27 @@ export default function AdminSettings() {
                                   data-testid="textarea-product-description"
                                 />
                               </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={addProductForm.control}
+                          name="category"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel data-testid="label-product-category">Category (Optional)</FormLabel>
+                              <FormControl>
+                                <Input
+                                  placeholder="flatbed, adhesive backed, paper, misc"
+                                  {...field}
+                                  value={field.value || ""}
+                                  data-testid="input-product-category"
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                Product category for filtering (e.g., flatbed, adhesive backed, paper, misc)
+                              </FormDescription>
                               <FormMessage />
                             </FormItem>
                           )}
@@ -828,6 +851,27 @@ export default function AdminSettings() {
                                             <FormControl>
                                               <Textarea {...field} data-testid={`textarea-edit-description-${product.id}`} />
                                             </FormControl>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editProductForm.control}
+                                        name="category"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>Category (Optional)</FormLabel>
+                                            <FormControl>
+                                              <Input 
+                                                {...field} 
+                                                value={field.value || ""} 
+                                                placeholder="flatbed, adhesive backed, paper, misc"
+                                                data-testid={`input-edit-category-${product.id}`} 
+                                              />
+                                            </FormControl>
+                                            <FormDescription>
+                                              Product category for filtering
+                                            </FormDescription>
                                             <FormMessage />
                                           </FormItem>
                                         )}

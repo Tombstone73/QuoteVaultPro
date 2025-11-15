@@ -5,6 +5,7 @@ import {
   productVariants,
   globalVariables,
   quotes,
+  quoteLineItems,
   pricingRules,
   type User,
   type UpsertUser,
@@ -22,6 +23,8 @@ import {
   type UpdateGlobalVariable,
   type Quote,
   type InsertQuote,
+  type QuoteLineItem,
+  type InsertQuoteLineItem,
   type QuoteWithRelations,
   type PricingRule,
   type InsertPricingRule,
@@ -62,7 +65,11 @@ export interface IStorage {
   deleteGlobalVariable(id: string): Promise<void>;
 
   // Quote operations
-  createQuote(quote: InsertQuote): Promise<Quote>;
+  createQuote(data: {
+    userId: string;
+    customerName?: string;
+    lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
+  }): Promise<QuoteWithRelations>;
   getUserQuotes(userId: string, filters?: {
     searchCustomer?: string;
     searchProduct?: string;
@@ -318,16 +325,73 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Quote operations
-  async createQuote(quote: InsertQuote): Promise<Quote> {
+  async createQuote(data: {
+    userId: string;
+    customerName?: string;
+    lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
+  }): Promise<QuoteWithRelations> {
+    // Calculate total price from line items
+    const totalPrice = data.lineItems.reduce((sum, item) => sum + Number(item.linePrice), 0);
+    
+    // Create the parent quote
     const quoteData = {
-      ...quote,
-      width: quote.width.toString(),
-      height: quote.height.toString(),
-      calculatedPrice: quote.calculatedPrice.toString(),
+      userId: data.userId,
+      customerName: data.customerName,
+      totalPrice: totalPrice.toString(),
     } as typeof quotes.$inferInsert;
     
     const [newQuote] = await db.insert(quotes).values(quoteData).returning();
-    return newQuote;
+    
+    // Create line items
+    const lineItemsData = data.lineItems.map((item, index) => ({
+      quoteId: newQuote.id,
+      productId: item.productId,
+      productName: item.productName,
+      variantId: item.variantId,
+      variantName: item.variantName,
+      width: item.width.toString(),
+      height: item.height.toString(),
+      quantity: item.quantity,
+      selectedOptions: item.selectedOptions as Array<{
+        optionId: string;
+        optionName: string;
+        value: string | number | boolean;
+        setupCost: number;
+        calculatedCost: number;
+      }>,
+      linePrice: item.linePrice.toString(),
+      priceBreakdown: {
+        ...item.priceBreakdown,
+        variantInfo: item.priceBreakdown.variantInfo as string | undefined,
+      },
+      displayOrder: item.displayOrder || index,
+    }));
+    
+    const createdLineItems = await db.insert(quoteLineItems).values(lineItemsData).returning();
+    
+    // Fetch user and product details for line items
+    const lineItemsWithRelations = await Promise.all(
+      createdLineItems.map(async (lineItem) => {
+        const [product] = await db.select().from(products).where(eq(products.id, lineItem.productId));
+        let variant = null;
+        if (lineItem.variantId) {
+          [variant] = await db.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+        }
+        return {
+          ...lineItem,
+          product,
+          variant,
+        };
+      })
+    );
+    
+    const [user] = await db.select().from(users).where(eq(users.id, newQuote.userId));
+    
+    return {
+      ...newQuote,
+      user,
+      lineItems: lineItemsWithRelations,
+    };
   }
 
   async getUserQuotes(userId: string, filters?: {
@@ -338,21 +402,10 @@ export class DatabaseStorage implements IStorage {
     minPrice?: string;
     maxPrice?: string;
   }): Promise<QuoteWithRelations[]> {
-    let query = db
-      .select()
-      .from(quotes)
-      .innerJoin(users, eq(quotes.userId, users.id))
-      .innerJoin(products, eq(quotes.productId, products.id))
-      .where(eq(quotes.userId, userId));
-
     const conditions = [eq(quotes.userId, userId)];
 
     if (filters?.searchCustomer) {
       conditions.push(like(quotes.customerName, `%${filters.searchCustomer}%`));
-    }
-
-    if (filters?.searchProduct) {
-      conditions.push(eq(quotes.productId, filters.searchProduct));
     }
 
     if (filters?.startDate) {
@@ -366,26 +419,60 @@ export class DatabaseStorage implements IStorage {
     }
 
     if (filters?.minPrice) {
-      conditions.push(sql`${quotes.calculatedPrice}::numeric >= ${filters.minPrice}::numeric`);
+      conditions.push(sql`${quotes.totalPrice}::numeric >= ${filters.minPrice}::numeric`);
     }
 
     if (filters?.maxPrice) {
-      conditions.push(sql`${quotes.calculatedPrice}::numeric <= ${filters.maxPrice}::numeric`);
+      conditions.push(sql`${quotes.totalPrice}::numeric <= ${filters.maxPrice}::numeric`);
     }
 
-    const results = await db
+    const userQuotes = await db
       .select()
       .from(quotes)
-      .innerJoin(users, eq(quotes.userId, users.id))
-      .innerJoin(products, eq(quotes.productId, products.id))
       .where(and(...conditions))
       .orderBy(sql`${quotes.createdAt} DESC`);
 
-    return results.map(row => ({
-      ...row.quotes,
-      user: row.users,
-      product: row.products,
-    }));
+    // Fetch user and line items for each quote
+    return await Promise.all(
+      userQuotes.map(async (quote) => {
+        const [user] = await db.select().from(users).where(eq(users.id, quote.userId));
+        
+        // Fetch line items
+        const lineItems = await db.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quote.id));
+        
+        // Apply product filter if specified
+        let filteredLineItems = lineItems;
+        if (filters?.searchProduct) {
+          filteredLineItems = lineItems.filter(item => item.productId === filters.searchProduct);
+          // If no line items match the product filter, skip this quote
+          if (filteredLineItems.length === 0) {
+            return null;
+          }
+        }
+        
+        // Fetch product and variant details for line items
+        const lineItemsWithRelations = await Promise.all(
+          lineItems.map(async (lineItem) => {
+            const [product] = await db.select().from(products).where(eq(products.id, lineItem.productId));
+            let variant = null;
+            if (lineItem.variantId) {
+              [variant] = await db.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+            }
+            return {
+              ...lineItem,
+              product,
+              variant,
+            };
+          })
+        );
+        
+        return {
+          ...quote,
+          user,
+          lineItems: lineItemsWithRelations,
+        };
+      })
+    ).then(results => results.filter(r => r !== null) as QuoteWithRelations[]);
   }
 
   async getAllQuotes(filters?: {
@@ -399,16 +486,8 @@ export class DatabaseStorage implements IStorage {
   }): Promise<QuoteWithRelations[]> {
     const conditions = [];
 
-    if (filters?.searchUser) {
-      conditions.push(like(users.email, `%${filters.searchUser}%`));
-    }
-
     if (filters?.searchCustomer) {
       conditions.push(like(quotes.customerName, `%${filters.searchCustomer}%`));
-    }
-
-    if (filters?.searchProduct) {
-      conditions.push(eq(quotes.productId, filters.searchProduct));
     }
 
     if (filters?.startDate) {
@@ -421,29 +500,69 @@ export class DatabaseStorage implements IStorage {
       conditions.push(lte(quotes.createdAt, endDate));
     }
 
-    if (filters?.minQuantity) {
-      conditions.push(gte(quotes.quantity, parseInt(filters.minQuantity)));
-    }
-
-    if (filters?.maxQuantity) {
-      conditions.push(lte(quotes.quantity, parseInt(filters.maxQuantity)));
-    }
-
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const results = await db
+    const allQuotes = await db
       .select()
       .from(quotes)
-      .innerJoin(users, eq(quotes.userId, users.id))
-      .innerJoin(products, eq(quotes.productId, products.id))
       .where(whereClause)
       .orderBy(sql`${quotes.createdAt} DESC`);
 
-    return results.map(row => ({
-      ...row.quotes,
-      user: row.users,
-      product: row.products,
-    }));
+    // Fetch user and line items for each quote
+    return await Promise.all(
+      allQuotes.map(async (quote) => {
+        const [user] = await db.select().from(users).where(eq(users.id, quote.userId));
+        
+        // Apply user filter if specified
+        if (filters?.searchUser && !user.email?.includes(filters.searchUser)) {
+          return null;
+        }
+        
+        // Fetch line items
+        const lineItems = await db.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quote.id));
+        
+        // Apply product filter if specified
+        if (filters?.searchProduct) {
+          const hasProduct = lineItems.some(item => item.productId === filters.searchProduct);
+          if (!hasProduct) {
+            return null;
+          }
+        }
+        
+        // Apply quantity filters if specified (check if any line item matches)
+        if (filters?.minQuantity) {
+          const hasMinQuantity = lineItems.some(item => item.quantity >= parseInt(filters.minQuantity!));
+          if (!hasMinQuantity) return null;
+        }
+        
+        if (filters?.maxQuantity) {
+          const hasMaxQuantity = lineItems.some(item => item.quantity <= parseInt(filters.maxQuantity!));
+          if (!hasMaxQuantity) return null;
+        }
+        
+        // Fetch product and variant details for line items
+        const lineItemsWithRelations = await Promise.all(
+          lineItems.map(async (lineItem) => {
+            const [product] = await db.select().from(products).where(eq(products.id, lineItem.productId));
+            let variant = null;
+            if (lineItem.variantId) {
+              [variant] = await db.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+            }
+            return {
+              ...lineItem,
+              product,
+              variant,
+            };
+          })
+        );
+        
+        return {
+          ...quote,
+          user,
+          lineItems: lineItemsWithRelations,
+        };
+      })
+    ).then(results => results.filter(r => r !== null) as QuoteWithRelations[]);
   }
 
   // Pricing rules operations

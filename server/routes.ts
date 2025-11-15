@@ -504,12 +504,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/quotes", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
-      const quoteData = insertQuoteSchema.parse({
-        ...req.body,
-        userId,
+      const { customerName, lineItems } = req.body;
+
+      if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        return res.status(400).json({ message: "At least one line item is required" });
+      }
+
+      // Validate each line item
+      const validatedLineItems = lineItems.map((item: any) => {
+        if (!item.productId || !item.productName || item.width == null || item.height == null || item.quantity == null || item.linePrice == null) {
+          throw new Error("Missing required fields in line item");
+        }
+        
+        return {
+          productId: item.productId,
+          productName: item.productName,
+          variantId: item.variantId || null,
+          variantName: item.variantName || null,
+          width: parseFloat(item.width),
+          height: parseFloat(item.height),
+          quantity: parseInt(item.quantity),
+          selectedOptions: item.selectedOptions || [],
+          linePrice: parseFloat(item.linePrice),
+          priceBreakdown: item.priceBreakdown || {
+            basePrice: parseFloat(item.linePrice),
+            optionsPrice: 0,
+            total: parseFloat(item.linePrice),
+            formula: "",
+          },
+          displayOrder: item.displayOrder || 0,
+        };
       });
 
-      const quote = await storage.createQuote(quoteData);
+      const quote = await storage.createQuote({
+        userId,
+        customerName: customerName || undefined,
+        lineItems: validatedLineItems,
+      });
+      
       res.json(quote);
     } catch (error) {
       if (error instanceof z.ZodError) {

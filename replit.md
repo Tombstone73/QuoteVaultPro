@@ -94,6 +94,45 @@ Required environment variables: `DATABASE_URL`, `SESSION_SECRET`, `REPL_ID`, `IS
 
 ## Recent Changes
 
+### Multi-Line Quote System (November 15, 2025 - IN PROGRESS)
+
+Major restructuring to support quotes with multiple line items and product filtering:
+
+**Schema Changes:**
+- **Products Table**: Added `category` VARCHAR(100) field for grouping products (flatbed, adhesive backed, paper, misc)
+- **Quotes Table Restructure**: Changed from single-product quotes to parent-child model
+  - **Old**: quotes table contained productId, width, height, quantity, selectedOptions, calculatedPrice embedded
+  - **New**: quotes table is parent record (id, userId, customerName, totalPrice, createdAt)
+  - **New**: quote_line_items table stores individual line items with full product details (productId, productName, variantId, variantName, width, height, quantity, selectedOptions, linePrice, priceBreakdown, displayOrder)
+- **Migration**: Used execute_sql_tool to drop/recreate quotes table, backup existing quotes to quotes_backup
+
+**Backend Implementation:**
+- **Storage Layer** (server/storage.ts):
+  - `createQuote()`: Now accepts {userId, customerName, lineItems[]} structure
+  - Creates parent quote, then inserts all line items atomically
+  - Returns QuoteWithRelations including line items with product/variant details
+  - `getUserQuotes()` and `getAllQuotes()`: Fetch quotes with related line items, apply filters at line item level
+- **API Routes** (server/routes.ts):
+  - `POST /api/quotes`: Updated to accept multi-line quote structure with validation
+  - Validates each line item has required fields (productId, productName, width, height, quantity, linePrice)
+  - Provides defaults for optional fields (selectedOptions, priceBreakdown)
+
+**Pending Frontend Work:**
+- Calculator UI needs refactor to support:
+  - Line items state management
+  - "Add to Quote" button to add current product config to line items list
+  - Line items display table with remove capability
+  - "Save Quote" button to persist multi-line quote
+  - Product search bar for quick product selection
+  - Category filter tabs/buttons
+- Quote History needs update to display multi-line quotes with expandable line items
+
+**Architecture Notes:**
+- Parent-child quote model enables: multiple products per quote, better analytics, cleaner data model
+- Quote total calculated as sum of all line items
+- Line items store denormalized product/variant names for historical accuracy
+- Category filtering enables faster product discovery in calculator
+
 ### Show Store Link Toggle (November 15, 2025)
 
 Added granular control over external store link visibility in the calculator:
