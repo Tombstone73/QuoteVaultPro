@@ -214,3 +214,28 @@ Implemented comprehensive product options functionality allowing dynamic configu
 - Safe formula evaluation preventing code injection
 - Field mapping: optionName, value, calculatedCost
 - Null-safe rendering with default cost values
+
+### Form Prepopulation & UI Enhancements (November 15, 2025)
+
+Fixed critical UX issues in Admin Settings forms:
+
+**Variant Edit Dialog Fix:**
+- **Problem**: Edit variant dialog was not prepopulating fields when editing existing variants
+- **Root Cause**: Dialog form fields bound to `variantForm` but `handleEditVariant()` populated `editVariantForm`
+- **Solution**: Updated all FormFields in edit variant dialog to use `editVariantForm.control`
+- **Impact**: Editing variants now correctly shows existing name, description, base price, display order, and default flag values
+
+**Select Option Multi-Choice UI:**
+- **Problem**: No intuitive UI for managing dropdown choices in select-type options; only confusing single text input
+- **Solution**: Created `SelectChoicesInput` component with tag-based interface
+  - Shows existing choices as removable badges with × buttons
+  - Input field + button for adding new choices
+  - Enter key support for quick entry
+  - Duplicate prevention
+  - Stores choices as comma-separated string in `defaultValue` field (compatible with calculator rendering)
+- **Impact**: Admin users can easily manage dropdown options (e.g., "Matte, Gloss, Satin" for lamination types)
+
+**Authentication Robustness:**
+- **Problem**: OIDC callback crashed on duplicate email when same email used with different OIDC sub
+- **Solution**: Enhanced `upsertUser()` to catch unique constraint violations on email and gracefully update existing user profile
+- **Impact**: Prevents server crashes during login, handles edge cases like OIDC provider changes

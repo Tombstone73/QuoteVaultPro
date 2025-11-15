@@ -96,18 +96,49 @@ export class DatabaseStorage implements IStorage {
   }
 
   async upsertUser(userData: UpsertUser): Promise<User> {
-    const [user] = await db
-      .insert(users)
-      .values(userData)
-      .onConflictDoUpdate({
-        target: users.id,
-        set: {
-          ...userData,
-          updatedAt: new Date(),
-        },
-      })
-      .returning();
-    return user;
+    // Try to insert, and if there's a conflict on either id or email, update the user
+    try {
+      const [user] = await db
+        .insert(users)
+        .values(userData)
+        .onConflictDoUpdate({
+          target: users.id,
+          set: {
+            email: userData.email,
+            firstName: userData.firstName,
+            lastName: userData.lastName,
+            profileImageUrl: userData.profileImageUrl,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+      return user;
+    } catch (error: any) {
+      // If we get a unique constraint violation on email, find and update that user
+      if (error?.code === '23505' && error?.constraint === 'users_email_unique') {
+        const [existingUser] = await db
+          .select()
+          .from(users)
+          .where(sql`${users.email} = ${userData.email}`);
+        
+        if (existingUser) {
+          // Update the existing user's profile, keep their original id
+          const [updatedUser] = await db
+            .update(users)
+            .set({
+              firstName: userData.firstName,
+              lastName: userData.lastName,
+              profileImageUrl: userData.profileImageUrl,
+              updatedAt: new Date(),
+            })
+            .where(eq(users.id, existingUser.id))
+            .returning();
+          return updatedUser;
+        }
+      }
+      // Re-throw if it's a different error
+      throw error;
+    }
   }
 
   // Product operations
