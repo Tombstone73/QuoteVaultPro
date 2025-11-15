@@ -1501,8 +1501,10 @@ export default function AdminSettings() {
                                                           <FormItem>
                                                             <FormLabel>Default Selection</FormLabel>
                                                             <Select
-                                                              onValueChange={field.onChange}
-                                                              value={field.value || ""}
+                                                              onValueChange={(value) => {
+                                                                field.onChange(value === "__none__" ? "" : value);
+                                                              }}
+                                                              value={field.value || "__none__"}
                                                             >
                                                               <FormControl>
                                                                 <SelectTrigger data-testid="select-default-selection">
@@ -1511,12 +1513,12 @@ export default function AdminSettings() {
                                                               </FormControl>
                                                               <SelectContent>
                                                                 {choices.length === 0 ? (
-                                                                  <SelectItem value="" disabled>
+                                                                  <SelectItem value="__disabled__" disabled>
                                                                     Add choices first
                                                                   </SelectItem>
                                                                 ) : (
                                                                   <>
-                                                                    <SelectItem value="">None (user must select)</SelectItem>
+                                                                    <SelectItem value="__none__">None (user must select)</SelectItem>
                                                                     {choices.map((choice) => (
                                                                       <SelectItem key={choice} value={choice}>
                                                                         {choice}
