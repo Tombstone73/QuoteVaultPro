@@ -94,9 +94,9 @@ Required environment variables: `DATABASE_URL`, `SESSION_SECRET`, `REPL_ID`, `IS
 
 ## Recent Changes
 
-### Multi-Line Quote System (November 15, 2025 - IN PROGRESS)
+### Multi-Line Quote System (November 15, 2025 - COMPLETED)
 
-Major restructuring to support quotes with multiple line items and product filtering:
+Major restructuring to support quotes with multiple line items:
 
 **Schema Changes:**
 - **Products Table**: Added `category` VARCHAR(100) field for grouping products (flatbed, adhesive backed, paper, misc)
@@ -116,22 +116,47 @@ Major restructuring to support quotes with multiple line items and product filte
   - `POST /api/quotes`: Updated to accept multi-line quote structure with validation
   - Validates each line item has required fields (productId, productName, width, height, quantity, linePrice)
   - Provides defaults for optional fields (selectedOptions, priceBreakdown)
+- **CSV Export** (server/routes.ts):
+  - Updated to work with multi-line quotes
+  - Each line item generates its own CSV row with complete product details
 
-**Pending Frontend Work:**
-- Calculator UI needs refactor to support:
-  - Line items state management
-  - "Add to Quote" button to add current product config to line items list
-  - Line items display table with remove capability
-  - "Save Quote" button to persist multi-line quote
-  - Product search bar for quick product selection
-  - Category filter tabs/buttons
-- Quote History needs update to display multi-line quotes with expandable line items
+**Frontend Implementation:**
+- **Calculator UI** (client/src/components/calculator.tsx):
+  - Line items state management with array of configured products
+  - "Calculate Price" button provides preview (doesn't auto-save)
+  - "Add to Quote" button (enabled only after successful calculation)
+  - Line items display panel showing all added items with remove capability
+  - "Clear Quote" button to reset all line items
+  - "Save Quote" button persists multi-line quote to backend
+  - Form reset after adding to quote (quantity defaults to "1")
+  - Red border highlighting for required fields (Product, Width, Height, Quantity)
+- **Quote History** (client/src/components/quote-history.tsx):
+  - Updated table to display multi-line quotes
+  - Shows all line items per quote with product name, variant, dimensions, quantity, options count
+  - Displays quote total from totalPrice field
+  - Legacy quote support for old single-line quotes (shows "Legacy quote" placeholder)
+
+**User Workflow:**
+1. Select product, enter dimensions (quantity defaults to "1")
+2. Configure options (respects defaultValue from schema)
+3. Click "Calculate Price" to preview pricing
+4. Click "Add to Quote" to add item to current quote
+5. Repeat steps 1-4 to add more items
+6. Enter customer name (optional)
+7. Click "Save Quote" to persist all line items as one quote
 
 **Architecture Notes:**
 - Parent-child quote model enables: multiple products per quote, better analytics, cleaner data model
 - Quote total calculated as sum of all line items
 - Line items store denormalized product/variant names for historical accuracy
-- Category filtering enables faster product discovery in calculator
+- Default option values (toggle, number, select types) work correctly via defaultValue field
+- Backward compatibility maintained for legacy single-line quotes
+
+**Test Coverage:**
+- End-to-end testing verified: add multiple products to quote, save with customer name, view in history
+- Form validation with red highlighting for missing required fields
+- Default quantity value ("1") and default option values confirmed working
+- CSV export confirmed working with multi-line structure
 
 ### Show Store Link Toggle (November 15, 2025)
 
