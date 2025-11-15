@@ -22,12 +22,24 @@ import type {
   UpdateProduct,
   ProductOption,
   InsertProductOption,
-  UpdateProductOption
+  UpdateProductOption,
+  ProductVariant,
+  InsertProductVariant,
+  UpdateProductVariant,
+  GlobalVariable,
+  InsertGlobalVariable,
+  UpdateGlobalVariable
 } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { insertProductSchema, insertProductOptionSchema } from "@shared/schema";
+import { 
+  insertProductSchema, 
+  insertProductOptionSchema,
+  insertProductVariantSchema,
+  insertGlobalVariableSchema
+} from "@shared/schema";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export default function AdminSettings() {
   const { toast } = useToast();
@@ -35,6 +47,11 @@ export default function AdminSettings() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingOption, setEditingOption] = useState<ProductOption | null>(null);
   const [isAddOptionDialogOpen, setIsAddOptionDialogOpen] = useState(false);
+  const [editingVariant, setEditingVariant] = useState<ProductVariant | null>(null);
+  const [isAddVariantDialogOpen, setIsAddVariantDialogOpen] = useState(false);
+  const [editingVariable, setEditingVariable] = useState<GlobalVariable | null>(null);
+  const [isAddVariableDialogOpen, setIsAddVariableDialogOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -69,6 +86,37 @@ export default function AdminSettings() {
       displayOrder: 0,
       isActive: true,
     },
+  });
+
+  const variantForm = useForm<Omit<InsertProductVariant, "productId">>({
+    resolver: zodResolver(insertProductVariantSchema.omit({ productId: true })),
+    defaultValues: {
+      name: "",
+      description: "",
+      basePricePerSqft: 0,
+      isDefault: false,
+      displayOrder: 0,
+      isActive: true,
+    },
+  });
+
+  const editVariantForm = useForm<Omit<InsertProductVariant, "productId">>({
+    resolver: zodResolver(insertProductVariantSchema.omit({ productId: true })),
+  });
+
+  const variableForm = useForm<InsertGlobalVariable>({
+    resolver: zodResolver(insertGlobalVariableSchema),
+    defaultValues: {
+      name: "",
+      value: 0,
+      description: "",
+      category: "",
+      isActive: true,
+    },
+  });
+
+  const editVariableForm = useForm<InsertGlobalVariable>({
+    resolver: zodResolver(insertGlobalVariableSchema),
   });
 
   const addProductMutation = useMutation({
@@ -206,6 +254,159 @@ export default function AdminSettings() {
     },
   });
 
+  // Fetch all variants for all products
+  const { data: allVariants, isLoading: variantsLoading } = useQuery<{ productId: string; productName: string; variants: ProductVariant[] }[]>({
+    queryKey: ["/api/all-variants"],
+    queryFn: async () => {
+      if (!products) return [];
+      const variantsData = await Promise.all(
+        products.map(async (product) => {
+          const response = await fetch(`/api/products/${product.id}/variants`);
+          const variants = await response.json();
+          return {
+            productId: product.id,
+            productName: product.name,
+            variants: variants || [],
+          };
+        })
+      );
+      return variantsData;
+    },
+    enabled: !!products,
+  });
+
+  const addVariantMutation = useMutation({
+    mutationFn: async ({ productId, data }: { productId: string; data: Omit<InsertProductVariant, "productId"> }) => {
+      return await apiRequest("POST", `/api/products/${productId}/variants`, data);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Variant Added",
+        description: "The product variant has been added successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/all-variants"] });
+      setIsAddVariantDialogOpen(false);
+      variantForm.reset();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const updateVariantMutation = useMutation({
+    mutationFn: async ({ productId, id, data }: { productId: string; id: string; data: Omit<InsertProductVariant, "productId"> }) => {
+      return await apiRequest("PATCH", `/api/products/${productId}/variants/${id}`, data);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Variant Updated",
+        description: "The product variant has been updated successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/all-variants"] });
+      setEditingVariant(null);
+      editVariantForm.reset();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteVariantMutation = useMutation({
+    mutationFn: async ({ productId, id }: { productId: string; id: string }) => {
+      return await apiRequest("DELETE", `/api/products/${productId}/variants/${id}`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Variant Deleted",
+        description: "The product variant has been deleted successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/all-variants"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const { data: globalVariables, isLoading: variablesLoading } = useQuery<GlobalVariable[]>({
+    queryKey: ["/api/global-variables"],
+  });
+
+  const addVariableMutation = useMutation({
+    mutationFn: async (data: InsertGlobalVariable) => {
+      return await apiRequest("POST", "/api/global-variables", data);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Variable Added",
+        description: "The global variable has been added successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
+      setIsAddVariableDialogOpen(false);
+      variableForm.reset();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const updateVariableMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: InsertGlobalVariable }) => {
+      return await apiRequest("PATCH", `/api/global-variables/${id}`, data);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Variable Updated",
+        description: "The global variable has been updated successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
+      setEditingVariable(null);
+      editVariableForm.reset();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteVariableMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await apiRequest("DELETE", `/api/global-variables/${id}`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Variable Deleted",
+        description: "The global variable has been deleted successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/global-variables"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleEditProduct = (product: Product) => {
     setEditingProduct(product);
     editProductForm.reset({
@@ -216,6 +417,35 @@ export default function AdminSettings() {
       isActive: product.isActive,
     });
   };
+
+  const handleEditVariant = (variant: ProductVariant, productId: string) => {
+    setEditingVariant({ ...variant, productId } as any);
+    editVariantForm.reset({
+      name: variant.name,
+      description: variant.description || "",
+      basePricePerSqft: Number(variant.basePricePerSqft),
+      isDefault: variant.isDefault,
+      displayOrder: variant.displayOrder,
+      isActive: variant.isActive,
+    });
+  };
+
+  const handleEditVariable = (variable: GlobalVariable) => {
+    setEditingVariable(variable);
+    editVariableForm.reset({
+      name: variable.name,
+      value: Number(variable.value),
+      description: variable.description || "",
+      category: variable.category || "",
+      isActive: variable.isActive,
+    });
+  };
+
+  const filteredVariables = globalVariables?.filter((variable) =>
+    variable.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    variable.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    variable.category?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   if (productsLoading) {
     return (
@@ -239,8 +469,10 @@ export default function AdminSettings() {
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="products" data-testid="tabs-admin-settings">
-            <TabsList className="grid w-full grid-cols-2">
+            <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
+              <TabsTrigger value="variants" data-testid="tab-variants">Product Variants</TabsTrigger>
+              <TabsTrigger value="variables" data-testid="tab-variables">Global Variables</TabsTrigger>
               <TabsTrigger value="formulas" data-testid="tab-formulas">Pricing Formulas</TabsTrigger>
             </TabsList>
 
@@ -1065,6 +1297,690 @@ export default function AdminSettings() {
                       <TableRow>
                         <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
                           No products yet. Add your first product to get started.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="variants" className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Product Variants Management</h3>
+                <Dialog open={isAddVariantDialogOpen} onOpenChange={setIsAddVariantDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button data-testid="button-add-variant">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Variant
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl" data-testid="dialog-add-variant">
+                    <DialogHeader>
+                      <DialogTitle>Add New Product Variant</DialogTitle>
+                      <DialogDescription>
+                        Create a new variant for a product
+                      </DialogDescription>
+                    </DialogHeader>
+                    <Form {...variantForm}>
+                      <form onSubmit={variantForm.handleSubmit((data) => {
+                        const productId = variantForm.getValues("productId" as any);
+                        if (!productId) {
+                          toast({
+                            title: "Error",
+                            description: "Please select a product",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
+                        addVariantMutation.mutate({ productId, data });
+                      })} className="space-y-4">
+                        <div className="space-y-4">
+                          <div>
+                            <Label htmlFor="productId" data-testid="label-variant-product">Product</Label>
+                            <Select 
+                              onValueChange={(value) => variantForm.setValue("productId" as any, value)}
+                            >
+                              <SelectTrigger data-testid="select-variant-product">
+                                <SelectValue placeholder="Select a product" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {products?.map((product) => (
+                                  <SelectItem key={product.id} value={product.id} data-testid={`option-product-${product.id}`}>
+                                    {product.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <FormField
+                            control={variantForm.control}
+                            name="name"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel data-testid="label-variant-name">Variant Name</FormLabel>
+                                <FormControl>
+                                  <Input placeholder="Standard" {...field} data-testid="input-variant-name" />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={variantForm.control}
+                            name="description"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel data-testid="label-variant-description">Description</FormLabel>
+                                <FormControl>
+                                  <Textarea
+                                    placeholder="Standard quality variant..."
+                                    {...field}
+                                    value={field.value || ""}
+                                    data-testid="textarea-variant-description"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={variantForm.control}
+                            name="basePricePerSqft"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel data-testid="label-variant-price">Base Price Per Sqft</FormLabel>
+                                <FormControl>
+                                  <Input 
+                                    type="number" 
+                                    step="0.0001" 
+                                    min="0"
+                                    placeholder="0.05"
+                                    {...field}
+                                    onChange={(e) => field.onChange(Number(e.target.value))}
+                                    data-testid="input-variant-price"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={variantForm.control}
+                            name="isDefault"
+                            render={({ field }) => (
+                              <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+                                <FormControl>
+                                  <Checkbox
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                    data-testid="checkbox-variant-default"
+                                  />
+                                </FormControl>
+                                <div className="space-y-1 leading-none">
+                                  <FormLabel data-testid="label-variant-default">
+                                    Is Default Variant
+                                  </FormLabel>
+                                  <FormDescription>
+                                    This variant will be pre-selected in the calculator
+                                  </FormDescription>
+                                </div>
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={variantForm.control}
+                            name="displayOrder"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel data-testid="label-variant-order">Display Order</FormLabel>
+                                <FormControl>
+                                  <Input 
+                                    type="number" 
+                                    {...field}
+                                    onChange={(e) => field.onChange(Number(e.target.value))}
+                                    data-testid="input-variant-order"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            type="submit"
+                            disabled={addVariantMutation.isPending}
+                            data-testid="button-submit-add-variant"
+                          >
+                            {addVariantMutation.isPending ? "Adding..." : "Add Variant"}
+                          </Button>
+                        </DialogFooter>
+                      </form>
+                    </Form>
+                  </DialogContent>
+                </Dialog>
+              </div>
+
+              <div className="border rounded-md">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead data-testid="header-variant-product">Product Name</TableHead>
+                      <TableHead data-testid="header-variant-name">Variant Name</TableHead>
+                      <TableHead data-testid="header-variant-price">Base Price/sqft</TableHead>
+                      <TableHead data-testid="header-variant-default">Is Default</TableHead>
+                      <TableHead data-testid="header-variant-actions" className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {variantsLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center py-8">
+                          <Skeleton className="h-8 w-full" />
+                        </TableCell>
+                      </TableRow>
+                    ) : allVariants && allVariants.some(pv => pv.variants.length > 0) ? (
+                      allVariants.flatMap((productVariants) =>
+                        productVariants.variants.map((variant) => (
+                          <TableRow key={variant.id} data-testid={`row-variant-${variant.id}`}>
+                            <TableCell className="font-medium" data-testid={`cell-variant-product-${variant.id}`}>
+                              {productVariants.productName}
+                            </TableCell>
+                            <TableCell data-testid={`cell-variant-name-${variant.id}`}>
+                              {variant.name}
+                            </TableCell>
+                            <TableCell className="font-mono" data-testid={`cell-variant-price-${variant.id}`}>
+                              ${Number(variant.basePricePerSqft).toFixed(4)}
+                            </TableCell>
+                            <TableCell data-testid={`cell-variant-default-${variant.id}`}>
+                              {variant.isDefault ? (
+                                <Badge variant="default" data-testid={`badge-default-${variant.id}`}>Default</Badge>
+                              ) : (
+                                <span className="text-muted-foreground">No</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-2">
+                                <Dialog
+                                  open={editingVariant?.id === variant.id}
+                                  onOpenChange={(open) => !open && setEditingVariant(null)}
+                                >
+                                  <DialogTrigger asChild>
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={() => handleEditVariant(variant, productVariants.productId)}
+                                      data-testid={`button-edit-variant-${variant.id}`}
+                                    >
+                                      <Edit className="w-4 h-4" />
+                                    </Button>
+                                  </DialogTrigger>
+                                  <DialogContent className="max-w-2xl" data-testid={`dialog-edit-variant-${variant.id}`}>
+                                    <DialogHeader>
+                                      <DialogTitle>Edit Variant</DialogTitle>
+                                      <DialogDescription>
+                                        Update variant details
+                                      </DialogDescription>
+                                    </DialogHeader>
+                                    <Form {...editVariantForm}>
+                                      <form
+                                        onSubmit={editVariantForm.handleSubmit((data) =>
+                                          updateVariantMutation.mutate({ 
+                                            productId: productVariants.productId, 
+                                            id: variant.id, 
+                                            data 
+                                          })
+                                        )}
+                                        className="space-y-4"
+                                      >
+                                        <FormField
+                                          control={editVariantForm.control}
+                                          name="name"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Variant Name</FormLabel>
+                                              <FormControl>
+                                                <Input {...field} data-testid={`input-edit-variant-name-${variant.id}`} />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <FormField
+                                          control={editVariantForm.control}
+                                          name="description"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Description</FormLabel>
+                                              <FormControl>
+                                                <Textarea {...field} value={field.value || ""} data-testid={`textarea-edit-variant-description-${variant.id}`} />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <FormField
+                                          control={editVariantForm.control}
+                                          name="basePricePerSqft"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Base Price Per Sqft</FormLabel>
+                                              <FormControl>
+                                                <Input 
+                                                  type="number" 
+                                                  step="0.0001" 
+                                                  min="0"
+                                                  {...field}
+                                                  onChange={(e) => field.onChange(Number(e.target.value))}
+                                                  data-testid={`input-edit-variant-price-${variant.id}`}
+                                                />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <FormField
+                                          control={editVariantForm.control}
+                                          name="isDefault"
+                                          render={({ field }) => (
+                                            <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+                                              <FormControl>
+                                                <Checkbox
+                                                  checked={field.value}
+                                                  onCheckedChange={field.onChange}
+                                                  data-testid={`checkbox-edit-variant-default-${variant.id}`}
+                                                />
+                                              </FormControl>
+                                              <div className="space-y-1 leading-none">
+                                                <FormLabel>
+                                                  Is Default Variant
+                                                </FormLabel>
+                                                <FormDescription>
+                                                  This variant will be pre-selected in the calculator
+                                                </FormDescription>
+                                              </div>
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <FormField
+                                          control={editVariantForm.control}
+                                          name="displayOrder"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Display Order</FormLabel>
+                                              <FormControl>
+                                                <Input 
+                                                  type="number" 
+                                                  {...field}
+                                                  onChange={(e) => field.onChange(Number(e.target.value))}
+                                                  data-testid={`input-edit-variant-order-${variant.id}`}
+                                                />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <DialogFooter>
+                                          <Button
+                                            type="submit"
+                                            disabled={updateVariantMutation.isPending}
+                                            data-testid={`button-submit-edit-variant-${variant.id}`}
+                                          >
+                                            {updateVariantMutation.isPending ? "Updating..." : "Update Variant"}
+                                          </Button>
+                                        </DialogFooter>
+                                      </form>
+                                    </Form>
+                                  </DialogContent>
+                                </Dialog>
+
+                                <AlertDialog>
+                                  <AlertDialogTrigger asChild>
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      data-testid={`button-delete-variant-${variant.id}`}
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  </AlertDialogTrigger>
+                                  <AlertDialogContent data-testid={`dialog-delete-variant-${variant.id}`}>
+                                    <AlertDialogHeader>
+                                      <AlertDialogTitle>Delete Variant?</AlertDialogTitle>
+                                      <AlertDialogDescription>
+                                        This will permanently delete "{variant.name}". This action cannot be undone.
+                                      </AlertDialogDescription>
+                                    </AlertDialogHeader>
+                                    <AlertDialogFooter>
+                                      <AlertDialogCancel data-testid={`button-cancel-delete-variant-${variant.id}`}>
+                                        Cancel
+                                      </AlertDialogCancel>
+                                      <AlertDialogAction
+                                        onClick={() => deleteVariantMutation.mutate({ productId: productVariants.productId, id: variant.id })}
+                                        data-testid={`button-confirm-delete-variant-${variant.id}`}
+                                      >
+                                        Delete
+                                      </AlertDialogAction>
+                                    </AlertDialogFooter>
+                                  </AlertDialogContent>
+                                </AlertDialog>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                          No variants yet. Add your first variant to get started.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="variables" className="space-y-4">
+              <div className="flex justify-between items-center gap-4">
+                <div className="flex-1 max-w-md">
+                  <Input
+                    placeholder="Search variables..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    data-testid="input-search-variables"
+                  />
+                </div>
+                <Dialog open={isAddVariableDialogOpen} onOpenChange={setIsAddVariableDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button data-testid="button-add-variable">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Variable
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl" data-testid="dialog-add-variable">
+                    <DialogHeader>
+                      <DialogTitle>Add New Global Variable</DialogTitle>
+                      <DialogDescription>
+                        Create a new global variable for use in pricing calculations
+                      </DialogDescription>
+                    </DialogHeader>
+                    <Form {...variableForm}>
+                      <form onSubmit={variableForm.handleSubmit((data) => addVariableMutation.mutate(data))} className="space-y-4">
+                        <FormField
+                          control={variableForm.control}
+                          name="name"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel data-testid="label-variable-name">Variable Name</FormLabel>
+                              <FormControl>
+                                <Input placeholder="BASE_COST" {...field} data-testid="input-variable-name" />
+                              </FormControl>
+                              <FormDescription>
+                                Use a unique, descriptive name (e.g., BASE_COST, TAX_RATE)
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={variableForm.control}
+                          name="value"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel data-testid="label-variable-value">Value</FormLabel>
+                              <FormControl>
+                                <Input 
+                                  type="number" 
+                                  step="0.0001"
+                                  placeholder="0"
+                                  {...field}
+                                  onChange={(e) => field.onChange(Number(e.target.value))}
+                                  data-testid="input-variable-value"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={variableForm.control}
+                          name="description"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel data-testid="label-variable-description">Description</FormLabel>
+                              <FormControl>
+                                <Textarea
+                                  placeholder="Description of what this variable is used for..."
+                                  {...field}
+                                  value={field.value || ""}
+                                  data-testid="textarea-variable-description"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={variableForm.control}
+                          name="category"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel data-testid="label-variable-category">Category (Optional)</FormLabel>
+                              <FormControl>
+                                <Input 
+                                  placeholder="Costs" 
+                                  {...field} 
+                                  value={field.value || ""}
+                                  data-testid="input-variable-category"
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                Group related variables by category
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <DialogFooter>
+                          <Button
+                            type="submit"
+                            disabled={addVariableMutation.isPending}
+                            data-testid="button-submit-add-variable"
+                          >
+                            {addVariableMutation.isPending ? "Adding..." : "Add Variable"}
+                          </Button>
+                        </DialogFooter>
+                      </form>
+                    </Form>
+                  </DialogContent>
+                </Dialog>
+              </div>
+
+              <div className="border rounded-md">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead data-testid="header-variable-name">Name</TableHead>
+                      <TableHead data-testid="header-variable-value">Value</TableHead>
+                      <TableHead data-testid="header-variable-description">Description</TableHead>
+                      <TableHead data-testid="header-variable-category">Category</TableHead>
+                      <TableHead data-testid="header-variable-actions" className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {variablesLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center py-8">
+                          <Skeleton className="h-8 w-full" />
+                        </TableCell>
+                      </TableRow>
+                    ) : filteredVariables && filteredVariables.length > 0 ? (
+                      filteredVariables.map((variable) => (
+                        <TableRow key={variable.id} data-testid={`row-variable-${variable.id}`}>
+                          <TableCell className="font-medium font-mono" data-testid={`cell-variable-name-${variable.id}`}>
+                            {variable.name}
+                          </TableCell>
+                          <TableCell className="font-mono" data-testid={`cell-variable-value-${variable.id}`}>
+                            {Number(variable.value).toFixed(4)}
+                          </TableCell>
+                          <TableCell className="max-w-xs truncate" data-testid={`cell-variable-description-${variable.id}`}>
+                            {variable.description || <span className="text-muted-foreground">—</span>}
+                          </TableCell>
+                          <TableCell data-testid={`cell-variable-category-${variable.id}`}>
+                            {variable.category ? (
+                              <Badge variant="outline" data-testid={`badge-category-${variable.id}`}>{variable.category}</Badge>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              <Dialog
+                                open={editingVariable?.id === variable.id}
+                                onOpenChange={(open) => !open && setEditingVariable(null)}
+                              >
+                                <DialogTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={() => handleEditVariable(variable)}
+                                    data-testid={`button-edit-variable-${variable.id}`}
+                                  >
+                                    <Edit className="w-4 h-4" />
+                                  </Button>
+                                </DialogTrigger>
+                                <DialogContent className="max-w-2xl" data-testid={`dialog-edit-variable-${variable.id}`}>
+                                  <DialogHeader>
+                                    <DialogTitle>Edit Global Variable</DialogTitle>
+                                    <DialogDescription>
+                                      Update variable details
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <Form {...editVariableForm}>
+                                    <form
+                                      onSubmit={editVariableForm.handleSubmit((data) =>
+                                        updateVariableMutation.mutate({ id: variable.id, data })
+                                      )}
+                                      className="space-y-4"
+                                    >
+                                      <FormField
+                                        control={editVariableForm.control}
+                                        name="name"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>Variable Name</FormLabel>
+                                            <FormControl>
+                                              <Input {...field} data-testid={`input-edit-variable-name-${variable.id}`} />
+                                            </FormControl>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editVariableForm.control}
+                                        name="value"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>Value</FormLabel>
+                                            <FormControl>
+                                              <Input 
+                                                type="number" 
+                                                step="0.0001"
+                                                {...field}
+                                                onChange={(e) => field.onChange(Number(e.target.value))}
+                                                data-testid={`input-edit-variable-value-${variable.id}`}
+                                              />
+                                            </FormControl>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editVariableForm.control}
+                                        name="description"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>Description</FormLabel>
+                                            <FormControl>
+                                              <Textarea {...field} value={field.value || ""} data-testid={`textarea-edit-variable-description-${variable.id}`} />
+                                            </FormControl>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editVariableForm.control}
+                                        name="category"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>Category</FormLabel>
+                                            <FormControl>
+                                              <Input {...field} value={field.value || ""} data-testid={`input-edit-variable-category-${variable.id}`} />
+                                            </FormControl>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <DialogFooter>
+                                        <Button
+                                          type="submit"
+                                          disabled={updateVariableMutation.isPending}
+                                          data-testid={`button-submit-edit-variable-${variable.id}`}
+                                        >
+                                          {updateVariableMutation.isPending ? "Updating..." : "Update Variable"}
+                                        </Button>
+                                      </DialogFooter>
+                                    </form>
+                                  </Form>
+                                </DialogContent>
+                              </Dialog>
+
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    data-testid={`button-delete-variable-${variable.id}`}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent data-testid={`dialog-delete-variable-${variable.id}`}>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Delete Variable?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      This will permanently delete "{variable.name}". This action cannot be undone.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel data-testid={`button-cancel-delete-variable-${variable.id}`}>
+                                      Cancel
+                                    </AlertDialogCancel>
+                                    <AlertDialogAction
+                                      onClick={() => deleteVariableMutation.mutate(variable.id)}
+                                      data-testid={`button-confirm-delete-variable-${variable.id}`}
+                                    >
+                                      Delete
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : searchTerm ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                          No variables match your search.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                          No global variables yet. Add your first variable to get started.
                         </TableCell>
                       </TableRow>
                     )}

@@ -8,7 +8,11 @@ import {
   updateProductSchema,
   insertQuoteSchema,
   insertProductOptionSchema,
-  updateProductOptionSchema
+  updateProductOptionSchema,
+  insertProductVariantSchema,
+  updateProductVariantSchema,
+  insertGlobalVariableSchema,
+  updateGlobalVariableSchema
 } from "@shared/schema";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -143,9 +147,116 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Product Variants routes
+  app.get("/api/products/:id/variants", isAuthenticated, async (req, res) => {
+    try {
+      const variants = await storage.getProductVariants(req.params.id);
+      res.json(variants);
+    } catch (error) {
+      console.error("Error fetching product variants:", error);
+      res.status(500).json({ message: "Failed to fetch product variants" });
+    }
+  });
+
+  app.post("/api/products/:id/variants", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const variantData = insertProductVariantSchema.parse({
+        ...req.body,
+        productId: req.params.id,
+      });
+      const variant = await storage.createProductVariant(variantData);
+      res.json(variant);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating product variant:", error);
+      res.status(500).json({ message: "Failed to create product variant" });
+    }
+  });
+
+  app.patch("/api/products/:productId/variants/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const variantData = updateProductVariantSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const variant = await storage.updateProductVariant(req.params.id, variantData);
+      res.json(variant);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating product variant:", error);
+      res.status(500).json({ message: "Failed to update product variant" });
+    }
+  });
+
+  app.delete("/api/products/:productId/variants/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      await storage.deleteProductVariant(req.params.id);
+      res.json({ message: "Product variant deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting product variant:", error);
+      res.status(500).json({ message: "Failed to delete product variant" });
+    }
+  });
+
+  // Global Variables routes
+  app.get("/api/global-variables", isAuthenticated, async (req, res) => {
+    try {
+      const variables = await storage.getAllGlobalVariables();
+      res.json(variables);
+    } catch (error) {
+      console.error("Error fetching global variables:", error);
+      res.status(500).json({ message: "Failed to fetch global variables" });
+    }
+  });
+
+  app.post("/api/global-variables", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const variableData = insertGlobalVariableSchema.parse(req.body);
+      const variable = await storage.createGlobalVariable(variableData);
+      res.json(variable);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating global variable:", error);
+      res.status(500).json({ message: "Failed to create global variable" });
+    }
+  });
+
+  app.patch("/api/global-variables/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const variableData = updateGlobalVariableSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const variable = await storage.updateGlobalVariable(req.params.id, variableData);
+      res.json(variable);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating global variable:", error);
+      res.status(500).json({ message: "Failed to update global variable" });
+    }
+  });
+
+  app.delete("/api/global-variables/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      await storage.deleteGlobalVariable(req.params.id);
+      res.json({ message: "Global variable deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting global variable:", error);
+      res.status(500).json({ message: "Failed to delete global variable" });
+    }
+  });
+
   app.post("/api/quotes/calculate", isAuthenticated, async (req, res) => {
     try {
-      const { productId, width, height, quantity, selectedOptions = {} } = req.body;
+      const { productId, variantId, width, height, quantity, selectedOptions = {} } = req.body;
 
       if (!productId || width == null || height == null || quantity == null) {
         return res.status(400).json({ message: "Missing required fields" });
@@ -155,6 +266,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!product) {
         return res.status(404).json({ message: "Product not found" });
       }
+
+      // Fetch product variant if provided
+      let variant = null;
+      let variantName = null;
+      if (variantId) {
+        const variants = await storage.getProductVariants(productId);
+        variant = variants.find(v => v.id === variantId);
+        if (variant) {
+          variantName = variant.name;
+        }
+      }
+
+      // Fetch all global variables for formula evaluation
+      const globalVariables = await storage.getAllGlobalVariables();
+      const globalVarsContext: Record<string, number> = {};
+      globalVariables.forEach(v => {
+        globalVarsContext[v.name] = parseFloat(v.value);
+      });
 
       // Coerce inputs to numbers (handles both string and number inputs)
       const widthNum = Number(width);
@@ -172,15 +301,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid quantity value" });
       }
 
+      // Calculate square footage
+      const sqft = (widthNum * heightNum) / 144; // Convert sq inches to sq feet
+
+      // Build formula context with dimensions, quantity, variant base price, and global variables
+      const formulaContext: Record<string, number> = {
+        width: widthNum,
+        height: heightNum,
+        quantity: quantityNum,
+        sqft,
+        basePricePerSqft: variant ? parseFloat(variant.basePricePerSqft) : 0,
+        ...globalVarsContext,
+      };
+
       // Safely evaluate base price using mathjs
       let basePrice = 0;
       try {
         const formula = product.pricingFormula;
-        basePrice = evaluate(formula, { 
-          width: widthNum, 
-          height: heightNum, 
-          quantity: quantityNum 
-        });
+        basePrice = evaluate(formula, formulaContext);
 
         // Validate base price is a finite number
         if (!Number.isFinite(basePrice)) {
@@ -247,9 +385,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (option.priceFormula) {
           try {
             const optionCost = evaluate(option.priceFormula, {
-              width: widthNum,
-              height: heightNum,
-              quantity: quantityNum,
+              ...formulaContext,
               value: option.type === "number" ? parseFloat(value as string) : value,
             });
             
@@ -299,7 +435,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           total,
           formula: product.pricingFormula,
           selectedOptions: selectedOptionsArray,
+          variantInfo: variantName || undefined,
         },
+        variant: variant ? {
+          id: variant.id,
+          name: variant.name,
+        } : null,
       });
     } catch (error) {
       console.error("Error calculating price:", error);

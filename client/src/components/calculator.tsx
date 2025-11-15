@@ -10,11 +10,12 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Calculator as CalcIcon, ExternalLink, Save } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product, InsertQuote, ProductOption } from "@shared/schema";
+import type { Product, InsertQuote, ProductOption, ProductVariant } from "@shared/schema";
 
 export default function CalculatorComponent() {
   const { toast } = useToast();
   const [selectedProductId, setSelectedProductId] = useState<string>("");
+  const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
   const [width, setWidth] = useState<string>("");
   const [height, setHeight] = useState<string>("");
   const [quantity, setQuantity] = useState<string>("");
@@ -32,11 +33,17 @@ export default function CalculatorComponent() {
     enabled: !!selectedProductId,
   });
 
+  const { data: productVariants } = useQuery<ProductVariant[]>({
+    queryKey: ["/api/products", selectedProductId, "variants"],
+    enabled: !!selectedProductId,
+  });
+
   const selectedProduct = products?.find(p => p.id === selectedProductId);
 
-  // Reset option values when product changes
+  // Reset option values and variant when product changes
   useEffect(() => {
     setOptionValues({});
+    setSelectedVariant(null);
   }, [selectedProductId]);
 
   // Set default values when product options load
@@ -93,6 +100,7 @@ export default function CalculatorComponent() {
     mutationFn: async () => {
       const response = await apiRequest("POST", "/api/quotes/calculate", {
         productId: selectedProductId,
+        variantId: selectedVariant,
         width: parseFloat(width),
         height: parseFloat(height),
         quantity: parseInt(quantity),
@@ -322,6 +330,27 @@ export default function CalculatorComponent() {
               </Select>
             </div>
 
+            {productVariants && productVariants.filter(v => v.isActive).length > 0 && (
+              <div className="space-y-2">
+                <Label htmlFor="variant" data-testid="label-variant">Select Variant</Label>
+                <Select value={selectedVariant || ""} onValueChange={(value) => setSelectedVariant(value || null)}>
+                  <SelectTrigger id="variant" data-testid="select-variant">
+                    <SelectValue placeholder="Select a variant" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {productVariants
+                      .filter(v => v.isActive)
+                      .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
+                      .map((variant) => (
+                        <SelectItem key={variant.id} value={variant.id} data-testid={`option-variant-${variant.id}`}>
+                          {variant.name} (${parseFloat(variant.basePricePerSqft).toFixed(2)}/sqft)
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             {selectedProduct && (
               <div className="p-4 bg-muted rounded-md space-y-2" data-testid="product-description">
                 <p className="text-sm text-muted-foreground">{selectedProduct.description}</p>
@@ -432,6 +461,15 @@ export default function CalculatorComponent() {
                 </div>
 
                 <div className="space-y-2">
+                  {priceBreakdown.variantInfo && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Variant:</span>
+                      <span data-testid="text-variant-info">
+                        {priceBreakdown.variantInfo}
+                      </span>
+                    </div>
+                  )}
+                  
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Base Price:</span>
                     <span className="font-mono" data-testid="text-base-price">

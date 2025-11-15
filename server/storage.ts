@@ -2,6 +2,8 @@ import {
   users,
   products,
   productOptions,
+  productVariants,
+  globalVariables,
   quotes,
   pricingRules,
   type User,
@@ -12,6 +14,12 @@ import {
   type ProductOption,
   type InsertProductOption,
   type UpdateProductOption,
+  type ProductVariant,
+  type InsertProductVariant,
+  type UpdateProductVariant,
+  type GlobalVariable,
+  type InsertGlobalVariable,
+  type UpdateGlobalVariable,
   type Quote,
   type InsertQuote,
   type QuoteWithRelations,
@@ -39,6 +47,19 @@ export interface IStorage {
   createProductOption(option: InsertProductOption): Promise<ProductOption>;
   updateProductOption(id: string, option: Partial<InsertProductOption>): Promise<ProductOption>;
   deleteProductOption(id: string): Promise<void>;
+
+  // Product variants operations
+  getProductVariants(productId: string): Promise<ProductVariant[]>;
+  createProductVariant(variant: InsertProductVariant): Promise<ProductVariant>;
+  updateProductVariant(id: string, variant: Partial<InsertProductVariant>): Promise<ProductVariant>;
+  deleteProductVariant(id: string): Promise<void>;
+
+  // Global variables operations
+  getAllGlobalVariables(): Promise<GlobalVariable[]>;
+  getGlobalVariableByName(name: string): Promise<GlobalVariable | undefined>;
+  createGlobalVariable(variable: InsertGlobalVariable): Promise<GlobalVariable>;
+  updateGlobalVariable(id: string, variable: Partial<InsertGlobalVariable>): Promise<GlobalVariable>;
+  deleteGlobalVariable(id: string): Promise<void>;
 
   // Quote operations
   createQuote(quote: InsertQuote): Promise<Quote>;
@@ -156,6 +177,96 @@ export class DatabaseStorage implements IStorage {
 
   async deleteProductOption(id: string): Promise<void> {
     await db.delete(productOptions).where(eq(productOptions.id, id));
+  }
+
+  // Product variants operations
+  async getProductVariants(productId: string): Promise<ProductVariant[]> {
+    return await db
+      .select()
+      .from(productVariants)
+      .where(eq(productVariants.productId, productId))
+      .orderBy(productVariants.displayOrder);
+  }
+
+  async createProductVariant(variant: InsertProductVariant): Promise<ProductVariant> {
+    const variantData = {
+      ...variant,
+      basePricePerSqft: variant.basePricePerSqft.toString(),
+    } as typeof productVariants.$inferInsert;
+    
+    const [newVariant] = await db.insert(productVariants).values(variantData).returning();
+    return newVariant;
+  }
+
+  async updateProductVariant(id: string, variantData: Partial<InsertProductVariant>): Promise<ProductVariant> {
+    const updateData: Record<string, any> = {
+      ...variantData,
+      updatedAt: new Date(),
+    };
+    
+    if (variantData.basePricePerSqft !== undefined) {
+      updateData.basePricePerSqft = variantData.basePricePerSqft.toString();
+    }
+    
+    const [updated] = await db
+      .update(productVariants)
+      .set(updateData)
+      .where(eq(productVariants.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteProductVariant(id: string): Promise<void> {
+    await db.delete(productVariants).where(eq(productVariants.id, id));
+  }
+
+  // Global variables operations
+  async getAllGlobalVariables(): Promise<GlobalVariable[]> {
+    return await db
+      .select()
+      .from(globalVariables)
+      .where(eq(globalVariables.isActive, true))
+      .orderBy(globalVariables.category, globalVariables.name);
+  }
+
+  async getGlobalVariableByName(name: string): Promise<GlobalVariable | undefined> {
+    const [variable] = await db
+      .select()
+      .from(globalVariables)
+      .where(eq(globalVariables.name, name));
+    return variable;
+  }
+
+  async createGlobalVariable(variable: InsertGlobalVariable): Promise<GlobalVariable> {
+    const variableData = {
+      ...variable,
+      value: variable.value.toString(),
+    } as typeof globalVariables.$inferInsert;
+    
+    const [newVariable] = await db.insert(globalVariables).values(variableData).returning();
+    return newVariable;
+  }
+
+  async updateGlobalVariable(id: string, variableData: Partial<InsertGlobalVariable>): Promise<GlobalVariable> {
+    const updateData: Record<string, any> = {
+      ...variableData,
+      updatedAt: new Date(),
+    };
+    
+    if (variableData.value !== undefined) {
+      updateData.value = variableData.value.toString();
+    }
+    
+    const [updated] = await db
+      .update(globalVariables)
+      .set(updateData)
+      .where(eq(globalVariables.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteGlobalVariable(id: string): Promise<void> {
+    await db.delete(globalVariables).where(eq(globalVariables.id, id));
   }
 
   // Quote operations
