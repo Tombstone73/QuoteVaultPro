@@ -41,6 +41,69 @@ import {
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
 
+function SelectChoicesInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [newChoice, setNewChoice] = useState("");
+  const choices = value?.split(",").map(s => s.trim()).filter(Boolean) || [];
+  
+  const addChoice = () => {
+    const trimmed = newChoice.trim();
+    if (trimmed && !choices.includes(trimmed)) {
+      onChange([...choices, trimmed].join(","));
+      setNewChoice("");
+    }
+  };
+  
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <Input
+          placeholder="Add a choice (e.g., Matte, Gloss)"
+          value={newChoice}
+          onChange={(e) => setNewChoice(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addChoice();
+            }
+          }}
+          data-testid="input-add-select-choice"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          onClick={addChoice}
+          data-testid="button-add-select-choice"
+        >
+          <Plus className="w-4 h-4" />
+        </Button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {choices.map((choice, index) => (
+          <Badge
+            key={index}
+            variant="secondary"
+            className="gap-1"
+            data-testid={`badge-choice-${index}`}
+          >
+            {choice}
+            <button
+              type="button"
+              onClick={() => {
+                const newChoices = choices.filter((_, i) => i !== index);
+                onChange(newChoices.join(","));
+              }}
+              className="ml-1 hover:text-destructive"
+              data-testid={`button-remove-choice-${index}`}
+            >
+              ×
+            </button>
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminSettings() {
   const { toast } = useToast();
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -1008,10 +1071,10 @@ export default function AdminSettings() {
                                                                 Update {(product.variantLabel || "variant").toLowerCase()} details
                                                               </DialogDescription>
                                                             </DialogHeader>
-                                                            <Form {...variantForm}>
-                                                              <form onSubmit={variantForm.handleSubmit((data) => updateVariantMutation.mutate({ productId: product.id, id: variant.id, data }))} className="space-y-4">
+                                                            <Form {...editVariantForm}>
+                                                              <form onSubmit={editVariantForm.handleSubmit((data) => updateVariantMutation.mutate({ productId: product.id, id: variant.id, data }))} className="space-y-4">
                                                                 <FormField
-                                                                  control={variantForm.control}
+                                                                  control={editVariantForm.control}
                                                                   name="name"
                                                                   render={({ field }) => (
                                                                     <FormItem>
@@ -1024,7 +1087,7 @@ export default function AdminSettings() {
                                                                   )}
                                                                 />
                                                                 <FormField
-                                                                  control={variantForm.control}
+                                                                  control={editVariantForm.control}
                                                                   name="description"
                                                                   render={({ field }) => (
                                                                     <FormItem>
@@ -1037,7 +1100,7 @@ export default function AdminSettings() {
                                                                   )}
                                                                 />
                                                                 <FormField
-                                                                  control={variantForm.control}
+                                                                  control={editVariantForm.control}
                                                                   name="basePricePerSqft"
                                                                   render={({ field }) => (
                                                                     <FormItem>
@@ -1056,7 +1119,7 @@ export default function AdminSettings() {
                                                                   )}
                                                                 />
                                                                 <FormField
-                                                                  control={variantForm.control}
+                                                                  control={editVariantForm.control}
                                                                   name="isDefault"
                                                                   render={({ field }) => (
                                                                     <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
@@ -1077,7 +1140,7 @@ export default function AdminSettings() {
                                                                   )}
                                                                 />
                                                                 <FormField
-                                                                  control={variantForm.control}
+                                                                  control={editVariantForm.control}
                                                                   name="displayOrder"
                                                                   render={({ field }) => (
                                                                     <FormItem>
@@ -1278,23 +1341,50 @@ export default function AdminSettings() {
                                                       </FormItem>
                                                     )}
                                                   />
-                                                  <div className="grid grid-cols-2 gap-4">
-                                                    <FormField
-                                                      control={optionForm.control}
-                                                      name="defaultValue"
-                                                      render={({ field }) => (
+                                                  <FormField
+                                                    control={optionForm.control}
+                                                    name="defaultValue"
+                                                    render={({ field }) => {
+                                                      const optionType = optionForm.watch("type");
+                                                      
+                                                      if (optionType === "select") {
+                                                        return (
+                                                          <FormItem className="col-span-2">
+                                                            <FormLabel>Dropdown Choices</FormLabel>
+                                                            <FormControl>
+                                                              <SelectChoicesInput
+                                                                value={field.value || ""}
+                                                                onChange={field.onChange}
+                                                              />
+                                                            </FormControl>
+                                                            <FormDescription className="text-xs">
+                                                              Add dropdown choices for users to select from
+                                                            </FormDescription>
+                                                            <FormMessage />
+                                                          </FormItem>
+                                                        );
+                                                      }
+                                                      
+                                                      return (
                                                         <FormItem>
                                                           <FormLabel>Default Value</FormLabel>
                                                           <FormControl>
-                                                            <Input placeholder="false" {...field} value={field.value || ""} data-testid="input-option-default-value" />
+                                                            <Input
+                                                              placeholder={optionType === "toggle" ? "false" : "0"}
+                                                              {...field}
+                                                              value={field.value || ""}
+                                                              data-testid="input-option-default-value"
+                                                            />
                                                           </FormControl>
                                                           <FormDescription className="text-xs">
-                                                            For toggle: "true"/"false", number: "0", select: option value
+                                                            {optionType === "toggle" ? "Use 'true' or 'false'" : "Default numeric value"}
                                                           </FormDescription>
                                                           <FormMessage />
                                                         </FormItem>
-                                                      )}
-                                                    />
+                                                      );
+                                                    }}
+                                                  />
+                                                  <div className="grid grid-cols-2 gap-4">
                                                     <FormField
                                                       control={optionForm.control}
                                                       name="setupCost"
