@@ -54,6 +54,7 @@ export const products = pgTable("products", {
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description").notNull(),
   pricingFormula: text("pricing_formula").notNull(),
+  variantLabel: varchar("variant_label", { length: 100 }).default("Variant"),
   storeUrl: varchar("store_url", { length: 512 }),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
