@@ -90,4 +90,35 @@ Required environment variables: `DATABASE_URL`, `SESSION_SECRET`, `REPL_ID`, `IS
 
 - **Email**: Pending SMTP integration for quote emails.
 - **CSV Export**: Server-side generation of quote data, including detailed option information.
-- **Product Store Links**: Products can link to external online store URLs.
+- **Product Store Links**: Products can link to external online store URLs with toggle control.
+
+## Recent Changes
+
+### Show Store Link Toggle (November 15, 2025)
+
+Added granular control over external store link visibility in the calculator:
+
+**Feature:**
+- New `showStoreLink` boolean field added to products table
+- Admin toggle in both Add Product and Edit Product forms
+- Controls whether "View in Store" button appears in calculator
+- Defaults to `true` (enabled) to preserve pre-feature behavior
+
+**Implementation Details:**
+- **Schema**: `showStoreLink` boolean column with default value `true`
+- **Admin UI**: Switch component placed between Store URL field and Active toggle
+- **Calculator Logic**: "View in Store" button renders only when both `storeUrl` exists AND `showStoreLink` is `true`
+- **Database Migration**: Column added with default `true`, existing products backfilled
+
+**UX Improvements:**
+- Admin can disable store links for specific products even if URL exists
+- Opt-out model: links show by default when URL is entered (preserving legacy behavior)
+- Explicit control over which products expose external store links
+- Changes persist immediately to database
+
+**Test Coverage:**
+- Toggle default state verified (ON by default)
+- Store link visibility controlled by toggle
+- Both conditions (URL + toggle) required for button display
+- Existing products retain store link functionality (backfilled)
+- Admin can enable/disable toggle per product
