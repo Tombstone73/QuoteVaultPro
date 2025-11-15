@@ -799,6 +799,346 @@ export default function AdminSettings() {
                                         )}
                                       />
 
+                                      {/* Product Variants Section */}
+                                      <div className="space-y-4 border-t pt-4 mt-4">
+                                        <div className="flex items-center justify-between">
+                                          <div>
+                                            <h3 className="text-lg font-semibold">
+                                              {product.variantLabel || "Variant"}s
+                                            </h3>
+                                            <p className="text-sm text-muted-foreground">
+                                              Manage different {(product.variantLabel || "variant").toLowerCase()} options for this product
+                                            </p>
+                                          </div>
+                                          <Dialog open={isAddVariantDialogOpen} onOpenChange={setIsAddVariantDialogOpen}>
+                                            <DialogTrigger asChild>
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => {
+                                                  variantForm.reset({
+                                                    name: "",
+                                                    description: "",
+                                                    basePricePerSqft: 0,
+                                                    isDefault: false,
+                                                    displayOrder: 0,
+                                                    isActive: true,
+                                                  });
+                                                }}
+                                                data-testid={`button-add-variant-${product.id}`}
+                                              >
+                                                <Plus className="w-4 h-4 mr-2" />
+                                                Add {product.variantLabel || "Variant"}
+                                              </Button>
+                                            </DialogTrigger>
+                                            <DialogContent className="max-w-2xl" data-testid="dialog-add-variant-inline">
+                                              <DialogHeader>
+                                                <DialogTitle>Add {product.variantLabel || "Variant"}</DialogTitle>
+                                                <DialogDescription>
+                                                  Create a new {(product.variantLabel || "variant").toLowerCase()} option for {product.name}
+                                                </DialogDescription>
+                                              </DialogHeader>
+                                              <Form {...variantForm}>
+                                                <form onSubmit={variantForm.handleSubmit((data) => addVariantMutation.mutate({ productId: product.id, data }))} className="space-y-4">
+                                                  <FormField
+                                                    control={variantForm.control}
+                                                    name="name"
+                                                    render={({ field }) => (
+                                                      <FormItem>
+                                                        <FormLabel>{product.variantLabel || "Variant"} Name</FormLabel>
+                                                        <FormControl>
+                                                          <Input placeholder="13oz Vinyl" {...field} data-testid="input-variant-name-inline" />
+                                                        </FormControl>
+                                                        <FormMessage />
+                                                      </FormItem>
+                                                    )}
+                                                  />
+                                                  <FormField
+                                                    control={variantForm.control}
+                                                    name="description"
+                                                    render={({ field }) => (
+                                                      <FormItem>
+                                                        <FormLabel>Description (Optional)</FormLabel>
+                                                        <FormControl>
+                                                          <Textarea
+                                                            placeholder="Standard vinyl banner material"
+                                                            {...field}
+                                                            value={field.value || ""}
+                                                            data-testid="textarea-variant-description-inline"
+                                                          />
+                                                        </FormControl>
+                                                        <FormMessage />
+                                                      </FormItem>
+                                                    )}
+                                                  />
+                                                  <FormField
+                                                    control={variantForm.control}
+                                                    name="basePricePerSqft"
+                                                    render={({ field }) => (
+                                                      <FormItem>
+                                                        <FormLabel>Base Price per Square Foot</FormLabel>
+                                                        <FormControl>
+                                                          <Input
+                                                            type="number"
+                                                            step="0.0001"
+                                                            {...field}
+                                                            onChange={(e) => field.onChange(Number(e.target.value))}
+                                                            data-testid="input-variant-price-inline"
+                                                          />
+                                                        </FormControl>
+                                                        <FormMessage />
+                                                      </FormItem>
+                                                    )}
+                                                  />
+                                                  <FormField
+                                                    control={variantForm.control}
+                                                    name="isDefault"
+                                                    render={({ field }) => (
+                                                      <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
+                                                        <div className="space-y-0.5">
+                                                          <FormLabel className="text-base">Is Default {product.variantLabel || "Variant"}</FormLabel>
+                                                          <FormDescription>
+                                                            This {(product.variantLabel || "variant").toLowerCase()} will be pre-selected in the calculator
+                                                          </FormDescription>
+                                                        </div>
+                                                        <FormControl>
+                                                          <Switch
+                                                            checked={field.value}
+                                                            onCheckedChange={field.onChange}
+                                                            data-testid="checkbox-variant-default-inline"
+                                                          />
+                                                        </FormControl>
+                                                      </FormItem>
+                                                    )}
+                                                  />
+                                                  <FormField
+                                                    control={variantForm.control}
+                                                    name="displayOrder"
+                                                    render={({ field }) => (
+                                                      <FormItem>
+                                                        <FormLabel>Display Order</FormLabel>
+                                                        <FormControl>
+                                                          <Input
+                                                            type="number"
+                                                            {...field}
+                                                            onChange={(e) => field.onChange(Number(e.target.value))}
+                                                            data-testid="input-variant-order-inline"
+                                                          />
+                                                        </FormControl>
+                                                        <FormMessage />
+                                                      </FormItem>
+                                                    )}
+                                                  />
+                                                  <DialogFooter>
+                                                    <Button
+                                                      type="submit"
+                                                      disabled={addVariantMutation.isPending}
+                                                      data-testid="button-submit-add-variant-inline"
+                                                    >
+                                                      {addVariantMutation.isPending ? "Adding..." : `Add ${product.variantLabel || "Variant"}`}
+                                                    </Button>
+                                                  </DialogFooter>
+                                                </form>
+                                              </Form>
+                                            </DialogContent>
+                                          </Dialog>
+                                        </div>
+
+                                        {/* Variants List */}
+                                        <div className="space-y-2">
+                                          {allVariants?.find(pv => pv.productId === product.id)?.variants.length ? (
+                                            allVariants
+                                              .find(pv => pv.productId === product.id)
+                                              ?.variants.sort((a, b) => a.displayOrder - b.displayOrder)
+                                              .map((variant) => (
+                                                <Card key={variant.id} data-testid={`card-variant-${variant.id}`}>
+                                                  <CardContent className="p-4">
+                                                    <div className="flex items-start justify-between gap-4">
+                                                      <div className="flex-1 space-y-2">
+                                                        <div className="flex items-center gap-2">
+                                                          <h4 className="font-semibold" data-testid={`text-variant-name-${variant.id}`}>
+                                                            {variant.name}
+                                                          </h4>
+                                                          {variant.isDefault && (
+                                                            <Badge variant="default" data-testid={`badge-default-variant-${variant.id}`}>Default</Badge>
+                                                          )}
+                                                          {!variant.isActive && (
+                                                            <Badge variant="secondary">Inactive</Badge>
+                                                          )}
+                                                        </div>
+                                                        {variant.description && (
+                                                          <p className="text-sm text-muted-foreground" data-testid={`text-variant-description-${variant.id}`}>
+                                                            {variant.description}
+                                                          </p>
+                                                        )}
+                                                        <div className="text-sm font-mono" data-testid={`text-variant-price-${variant.id}`}>
+                                                          Base Price: ${Number(variant.basePricePerSqft).toFixed(4)}/sqft
+                                                        </div>
+                                                      </div>
+                                                      <div className="flex gap-2">
+                                                        <Dialog
+                                                          open={editingVariant?.id === variant.id}
+                                                          onOpenChange={(open) => !open && setEditingVariant(null)}
+                                                        >
+                                                          <DialogTrigger asChild>
+                                                            <Button
+                                                              variant="outline"
+                                                              size="icon"
+                                                              onClick={() => handleEditVariant(variant, product.id)}
+                                                              data-testid={`button-edit-variant-inline-${variant.id}`}
+                                                            >
+                                                              <Edit className="w-4 h-4" />
+                                                            </Button>
+                                                          </DialogTrigger>
+                                                          <DialogContent className="max-w-2xl" data-testid={`dialog-edit-variant-inline-${variant.id}`}>
+                                                            <DialogHeader>
+                                                              <DialogTitle>Edit {product.variantLabel || "Variant"}</DialogTitle>
+                                                              <DialogDescription>
+                                                                Update {(product.variantLabel || "variant").toLowerCase()} details
+                                                              </DialogDescription>
+                                                            </DialogHeader>
+                                                            <Form {...variantForm}>
+                                                              <form onSubmit={variantForm.handleSubmit((data) => updateVariantMutation.mutate({ productId: product.id, id: variant.id, data }))} className="space-y-4">
+                                                                <FormField
+                                                                  control={variantForm.control}
+                                                                  name="name"
+                                                                  render={({ field }) => (
+                                                                    <FormItem>
+                                                                      <FormLabel>{product.variantLabel || "Variant"} Name</FormLabel>
+                                                                      <FormControl>
+                                                                        <Input {...field} data-testid={`input-edit-variant-name-${variant.id}`} />
+                                                                      </FormControl>
+                                                                      <FormMessage />
+                                                                    </FormItem>
+                                                                  )}
+                                                                />
+                                                                <FormField
+                                                                  control={variantForm.control}
+                                                                  name="description"
+                                                                  render={({ field }) => (
+                                                                    <FormItem>
+                                                                      <FormLabel>Description (Optional)</FormLabel>
+                                                                      <FormControl>
+                                                                        <Textarea {...field} value={field.value || ""} data-testid={`textarea-edit-variant-description-${variant.id}`} />
+                                                                      </FormControl>
+                                                                      <FormMessage />
+                                                                    </FormItem>
+                                                                  )}
+                                                                />
+                                                                <FormField
+                                                                  control={variantForm.control}
+                                                                  name="basePricePerSqft"
+                                                                  render={({ field }) => (
+                                                                    <FormItem>
+                                                                      <FormLabel>Base Price per Square Foot</FormLabel>
+                                                                      <FormControl>
+                                                                        <Input
+                                                                          type="number"
+                                                                          step="0.0001"
+                                                                          {...field}
+                                                                          onChange={(e) => field.onChange(Number(e.target.value))}
+                                                                          data-testid={`input-edit-variant-price-${variant.id}`}
+                                                                        />
+                                                                      </FormControl>
+                                                                      <FormMessage />
+                                                                    </FormItem>
+                                                                  )}
+                                                                />
+                                                                <FormField
+                                                                  control={variantForm.control}
+                                                                  name="isDefault"
+                                                                  render={({ field }) => (
+                                                                    <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
+                                                                      <div className="space-y-0.5">
+                                                                        <FormLabel className="text-base">Is Default {product.variantLabel || "Variant"}</FormLabel>
+                                                                        <FormDescription>
+                                                                          This {(product.variantLabel || "variant").toLowerCase()} will be pre-selected
+                                                                        </FormDescription>
+                                                                      </div>
+                                                                      <FormControl>
+                                                                        <Switch
+                                                                          checked={field.value}
+                                                                          onCheckedChange={field.onChange}
+                                                                          data-testid={`checkbox-edit-variant-default-${variant.id}`}
+                                                                        />
+                                                                      </FormControl>
+                                                                    </FormItem>
+                                                                  )}
+                                                                />
+                                                                <FormField
+                                                                  control={variantForm.control}
+                                                                  name="displayOrder"
+                                                                  render={({ field }) => (
+                                                                    <FormItem>
+                                                                      <FormLabel>Display Order</FormLabel>
+                                                                      <FormControl>
+                                                                        <Input
+                                                                          type="number"
+                                                                          {...field}
+                                                                          onChange={(e) => field.onChange(Number(e.target.value))}
+                                                                          data-testid={`input-edit-variant-order-${variant.id}`}
+                                                                        />
+                                                                      </FormControl>
+                                                                      <FormMessage />
+                                                                    </FormItem>
+                                                                  )}
+                                                                />
+                                                                <DialogFooter>
+                                                                  <Button
+                                                                    type="submit"
+                                                                    disabled={updateVariantMutation.isPending}
+                                                                    data-testid={`button-submit-edit-variant-${variant.id}`}
+                                                                  >
+                                                                    {updateVariantMutation.isPending ? "Updating..." : `Update ${product.variantLabel || "Variant"}`}
+                                                                  </Button>
+                                                                </DialogFooter>
+                                                              </form>
+                                                            </Form>
+                                                          </DialogContent>
+                                                        </Dialog>
+                                                        <AlertDialog>
+                                                          <AlertDialogTrigger asChild>
+                                                            <Button
+                                                              variant="outline"
+                                                              size="icon"
+                                                              data-testid={`button-delete-variant-inline-${variant.id}`}
+                                                            >
+                                                              <Trash2 className="w-4 h-4" />
+                                                            </Button>
+                                                          </AlertDialogTrigger>
+                                                          <AlertDialogContent data-testid={`dialog-delete-variant-${variant.id}`}>
+                                                            <AlertDialogHeader>
+                                                              <AlertDialogTitle>Delete {product.variantLabel || "Variant"}?</AlertDialogTitle>
+                                                              <AlertDialogDescription>
+                                                                This will permanently delete "{variant.name}".
+                                                              </AlertDialogDescription>
+                                                            </AlertDialogHeader>
+                                                            <AlertDialogFooter>
+                                                              <AlertDialogCancel data-testid={`button-cancel-delete-variant-${variant.id}`}>
+                                                                Cancel
+                                                              </AlertDialogCancel>
+                                                              <AlertDialogAction
+                                                                onClick={() => deleteVariantMutation.mutate({ productId: product.id, id: variant.id })}
+                                                                data-testid={`button-confirm-delete-variant-${variant.id}`}
+                                                              >
+                                                                Delete
+                                                              </AlertDialogAction>
+                                                            </AlertDialogFooter>
+                                                          </AlertDialogContent>
+                                                        </AlertDialog>
+                                                      </div>
+                                                    </div>
+                                                  </CardContent>
+                                                </Card>
+                                              ))
+                                          ) : (
+                                            <div className="text-center py-8 text-muted-foreground">
+                                              No {(product.variantLabel || "variant").toLowerCase()}s configured yet
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+
                                       {/* Product Options Section */}
                                       <div className="space-y-4 border-t pt-4 mt-4">
                                         <div className="flex items-center justify-between">
