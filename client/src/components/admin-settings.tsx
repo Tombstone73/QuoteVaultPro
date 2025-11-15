@@ -284,7 +284,8 @@ export default function AdminSettings() {
         title: "Option Updated",
         description: "The product option has been updated successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/products", editingProduct?.id, "options"] });
+      // DON'T invalidate query - keeps product dialog open
+      // User can close/reopen dialog to see changes
       setEditingOption(null);
     },
     onError: (error: Error) => {
@@ -1591,6 +1592,7 @@ export default function AdminSettings() {
                                                         </div>
                                                         <div className="flex gap-2">
                                                           <Button
+                                                            type="button"
                                                             variant="outline"
                                                             size="icon"
                                                             onClick={() => {
@@ -1690,6 +1692,7 @@ export default function AdminSettings() {
                                                             </div>
                                                             <div className="flex gap-2">
                                                               <Button
+                                                                type="button"
                                                                 variant="outline"
                                                                 size="icon"
                                                                 onClick={() => {
