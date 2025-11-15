@@ -207,7 +207,14 @@ export default function QuoteHistory() {
                         )}
                       </TableCell>
                       <TableCell data-testid={`cell-product-${quote.id}`}>
-                        {quote.product.name}
+                        <div className="space-y-0.5">
+                          <div>{quote.product.name}</div>
+                          {quote.variantName && (
+                            <div className="text-xs text-muted-foreground" data-testid={`text-variant-${quote.id}`}>
+                              {quote.product.variantLabel || "Variant"}: {quote.variantName}
+                            </div>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell data-testid={`cell-dimensions-${quote.id}`}>
                         {quote.width}" × {quote.height}"
