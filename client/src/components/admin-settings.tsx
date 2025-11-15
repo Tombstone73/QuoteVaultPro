@@ -1285,13 +1285,16 @@ export default function AdminSettings() {
                                               </DialogHeader>
                                               <Form {...optionForm}>
                                                 <form
-                                                  onSubmit={optionForm.handleSubmit((data) => {
-                                                    if (editingOption) {
-                                                      updateOptionMutation.mutate({ id: editingOption.id, data });
-                                                    } else {
-                                                      addOptionMutation.mutate(data);
-                                                    }
-                                                  })}
+                                                  onSubmit={(e) => {
+                                                    e.stopPropagation();
+                                                    optionForm.handleSubmit((data) => {
+                                                      if (editingOption) {
+                                                        updateOptionMutation.mutate({ id: editingOption.id, data });
+                                                      } else {
+                                                        addOptionMutation.mutate(data);
+                                                      }
+                                                    })(e);
+                                                  }}
                                                   className="space-y-4"
                                                 >
                                                   <div className="grid grid-cols-2 gap-4">

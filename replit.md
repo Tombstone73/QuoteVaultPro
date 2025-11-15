@@ -254,9 +254,9 @@ Fixed critical UX issue where product dialog would close unexpectedly when savin
 3. **Final Solution:** Prevent event bubbling from nested variant form
 
 **Implementation:**
-- Added `e.stopPropagation()` to the variant form's onSubmit handler
+- Added `e.stopPropagation()` to both the variant form and product options form onSubmit handlers
 - This prevents the submit event from bubbling up to the parent product form
-- Now only the variant mutation runs when "Update Material" is clicked
+- Now only the nested form mutation runs (variant or option), not the parent product form
 - Product form remains untouched, so product dialog stays open
 
 **Server Log Evidence:**
