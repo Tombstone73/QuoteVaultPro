@@ -356,7 +356,7 @@ export default function CalculatorComponent() {
             {selectedProduct && (
               <div className="p-4 bg-muted rounded-md space-y-2" data-testid="product-description">
                 <p className="text-sm text-muted-foreground">{selectedProduct.description}</p>
-                {selectedProduct.storeUrl && (
+                {selectedProduct.storeUrl && selectedProduct.showStoreLink && (
                   <Button variant="outline" size="sm" asChild data-testid="button-view-store">
                     <a href={selectedProduct.storeUrl} target="_blank" rel="noopener noreferrer">
                       <ExternalLink className="w-4 h-4 mr-2" />
