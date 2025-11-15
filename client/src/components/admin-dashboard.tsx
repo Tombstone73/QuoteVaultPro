@@ -99,11 +99,18 @@ export default function AdminDashboard() {
 
   const totalQuotes = allQuotes?.length ?? 0;
   const uniqueUsers = new Set(allQuotes?.map(q => q.userId)).size;
-  const totalRevenue = allQuotes?.reduce((sum, q) => sum + parseFloat(q.calculatedPrice), 0) ?? 0;
+  const totalRevenue = allQuotes?.reduce((sum, q) => sum + parseFloat(q.totalPrice || "0"), 0) ?? 0;
+  
+  // Aggregate products from all line items across all quotes
   const topProduct = allQuotes?.reduce((acc, quote) => {
-    acc[quote.product.name] = (acc[quote.product.name] || 0) + 1;
+    quote.lineItems?.forEach(lineItem => {
+      if (lineItem.product?.name) {
+        acc[lineItem.product.name] = (acc[lineItem.product.name] || 0) + 1;
+      }
+    });
     return acc;
   }, {} as Record<string, number>);
+  
   const mostPopularProduct = topProduct && Object.keys(topProduct).length > 0
     ? Object.entries(topProduct).sort((a, b) => b[1] - a[1])[0][0]
     : "N/A";
@@ -292,44 +299,58 @@ export default function AdminDashboard() {
                     <TableHead data-testid="header-date">Date</TableHead>
                     <TableHead data-testid="header-user">User</TableHead>
                     <TableHead data-testid="header-customer">Customer</TableHead>
-                    <TableHead data-testid="header-product">Product</TableHead>
-                    <TableHead data-testid="header-dimensions">Dimensions</TableHead>
-                    <TableHead data-testid="header-quantity">Quantity</TableHead>
-                    <TableHead data-testid="header-price" className="text-right">Price</TableHead>
+                    <TableHead data-testid="header-products">Products</TableHead>
+                    <TableHead data-testid="header-items">Line Items</TableHead>
+                    <TableHead data-testid="header-price" className="text-right">Total Price</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {allQuotes.map((quote) => (
-                    <TableRow key={quote.id} data-testid={`row-quote-${quote.id}`}>
-                      <TableCell data-testid={`cell-date-${quote.id}`}>
-                        {format(new Date(quote.createdAt), 'MMM d, yyyy')}
-                      </TableCell>
-                      <TableCell data-testid={`cell-user-${quote.id}`}>
-                        <div className="text-sm">
-                          {quote.user.email || (
-                            <span className="text-muted-foreground italic">No email</span>
+                  {allQuotes.map((quote) => {
+                    const productNames = quote.lineItems?.map(item => item.product?.name).filter(Boolean) || [];
+                    const uniqueProducts = Array.from(new Set(productNames));
+                    
+                    return (
+                      <TableRow key={quote.id} data-testid={`row-quote-${quote.id}`}>
+                        <TableCell data-testid={`cell-date-${quote.id}`}>
+                          {format(new Date(quote.createdAt), 'MMM d, yyyy')}
+                        </TableCell>
+                        <TableCell data-testid={`cell-user-${quote.id}`}>
+                          <div className="text-sm">
+                            {quote.user.email || (
+                              <span className="text-muted-foreground italic">No email</span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell data-testid={`cell-customer-${quote.id}`}>
+                          {quote.customerName || (
+                            <span className="text-muted-foreground italic">Not specified</span>
                           )}
-                        </div>
-                      </TableCell>
-                      <TableCell data-testid={`cell-customer-${quote.id}`}>
-                        {quote.customerName || (
-                          <span className="text-muted-foreground italic">Not specified</span>
-                        )}
-                      </TableCell>
-                      <TableCell data-testid={`cell-product-${quote.id}`}>
-                        {quote.product.name}
-                      </TableCell>
-                      <TableCell data-testid={`cell-dimensions-${quote.id}`}>
-                        {quote.width}" × {quote.height}"
-                      </TableCell>
-                      <TableCell data-testid={`cell-quantity-${quote.id}`}>
-                        {quote.quantity}
-                      </TableCell>
-                      <TableCell className="text-right font-mono" data-testid={`cell-price-${quote.id}`}>
-                        ${parseFloat(quote.calculatedPrice).toFixed(2)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                        </TableCell>
+                        <TableCell data-testid={`cell-products-${quote.id}`}>
+                          <div className="text-sm">
+                            {uniqueProducts.length > 0 ? (
+                              <div className="space-y-1">
+                                {uniqueProducts.slice(0, 2).map((name, idx) => (
+                                  <div key={idx}>{name}</div>
+                                ))}
+                                {uniqueProducts.length > 2 && (
+                                  <div className="text-muted-foreground">+{uniqueProducts.length - 2} more</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground italic">No items</span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell data-testid={`cell-items-${quote.id}`}>
+                          {quote.lineItems?.length || 0}
+                        </TableCell>
+                        <TableCell className="text-right font-mono" data-testid={`cell-price-${quote.id}`}>
+                          ${parseFloat(quote.totalPrice || "0").toFixed(2)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
