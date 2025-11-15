@@ -12,7 +12,9 @@ import {
   insertProductVariantSchema,
   updateProductVariantSchema,
   insertGlobalVariableSchema,
-  updateGlobalVariableSchema
+  updateGlobalVariableSchema,
+  type InsertProduct,
+  type UpdateProduct
 } from "@shared/schema";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
@@ -56,8 +58,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/products", isAuthenticated, isAdmin, async (req, res) => {
     try {
-      const productData = insertProductSchema.parse(req.body);
-      const product = await storage.createProduct(productData);
+      const parsedData = insertProductSchema.parse(req.body);
+      const productData: any = {};
+      Object.entries(parsedData).forEach(([k, v]) => {
+        // Convert empty strings to null, but preserve null/undefined to let storage handle defaults
+        productData[k] = v === '' ? null : v;
+      });
+      const product = await storage.createProduct(productData as InsertProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -70,8 +77,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/products/:id", isAuthenticated, isAdmin, async (req, res) => {
     try {
-      const productData = updateProductSchema.parse(req.body);
-      const product = await storage.updateProduct(req.params.id, productData);
+      const parsedData = updateProductSchema.parse(req.body);
+      const productData: any = {};
+      Object.entries(parsedData).forEach(([k, v]) => {
+        // Convert empty strings to null, but preserve null/undefined to let storage handle defaults
+        productData[k] = v === '' ? null : v;
+      });
+      const product = await storage.updateProduct(req.params.id, productData as UpdateProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {

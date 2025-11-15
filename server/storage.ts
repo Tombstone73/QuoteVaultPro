@@ -121,14 +121,31 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProduct(product: InsertProduct): Promise<Product> {
-    const [newProduct] = await db.insert(products).values(product).returning();
+    const cleanProduct: any = {};
+    Object.entries(product).forEach(([k, v]) => {
+      if (k === 'variantLabel' && v === null) {
+        // Omit null variantLabel so DB default applies
+        return;
+      }
+      cleanProduct[k] = v;
+    });
+    const [newProduct] = await db.insert(products).values(cleanProduct).returning();
     return newProduct;
   }
 
   async updateProduct(id: string, productData: UpdateProduct): Promise<Product> {
+    const cleanProductData: any = { updatedAt: new Date() };
+    Object.entries(productData).forEach(([k, v]) => {
+      if (k === 'variantLabel' && v === null) {
+        // Reset to default value when null
+        cleanProductData[k] = 'Variant';
+        return;
+      }
+      cleanProductData[k] = v;
+    });
     const [updated] = await db
       .update(products)
-      .set({ ...productData, updatedAt: new Date() })
+      .set(cleanProductData)
       .where(eq(products.id, id))
       .returning();
     return updated;

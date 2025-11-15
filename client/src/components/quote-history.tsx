@@ -211,7 +211,7 @@ export default function QuoteHistory() {
                           <div>{quote.product.name}</div>
                           {quote.variantName && (
                             <div className="text-xs text-muted-foreground" data-testid={`text-variant-${quote.id}`}>
-                              {quote.product.variantLabel || "Variant"}: {quote.variantName}
+                              {quote.product.variantLabel ?? "Variant"}: {quote.variantName}
                             </div>
                           )}
                         </div>

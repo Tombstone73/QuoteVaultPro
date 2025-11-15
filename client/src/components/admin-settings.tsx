@@ -511,7 +511,14 @@ export default function AdminSettings() {
                       </DialogDescription>
                     </DialogHeader>
                     <Form {...addProductForm}>
-                      <form onSubmit={addProductForm.handleSubmit((data) => addProductMutation.mutate(data))} className="space-y-4">
+                      <form onSubmit={addProductForm.handleSubmit((data) => {
+                        const cleanData: any = {};
+                        Object.entries(data).forEach(([k, v]) => {
+                          // Convert empty strings to null, preserve null/undefined to let backend handle defaults
+                          cleanData[k] = v === '' ? null : v;
+                        });
+                        addProductMutation.mutate(cleanData);
+                      })} className="space-y-4">
                         <FormField
                           control={addProductForm.control}
                           name="name"
@@ -686,7 +693,7 @@ export default function AdminSettings() {
                                     <Edit className="w-4 h-4" />
                                   </Button>
                                 </DialogTrigger>
-                                <DialogContent className="max-w-2xl" data-testid={`dialog-edit-${product.id}`}>
+                                <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid={`dialog-edit-${product.id}`}>
                                   <DialogHeader>
                                     <DialogTitle>Edit Product</DialogTitle>
                                     <DialogDescription>
@@ -695,9 +702,14 @@ export default function AdminSettings() {
                                   </DialogHeader>
                                   <Form {...editProductForm}>
                                     <form
-                                      onSubmit={editProductForm.handleSubmit((data) =>
-                                        updateProductMutation.mutate({ id: product.id, data })
-                                      )}
+                                      onSubmit={editProductForm.handleSubmit((data) => {
+                                        const cleanData: any = {};
+                                        Object.entries(data).forEach(([k, v]) => {
+                                          // Convert empty strings to null, preserve null/undefined to let backend handle defaults
+                                          cleanData[k] = v === '' ? null : v;
+                                        });
+                                        updateProductMutation.mutate({ id: product.id, data: cleanData });
+                                      })}
                                       className="space-y-4"
                                     >
                                       <FormField
@@ -803,10 +815,10 @@ export default function AdminSettings() {
                                         <div className="flex items-center justify-between">
                                           <div>
                                             <h3 className="text-lg font-semibold">
-                                              {product.variantLabel || "Variant"}s
+                                              {product.variantLabel ?? "Variant"}s
                                             </h3>
                                             <p className="text-sm text-muted-foreground">
-                                              Manage different {(product.variantLabel || "variant").toLowerCase()} options for this product
+                                              Manage different {(product.variantLabel ?? "variant").toLowerCase()} options for this product
                                             </p>
                                           </div>
                                           <Dialog open={isAddVariantDialogOpen} onOpenChange={setIsAddVariantDialogOpen}>
@@ -827,12 +839,12 @@ export default function AdminSettings() {
                                                 data-testid={`button-add-variant-${product.id}`}
                                               >
                                                 <Plus className="w-4 h-4 mr-2" />
-                                                Add {product.variantLabel || "Variant"}
+                                                Add {product.variantLabel ?? "Variant"}
                                               </Button>
                                             </DialogTrigger>
                                             <DialogContent className="max-w-2xl" data-testid="dialog-add-variant-inline">
                                               <DialogHeader>
-                                                <DialogTitle>Add {product.variantLabel || "Variant"}</DialogTitle>
+                                                <DialogTitle>Add {product.variantLabel ?? "Variant"}</DialogTitle>
                                                 <DialogDescription>
                                                   Create a new {(product.variantLabel || "variant").toLowerCase()} option for {product.name}
                                                 </DialogDescription>
@@ -844,7 +856,7 @@ export default function AdminSettings() {
                                                     name="name"
                                                     render={({ field }) => (
                                                       <FormItem>
-                                                        <FormLabel>{product.variantLabel || "Variant"} Name</FormLabel>
+                                                        <FormLabel>{product.variantLabel ?? "Variant"} Name</FormLabel>
                                                         <FormControl>
                                                           <Input placeholder="13oz Vinyl" {...field} data-testid="input-variant-name-inline" />
                                                         </FormControl>
@@ -895,7 +907,7 @@ export default function AdminSettings() {
                                                     render={({ field }) => (
                                                       <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
                                                         <div className="space-y-0.5">
-                                                          <FormLabel className="text-base">Is Default {product.variantLabel || "Variant"}</FormLabel>
+                                                          <FormLabel className="text-base">Is Default {product.variantLabel ?? "Variant"}</FormLabel>
                                                           <FormDescription>
                                                             This {(product.variantLabel || "variant").toLowerCase()} will be pre-selected in the calculator
                                                           </FormDescription>
@@ -934,7 +946,7 @@ export default function AdminSettings() {
                                                       disabled={addVariantMutation.isPending}
                                                       data-testid="button-submit-add-variant-inline"
                                                     >
-                                                      {addVariantMutation.isPending ? "Adding..." : `Add ${product.variantLabel || "Variant"}`}
+                                                      {addVariantMutation.isPending ? "Adding..." : `Add ${product.variantLabel ?? "Variant"}`}
                                                     </Button>
                                                   </DialogFooter>
                                                 </form>
@@ -991,7 +1003,7 @@ export default function AdminSettings() {
                                                           </DialogTrigger>
                                                           <DialogContent className="max-w-2xl" data-testid={`dialog-edit-variant-inline-${variant.id}`}>
                                                             <DialogHeader>
-                                                              <DialogTitle>Edit {product.variantLabel || "Variant"}</DialogTitle>
+                                                              <DialogTitle>Edit {product.variantLabel ?? "Variant"}</DialogTitle>
                                                               <DialogDescription>
                                                                 Update {(product.variantLabel || "variant").toLowerCase()} details
                                                               </DialogDescription>
@@ -1003,7 +1015,7 @@ export default function AdminSettings() {
                                                                   name="name"
                                                                   render={({ field }) => (
                                                                     <FormItem>
-                                                                      <FormLabel>{product.variantLabel || "Variant"} Name</FormLabel>
+                                                                      <FormLabel>{product.variantLabel ?? "Variant"} Name</FormLabel>
                                                                       <FormControl>
                                                                         <Input {...field} data-testid={`input-edit-variant-name-${variant.id}`} />
                                                                       </FormControl>
@@ -1049,7 +1061,7 @@ export default function AdminSettings() {
                                                                   render={({ field }) => (
                                                                     <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
                                                                       <div className="space-y-0.5">
-                                                                        <FormLabel className="text-base">Is Default {product.variantLabel || "Variant"}</FormLabel>
+                                                                        <FormLabel className="text-base">Is Default {product.variantLabel ?? "Variant"}</FormLabel>
                                                                         <FormDescription>
                                                                           This {(product.variantLabel || "variant").toLowerCase()} will be pre-selected
                                                                         </FormDescription>
@@ -1088,7 +1100,7 @@ export default function AdminSettings() {
                                                                     disabled={updateVariantMutation.isPending}
                                                                     data-testid={`button-submit-edit-variant-${variant.id}`}
                                                                   >
-                                                                    {updateVariantMutation.isPending ? "Updating..." : `Update ${product.variantLabel || "Variant"}`}
+                                                                    {updateVariantMutation.isPending ? "Updating..." : `Update ${product.variantLabel ?? "Variant"}`}
                                                                   </Button>
                                                                 </DialogFooter>
                                                               </form>
@@ -1107,7 +1119,7 @@ export default function AdminSettings() {
                                                           </AlertDialogTrigger>
                                                           <AlertDialogContent data-testid={`dialog-delete-variant-${variant.id}`}>
                                                             <AlertDialogHeader>
-                                                              <AlertDialogTitle>Delete {product.variantLabel || "Variant"}?</AlertDialogTitle>
+                                                              <AlertDialogTitle>Delete {product.variantLabel ?? "Variant"}?</AlertDialogTitle>
                                                               <AlertDialogDescription>
                                                                 This will permanently delete "{variant.name}".
                                                               </AlertDialogDescription>

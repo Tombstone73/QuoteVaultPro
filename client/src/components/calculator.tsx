@@ -333,11 +333,11 @@ export default function CalculatorComponent() {
             {productVariants && productVariants.filter(v => v.isActive).length > 0 && (
               <div className="space-y-2">
                 <Label htmlFor="variant" data-testid="label-variant">
-                  Select {selectedProduct?.variantLabel || "Variant"}
+                  Select {selectedProduct?.variantLabel ?? "Variant"}
                 </Label>
                 <Select value={selectedVariant || ""} onValueChange={(value) => setSelectedVariant(value || null)}>
                   <SelectTrigger id="variant" data-testid="select-variant">
-                    <SelectValue placeholder={`Select a ${(selectedProduct?.variantLabel || "variant").toLowerCase()}`} />
+                    <SelectValue placeholder={`Select a ${(selectedProduct?.variantLabel ?? "variant").toLowerCase()}`} />
                   </SelectTrigger>
                   <SelectContent>
                     {productVariants
@@ -465,7 +465,7 @@ export default function CalculatorComponent() {
                 <div className="space-y-2">
                   {priceBreakdown.variantInfo && (
                     <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">{selectedProduct?.variantLabel || "Variant"}:</span>
+                      <span className="text-muted-foreground">{selectedProduct?.variantLabel ?? "Variant"}:</span>
                       <span data-testid="text-variant-info">
                         {priceBreakdown.variantInfo}
                       </span>
