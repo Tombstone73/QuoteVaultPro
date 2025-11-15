@@ -23,6 +23,12 @@ export default function CalculatorComponent() {
   const [optionValues, setOptionValues] = useState<Record<string, any>>({});
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [priceBreakdown, setPriceBreakdown] = useState<any>(null);
+  const [fieldErrors, setFieldErrors] = useState<{
+    product?: boolean;
+    width?: boolean;
+    height?: boolean;
+    quantity?: boolean;
+  }>({});
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -158,25 +164,55 @@ export default function CalculatorComponent() {
   });
 
   const handleCalculate = () => {
-    if (!selectedProductId || width.trim() === "" || height.trim() === "" || quantity.trim() === "") {
+    const errors: typeof fieldErrors = {};
+    let hasErrors = false;
+
+    if (!selectedProductId) {
+      errors.product = true;
+      hasErrors = true;
+    }
+    if (width.trim() === "") {
+      errors.width = true;
+      hasErrors = true;
+    }
+    if (height.trim() === "") {
+      errors.height = true;
+      hasErrors = true;
+    }
+    if (quantity.trim() === "") {
+      errors.quantity = true;
+      hasErrors = true;
+    }
+
+    if (hasErrors) {
+      setFieldErrors(errors);
       toast({
         title: "Missing Information",
-        description: "Please fill in all required fields.",
+        description: "Please fill in all required fields (highlighted in red).",
         variant: "destructive",
       });
       return;
     }
+
     const widthNum = parseFloat(width);
     const heightNum = parseFloat(height);
     const quantityNum = parseInt(quantity);
     if (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0 || !Number.isFinite(quantityNum) || quantityNum <= 0) {
+      const invalidErrors: typeof fieldErrors = {};
+      if (!Number.isFinite(widthNum) || widthNum <= 0) invalidErrors.width = true;
+      if (!Number.isFinite(heightNum) || heightNum <= 0) invalidErrors.height = true;
+      if (!Number.isFinite(quantityNum) || quantityNum <= 0) invalidErrors.quantity = true;
+      
+      setFieldErrors(invalidErrors);
       toast({
         title: "Invalid Values",
-        description: "Please enter valid positive numbers for all fields.",
+        description: "Please enter valid positive numbers for all fields (highlighted in red).",
         variant: "destructive",
       });
       return;
     }
+    
+    setFieldErrors({});
     calculateMutation.mutate();
   };
 
@@ -316,8 +352,18 @@ export default function CalculatorComponent() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="product" data-testid="label-product">Product Type</Label>
-              <Select value={selectedProductId} onValueChange={setSelectedProductId}>
-                <SelectTrigger id="product" data-testid="select-product">
+              <Select 
+                value={selectedProductId} 
+                onValueChange={(value) => {
+                  setSelectedProductId(value);
+                  setFieldErrors(prev => ({ ...prev, product: false }));
+                }}
+              >
+                <SelectTrigger 
+                  id="product" 
+                  data-testid="select-product"
+                  className={fieldErrors.product ? "border-red-500 focus:border-red-500" : ""}
+                >
                   <SelectValue placeholder="Select a product" />
                 </SelectTrigger>
                 <SelectContent>
@@ -328,6 +374,9 @@ export default function CalculatorComponent() {
                   ))}
                 </SelectContent>
               </Select>
+              {fieldErrors.product && (
+                <p className="text-sm text-red-500">Please select a product</p>
+              )}
             </div>
 
             {productVariants && productVariants.filter(v => v.isActive).length > 0 && (
@@ -377,9 +426,16 @@ export default function CalculatorComponent() {
                   min="0"
                   placeholder="0.00"
                   value={width}
-                  onChange={(e) => setWidth(e.target.value)}
+                  onChange={(e) => {
+                    setWidth(e.target.value);
+                    setFieldErrors(prev => ({ ...prev, width: false }));
+                  }}
                   data-testid="input-width"
+                  className={fieldErrors.width ? "border-red-500 focus-visible:ring-red-500" : ""}
                 />
+                {fieldErrors.width && (
+                  <p className="text-sm text-red-500">Please enter a valid width</p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="height" data-testid="label-height">Height (inches)</Label>
@@ -390,9 +446,16 @@ export default function CalculatorComponent() {
                   min="0"
                   placeholder="0.00"
                   value={height}
-                  onChange={(e) => setHeight(e.target.value)}
+                  onChange={(e) => {
+                    setHeight(e.target.value);
+                    setFieldErrors(prev => ({ ...prev, height: false }));
+                  }}
                   data-testid="input-height"
+                  className={fieldErrors.height ? "border-red-500 focus-visible:ring-red-500" : ""}
                 />
+                {fieldErrors.height && (
+                  <p className="text-sm text-red-500">Please enter a valid height</p>
+                )}
               </div>
             </div>
 
@@ -404,9 +467,16 @@ export default function CalculatorComponent() {
                 min="1"
                 placeholder="1"
                 value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
+                onChange={(e) => {
+                  setQuantity(e.target.value);
+                  setFieldErrors(prev => ({ ...prev, quantity: false }));
+                }}
                 data-testid="input-quantity"
+                className={fieldErrors.quantity ? "border-red-500 focus-visible:ring-red-500" : ""}
               />
+              {fieldErrors.quantity && (
+                <p className="text-sm text-red-500">Please enter a valid quantity</p>
+              )}
             </div>
 
             {topLevelOptions.length > 0 && (
