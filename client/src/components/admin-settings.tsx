@@ -565,6 +565,27 @@ export default function AdminSettings() {
                         />
                         <FormField
                           control={addProductForm.control}
+                          name="variantLabel"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel data-testid="label-product-variant-label">Variant Label (Optional)</FormLabel>
+                              <FormControl>
+                                <Input
+                                  placeholder="Material, Size, Type, etc. (default: Variant)"
+                                  {...field}
+                                  value={field.value || ""}
+                                  data-testid="input-product-variant-label"
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                Customize how variants are labeled (e.g., "Material", "Size", "Type")
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={addProductForm.control}
                           name="storeUrl"
                           render={({ field }) => (
                             <FormItem>
@@ -717,6 +738,27 @@ export default function AdminSettings() {
                                             </FormControl>
                                             <FormDescription>
                                               Use: width, height, quantity
+                                            </FormDescription>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editProductForm.control}
+                                        name="variantLabel"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>Variant Label (Optional)</FormLabel>
+                                            <FormControl>
+                                              <Input 
+                                                {...field} 
+                                                value={field.value || ""} 
+                                                placeholder="Material, Size, Type, etc. (default: Variant)"
+                                                data-testid={`input-edit-variant-label-${product.id}`} 
+                                              />
+                                            </FormControl>
+                                            <FormDescription>
+                                              Customize how variants are labeled
                                             </FormDescription>
                                             <FormMessage />
                                           </FormItem>
