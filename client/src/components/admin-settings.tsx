@@ -144,6 +144,7 @@ export default function AdminSettings() {
       description: "",
       type: "toggle",
       defaultValue: "false",
+      defaultSelection: "",
       isDefaultEnabled: false,
       setupCost: 0,
       priceFormula: "0",
@@ -1486,6 +1487,54 @@ export default function AdminSettings() {
                                                       );
                                                     }}
                                                   />
+                                                  {optionForm.watch("type") === "select" && (
+                                                    <FormField
+                                                      control={optionForm.control}
+                                                      name="defaultSelection"
+                                                      render={({ field }) => {
+                                                        const choices = (optionForm.watch("defaultValue") || "")
+                                                          .split(",")
+                                                          .map(s => s.trim())
+                                                          .filter(Boolean);
+                                                        
+                                                        return (
+                                                          <FormItem>
+                                                            <FormLabel>Default Selection</FormLabel>
+                                                            <Select
+                                                              onValueChange={field.onChange}
+                                                              value={field.value || ""}
+                                                            >
+                                                              <FormControl>
+                                                                <SelectTrigger data-testid="select-default-selection">
+                                                                  <SelectValue placeholder="Select default choice (optional)" />
+                                                                </SelectTrigger>
+                                                              </FormControl>
+                                                              <SelectContent>
+                                                                {choices.length === 0 ? (
+                                                                  <SelectItem value="" disabled>
+                                                                    Add choices first
+                                                                  </SelectItem>
+                                                                ) : (
+                                                                  <>
+                                                                    <SelectItem value="">None (user must select)</SelectItem>
+                                                                    {choices.map((choice) => (
+                                                                      <SelectItem key={choice} value={choice}>
+                                                                        {choice}
+                                                                      </SelectItem>
+                                                                    ))}
+                                                                  </>
+                                                                )}
+                                                              </SelectContent>
+                                                            </Select>
+                                                            <FormDescription className="text-xs">
+                                                              Which option should be selected by default
+                                                            </FormDescription>
+                                                            <FormMessage />
+                                                          </FormItem>
+                                                        );
+                                                      }}
+                                                    />
+                                                  )}
                                                   <div className="grid grid-cols-2 gap-4">
                                                     <FormField
                                                       control={optionForm.control}
