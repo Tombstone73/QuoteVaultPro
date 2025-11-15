@@ -572,6 +572,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { id } = req.params;
+
+      const quote = await storage.getQuoteById(id, userId);
+      
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      res.json(quote);
+    } catch (error) {
+      console.error("Error fetching quote:", error);
+      res.status(500).json({ message: "Failed to fetch quote" });
+    }
+  });
+
+  app.patch("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { id } = req.params;
+      const { customerName, subtotal, taxRate, marginPercentage, discountAmount, totalPrice } = req.body;
+
+      // Verify the quote belongs to the user
+      const existing = await storage.getQuoteById(id, userId);
+      if (!existing) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      const updatedQuote = await storage.updateQuote(id, {
+        customerName,
+        subtotal,
+        taxRate,
+        marginPercentage,
+        discountAmount,
+        totalPrice,
+      });
+
+      res.json(updatedQuote);
+    } catch (error) {
+      console.error("Error updating quote:", error);
+      res.status(500).json({ message: "Failed to update quote" });
+    }
+  });
+
+  app.delete("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { id } = req.params;
+
+      // Verify the quote belongs to the user
+      const existing = await storage.getQuoteById(id, userId);
+      if (!existing) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      await storage.deleteQuote(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting quote:", error);
+      res.status(500).json({ message: "Failed to delete quote" });
+    }
+  });
+
+  app.post("/api/quotes/:id/line-items", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { id } = req.params;
+      const lineItem = req.body;
+
+      // Verify the quote belongs to the user
+      const quote = await storage.getQuoteById(id, userId);
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      // Validate line item
+      if (!lineItem.productId || !lineItem.productName || lineItem.width == null || lineItem.height == null || lineItem.quantity == null || lineItem.linePrice == null) {
+        return res.status(400).json({ message: "Missing required fields in line item" });
+      }
+
+      const validatedLineItem = {
+        productId: lineItem.productId,
+        productName: lineItem.productName,
+        variantId: lineItem.variantId || null,
+        variantName: lineItem.variantName || null,
+        width: parseFloat(lineItem.width),
+        height: parseFloat(lineItem.height),
+        quantity: parseInt(lineItem.quantity),
+        selectedOptions: lineItem.selectedOptions || [],
+        linePrice: parseFloat(lineItem.linePrice),
+        priceBreakdown: lineItem.priceBreakdown || {
+          basePrice: parseFloat(lineItem.linePrice),
+          optionsPrice: 0,
+          total: parseFloat(lineItem.linePrice),
+          formula: "",
+        },
+        displayOrder: lineItem.displayOrder || 0,
+      };
+
+      const createdLineItem = await storage.addLineItem(id, validatedLineItem);
+      res.json(createdLineItem);
+    } catch (error) {
+      console.error("Error adding line item:", error);
+      res.status(500).json({ message: "Failed to add line item" });
+    }
+  });
+
+  app.patch("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { id, lineItemId } = req.params;
+      const lineItem = req.body;
+
+      // Verify the quote belongs to the user
+      const quote = await storage.getQuoteById(id, userId);
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      const updateData: any = {};
+      if (lineItem.productId) updateData.productId = lineItem.productId;
+      if (lineItem.productName) updateData.productName = lineItem.productName;
+      if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
+      if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
+      if (lineItem.width !== undefined) updateData.width = parseFloat(lineItem.width);
+      if (lineItem.height !== undefined) updateData.height = parseFloat(lineItem.height);
+      if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
+      if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
+      if (lineItem.linePrice !== undefined) updateData.linePrice = parseFloat(lineItem.linePrice);
+      if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
+      if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+
+      const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
+      res.json(updatedLineItem);
+    } catch (error) {
+      console.error("Error updating line item:", error);
+      res.status(500).json({ message: "Failed to update line item" });
+    }
+  });
+
+  app.delete("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { id, lineItemId } = req.params;
+
+      // Verify the quote belongs to the user
+      const quote = await storage.getQuoteById(id, userId);
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      await storage.deleteLineItem(lineItemId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting line item:", error);
+      res.status(500).json({ message: "Failed to delete line item" });
+    }
+  });
+
   app.get("/api/admin/quotes", isAuthenticated, isAdmin, async (req, res) => {
     try {
       const filters = {

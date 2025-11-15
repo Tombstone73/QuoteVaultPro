@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Search } from "lucide-react";
+import { FileText, Search, Edit } from "lucide-react";
 import { format } from "date-fns";
 import type { Quote, Product, QuoteWithRelations } from "@shared/schema";
 
@@ -190,6 +191,7 @@ export default function QuoteHistory() {
                     <TableHead data-testid="header-customer">Customer</TableHead>
                     <TableHead data-testid="header-items">Items</TableHead>
                     <TableHead data-testid="header-price" className="text-right">Total</TableHead>
+                    <TableHead data-testid="header-actions" className="w-[100px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -231,6 +233,14 @@ export default function QuoteHistory() {
                       </TableCell>
                       <TableCell className="text-right font-mono" data-testid={`cell-price-${quote.id}`}>
                         ${parseFloat(quote.totalPrice).toFixed(2)}
+                      </TableCell>
+                      <TableCell>
+                        <Link href={`/quotes/${quote.id}/edit`}>
+                          <Button variant="ghost" size="sm" data-testid={`button-edit-${quote.id}`}>
+                            <Edit className="w-4 h-4 mr-1" />
+                            Edit
+                          </Button>
+                        </Link>
                       </TableCell>
                     </TableRow>
                   ))}

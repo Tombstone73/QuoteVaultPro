@@ -23,6 +23,7 @@ import {
   type UpdateGlobalVariable,
   type Quote,
   type InsertQuote,
+  type UpdateQuote,
   type QuoteLineItem,
   type InsertQuoteLineItem,
   type QuoteWithRelations,
@@ -70,6 +71,19 @@ export interface IStorage {
     customerName?: string;
     lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
   }): Promise<QuoteWithRelations>;
+  getQuoteById(id: string, userId?: string): Promise<QuoteWithRelations | undefined>;
+  updateQuote(id: string, data: {
+    customerName?: string;
+    subtotal?: number;
+    taxRate?: number;
+    marginPercentage?: number;
+    discountAmount?: number;
+    totalPrice?: number;
+  }): Promise<QuoteWithRelations>;
+  deleteQuote(id: string): Promise<void>;
+  addLineItem(quoteId: string, lineItem: Omit<InsertQuoteLineItem, 'quoteId'>): Promise<QuoteLineItem>;
+  updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>): Promise<QuoteLineItem>;
+  deleteLineItem(id: string): Promise<void>;
   getUserQuotes(userId: string, filters?: {
     searchCustomer?: string;
     searchProduct?: string;
@@ -330,14 +344,15 @@ export class DatabaseStorage implements IStorage {
     customerName?: string;
     lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
   }): Promise<QuoteWithRelations> {
-    // Calculate total price from line items
-    const totalPrice = data.lineItems.reduce((sum, item) => sum + Number(item.linePrice), 0);
+    // Calculate subtotal from line items
+    const subtotal = data.lineItems.reduce((sum, item) => sum + Number(item.linePrice), 0);
     
-    // Create the parent quote
+    // Create the parent quote (totalPrice initially same as subtotal, can be adjusted later)
     const quoteData = {
       userId: data.userId,
       customerName: data.customerName,
-      totalPrice: totalPrice.toString(),
+      subtotal: subtotal.toString(),
+      totalPrice: subtotal.toString(),
     } as typeof quotes.$inferInsert;
     
     const [newQuote] = await db.insert(quotes).values(quoteData).returning();
@@ -392,6 +407,149 @@ export class DatabaseStorage implements IStorage {
       user,
       lineItems: lineItemsWithRelations,
     };
+  }
+
+  async getQuoteById(id: string, userId?: string): Promise<QuoteWithRelations | undefined> {
+    const conditions = [eq(quotes.id, id)];
+    if (userId) {
+      conditions.push(eq(quotes.userId, userId));
+    }
+
+    const [quote] = await db
+      .select()
+      .from(quotes)
+      .where(and(...conditions));
+
+    if (!quote) {
+      return undefined;
+    }
+
+    const lineItems = await db
+      .select()
+      .from(quoteLineItems)
+      .where(eq(quoteLineItems.quoteId, id));
+
+    // Fetch product and variant details for line items
+    const lineItemsWithRelations = await Promise.all(
+      lineItems.map(async (lineItem) => {
+        const [product] = await db.select().from(products).where(eq(products.id, lineItem.productId));
+        let variant = null;
+        if (lineItem.variantId) {
+          [variant] = await db.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+        }
+        return {
+          ...lineItem,
+          product,
+          variant,
+        };
+      })
+    );
+
+    const [user] = await db.select().from(users).where(eq(users.id, quote.userId));
+
+    return {
+      ...quote,
+      user,
+      lineItems: lineItemsWithRelations,
+    };
+  }
+
+  async updateQuote(id: string, data: {
+    customerName?: string;
+    subtotal?: number;
+    taxRate?: number;
+    marginPercentage?: number;
+    discountAmount?: number;
+    totalPrice?: number;
+  }): Promise<QuoteWithRelations> {
+    const updateData: any = {};
+    if (data.customerName !== undefined) updateData.customerName = data.customerName;
+    if (data.subtotal !== undefined) updateData.subtotal = data.subtotal.toString();
+    if (data.taxRate !== undefined) updateData.taxRate = data.taxRate.toString();
+    if (data.marginPercentage !== undefined) updateData.marginPercentage = data.marginPercentage.toString();
+    if (data.discountAmount !== undefined) updateData.discountAmount = data.discountAmount.toString();
+    if (data.totalPrice !== undefined) updateData.totalPrice = data.totalPrice.toString();
+
+    const [updated] = await db
+      .update(quotes)
+      .set(updateData)
+      .where(eq(quotes.id, id))
+      .returning();
+
+    if (!updated) {
+      throw new Error(`Quote ${id} not found`);
+    }
+
+    // Fetch the complete quote with relations
+    const result = await this.getQuoteById(id);
+    if (!result) {
+      throw new Error(`Quote ${id} not found after update`);
+    }
+    return result;
+  }
+
+  async deleteQuote(id: string): Promise<void> {
+    await db.delete(quotes).where(eq(quotes.id, id));
+  }
+
+  async addLineItem(quoteId: string, lineItem: Omit<InsertQuoteLineItem, 'quoteId'>): Promise<QuoteLineItem> {
+    const lineItemData = {
+      quoteId,
+      productId: lineItem.productId,
+      productName: lineItem.productName,
+      variantId: lineItem.variantId,
+      variantName: lineItem.variantName,
+      width: lineItem.width.toString(),
+      height: lineItem.height.toString(),
+      quantity: lineItem.quantity,
+      selectedOptions: lineItem.selectedOptions as Array<{
+        optionId: string;
+        optionName: string;
+        value: string | number | boolean;
+        setupCost: number;
+        calculatedCost: number;
+      }>,
+      linePrice: lineItem.linePrice.toString(),
+      priceBreakdown: {
+        ...lineItem.priceBreakdown,
+        variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
+      },
+      displayOrder: lineItem.displayOrder || 0,
+    };
+
+    const [created] = await db.insert(quoteLineItems).values(lineItemData).returning();
+    return created;
+  }
+
+  async updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>): Promise<QuoteLineItem> {
+    const updateData: any = {};
+    if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
+    if (lineItem.productName !== undefined) updateData.productName = lineItem.productName;
+    if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
+    if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
+    if (lineItem.width !== undefined) updateData.width = lineItem.width.toString();
+    if (lineItem.height !== undefined) updateData.height = lineItem.height.toString();
+    if (lineItem.quantity !== undefined) updateData.quantity = lineItem.quantity;
+    if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
+    if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
+    if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
+    if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+
+    const [updated] = await db
+      .update(quoteLineItems)
+      .set(updateData)
+      .where(eq(quoteLineItems.id, id))
+      .returning();
+
+    if (!updated) {
+      throw new Error(`Line item ${id} not found`);
+    }
+
+    return updated;
+  }
+
+  async deleteLineItem(id: string): Promise<void> {
+    await db.delete(quoteLineItems).where(eq(quoteLineItems.id, id));
   }
 
   async getUserQuotes(userId: string, filters?: {

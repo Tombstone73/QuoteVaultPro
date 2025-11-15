@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/useAuth";
 import Landing from "@/pages/landing";
 import Home from "@/pages/home";
+import EditQuote from "@/pages/edit-quote";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -16,7 +17,10 @@ function Router() {
       {isLoading || !isAuthenticated ? (
         <Route path="/" component={Landing} />
       ) : (
-        <Route path="/" component={Home} />
+        <>
+          <Route path="/quotes/:id/edit" component={EditQuote} />
+          <Route path="/" component={Home} />
+        </>
       )}
       <Route component={NotFound} />
     </Switch>

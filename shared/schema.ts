@@ -183,6 +183,10 @@ export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   customerName: varchar("customer_name", { length: 255 }),
+  subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
+  taxRate: decimal("tax_rate", { precision: 5, scale: 4 }).default("0").notNull(),
+  marginPercentage: decimal("margin_percentage", { precision: 5, scale: 4 }).default("0").notNull(),
+  discountAmount: decimal("discount_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull().default("0"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
@@ -227,7 +231,15 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   id: true,
   createdAt: true,
 }).extend({
+  subtotal: z.coerce.number().min(0),
+  taxRate: z.coerce.number().min(0).max(1),
+  marginPercentage: z.coerce.number().min(0).max(1),
+  discountAmount: z.coerce.number().min(0),
   totalPrice: z.coerce.number().min(0),
+});
+
+export const updateQuoteSchema = insertQuoteSchema.partial().extend({
+  id: z.string(),
 });
 
 export const insertQuoteLineItemSchema = createInsertSchema(quoteLineItems).omit({
@@ -242,6 +254,7 @@ export const insertQuoteLineItemSchema = createInsertSchema(quoteLineItems).omit
 });
 
 export type InsertQuote = z.infer<typeof insertQuoteSchema>;
+export type UpdateQuote = z.infer<typeof updateQuoteSchema>;
 export type Quote = typeof quotes.$inferSelect;
 export type InsertQuoteLineItem = z.infer<typeof insertQuoteLineItemSchema>;
 export type QuoteLineItem = typeof quoteLineItems.$inferSelect;
