@@ -244,19 +244,23 @@ Fixed critical UX issues in Admin Settings forms:
 
 Fixed critical UX issue where product dialog would close unexpectedly when saving variant changes:
 
-**Problem:** When editing a product variant from within the product edit dialog, saving the variant would close BOTH dialogs (variant and product), forcing the user to reopen the product dialog to continue editing.
+**Problem:** When editing a product variant from within the product edit dialog, clicking "Update Material/Variant" would close BOTH dialogs (variant and product), forcing the user to reopen the product dialog to continue editing.
 
-**Root Cause:** Query invalidation and cache updates triggered re-renders that caused the product dialog to unmount.
+**Root Cause:** The variant edit form was nested inside the product form in the DOM. When the "Update Material" button was clicked, the submit event was bubbling up and triggering BOTH form submissions - updating both the variant AND the product. The product update invalidated the `/api/products` query which caused the product dialog to close.
 
 **Solutions Attempted:**
-1. setTimeout delay before closing variant dialog - failed, both dialogs still closed
-2. Manual cache update via setQueryData - failed, re-renders still triggered dialog closure
-3. **Final Solution:** Remove ALL query invalidations/cache updates from variant save handler
+1. Removing query invalidations from variant mutation - failed, product was still being updated
+2. setTimeout delay and manual cache updates - failed, still had two PATCH requests
+3. **Final Solution:** Prevent event bubbling from nested variant form
 
 **Implementation:**
-- Modified `updateVariantMutation.onSuccess` to only close the variant dialog (setEditingVariant(null))
-- Removed query invalidations that were causing re-renders
-- Trade-off: Updated variant name won't immediately appear in the list (user must close/reopen dialog or refresh to see changes)
-- Benefit: Product dialog stays open, allowing user to continue editing product or other variants without interruption
+- Added `e.stopPropagation()` to the variant form's onSubmit handler
+- This prevents the submit event from bubbling up to the parent product form
+- Now only the variant mutation runs when "Update Material" is clicked
+- Product form remains untouched, so product dialog stays open
 
-**Impact:** Significantly improved UX for admin users managing product variants - no more frustrating dialog closures mid-workflow
+**Server Log Evidence:**
+- Before fix: Two simultaneous PATCH requests (variant + product) followed by GET /api/products
+- After fix: Only one PATCH request (variant only), no product update
+
+**Impact:** Product dialog now stays open when editing variants, allowing admin users to edit multiple variants without repeatedly reopening the product dialog

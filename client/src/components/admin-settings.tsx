@@ -1077,7 +1077,10 @@ export default function AdminSettings() {
                                                               </DialogDescription>
                                                             </DialogHeader>
                                                             <Form {...editVariantForm}>
-                                                              <form onSubmit={editVariantForm.handleSubmit((data) => updateVariantMutation.mutate({ productId: product.id, id: variant.id, data }))} className="space-y-4">
+                                                              <form onSubmit={(e) => {
+                                                                e.stopPropagation();
+                                                                editVariantForm.handleSubmit((data) => updateVariantMutation.mutate({ productId: product.id, id: variant.id, data }))(e);
+                                                              }} className="space-y-4">
                                                                 <FormField
                                                                   control={editVariantForm.control}
                                                                   name="name"
