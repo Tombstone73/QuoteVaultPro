@@ -596,37 +596,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const quotes = await storage.getAllQuotes();
 
-      const csvHeader = "Date,User Email,Customer Name,Product,Width,Height,Quantity,Selected Options,Options Cost,Price\n";
-      const csvRows = quotes.map(quote => {
+      const csvHeader = "Quote Date,Quote ID,User Email,Customer Name,Product,Variant,Width,Height,Quantity,Selected Options,Options Cost,Line Price,Quote Total\n";
+      const csvRows: string[] = [];
+      
+      quotes.forEach(quote => {
         const date = new Date(quote.createdAt).toISOString().split('T')[0];
         const userEmail = quote.user.email || "N/A";
         const customerName = quote.customerName || "N/A";
-        const product = quote.product.name;
-        const width = quote.width;
-        const height = quote.height;
-        const quantity = quote.quantity;
-        const price = parseFloat(quote.calculatedPrice).toFixed(2);
+        const quoteId = quote.id;
+        const quoteTotal = parseFloat(quote.totalPrice).toFixed(2);
         
-        // Format selected options for CSV
-        let optionsText = "None";
-        let optionsCost = "0.00";
-        if (quote.selectedOptions && Array.isArray(quote.selectedOptions) && quote.selectedOptions.length > 0) {
-          optionsText = quote.selectedOptions.map((opt: any) => {
-            const value = typeof opt.value === 'boolean' ? (opt.value ? 'Yes' : 'No') : opt.value;
-            const cost = opt.calculatedCost ?? 0;
-            return `${opt.optionName}: ${value} (+$${cost.toFixed(2)})`;
-          }).join('; ');
+        // Each line item gets its own row
+        quote.lineItems.forEach(lineItem => {
+          const product = lineItem.productName;
+          const variant = lineItem.variantName || "N/A";
+          const width = lineItem.width;
+          const height = lineItem.height;
+          const quantity = lineItem.quantity;
+          const linePrice = parseFloat(lineItem.linePrice).toFixed(2);
           
-          const totalOptionsCost = quote.selectedOptions.reduce((sum: number, opt: any) => {
-            return sum + (opt.calculatedCost ?? 0);
-          }, 0);
-          optionsCost = totalOptionsCost.toFixed(2);
-        }
+          // Format selected options for CSV
+          let optionsText = "None";
+          let optionsCost = "0.00";
+          if (lineItem.selectedOptions && Array.isArray(lineItem.selectedOptions) && lineItem.selectedOptions.length > 0) {
+            optionsText = lineItem.selectedOptions.map((opt: any) => {
+              const value = typeof opt.value === 'boolean' ? (opt.value ? 'Yes' : 'No') : opt.value;
+              const cost = opt.calculatedCost ?? 0;
+              return `${opt.optionName}: ${value} (+$${cost.toFixed(2)})`;
+            }).join('; ');
+            
+            const totalOptionsCost = lineItem.selectedOptions.reduce((sum: number, opt: any) => {
+              return sum + (opt.calculatedCost ?? 0);
+            }, 0);
+            optionsCost = totalOptionsCost.toFixed(2);
+          }
 
-        return `${date},"${userEmail}","${customerName}","${product}",${width},${height},${quantity},"${optionsText}",${optionsCost},${price}`;
-      }).join("\n");
+          csvRows.push(`${date},"${quoteId}","${userEmail}","${customerName}","${product}","${variant}",${width},${height},${quantity},"${optionsText}",${optionsCost},${linePrice},${quoteTotal}`);
+        });
+      });
 
-      const csv = csvHeader + csvRows;
+      const csv = csvHeader + csvRows.join("\n");
 
       res.setHeader("Content-Type", "text/csv");
       res.setHeader("Content-Disposition", "attachment; filename=quotes-export.csv");

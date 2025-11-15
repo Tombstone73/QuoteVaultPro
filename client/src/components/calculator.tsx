@@ -8,9 +8,24 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator as CalcIcon, ExternalLink, Save } from "lucide-react";
+import { Calculator as CalcIcon, ExternalLink, Save, Plus, X, Trash2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product, InsertQuote, ProductOption, ProductVariant } from "@shared/schema";
+import type { Product, InsertQuote, ProductOption, ProductVariant, InsertQuoteLineItem } from "@shared/schema";
+
+// Line item draft type (before saving to server)
+type LineItemDraft = {
+  tempId: string;
+  productId: string;
+  productName: string;
+  variantId: string | null;
+  variantName: string | null;
+  width: number;
+  height: number;
+  quantity: number;
+  selectedOptions: any[];
+  linePrice: number;
+  priceBreakdown: any;
+};
 
 export default function CalculatorComponent() {
   const { toast } = useToast();
@@ -18,11 +33,12 @@ export default function CalculatorComponent() {
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
   const [width, setWidth] = useState<string>("");
   const [height, setHeight] = useState<string>("");
-  const [quantity, setQuantity] = useState<string>("");
+  const [quantity, setQuantity] = useState<string>("1");
   const [customerName, setCustomerName] = useState<string>("");
   const [optionValues, setOptionValues] = useState<Record<string, any>>({});
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [priceBreakdown, setPriceBreakdown] = useState<any>(null);
+  const [lineItems, setLineItems] = useState<LineItemDraft[]>([]);
   const [fieldErrors, setFieldErrors] = useState<{
     product?: boolean;
     width?: boolean;
@@ -129,18 +145,25 @@ export default function CalculatorComponent() {
 
   const saveQuoteMutation = useMutation({
     mutationFn: async () => {
-      if (!calculatedPrice || !priceBreakdown) return;
+      if (lineItems.length === 0) {
+        throw new Error("Please add at least one item to the quote");
+      }
       
-      const quoteData: Omit<InsertQuote, 'userId'> = {
-        productId: selectedProductId,
+      const quoteData = {
         customerName: customerName || undefined,
-        width: parseFloat(width),
-        height: parseFloat(height),
-        quantity: parseInt(quantity),
-        addOns: [],
-        selectedOptions: priceBreakdown.selectedOptions || [],
-        calculatedPrice: calculatedPrice,
-        priceBreakdown,
+        lineItems: lineItems.map(item => ({
+          productId: item.productId,
+          productName: item.productName,
+          variantId: item.variantId || undefined,
+          variantName: item.variantName || undefined,
+          width: item.width,
+          height: item.height,
+          quantity: item.quantity,
+          selectedOptions: item.selectedOptions,
+          linePrice: item.linePrice,
+          priceBreakdown: item.priceBreakdown,
+          displayOrder: 0,
+        })),
       };
 
       const response = await apiRequest("POST", "/api/quotes", quoteData);
@@ -152,7 +175,18 @@ export default function CalculatorComponent() {
         description: "Your quote has been saved successfully.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      
+      // Clear everything after successful save
+      setLineItems([]);
       setCustomerName("");
+      setSelectedProductId("");
+      setSelectedVariant(null);
+      setWidth("");
+      setHeight("");
+      setQuantity("1");
+      setOptionValues({});
+      setCalculatedPrice(null);
+      setPriceBreakdown(null);
     },
     onError: (error: Error) => {
       toast({
@@ -214,6 +248,67 @@ export default function CalculatorComponent() {
     
     setFieldErrors({});
     calculateMutation.mutate();
+  };
+
+  const handleAddToQuote = () => {
+    if (!calculatedPrice || !priceBreakdown || !selectedProduct) {
+      toast({
+        title: "Calculate First",
+        description: "Please calculate the price before adding to quote.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const variant = productVariants?.find(v => v.id === selectedVariant);
+    
+    const newLineItem: LineItemDraft = {
+      tempId: `temp-${Date.now()}-${Math.random()}`,
+      productId: selectedProductId,
+      productName: selectedProduct.name,
+      variantId: selectedVariant,
+      variantName: variant?.name || null,
+      width: parseFloat(width),
+      height: parseFloat(height),
+      quantity: parseInt(quantity),
+      selectedOptions: priceBreakdown.selectedOptions || [],
+      linePrice: calculatedPrice,
+      priceBreakdown,
+    };
+
+    setLineItems(prev => [...prev, newLineItem]);
+    
+    // Reset configuration for next item
+    setSelectedProductId("");
+    setSelectedVariant(null);
+    setWidth("");
+    setHeight("");
+    setQuantity("1");
+    setOptionValues({});
+    setCalculatedPrice(null);
+    setPriceBreakdown(null);
+    
+    toast({
+      title: "Added to Quote",
+      description: "Item added successfully. Add more items or save the quote.",
+    });
+  };
+
+  const handleRemoveLineItem = (tempId: string) => {
+    setLineItems(prev => prev.filter(item => item.tempId !== tempId));
+    toast({
+      title: "Item Removed",
+      description: "Line item removed from quote.",
+    });
+  };
+
+  const handleClearQuote = () => {
+    setLineItems([]);
+    setCustomerName("");
+    toast({
+      title: "Quote Cleared",
+      description: "All line items have been removed.",
+    });
   };
 
   const handleOptionChange = (optionId: string, value: any, option: ProductOption) => {
@@ -504,19 +599,98 @@ export default function CalculatorComponent() {
               </div>
             )}
 
-            <Button
-              onClick={handleCalculate}
-              disabled={calculateMutation.isPending}
-              className="w-full"
-              data-testid="button-calculate"
-            >
-              {calculateMutation.isPending ? "Calculating..." : "Calculate Price"}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleCalculate}
+                disabled={calculateMutation.isPending}
+                className="flex-1"
+                data-testid="button-calculate"
+              >
+                {calculateMutation.isPending ? "Calculating..." : "Calculate Price"}
+              </Button>
+              <Button
+                onClick={handleAddToQuote}
+                disabled={!calculatedPrice || calculateMutation.isPending}
+                variant="secondary"
+                className="flex-1"
+                data-testid="button-add-to-quote"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add to Quote
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
 
       <div className="space-y-6">
+        {lineItems.length > 0 && (
+          <Card data-testid="card-line-items">
+            <CardHeader>
+              <CardTitle>Quote Items ({lineItems.length})</CardTitle>
+              <CardDescription>Items added to this quote</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {lineItems.map((item, index) => (
+                  <div
+                    key={item.tempId}
+                    className="flex items-start justify-between p-4 border rounded-lg"
+                    data-testid={`line-item-${index}`}
+                  >
+                    <div className="flex-1">
+                      <div className="font-medium" data-testid={`line-item-product-${index}`}>
+                        {item.productName}
+                        {item.variantName && (
+                          <span className="text-sm text-muted-foreground ml-2">
+                            ({item.variantName})
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-sm text-muted-foreground mt-1">
+                        {item.width}" × {item.height}" • Qty: {item.quantity}
+                      </div>
+                      {item.selectedOptions && item.selectedOptions.length > 0 && (
+                        <div className="text-xs text-muted-foreground mt-1">
+                          {item.selectedOptions.map((opt: any) => (
+                            <span key={opt.optionId} className="mr-2">
+                              {opt.optionName}
+                              {typeof opt.value !== 'boolean' && `: ${opt.value}`}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 ml-4">
+                      <div className="text-right">
+                        <div className="font-mono font-medium" data-testid={`line-item-price-${index}`}>
+                          ${item.linePrice.toFixed(2)}
+                        </div>
+                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => handleRemoveLineItem(item.tempId)}
+                        data-testid={`button-remove-item-${index}`}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 pt-4 border-t">
+                <div className="flex justify-between items-center">
+                  <span className="font-medium">Quote Total:</span>
+                  <span className="text-2xl font-bold font-mono" data-testid="text-quote-total">
+                    ${lineItems.reduce((sum, item) => sum + item.linePrice, 0).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {calculatedPrice !== null && priceBreakdown && (
           <>
             <Card data-testid="card-price-display">
@@ -592,41 +766,54 @@ export default function CalculatorComponent() {
               </CardContent>
             </Card>
 
-            <Card data-testid="card-save-quote">
-              <CardHeader>
-                <CardTitle>Save Quote</CardTitle>
-                <CardDescription>Save this quote to your history</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  <Label htmlFor="customerName" data-testid="label-customer-name">
-                    Customer Name (Optional)
-                  </Label>
-                  <Input
-                    id="customerName"
-                    placeholder="Enter customer name"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    data-testid="input-customer-name"
-                  />
-                </div>
-              </CardContent>
-              <CardFooter>
-                <Button
-                  onClick={() => saveQuoteMutation.mutate()}
-                  disabled={saveQuoteMutation.isPending}
-                  className="w-full"
-                  data-testid="button-save-quote"
-                >
-                  <Save className="w-4 h-4 mr-2" />
-                  {saveQuoteMutation.isPending ? "Saving..." : "Save Quote"}
-                </Button>
-              </CardFooter>
-            </Card>
           </>
         )}
 
-        {calculatedPrice === null && (
+        {lineItems.length > 0 && (
+          <Card data-testid="card-save-quote">
+            <CardHeader>
+              <CardTitle>Save Quote</CardTitle>
+              <CardDescription>Save this quote to your history</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <Label htmlFor="customerName" data-testid="label-customer-name">
+                  Customer Name (Optional)
+                </Label>
+                <Input
+                  id="customerName"
+                  placeholder="Enter customer name"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  data-testid="input-customer-name"
+                />
+              </div>
+            </CardContent>
+            <CardFooter className="flex gap-2">
+              <Button
+                onClick={() => saveQuoteMutation.mutate()}
+                disabled={saveQuoteMutation.isPending}
+                className="flex-1"
+                data-testid="button-save-quote"
+              >
+                <Save className="w-4 h-4 mr-2" />
+                {saveQuoteMutation.isPending ? "Saving..." : "Save Quote"}
+              </Button>
+              <Button
+                onClick={handleClearQuote}
+                disabled={saveQuoteMutation.isPending}
+                variant="outline"
+                className="flex-1"
+                data-testid="button-clear-quote"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Clear Quote
+              </Button>
+            </CardFooter>
+          </Card>
+        )}
+
+        {calculatedPrice === null && lineItems.length === 0 && (
           <Card data-testid="card-price-empty">
             <CardContent className="py-16 text-center">
               <CalcIcon className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />

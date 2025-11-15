@@ -188,11 +188,8 @@ export default function QuoteHistory() {
                   <TableRow>
                     <TableHead data-testid="header-date">Date</TableHead>
                     <TableHead data-testid="header-customer">Customer</TableHead>
-                    <TableHead data-testid="header-product">Product</TableHead>
-                    <TableHead data-testid="header-dimensions">Dimensions</TableHead>
-                    <TableHead data-testid="header-quantity">Quantity</TableHead>
-                    <TableHead data-testid="header-options">Options</TableHead>
-                    <TableHead data-testid="header-price" className="text-right">Price</TableHead>
+                    <TableHead data-testid="header-items">Items</TableHead>
+                    <TableHead data-testid="header-price" className="text-right">Total</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -206,46 +203,34 @@ export default function QuoteHistory() {
                           <span className="text-muted-foreground italic">Not specified</span>
                         )}
                       </TableCell>
-                      <TableCell data-testid={`cell-product-${quote.id}`}>
-                        <div className="space-y-0.5">
-                          <div>{quote.product.name}</div>
-                          {quote.variantName && (
-                            <div className="text-xs text-muted-foreground" data-testid={`text-variant-${quote.id}`}>
-                              {quote.product.variantLabel ?? "Variant"}: {quote.variantName}
-                            </div>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell data-testid={`cell-dimensions-${quote.id}`}>
-                        {quote.width}" × {quote.height}"
-                      </TableCell>
-                      <TableCell data-testid={`cell-quantity-${quote.id}`}>
-                        {quote.quantity}
-                      </TableCell>
-                      <TableCell data-testid={`cell-options-${quote.id}`}>
-                        {quote.selectedOptions && quote.selectedOptions.length > 0 ? (
-                          <div className="flex flex-wrap gap-1">
-                            {quote.selectedOptions.map((opt: any, idx: number) => {
-                              const cost = opt.calculatedCost ?? 0;
-                              const displayValue = typeof opt.value === 'boolean' ? (opt.value ? 'Yes' : 'No') : opt.value;
-                              return (
-                                <Badge 
-                                  key={idx} 
-                                  variant="secondary" 
-                                  className="text-xs"
-                                  data-testid={`badge-option-${quote.id}-${idx}`}
-                                >
-                                  {opt.optionName}: {displayValue} (+${cost.toFixed(2)})
-                                </Badge>
-                              );
-                            })}
+                      <TableCell data-testid={`cell-items-${quote.id}`}>
+                        {quote.lineItems && quote.lineItems.length > 0 ? (
+                          <div className="space-y-2">
+                            {quote.lineItems.map((item, idx) => (
+                              <div key={idx} className="text-sm">
+                                <div className="font-medium">
+                                  {item.productName}
+                                  {item.variantName && (
+                                    <span className="text-xs text-muted-foreground ml-1">({item.variantName})</span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {item.width}" × {item.height}" • Qty: {item.quantity}
+                                  {item.selectedOptions && item.selectedOptions.length > 0 && (
+                                    <span className="ml-2">
+                                      • {item.selectedOptions.length} option{item.selectedOptions.length > 1 ? 's' : ''}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         ) : (
-                          <span className="text-muted-foreground text-sm italic">None</span>
+                          <span className="text-muted-foreground italic text-sm">Legacy quote</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right font-mono" data-testid={`cell-price-${quote.id}`}>
-                        ${parseFloat(quote.calculatedPrice).toFixed(2)}
+                        ${parseFloat(quote.totalPrice).toFixed(2)}
                       </TableCell>
                     </TableRow>
                   ))}
