@@ -596,11 +596,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const { customerName, subtotal, taxRate, marginPercentage, discountAmount, totalPrice } = req.body;
 
+      console.log(`[PATCH /api/quotes/${id}] Received update data:`, {
+        customerName,
+        subtotal,
+        taxRate,
+        marginPercentage,
+        discountAmount,
+        totalPrice,
+      });
+
       // Verify the quote belongs to the user
       const existing = await storage.getQuoteById(id, userId);
       if (!existing) {
         return res.status(404).json({ message: "Quote not found" });
       }
+
+      console.log(`[PATCH /api/quotes/${id}] Existing customerName:`, existing.customerName);
 
       const updatedQuote = await storage.updateQuote(id, {
         customerName,
@@ -610,6 +621,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         discountAmount,
         totalPrice,
       });
+
+      console.log(`[PATCH /api/quotes/${id}] Updated customerName:`, updatedQuote.customerName);
 
       res.json(updatedQuote);
     } catch (error) {

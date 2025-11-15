@@ -186,3 +186,83 @@ Added granular control over external store link visibility in the calculator:
 - Both conditions (URL + toggle) required for button display
 - Existing products retain store link functionality (backfilled)
 - Admin can enable/disable toggle per product
+
+### Quote Editing System (November 15, 2025 - IN PROGRESS)
+
+Full CRUD capabilities for editing saved quotes including customer information, line items, and price adjustments:
+
+**Schema Changes:**
+- **Quotes Table**: Added price adjustment fields
+  - `subtotal` VARCHAR (stored as string, nullable)
+  - `taxRate` VARCHAR (stored as decimal 0-1, nullable)
+  - `marginPercentage` VARCHAR (stored as decimal 0-1, nullable)
+  - `discountAmount` VARCHAR (stored as string, nullable)
+  - Note: `totalPrice` already exists and is calculated from adjustments
+
+**Backend Implementation:**
+- **Storage Layer** (server/storage.ts):
+  - `getQuoteById(id, userId?)`: Fetch single quote with line items and relations
+  - `updateQuote(id, data)`: Update quote customer name and price adjustments
+  - `deleteQuote(id)`: Delete quote and all associated line items
+  - `addLineItem(quoteId, data)`: Add new line item to existing quote
+  - `updateLineItem(id, data)`: Update line item dimensions, quantity, options
+  - `deleteLineItem(id)`: Remove line item from quote
+- **API Routes** (server/routes.ts):
+  - `GET /api/quotes/:id` - Fetch single quote with authorization check
+  - `PATCH /api/quotes/:id` - Update quote (customer name, price adjustments)
+  - `DELETE /api/quotes/:id` - Delete quote
+  - `POST /api/quotes/:id/line-items` - Add line item to quote
+  - `PATCH /api/quotes/:id/line-items/:lineItemId` - Update line item
+  - `DELETE /api/quotes/:id/line-items/:lineItemId` - Delete line item
+  - All endpoints enforce ownership via `storage.getQuoteById(id, userId)` check
+
+**Frontend Implementation:**
+- **EditQuote Page** (client/src/pages/edit-quote.tsx):
+  - Route: `/quotes/:id/edit`
+  - Customer name editing with state management
+  - Line items table displaying: product name, variant, dimensions, quantity, options count, price
+  - Delete button per line item with confirmation dialog
+  - Price adjustments panel with real-time total calculation:
+    - Tax Rate (%) - converted to decimal for storage
+    - Margin Percentage (%) - converted to decimal for storage
+    - Discount Amount ($) - stored as-is
+    - Display: Subtotal, Tax amount, Margin amount, Discount, Final Total
+  - Save Changes button with optimistic updates
+  - Back button navigation to home page
+  - Loading skeletons and error states
+- **Quote History** (client/src/components/quote-history.tsx):
+  - Added "Actions" column to quotes table
+  - Edit button per quote linking to `/quotes/:id/edit`
+  - Uses wouter Link component for navigation
+
+**User Workflow:**
+1. View quote history in "My Quotes" tab
+2. Click "Edit" button on desired quote
+3. Edit customer name as needed
+4. Delete unwanted line items
+5. Apply price adjustments (tax %, margin %, discount $)
+6. Click "Save Changes" to persist modifications
+7. Click "Back to Quotes" to return to quote list
+8. Verify changes in quote history
+
+**Architecture Notes:**
+- Price adjustments stored as rates/percentages for flexibility
+- Frontend calculates display values from stored decimal rates
+- Quote total recalculated on frontend based on subtotal and adjustments
+- Cache invalidation ensures quote list refreshes after edits
+- Authorization enforced on all mutation endpoints
+- Line items can be deleted individually without affecting other items
+- Navigation uses existing home page route (/)
+
+**Known Issues:**
+- Testing revealed potential issues with customer name persistence
+- Line item deletion may have unexpected behavior (needs investigation)
+- Price adjustments calculation may need validation
+- Further testing required to verify all functionality works end-to-end
+
+**Next Steps:**
+- Debug customer name update persistence
+- Verify line item deletion works correctly (only deletes target item)
+- Add ability to add new line items to existing quotes
+- Implement line item editing (dimensions, quantity, options)
+- Add email functionality for edited quotes

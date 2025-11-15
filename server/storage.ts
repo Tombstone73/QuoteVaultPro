@@ -470,11 +470,15 @@ export class DatabaseStorage implements IStorage {
     if (data.discountAmount !== undefined) updateData.discountAmount = data.discountAmount.toString();
     if (data.totalPrice !== undefined) updateData.totalPrice = data.totalPrice.toString();
 
+    console.log(`[updateQuote] ID: ${id}, updateData:`, updateData);
+
     const [updated] = await db
       .update(quotes)
       .set(updateData)
       .where(eq(quotes.id, id))
       .returning();
+
+    console.log(`[updateQuote] Updated row:`, updated);
 
     if (!updated) {
       throw new Error(`Quote ${id} not found`);
@@ -482,6 +486,7 @@ export class DatabaseStorage implements IStorage {
 
     // Fetch the complete quote with relations
     const result = await this.getQuoteById(id);
+    console.log(`[updateQuote] Fetched result customerName:`, result?.customerName);
     if (!result) {
       throw new Error(`Quote ${id} not found after update`);
     }
