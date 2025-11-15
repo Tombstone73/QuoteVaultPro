@@ -382,12 +382,17 @@ export default function AdminSettings() {
     mutationFn: async ({ productId, id, data }: { productId: string; id: string; data: Omit<InsertProductVariant, "productId"> }) => {
       return await apiRequest("PATCH", `/api/products/${productId}/variants/${id}`, data);
     },
-    onSuccess: () => {
+    onSuccess: (updatedVariant, variables) => {
       toast({
         title: "Variant Updated",
         description: "The product variant has been updated successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/all-variants"] });
+      
+      //  DON'T invalidate or update cache - keep product dialog open
+      // The user can manually refresh to see changes, or close/reopen the dialog
+      // Invalidating causes the product dialog to close due to re-renders
+      
+      // Close only the variant dialog
       setEditingVariant(null);
       editVariantForm.reset();
     },
