@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -7,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart3, Download, FileText, Search, TrendingUp, Users } from "lucide-react";
+import { BarChart3, Download, FileText, Search, TrendingUp, Users, Edit } from "lucide-react";
 import { format } from "date-fns";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -302,6 +303,7 @@ export default function AdminDashboard() {
                     <TableHead data-testid="header-products">Products</TableHead>
                     <TableHead data-testid="header-items">Line Items</TableHead>
                     <TableHead data-testid="header-price" className="text-right">Total Price</TableHead>
+                    <TableHead data-testid="header-actions" className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -347,6 +349,13 @@ export default function AdminDashboard() {
                         </TableCell>
                         <TableCell className="text-right font-mono" data-testid={`cell-price-${quote.id}`}>
                           ${parseFloat(quote.totalPrice || "0").toFixed(2)}
+                        </TableCell>
+                        <TableCell className="text-right" data-testid={`cell-actions-${quote.id}`}>
+                          <Link href={`/quote/${quote.id}`}>
+                            <Button size="sm" variant="ghost" data-testid={`button-edit-quote-${quote.id}`}>
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                          </Link>
                         </TableCell>
                       </TableRow>
                     );
