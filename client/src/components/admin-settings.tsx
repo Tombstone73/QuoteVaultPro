@@ -12,10 +12,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { ObjectUploader } from "@/components/object-uploader";
 import type {
   Product,
   InsertProduct,
@@ -116,6 +117,7 @@ export default function AdminSettings() {
   const [isAddVariableDialogOpen, setIsAddVariableDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [viewMode, setViewMode] = useState<"table" | "grid">("table");
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -130,6 +132,7 @@ export default function AdminSettings() {
       pricingFormula: "width * height * 0.05 * quantity",
       storeUrl: "",
       showStoreLink: true,
+      thumbnailUrls: [],
       isActive: true,
     },
   });
@@ -734,13 +737,35 @@ export default function AdminSettings() {
 
               <div className="flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Product Management</h3>
-                <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button data-testid="button-add-product">
-                      <Plus className="w-4 h-4 mr-2" />
-                      Add Product
+                <div className="flex gap-2">
+                  <div className="flex border rounded-md">
+                    <Button
+                      variant={viewMode === "table" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setViewMode("table")}
+                      className="rounded-r-none"
+                      data-testid="button-view-table"
+                    >
+                      <LayoutList className="w-4 h-4" />
                     </Button>
-                  </DialogTrigger>
+                    <Button
+                      variant={viewMode === "grid" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setViewMode("grid")}
+                      className="rounded-l-none"
+                      data-testid="button-view-grid"
+                    >
+                      <LayoutGrid className="w-4 h-4" />
+                    </Button>
+                  </div>
+
+                  <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button data-testid="button-add-product">
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Product
+                      </Button>
+                    </DialogTrigger>
                   <DialogContent className="max-w-2xl" data-testid="dialog-add-product">
                     <DialogHeader>
                       <DialogTitle>Add New Product</DialogTitle>
@@ -892,6 +917,29 @@ export default function AdminSettings() {
                         />
                         <FormField
                           control={addProductForm.control}
+                          name="thumbnailUrls"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel data-testid="label-product-thumbnails">
+                                Product Thumbnails (Optional)
+                              </FormLabel>
+                              <FormControl>
+                                <ObjectUploader
+                                  value={field.value ?? []}
+                                  onChange={field.onChange}
+                                  maxFiles={5}
+                                  allowedFileTypes={["image/*"]}
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                Upload up to 5 product images. Drag to reorder.
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={addProductForm.control}
                           name="isActive"
                           render={({ field }) => (
                             <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
@@ -927,12 +975,14 @@ export default function AdminSettings() {
                   </DialogContent>
                 </Dialog>
               </div>
+            </div>
 
-              <div className="border rounded-md">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead data-testid="header-name">Name</TableHead>
+            {viewMode === "table" ? (
+                <div className="border rounded-md">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead data-testid="header-name">Name</TableHead>
                       <TableHead data-testid="header-description">Description</TableHead>
                       <TableHead data-testid="header-formula">Formula</TableHead>
                       <TableHead data-testid="header-status">Status</TableHead>
@@ -1109,6 +1159,29 @@ export default function AdminSettings() {
                                                 data-testid={`switch-edit-show-store-link-${product.id}`}
                                               />
                                             </FormControl>
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editProductForm.control}
+                                        name="thumbnailUrls"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel data-testid={`label-edit-thumbnails-${product.id}`}>
+                                              Product Thumbnails (Optional)
+                                            </FormLabel>
+                                            <FormControl>
+                                              <ObjectUploader
+                                                value={field.value || []}
+                                                onChange={field.onChange}
+                                                maxFiles={5}
+                                                allowedFileTypes={["image/*"]}
+                                              />
+                                            </FormControl>
+                                            <FormDescription>
+                                              Upload up to 5 product images. Drag to reorder.
+                                            </FormDescription>
+                                            <FormMessage />
                                           </FormItem>
                                         )}
                                       />
@@ -2133,6 +2206,90 @@ export default function AdminSettings() {
                   </TableBody>
                 </Table>
               </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" data-testid="products-grid">
+                  {products && products.length > 0 ? (
+                    products.map((product) => (
+                      <Card key={product.id} className="flex flex-col" data-testid={`card-product-${product.id}`}>
+                        <div className="aspect-square relative bg-muted overflow-hidden rounded-t-md">
+                          {product.thumbnailUrls && product.thumbnailUrls.length > 0 ? (
+                            <img
+                              src={product.thumbnailUrls[0]}
+                              alt={product.name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                              No image
+                            </div>
+                          )}
+                        </div>
+                        <CardContent className="flex-1 p-4 space-y-2">
+                          <h4 className="font-semibold truncate" data-testid={`text-product-name-${product.id}`}>
+                            {product.name}
+                          </h4>
+                          {product.category && (
+                            <Badge variant="secondary" className="text-xs" data-testid={`badge-category-${product.id}`}>
+                              {product.category}
+                            </Badge>
+                          )}
+                          <p className="text-sm text-muted-foreground line-clamp-2" data-testid={`text-description-${product.id}`}>
+                            {product.description || "No description"}
+                          </p>
+                          <div className="flex items-center gap-2 pt-2">
+                            {product.isActive ? (
+                              <span className="text-xs text-green-600 dark:text-green-400" data-testid={`status-active-${product.id}`}>Active</span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground" data-testid={`status-inactive-${product.id}`}>Inactive</span>
+                            )}
+                          </div>
+                        </CardContent>
+                        <div className="p-4 pt-0 flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-1"
+                            onClick={() => handleEditProduct(product)}
+                            data-testid={`button-edit-card-${product.id}`}
+                          >
+                            <Edit className="w-4 h-4 mr-2" />
+                            Edit
+                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                data-testid={`button-delete-card-${product.id}`}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Delete Product</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Are you sure you want to delete "{product.name}"? This action cannot be undone.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={() => deleteProductMutation.mutate(product.id)}>
+                                  Delete
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
+                      </Card>
+                    ))
+                  ) : (
+                    <div className="col-span-full text-center py-12 text-muted-foreground">
+                      No products yet. Add your first product to get started.
+                    </div>
+                  )}
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="variables" className="space-y-4">
