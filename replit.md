@@ -34,7 +34,7 @@ The backend uses Node.js with Express.js, exposing a RESTful JSON API. PostgreSQ
 ### Application Features
 
 -   **User Capabilities**: Generate quotes with dynamic options, view/filter quote history, save/retrieve quotes, and email quotes.
--   **Admin Capabilities**: System-wide quote management, CRUD operations for products and product options (including defining option types, costs, formulas, and hierarchies), pricing formula management, and analytics with CSV export.
+-   **Admin Capabilities**: System-wide quote management, CRUD operations for products and product options (including defining option types, costs, formulas, and hierarchies), pricing formula management, product cloning, CSV import/export for bulk product management, and analytics with CSV export.
 -   **UI Components**: Dynamic calculator interface, searchable/filterable quote history, admin dashboard with metrics, and comprehensive admin settings for product and option management with tree views and inline editing.
 
 ## External Dependencies
