@@ -159,16 +159,25 @@ function MediaLibraryTab() {
     const newUrls = urls.filter(url => !existingUrls.includes(url));
     
     for (const url of newUrls) {
-      const filename = url.split('/').pop() || 'unknown';
+      const filename = url.split('/').pop() || 'unknown.jpg';
+      const extension = filename.split('.').pop()?.toLowerCase() || 'jpg';
+      
+      const mimeTypes: Record<string, string> = {
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif',
+        'webp': 'image/webp',
+        'svg': 'image/svg+xml',
+      };
+      
+      const mimeType = mimeTypes[extension] || 'image/jpeg';
+      
       try {
-        const response = await fetch(url, { method: 'HEAD' });
-        const fileSize = parseInt(response.headers.get('content-length') || '0');
-        const mimeType = response.headers.get('content-type') || 'image/jpeg';
-        
         await saveAssetMutation.mutateAsync({
           filename,
           url,
-          fileSize,
+          fileSize: 0,
           mimeType,
         });
       } catch (error) {
