@@ -230,11 +230,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           const newProduct = await storage.createProduct({
             name: productName,
-            description: row['Product Description']?.trim() || null,
+            description: row['Product Description']?.trim() || '',
             pricingFormula: row['Pricing Formula']?.trim() || 'basePrice * quantity',
-            variantLabel: row['Variant Label']?.trim() || null,
-            category: row['Category']?.trim() || null,
-            storeUrl: row['Store URL']?.trim() || null,
+            variantLabel: row['Variant Label']?.trim(),
+            category: row['Category']?.trim(),
+            storeUrl: row['Store URL']?.trim(),
             showStoreLink: row['Show Store Link']?.trim().toLowerCase() === 'true',
             thumbnailUrls,
             isActive: row['Is Active']?.trim().toLowerCase() !== 'false',

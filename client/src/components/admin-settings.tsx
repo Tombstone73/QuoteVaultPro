@@ -29,7 +29,8 @@ import type {
   UpdateProductVariant,
   GlobalVariable,
   InsertGlobalVariable,
-  UpdateGlobalVariable
+  UpdateGlobalVariable,
+  MediaAsset
 } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -101,6 +102,198 @@ function SelectChoicesInput({ value, onChange }: { value: string; onChange: (val
           </Badge>
         ))}
       </div>
+    </div>
+  );
+}
+
+function MediaLibraryTab() {
+  const { toast } = useToast();
+  const [uploadedUrls, setUploadedUrls] = useState<string[]>([]);
+
+  const { data: mediaAssets, isLoading } = useQuery<MediaAsset[]>({
+    queryKey: ["/api/media"],
+  });
+
+  const deleteAssetMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return apiRequest(`/api/media/${id}`, "DELETE");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/media"] });
+      toast({
+        title: "Asset deleted",
+        description: "Media asset has been removed from the library",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to delete asset",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const saveAssetMutation = useMutation({
+    mutationFn: async (data: { filename: string; url: string; fileSize: number; mimeType: string }) => {
+      return apiRequest("/api/media", "POST", data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/media"] });
+      setUploadedUrls([]);
+      toast({
+        title: "Asset saved",
+        description: "Media asset has been added to the library",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to save asset",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSaveUploads = async () => {
+    for (const url of uploadedUrls) {
+      const filename = url.split('/').pop() || 'unknown';
+      try {
+        const response = await fetch(url, { method: 'HEAD' });
+        const fileSize = parseInt(response.headers.get('content-length') || '0');
+        const mimeType = response.headers.get('content-type') || 'image/jpeg';
+        
+        await saveAssetMutation.mutateAsync({
+          filename,
+          url,
+          fileSize,
+          mimeType,
+        });
+      } catch (error) {
+        console.error('Failed to save asset:', error);
+      }
+    }
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Upload Media</CardTitle>
+          <CardDescription>
+            Add images to your media library to reuse across multiple products
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <ObjectUploader
+              value={uploadedUrls}
+              onChange={setUploadedUrls}
+              maxFiles={10}
+            />
+            {uploadedUrls.length > 0 && (
+              <Button
+                onClick={handleSaveUploads}
+                disabled={saveAssetMutation.isPending}
+                data-testid="button-save-to-library"
+              >
+                <Upload className="w-4 h-4 mr-2" />
+                Save {uploadedUrls.length} {uploadedUrls.length === 1 ? 'Image' : 'Images'} to Library
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Media Library</CardTitle>
+          <CardDescription>
+            {mediaAssets?.length || 0} images in library
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {[...Array(8)].map((_, i) => (
+                <Skeleton key={i} className="aspect-square" />
+              ))}
+            </div>
+          ) : mediaAssets && mediaAssets.length > 0 ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4" data-testid="media-library-grid">
+              {mediaAssets.map((asset) => (
+                <Card key={asset.id} className="overflow-hidden" data-testid={`media-asset-${asset.id}`}>
+                  <div className="aspect-square relative bg-muted">
+                    <img
+                      src={asset.url}
+                      alt={asset.filename}
+                      className="w-full h-full object-cover"
+                      data-testid={`media-image-${asset.id}`}
+                    />
+                  </div>
+                  <CardContent className="p-3 space-y-2">
+                    <div className="text-sm font-medium truncate" title={asset.filename}>
+                      {asset.filename}
+                    </div>
+                    <div className="flex justify-between items-center text-xs text-muted-foreground">
+                      <span>{formatFileSize(asset.fileSize)}</span>
+                      <span>{formatDate(asset.uploadedAt)}</span>
+                    </div>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="w-full"
+                          data-testid={`button-delete-asset-${asset.id}`}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete Media Asset</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            Are you sure you want to delete "{asset.filename}"? This action cannot be undone.
+                            Products using this image will no longer display it.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => deleteAssetMutation.mutate(asset.id)}
+                          >
+                            Delete
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12 text-muted-foreground">
+              No media assets yet. Upload your first image to get started.
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -678,8 +871,9 @@ export default function AdminSettings() {
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="products" data-testid="tabs-admin-settings">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
+              <TabsTrigger value="media" data-testid="tab-media">Media Library</TabsTrigger>
               <TabsTrigger value="variables" data-testid="tab-variables">Global Variables</TabsTrigger>
               <TabsTrigger value="formulas" data-testid="tab-formulas">Pricing Formulas</TabsTrigger>
             </TabsList>
@@ -2290,6 +2484,10 @@ export default function AdminSettings() {
                   )}
                 </div>
               )}
+            </TabsContent>
+
+            <TabsContent value="media" className="space-y-4">
+              <MediaLibraryTab />
             </TabsContent>
 
             <TabsContent value="variables" className="space-y-4">
