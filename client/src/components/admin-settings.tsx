@@ -309,6 +309,37 @@ export default function AdminSettings() {
     reader.readAsText(csvFile);
   };
 
+  const handleExportProducts = async () => {
+    try {
+      const response = await fetch('/api/products/export', {
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        throw new Error('Failed to export products');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      a.download = `products-export-${timestamp}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast({
+        title: "Export Successful",
+        description: "Products exported to CSV successfully.",
+      });
+    } catch (error) {
+      toast({
+        title: "Export Failed",
+        description: "Failed to export products to CSV.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleDownloadTemplate = async () => {
     try {
       const response = await fetch('/api/products/csv-template', {
@@ -667,6 +698,14 @@ export default function AdminSettings() {
                     >
                       <Download className="w-4 h-4 mr-2" />
                       Download Template
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={handleExportProducts}
+                      data-testid="button-export-csv"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Export CSV
                     </Button>
                     <div className="flex-1 flex gap-2">
                       <Input
