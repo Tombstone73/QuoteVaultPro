@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Edit, Plus, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -115,6 +115,7 @@ export default function AdminSettings() {
   const [editingVariable, setEditingVariable] = useState<GlobalVariable | null>(null);
   const [isAddVariableDialogOpen, setIsAddVariableDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [csvFile, setCsvFile] = useState<File | null>(null);
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -248,6 +249,88 @@ export default function AdminSettings() {
       });
     },
   });
+
+  const cloneProductMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await apiRequest("POST", `/api/products/${id}/clone`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Product Cloned",
+        description: "The product has been cloned successfully. You can now edit the name and pricing.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const importProductsMutation = useMutation({
+    mutationFn: async (csvData: string) => {
+      return await apiRequest("POST", "/api/products/import", { csvData });
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: "Products Imported",
+        description: `Successfully imported ${data.imported.products} products, ${data.imported.variants} variants, and ${data.imported.options} options.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      setCsvFile(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Import Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleCsvUpload = async () => {
+    if (!csvFile) {
+      toast({
+        title: "No File Selected",
+        description: "Please select a CSV file to upload.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const csvData = e.target?.result as string;
+      importProductsMutation.mutate(csvData);
+    };
+    reader.readAsText(csvFile);
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      const response = await fetch('/api/products/csv-template', {
+        credentials: 'include',
+      });
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'product-import-template.csv';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      toast({
+        title: "Download Failed",
+        description: "Failed to download the CSV template.",
+        variant: "destructive",
+      });
+    }
+  };
 
   const { data: productOptions } = useQuery<ProductOption[]>({
     queryKey: ["/api/products", editingProduct?.id, "options"],
@@ -568,6 +651,48 @@ export default function AdminSettings() {
             </TabsList>
 
             <TabsContent value="products" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Import Products from CSV</CardTitle>
+                  <CardDescription>
+                    Bulk import products with variants and options using a CSV file
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={handleDownloadTemplate}
+                      data-testid="button-download-csv-template"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Template
+                    </Button>
+                    <div className="flex-1 flex gap-2">
+                      <Input
+                        type="file"
+                        accept=".csv"
+                        onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+                        data-testid="input-csv-file"
+                      />
+                      <Button
+                        onClick={handleCsvUpload}
+                        disabled={!csvFile || importProductsMutation.isPending}
+                        data-testid="button-upload-csv"
+                      >
+                        <Upload className="w-4 h-4 mr-2" />
+                        {importProductsMutation.isPending ? "Importing..." : "Import CSV"}
+                      </Button>
+                    </div>
+                  </div>
+                  {csvFile && (
+                    <p className="text-sm text-muted-foreground" data-testid="text-selected-file">
+                      Selected file: {csvFile.name}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+
               <div className="flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Product Management</h3>
                 <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
@@ -1914,6 +2039,16 @@ export default function AdminSettings() {
                                   </Form>
                                 </DialogContent>
                               </Dialog>
+
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => cloneProductMutation.mutate(product.id)}
+                                disabled={cloneProductMutation.isPending}
+                                data-testid={`button-clone-${product.id}`}
+                              >
+                                <Copy className="w-4 h-4" />
+                              </Button>
 
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>

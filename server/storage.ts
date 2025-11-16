@@ -45,6 +45,7 @@ export interface IStorage {
   createProduct(product: InsertProduct): Promise<Product>;
   updateProduct(id: string, product: UpdateProduct): Promise<Product>;
   deleteProduct(id: string): Promise<void>;
+  cloneProduct(id: string): Promise<Product>;
 
   // Product options operations
   getProductOptions(productId: string): Promise<ProductOption[]>;
@@ -219,6 +220,84 @@ export class DatabaseStorage implements IStorage {
 
   async deleteProduct(id: string): Promise<void> {
     await db.delete(products).where(eq(products.id, id));
+  }
+
+  async cloneProduct(id: string): Promise<Product> {
+    const originalProduct = await this.getProductById(id);
+    if (!originalProduct) {
+      throw new Error('Product not found');
+    }
+
+    const newProductData: InsertProduct = {
+      name: `${originalProduct.name} (Copy)`,
+      description: originalProduct.description,
+      pricingFormula: originalProduct.pricingFormula,
+      variantLabel: originalProduct.variantLabel,
+      category: originalProduct.category,
+      storeUrl: originalProduct.storeUrl,
+      showStoreLink: originalProduct.showStoreLink,
+      isActive: originalProduct.isActive,
+    };
+
+    const newProduct = await this.createProduct(newProductData);
+
+    const originalVariants = await this.getProductVariants(id);
+    for (const variant of originalVariants) {
+      await this.createProductVariant({
+        productId: newProduct.id,
+        name: variant.name,
+        description: variant.description || undefined,
+        basePricePerSqft: parseFloat(variant.basePricePerSqft),
+        isDefault: variant.isDefault,
+        displayOrder: variant.displayOrder,
+        isActive: variant.isActive,
+      });
+    }
+
+    const originalOptions = await this.getProductOptions(id);
+    
+    const optionIdMap: Record<string, string> = {};
+    
+    const parentOptions = originalOptions.filter(opt => !opt.parentOptionId);
+    for (const option of parentOptions) {
+      const newOption = await this.createProductOption({
+        productId: newProduct.id,
+        name: option.name,
+        description: option.description || undefined,
+        type: option.type,
+        defaultValue: option.defaultValue || undefined,
+        defaultSelection: option.defaultSelection || undefined,
+        isDefaultEnabled: option.isDefaultEnabled,
+        setupCost: parseFloat(option.setupCost),
+        priceFormula: option.priceFormula || undefined,
+        parentOptionId: undefined,
+        displayOrder: option.displayOrder,
+        isActive: option.isActive,
+      });
+      optionIdMap[option.id] = newOption.id;
+    }
+
+    const childOptions = originalOptions.filter(opt => opt.parentOptionId);
+    for (const option of childOptions) {
+      const newParentId = option.parentOptionId ? optionIdMap[option.parentOptionId] : undefined;
+      const newOption = await this.createProductOption({
+        productId: newProduct.id,
+        name: option.name,
+        description: option.description || undefined,
+        type: option.type,
+        defaultValue: option.defaultValue || undefined,
+        defaultSelection: option.defaultSelection || undefined,
+        isDefaultEnabled: option.isDefaultEnabled,
+        setupCost: parseFloat(option.setupCost),
+        priceFormula: option.priceFormula || undefined,
+        parentOptionId: newParentId,
+        displayOrder: option.displayOrder,
+        isActive: option.isActive,
+      });
+      optionIdMap[option.id] = newOption.id;
+    }
+
+    return newProduct;
   }
 
   // Product options operations

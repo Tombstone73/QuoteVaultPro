@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { evaluate } from "mathjs";
+import Papa from "papaparse";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, isAdmin } from "./replitAuth";
 import {
@@ -101,6 +102,156 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting product:", error);
       res.status(500).json({ message: "Failed to delete product" });
+    }
+  });
+
+  app.post("/api/products/:id/clone", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const clonedProduct = await storage.cloneProduct(req.params.id);
+      res.json(clonedProduct);
+    } catch (error) {
+      console.error("Error cloning product:", error);
+      res.status(500).json({ message: "Failed to clone product" });
+    }
+  });
+
+  app.get("/api/products/csv-template", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const templateData = [
+        { Type: 'PRODUCT', 'Product Name': 'Business Cards', 'Product Description': 'High-quality business cards', 'Pricing Formula': 'basePrice * quantity', 'Variant Label': 'Media Type', Category: 'Cards', 'Store URL': 'https://example.com/business-cards', 'Show Store Link': 'true', 'Is Active': 'true', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
+        { Type: 'VARIANT', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Is Active': '', 'Variant Name': '13oz Vinyl', 'Variant Description': 'Durable vinyl material', 'Base Price Per Sqft': '0.0250', 'Is Default Variant': 'true', 'Variant Display Order': '1', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
+        { Type: 'VARIANT', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Is Active': '', 'Variant Name': 'Mesh', 'Variant Description': 'Windflow mesh material', 'Base Price Per Sqft': '0.0300', 'Is Default Variant': 'false', 'Variant Display Order': '2', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
+        { Type: 'OPTION', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Is Active': '', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': 'Lamination', 'Option Description': 'Add protective lamination', 'Option Type': 'toggle', 'Default Value': '', 'Default Selection': 'No Lamination', 'Is Default Enabled': 'false', 'Setup Cost': '25.00', 'Price Formula': 'quantity > 100 ? setupCost : setupCost * 1.5', 'Parent Option Name': '', 'Option Display Order': '1' },
+        { Type: 'OPTION', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Is Active': '', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': 'Grommets', 'Option Description': 'Add metal grommets', 'Option Type': 'select', 'Default Value': '', 'Default Selection': '4 Corners', 'Is Default Enabled': 'false', 'Setup Cost': '0', 'Price Formula': "setupCost + (selection === '4 Corners' ? 10 : selection === '8 Grommets' ? 20 : 0)", 'Parent Option Name': '', 'Option Display Order': '2' },
+        { Type: 'OPTION', 'Product Name': 'Business Cards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Is Active': '', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': 'Rush Production', 'Option Description': 'Expedited production', 'Option Type': 'toggle', 'Default Value': '', 'Default Selection': 'No Rush', 'Is Default Enabled': 'false', 'Setup Cost': '50.00', 'Price Formula': 'setupCost', 'Parent Option Name': '', 'Option Display Order': '3' },
+        { Type: 'PRODUCT', 'Product Name': 'Postcards', 'Product Description': 'Premium postcards', 'Pricing Formula': 'basePrice * quantity * 1.2', 'Variant Label': 'Paper Stock', Category: 'Cards', 'Store URL': 'https://example.com/postcards', 'Show Store Link': 'true', 'Is Active': 'true', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
+        { Type: 'VARIANT', 'Product Name': 'Postcards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Is Active': '', 'Variant Name': 'Glossy', 'Variant Description': 'High gloss finish', 'Base Price Per Sqft': '0.0150', 'Is Default Variant': 'true', 'Variant Display Order': '1', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
+        { Type: 'VARIANT', 'Product Name': 'Postcards', 'Product Description': '', 'Pricing Formula': '', 'Variant Label': '', Category: '', 'Store URL': '', 'Show Store Link': '', 'Is Active': '', 'Variant Name': 'Matte', 'Variant Description': 'Matte finish', 'Base Price Per Sqft': '0.0140', 'Is Default Variant': 'false', 'Variant Display Order': '2', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
+      ];
+
+      const csv = Papa.unparse(templateData);
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="product-import-template.csv"');
+      res.send(csv);
+    } catch (error) {
+      console.error("Error generating CSV template:", error);
+      res.status(500).json({ message: "Failed to generate CSV template" });
+    }
+  });
+
+  app.post("/api/products/import", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { csvData } = req.body;
+      if (!csvData || typeof csvData !== 'string') {
+        return res.status(400).json({ message: "CSV data is required" });
+      }
+
+      const parseResult = Papa.parse(csvData, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header: string) => header.trim(),
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.error("CSV parsing errors:", parseResult.errors);
+        return res.status(400).json({ 
+          message: "CSV parsing failed",
+          errors: parseResult.errors.map(e => e.message)
+        });
+      }
+
+      const rows = parseResult.data as Record<string, string>[];
+      if (rows.length === 0) {
+        return res.status(400).json({ message: "CSV must contain at least one data row" });
+      }
+
+      const productMap: Record<string, string> = {};
+      const optionMap: Record<string, Record<string, string>> = {};
+      
+      let importedProducts = 0;
+      let importedVariants = 0;
+      let importedOptions = 0;
+
+      for (const row of rows) {
+        const type = row['Type']?.trim();
+        const productName = row['Product Name']?.trim();
+
+        if (!type || !productName) continue;
+
+        if (type === 'PRODUCT') {
+          const newProduct = await storage.createProduct({
+            name: productName,
+            description: row['Product Description'] || '',
+            pricingFormula: row['Pricing Formula'] || 'basePrice * quantity',
+            variantLabel: row['Variant Label'] || 'Variant',
+            category: row['Category'] || null,
+            storeUrl: row['Store URL'] || null,
+            showStoreLink: row['Show Store Link'] === 'true',
+            isActive: row['Is Active'] !== 'false',
+          });
+          productMap[productName] = newProduct.id;
+          optionMap[productName] = {};
+          importedProducts++;
+        } else if (type === 'VARIANT') {
+          const productId = productMap[productName];
+          if (!productId) {
+            console.warn(`Variant references non-existent product: ${productName}`);
+            continue;
+          }
+
+          await storage.createProductVariant({
+            productId,
+            name: row['Variant Name'],
+            description: row['Variant Description'] || undefined,
+            basePricePerSqft: parseFloat(row['Base Price Per Sqft']) || 0,
+            isDefault: row['Is Default Variant'] === 'true',
+            displayOrder: parseInt(row['Variant Display Order']) || 0,
+            isActive: row['Is Active'] !== 'false',
+          });
+          importedVariants++;
+        } else if (type === 'OPTION') {
+          const productId = productMap[productName];
+          if (!productId) {
+            console.warn(`Option references non-existent product: ${productName}`);
+            continue;
+          }
+
+          const parentOptionName = row['Parent Option Name'];
+          const parentOptionId = parentOptionName ? optionMap[productName][parentOptionName] : undefined;
+
+          const optionType = (row['Option Type'] || 'toggle') as 'toggle' | 'number' | 'select';
+          const newOption = await storage.createProductOption({
+            productId,
+            name: row['Option Name'],
+            description: row['Option Description'] || undefined,
+            type: optionType,
+            defaultValue: row['Default Value'] || undefined,
+            defaultSelection: row['Default Selection'] || undefined,
+            isDefaultEnabled: row['Is Default Enabled'] === 'true',
+            setupCost: parseFloat(row['Setup Cost']) || 0,
+            priceFormula: row['Price Formula'] || undefined,
+            parentOptionId,
+            displayOrder: parseInt(row['Option Display Order']) || 0,
+            isActive: row['Is Active'] !== 'false',
+          });
+          
+          optionMap[productName][row['Option Name']] = newOption.id;
+          importedOptions++;
+        }
+      }
+
+      res.json({
+        message: "Products imported successfully",
+        imported: {
+          products: importedProducts,
+          variants: importedVariants,
+          options: importedOptions,
+        },
+      });
+    } catch (error) {
+      console.error("Error importing products:", error);
+      res.status(500).json({ message: "Failed to import products: " + (error as Error).message });
     }
   });
 
