@@ -2623,6 +2623,13 @@ export default function AdminSettings() {
                   )}
                 </div>
               )}
+
+              <MediaPicker
+                value={editProductForm.watch("thumbnailUrls") ?? []}
+                onChange={(urls) => editProductForm.setValue("thumbnailUrls", urls)}
+                open={isMediaPickerOpen && mediaPickerMode === "edit"}
+                onOpenChange={setIsMediaPickerOpen}
+              />
             </TabsContent>
 
             <TabsContent value="media" className="space-y-4">
