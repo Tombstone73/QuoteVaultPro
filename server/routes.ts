@@ -103,6 +103,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/media", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const assets = await storage.getAllMediaAssets();
+      res.json(assets);
+    } catch (error) {
+      console.error("Error fetching media assets:", error);
+      res.status(500).json({ message: "Failed to fetch media assets" });
+    }
+  });
+
+  app.post("/api/media", isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const { filename, url, fileSize, mimeType } = req.body;
+      
+      if (!filename || !url || fileSize === undefined || !mimeType) {
+        return res.status(400).json({ message: "filename, url, fileSize, and mimeType are required" });
+      }
+
+      const userId = req.user.claims.sub;
+      const asset = await storage.createMediaAsset({
+        filename,
+        url,
+        uploadedBy: userId,
+        fileSize,
+        mimeType,
+      });
+
+      res.json(asset);
+    } catch (error) {
+      console.error("Error creating media asset:", error);
+      res.status(500).json({ message: "Failed to create media asset" });
+    }
+  });
+
+  app.delete("/api/media/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteMediaAsset(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting media asset:", error);
+      res.status(500).json({ message: "Failed to delete media asset" });
+    }
+  });
+
   app.get("/api/products", isAuthenticated, async (req, res) => {
     try {
       const products = await storage.getAllProducts();
