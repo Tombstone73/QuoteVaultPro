@@ -181,8 +181,9 @@ function MediaLibraryTab() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
+  const formatDate = (date: string | Date) => {
+    const dateObj = typeof date === 'string' ? new Date(date) : date;
+    return dateObj.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric'
@@ -298,6 +299,107 @@ function MediaLibraryTab() {
   );
 }
 
+function MediaPicker({ 
+  value, 
+  onChange,
+  open,
+  onOpenChange
+}: { 
+  value: string[]; 
+  onChange: (urls: string[]) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [selected, setSelected] = useState<string[]>(value);
+
+  const { data: mediaAssets, isLoading } = useQuery<MediaAsset[]>({
+    queryKey: ["/api/media"],
+  });
+
+  const toggleSelection = (url: string) => {
+    if (selected.includes(url)) {
+      setSelected(selected.filter(u => u !== url));
+    } else {
+      setSelected([...selected, url]);
+    }
+  };
+
+  const handleConfirm = () => {
+    onChange(selected);
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto" data-testid="dialog-media-picker">
+        <DialogHeader>
+          <DialogTitle>Select Images from Library</DialogTitle>
+          <DialogDescription>
+            Choose images from your media library to add to this product
+          </DialogDescription>
+        </DialogHeader>
+        
+        {isLoading ? (
+          <div className="grid grid-cols-3 md:grid-cols-4 gap-4">
+            {[...Array(8)].map((_, i) => (
+              <Skeleton key={i} className="aspect-square" />
+            ))}
+          </div>
+        ) : mediaAssets && mediaAssets.length > 0 ? (
+          <div className="grid grid-cols-3 md:grid-cols-4 gap-4">
+            {mediaAssets.map((asset) => {
+              const isSelected = selected.includes(asset.url);
+              return (
+                <button
+                  key={asset.id}
+                  type="button"
+                  onClick={() => toggleSelection(asset.url)}
+                  className={`
+                    relative aspect-square rounded-md overflow-hidden border-2 transition-all
+                    ${isSelected ? 'border-primary ring-2 ring-primary' : 'border-transparent hover:border-muted-foreground'}
+                  `}
+                  data-testid={`picker-asset-${asset.id}`}
+                >
+                  <img
+                    src={asset.url}
+                    alt={asset.filename}
+                    className="w-full h-full object-cover"
+                  />
+                  {isSelected && (
+                    <div className="absolute inset-0 bg-primary/20 flex items-center justify-center">
+                      <div className="bg-primary text-primary-foreground rounded-full w-8 h-8 flex items-center justify-center font-bold">
+                        ✓
+                      </div>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-center py-12 text-muted-foreground">
+            No images in library. Go to Media Library tab to upload images first.
+          </div>
+        )}
+
+        <DialogFooter className="flex items-center justify-between">
+          <div className="text-sm text-muted-foreground">
+            {selected.length} {selected.length === 1 ? 'image' : 'images'} selected
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirm} data-testid="button-confirm-selection">
+              Add Selected Images
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function AdminSettings() {
   const { toast } = useToast();
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -311,6 +413,8 @@ export default function AdminSettings() {
   const [searchTerm, setSearchTerm] = useState("");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
+  const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
+  const [mediaPickerMode, setMediaPickerMode] = useState<"add" | "edit">("add");
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -1117,16 +1221,30 @@ export default function AdminSettings() {
                               <FormLabel data-testid="label-product-thumbnails">
                                 Product Thumbnails (Optional)
                               </FormLabel>
-                              <FormControl>
-                                <ObjectUploader
-                                  value={field.value ?? []}
-                                  onChange={field.onChange}
-                                  maxFiles={5}
-                                  allowedFileTypes={["image/*"]}
-                                />
-                              </FormControl>
+                              <div className="space-y-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setMediaPickerMode("add");
+                                    setIsMediaPickerOpen(true);
+                                  }}
+                                  data-testid="button-select-from-library"
+                                >
+                                  <LayoutGrid className="w-4 h-4 mr-2" />
+                                  Select from Library
+                                </Button>
+                                <FormControl>
+                                  <ObjectUploader
+                                    value={field.value ?? []}
+                                    onChange={field.onChange}
+                                    maxFiles={5}
+                                    allowedFileTypes={["image/*"]}
+                                  />
+                                </FormControl>
+                              </div>
                               <FormDescription>
-                                Upload up to 5 product images. Drag to reorder.
+                                Upload up to 5 product images or select from your media library. Drag to reorder.
                               </FormDescription>
                               <FormMessage />
                             </FormItem>
@@ -1168,6 +1286,13 @@ export default function AdminSettings() {
                     </Form>
                   </DialogContent>
                 </Dialog>
+
+                <MediaPicker
+                  value={addProductForm.watch("thumbnailUrls") ?? []}
+                  onChange={(urls) => addProductForm.setValue("thumbnailUrls", urls)}
+                  open={isMediaPickerOpen && mediaPickerMode === "add"}
+                  onOpenChange={setIsMediaPickerOpen}
+                />
               </div>
             </div>
 
@@ -1364,16 +1489,30 @@ export default function AdminSettings() {
                                             <FormLabel data-testid={`label-edit-thumbnails-${product.id}`}>
                                               Product Thumbnails (Optional)
                                             </FormLabel>
-                                            <FormControl>
-                                              <ObjectUploader
-                                                value={field.value || []}
-                                                onChange={field.onChange}
-                                                maxFiles={5}
-                                                allowedFileTypes={["image/*"]}
-                                              />
-                                            </FormControl>
+                                            <div className="space-y-2">
+                                              <Button
+                                                type="button"
+                                                variant="outline"
+                                                onClick={() => {
+                                                  setMediaPickerMode("edit");
+                                                  setIsMediaPickerOpen(true);
+                                                }}
+                                                data-testid={`button-select-from-library-edit-${product.id}`}
+                                              >
+                                                <LayoutGrid className="w-4 h-4 mr-2" />
+                                                Select from Library
+                                              </Button>
+                                              <FormControl>
+                                                <ObjectUploader
+                                                  value={field.value || []}
+                                                  onChange={field.onChange}
+                                                  maxFiles={5}
+                                                  allowedFileTypes={["image/*"]}
+                                                />
+                                              </FormControl>
+                                            </div>
                                             <FormDescription>
-                                              Upload up to 5 product images. Drag to reorder.
+                                              Upload up to 5 product images or select from your media library. Drag to reorder.
                                             </FormDescription>
                                             <FormMessage />
                                           </FormItem>
