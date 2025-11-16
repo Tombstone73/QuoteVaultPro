@@ -109,7 +109,6 @@ function SelectChoicesInput({ value, onChange }: { value: string; onChange: (val
 
 function MediaLibraryTab() {
   const { toast } = useToast();
-  const [uploadedUrls, setUploadedUrls] = useState<string[]>([]);
 
   const { data: mediaAssets, isLoading } = useQuery<MediaAsset[]>({
     queryKey: ["/api/media"],
@@ -141,23 +140,25 @@ function MediaLibraryTab() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/media"] });
-      setUploadedUrls([]);
       toast({
-        title: "Asset saved",
-        description: "Media asset has been added to the library",
+        title: "Image saved to library",
+        description: "Your image is now available in the media library",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: "Failed to save asset",
+        title: "Failed to save image",
         description: error.message,
         variant: "destructive",
       });
     },
   });
 
-  const handleSaveUploads = async () => {
-    for (const url of uploadedUrls) {
+  const handleUploadChange = async (urls: string[]) => {
+    const existingUrls = mediaAssets?.map(a => a.url) || [];
+    const newUrls = urls.filter(url => !existingUrls.includes(url));
+    
+    for (const url of newUrls) {
       const filename = url.split('/').pop() || 'unknown';
       try {
         const response = await fetch(url, { method: 'HEAD' });
@@ -172,6 +173,11 @@ function MediaLibraryTab() {
         });
       } catch (error) {
         console.error('Failed to save asset:', error);
+        toast({
+          title: "Upload failed",
+          description: `Failed to save ${filename} to library`,
+          variant: "destructive",
+        });
       }
     }
   };
@@ -197,27 +203,16 @@ function MediaLibraryTab() {
         <CardHeader>
           <CardTitle>Upload Media</CardTitle>
           <CardDescription>
-            Add images to your media library to reuse across multiple products
+            Upload images to automatically add them to your media library. You can then reuse them across multiple products.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
-            <ObjectUploader
-              value={uploadedUrls}
-              onChange={setUploadedUrls}
-              maxFiles={10}
-            />
-            {uploadedUrls.length > 0 && (
-              <Button
-                onClick={handleSaveUploads}
-                disabled={saveAssetMutation.isPending}
-                data-testid="button-save-to-library"
-              >
-                <Upload className="w-4 h-4 mr-2" />
-                Save {uploadedUrls.length} {uploadedUrls.length === 1 ? 'Image' : 'Images'} to Library
-              </Button>
-            )}
-          </div>
+          <ObjectUploader
+            value={mediaAssets?.map(a => a.url) || []}
+            onChange={handleUploadChange}
+            maxFiles={10}
+            allowedFileTypes={["image/*"]}
+          />
         </CardContent>
       </Card>
 
