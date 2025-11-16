@@ -68,10 +68,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const objectStorageService = new ObjectStorageService();
     try {
       const uploadURL = await objectStorageService.getObjectEntityUploadURL();
-      res.json({ uploadURL });
+      res.json({ 
+        method: "PUT",
+        url: uploadURL 
+      });
     } catch (error) {
       console.error("Error getting upload URL:", error);
       res.status(500).json({ message: "Failed to get upload URL" });
+    }
+  });
+
+  app.post("/api/objects/acl", isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const { objectPath } = req.body;
+      if (typeof objectPath !== 'string' || !objectPath) {
+        return res.status(400).json({ message: "objectPath is required" });
+      }
+
+      const userId = req.user.claims.sub;
+      const objectStorageService = new ObjectStorageService();
+
+      const normalizedPath = await objectStorageService.trySetObjectEntityAclPolicy(
+        objectPath,
+        {
+          owner: userId,
+          visibility: "public",
+        }
+      );
+
+      res.json({ path: normalizedPath });
+    } catch (error) {
+      console.error("Error setting object ACL:", error);
+      res.status(500).json({ message: "Failed to set object ACL" });
     }
   });
 
