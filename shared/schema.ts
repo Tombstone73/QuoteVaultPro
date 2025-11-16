@@ -59,6 +59,7 @@ export const products = pgTable("products", {
   category: varchar("category", { length: 100 }),
   storeUrl: varchar("store_url", { length: 512 }),
   showStoreLink: boolean("show_store_link").default(true).notNull(),
+  thumbnailUrls: text("thumbnail_urls").array().default(sql`'{}'::text[]`).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
