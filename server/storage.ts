@@ -7,6 +7,7 @@ import {
   quotes,
   quoteLineItems,
   pricingRules,
+  mediaAssets,
   type User,
   type UpsertUser,
   type Product,
@@ -30,6 +31,8 @@ import {
   type PricingRule,
   type InsertPricingRule,
   type UpdatePricingRule,
+  type MediaAsset,
+  type InsertMediaAsset,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, like, sql } from "drizzle-orm";
@@ -108,6 +111,12 @@ export interface IStorage {
   getPricingRuleByName(name: string): Promise<PricingRule | undefined>;
   createPricingRule(rule: InsertPricingRule): Promise<PricingRule>;
   updatePricingRule(rule: UpdatePricingRule): Promise<PricingRule>;
+
+  // Media assets operations
+  getAllMediaAssets(): Promise<MediaAsset[]>;
+  getMediaAssetById(id: string): Promise<MediaAsset | undefined>;
+  createMediaAsset(asset: InsertMediaAsset): Promise<MediaAsset>;
+  deleteMediaAsset(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -843,6 +852,25 @@ export class DatabaseStorage implements IStorage {
       .where(eq(pricingRules.name, ruleData.name))
       .returning();
     return updated;
+  }
+
+  // Media assets operations
+  async getAllMediaAssets(): Promise<MediaAsset[]> {
+    return await db.select().from(mediaAssets).orderBy(sql`${mediaAssets.uploadedAt} DESC`);
+  }
+
+  async getMediaAssetById(id: string): Promise<MediaAsset | undefined> {
+    const [asset] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, id));
+    return asset;
+  }
+
+  async createMediaAsset(assetData: InsertMediaAsset): Promise<MediaAsset> {
+    const [newAsset] = await db.insert(mediaAssets).values(assetData).returning();
+    return newAsset;
+  }
+
+  async deleteMediaAsset(id: string): Promise<void> {
+    await db.delete(mediaAssets).where(eq(mediaAssets.id, id));
   }
 }
 
