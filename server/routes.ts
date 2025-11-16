@@ -19,6 +19,11 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
+import {
+  ObjectStorageService,
+  ObjectNotFoundError,
+} from "./objectStorage";
+import { ObjectPermission } from "./objectAcl";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
@@ -31,6 +36,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching user:", error);
       res.status(500).json({ message: "Failed to fetch user" });
+    }
+  });
+
+  app.get("/objects/:objectPath(*)", async (req: any, res) => {
+    const userId = req.user?.claims?.sub;
+    const objectStorageService = new ObjectStorageService();
+    try {
+      const objectFile = await objectStorageService.getObjectEntityFile(
+        req.path,
+      );
+      const canAccess = await objectStorageService.canAccessObjectEntity({
+        objectFile,
+        userId: userId,
+        requestedPermission: ObjectPermission.READ,
+      });
+      if (!canAccess) {
+        return res.sendStatus(401);
+      }
+      objectStorageService.downloadObject(objectFile, res);
+    } catch (error) {
+      console.error("Error checking object access:", error);
+      if (error instanceof ObjectNotFoundError) {
+        return res.sendStatus(404);
+      }
+      return res.sendStatus(500);
+    }
+  });
+
+  app.post("/api/objects/upload", isAuthenticated, isAdmin, async (req, res) => {
+    const objectStorageService = new ObjectStorageService();
+    try {
+      const uploadURL = await objectStorageService.getObjectEntityUploadURL();
+      res.json({ uploadURL });
+    } catch (error) {
+      console.error("Error getting upload URL:", error);
+      res.status(500).json({ message: "Failed to get upload URL" });
     }
   });
 
@@ -351,6 +392,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error updating product:", error);
       res.status(500).json({ message: "Failed to update product" });
+    }
+  });
+
+  app.put("/api/products/:id/thumbnails", isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const { thumbnailUrls } = req.body;
+      if (!Array.isArray(thumbnailUrls)) {
+        return res.status(400).json({ message: "thumbnailUrls must be an array" });
+      }
+
+      const userId = req.user.claims.sub;
+      const objectStorageService = new ObjectStorageService();
+      const normalizedPaths: string[] = [];
+
+      for (const rawPath of thumbnailUrls) {
+        if (typeof rawPath !== 'string' || !rawPath) continue;
+        
+        const normalizedPath = await objectStorageService.trySetObjectEntityAclPolicy(
+          rawPath,
+          {
+            owner: userId,
+            visibility: "public",
+          }
+        );
+        normalizedPaths.push(normalizedPath);
+      }
+
+      const product = await storage.updateProduct(req.params.id, {
+        thumbnailUrls: normalizedPaths
+      } as UpdateProduct);
+
+      res.json(product);
+    } catch (error) {
+      console.error("Error updating product thumbnails:", error);
+      res.status(500).json({ message: "Failed to update product thumbnails" });
     }
   });
 
