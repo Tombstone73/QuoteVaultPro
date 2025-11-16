@@ -17,6 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { ObjectUploader } from "@/components/object-uploader";
+import { MediaPicker } from "@/components/media-picker";
 import type {
   Product,
   InsertProduct,
@@ -296,107 +297,6 @@ function MediaLibraryTab() {
         </CardContent>
       </Card>
     </div>
-  );
-}
-
-function MediaPicker({ 
-  value, 
-  onChange,
-  open,
-  onOpenChange
-}: { 
-  value: string[]; 
-  onChange: (urls: string[]) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const [selected, setSelected] = useState<string[]>(value);
-
-  const { data: mediaAssets, isLoading } = useQuery<MediaAsset[]>({
-    queryKey: ["/api/media"],
-  });
-
-  const toggleSelection = (url: string) => {
-    if (selected.includes(url)) {
-      setSelected(selected.filter(u => u !== url));
-    } else {
-      setSelected([...selected, url]);
-    }
-  };
-
-  const handleConfirm = () => {
-    onChange(selected);
-    onOpenChange(false);
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto" data-testid="dialog-media-picker">
-        <DialogHeader>
-          <DialogTitle>Select Images from Library</DialogTitle>
-          <DialogDescription>
-            Choose images from your media library to add to this product
-          </DialogDescription>
-        </DialogHeader>
-        
-        {isLoading ? (
-          <div className="grid grid-cols-3 md:grid-cols-4 gap-4">
-            {[...Array(8)].map((_, i) => (
-              <Skeleton key={i} className="aspect-square" />
-            ))}
-          </div>
-        ) : mediaAssets && mediaAssets.length > 0 ? (
-          <div className="grid grid-cols-3 md:grid-cols-4 gap-4">
-            {mediaAssets.map((asset) => {
-              const isSelected = selected.includes(asset.url);
-              return (
-                <button
-                  key={asset.id}
-                  type="button"
-                  onClick={() => toggleSelection(asset.url)}
-                  className={`
-                    relative aspect-square rounded-md overflow-hidden border-2 transition-all
-                    ${isSelected ? 'border-primary ring-2 ring-primary' : 'border-transparent hover:border-muted-foreground'}
-                  `}
-                  data-testid={`picker-asset-${asset.id}`}
-                >
-                  <img
-                    src={asset.url}
-                    alt={asset.filename}
-                    className="w-full h-full object-cover"
-                  />
-                  {isSelected && (
-                    <div className="absolute inset-0 bg-primary/20 flex items-center justify-center">
-                      <div className="bg-primary text-primary-foreground rounded-full w-8 h-8 flex items-center justify-center font-bold">
-                        ✓
-                      </div>
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-center py-12 text-muted-foreground">
-            No images in library. Go to Media Library tab to upload images first.
-          </div>
-        )}
-
-        <DialogFooter className="flex items-center justify-between">
-          <div className="text-sm text-muted-foreground">
-            {selected.length} {selected.length === 1 ? 'image' : 'images'} selected
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleConfirm} data-testid="button-confirm-selection">
-              Add Selected Images
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 
