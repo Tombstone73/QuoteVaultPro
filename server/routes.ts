@@ -191,6 +191,118 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/products/export", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const products = await storage.getAllProducts();
+      
+      const exportData: Array<Record<string, string>> = [];
+      
+      for (const product of products) {
+        exportData.push({
+          Type: 'PRODUCT',
+          'Product Name': product.name,
+          'Product Description': product.description || '',
+          'Pricing Formula': product.pricingFormula || '',
+          'Variant Label': product.variantLabel || '',
+          Category: product.category || '',
+          'Store URL': product.storeUrl || '',
+          'Show Store Link': product.showStoreLink ? 'true' : 'false',
+          'Is Active': product.isActive ? 'true' : 'false',
+          'Variant Name': '',
+          'Variant Description': '',
+          'Base Price Per Sqft': '',
+          'Is Default Variant': '',
+          'Variant Display Order': '',
+          'Option Name': '',
+          'Option Description': '',
+          'Option Type': '',
+          'Default Value': '',
+          'Default Selection': '',
+          'Is Default Enabled': '',
+          'Setup Cost': '',
+          'Price Formula': '',
+          'Parent Option Name': '',
+          'Option Display Order': '',
+        });
+        
+        const variants = await storage.getProductVariants(product.id);
+        for (const variant of variants) {
+          exportData.push({
+            Type: 'VARIANT',
+            'Product Name': product.name,
+            'Product Description': '',
+            'Pricing Formula': '',
+            'Variant Label': '',
+            Category: '',
+            'Store URL': '',
+            'Show Store Link': '',
+            'Is Active': '',
+            'Variant Name': variant.name,
+            'Variant Description': variant.description || '',
+            'Base Price Per Sqft': variant.basePricePerSqft.toString(),
+            'Is Default Variant': variant.isDefault ? 'true' : 'false',
+            'Variant Display Order': variant.displayOrder.toString(),
+            'Option Name': '',
+            'Option Description': '',
+            'Option Type': '',
+            'Default Value': '',
+            'Default Selection': '',
+            'Is Default Enabled': '',
+            'Setup Cost': '',
+            'Price Formula': '',
+            'Parent Option Name': '',
+            'Option Display Order': '',
+          });
+        }
+        
+        const options = await storage.getProductOptions(product.id);
+        const optionIdToNameMap: Record<string, string> = {};
+        for (const option of options) {
+          optionIdToNameMap[option.id] = option.name;
+        }
+        
+        for (const option of options) {
+          exportData.push({
+            Type: 'OPTION',
+            'Product Name': product.name,
+            'Product Description': '',
+            'Pricing Formula': '',
+            'Variant Label': '',
+            Category: '',
+            'Store URL': '',
+            'Show Store Link': '',
+            'Is Active': '',
+            'Variant Name': '',
+            'Variant Description': '',
+            'Base Price Per Sqft': '',
+            'Is Default Variant': '',
+            'Variant Display Order': '',
+            'Option Name': option.name,
+            'Option Description': option.description || '',
+            'Option Type': option.type,
+            'Default Value': option.defaultValue || '',
+            'Default Selection': option.defaultSelection || '',
+            'Is Default Enabled': option.isDefaultEnabled ? 'true' : 'false',
+            'Setup Cost': option.setupCost.toString(),
+            'Price Formula': option.priceFormula || '',
+            'Parent Option Name': option.parentOptionId ? (optionIdToNameMap[option.parentOptionId] || '') : '',
+            'Option Display Order': option.displayOrder.toString(),
+          });
+        }
+      }
+      
+      const csv = Papa.unparse(exportData);
+      
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="products-export-${timestamp}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error exporting products:", error);
+      res.status(500).json({ message: "Failed to export products" });
+    }
+  });
+
   app.get("/api/products/:id", isAuthenticated, async (req, res) => {
     try {
       const product = await storage.getProductById(req.params.id);
