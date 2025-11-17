@@ -673,6 +673,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...req.body,
         id: req.params.id,
       });
+      
+      // Special validation for next_quote_number to prevent duplicate quote numbers
+      const currentVariable = await storage.getGlobalVariableById(req.params.id);
+      if (currentVariable?.name === 'next_quote_number' && variableData.value !== undefined) {
+        const newValue = Math.floor(Number(variableData.value));
+        
+        // Get the maximum existing quote number
+        const maxQuoteNumber = await storage.getMaxQuoteNumber();
+        
+        if (maxQuoteNumber !== null && newValue <= maxQuoteNumber) {
+          return res.status(400).json({ 
+            message: `Cannot set next quote number to ${newValue}. The highest existing quote number is ${maxQuoteNumber}. Please set a value greater than ${maxQuoteNumber}.`
+          });
+        }
+      }
+      
       const variable = await storage.updateGlobalVariable(req.params.id, variableData);
       res.json(variable);
     } catch (error) {

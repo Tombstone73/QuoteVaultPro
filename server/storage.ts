@@ -64,6 +64,7 @@ export interface IStorage {
 
   // Global variables operations
   getAllGlobalVariables(): Promise<GlobalVariable[]>;
+  getGlobalVariableById(id: string): Promise<GlobalVariable | undefined>;
   getGlobalVariableByName(name: string): Promise<GlobalVariable | undefined>;
   createGlobalVariable(variable: InsertGlobalVariable): Promise<GlobalVariable>;
   updateGlobalVariable(id: string, variable: Partial<InsertGlobalVariable>): Promise<GlobalVariable>;
@@ -76,6 +77,7 @@ export interface IStorage {
     lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
   }): Promise<QuoteWithRelations>;
   getQuoteById(id: string, userId?: string): Promise<QuoteWithRelations | undefined>;
+  getMaxQuoteNumber(): Promise<number | null>;
   updateQuote(id: string, data: {
     customerName?: string;
     subtotal?: number;
@@ -408,6 +410,14 @@ export class DatabaseStorage implements IStorage {
     return variable;
   }
 
+  async getGlobalVariableById(id: string): Promise<GlobalVariable | undefined> {
+    const [variable] = await db
+      .select()
+      .from(globalVariables)
+      .where(eq(globalVariables.id, id));
+    return variable;
+  }
+
   async createGlobalVariable(variable: InsertGlobalVariable): Promise<GlobalVariable> {
     const variableData = {
       ...variable,
@@ -449,37 +459,45 @@ export class DatabaseStorage implements IStorage {
     // Calculate subtotal from line items
     const subtotal = data.lineItems.reduce((sum, item) => sum + Number(item.linePrice), 0);
     
-    // Get the next quote number from global variables
-    const [quoteNumberVar] = await db
-      .select()
-      .from(globalVariables)
-      .where(eq(globalVariables.name, 'next_quote_number'));
-    
-    if (!quoteNumberVar) {
-      throw new Error('Quote numbering system not initialized');
-    }
-    
-    const quoteNumber = Math.floor(Number(quoteNumberVar.value));
-    
-    // Create the parent quote (totalPrice initially same as subtotal, can be adjusted later)
-    const quoteData = {
-      userId: data.userId,
-      quoteNumber,
-      customerName: data.customerName,
-      subtotal: subtotal.toString(),
-      totalPrice: subtotal.toString(),
-    } as typeof quotes.$inferInsert;
-    
-    const [newQuote] = await db.insert(quotes).values(quoteData).returning();
-    
-    // Increment the next quote number
-    await db
-      .update(globalVariables)
-      .set({ 
-        value: (quoteNumber + 1).toString(),
-        updatedAt: new Date(),
-      })
-      .where(eq(globalVariables.id, quoteNumberVar.id));
+    // Use a transaction with row-level locking to ensure atomic quote number assignment
+    const newQuote = await db.transaction(async (tx) => {
+      // Lock the row to prevent concurrent access - use raw SQL for SELECT FOR UPDATE
+      const result = await tx.execute(sql`
+        SELECT * FROM ${globalVariables}
+        WHERE ${globalVariables.name} = 'next_quote_number'
+        FOR UPDATE
+      `);
+      
+      const quoteNumberVar = result.rows[0] as any;
+      
+      if (!quoteNumberVar) {
+        throw new Error('Quote numbering system not initialized');
+      }
+      
+      const quoteNumber = Math.floor(Number(quoteNumberVar.value));
+      
+      // Create the parent quote (totalPrice initially same as subtotal, can be adjusted later)
+      const quoteData = {
+        userId: data.userId,
+        quoteNumber,
+        customerName: data.customerName,
+        subtotal: subtotal.toString(),
+        totalPrice: subtotal.toString(),
+      } as typeof quotes.$inferInsert;
+      
+      const [quote] = await tx.insert(quotes).values(quoteData).returning();
+      
+      // Increment the next quote number
+      await tx
+        .update(globalVariables)
+        .set({ 
+          value: (quoteNumber + 1).toString(),
+          updatedAt: new Date(),
+        })
+        .where(eq(globalVariables.id, quoteNumberVar.id));
+      
+      return quote;
+    });
     
     // Create line items
     const lineItemsData = data.lineItems.map((item, index) => ({
@@ -576,6 +594,14 @@ export class DatabaseStorage implements IStorage {
       user,
       lineItems: lineItemsWithRelations,
     };
+  }
+
+  async getMaxQuoteNumber(): Promise<number | null> {
+    const result = await db
+      .select({ maxNumber: sql<number>`MAX(${quotes.quoteNumber})` })
+      .from(quotes);
+    
+    return result[0]?.maxNumber ?? null;
   }
 
   async updateQuote(id: string, data: {
