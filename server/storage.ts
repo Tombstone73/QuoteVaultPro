@@ -449,15 +449,37 @@ export class DatabaseStorage implements IStorage {
     // Calculate subtotal from line items
     const subtotal = data.lineItems.reduce((sum, item) => sum + Number(item.linePrice), 0);
     
+    // Get the next quote number from global variables
+    const [quoteNumberVar] = await db
+      .select()
+      .from(globalVariables)
+      .where(eq(globalVariables.name, 'next_quote_number'));
+    
+    if (!quoteNumberVar) {
+      throw new Error('Quote numbering system not initialized');
+    }
+    
+    const quoteNumber = Math.floor(Number(quoteNumberVar.value));
+    
     // Create the parent quote (totalPrice initially same as subtotal, can be adjusted later)
     const quoteData = {
       userId: data.userId,
+      quoteNumber,
       customerName: data.customerName,
       subtotal: subtotal.toString(),
       totalPrice: subtotal.toString(),
     } as typeof quotes.$inferInsert;
     
     const [newQuote] = await db.insert(quotes).values(quoteData).returning();
+    
+    // Increment the next quote number
+    await db
+      .update(globalVariables)
+      .set({ 
+        value: (quoteNumber + 1).toString(),
+        updatedAt: new Date(),
+      })
+      .where(eq(globalVariables.id, quoteNumberVar.id));
     
     // Create line items
     const lineItemsData = data.lineItems.map((item, index) => ({
