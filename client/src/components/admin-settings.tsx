@@ -136,7 +136,7 @@ function MediaLibraryTab() {
 
   const saveAssetMutation = useMutation({
     mutationFn: async (data: { filename: string; url: string; fileSize: number; mimeType: string }) => {
-      return apiRequest("/api/media", "POST", data);
+      return apiRequest("POST", "/api/media", data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/media"] });
