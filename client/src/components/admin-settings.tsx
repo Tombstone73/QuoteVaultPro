@@ -158,6 +158,8 @@ function MediaLibraryTab() {
     const existingUrls = mediaAssets?.map(a => a.url) || [];
     const newUrls = urls.filter(url => !existingUrls.includes(url));
     
+    console.log('handleUploadChange called', { allUrls: urls, existingUrls, newUrls });
+    
     for (const url of newUrls) {
       const filename = url.split('/').pop() || 'unknown.jpg';
       const extension = filename.split('.').pop()?.toLowerCase() || 'jpg';
@@ -173,18 +175,22 @@ function MediaLibraryTab() {
       
       const mimeType = mimeTypes[extension] || 'image/jpeg';
       
+      console.log('Attempting to save asset:', { filename, url, mimeType });
+      
       try {
-        await saveAssetMutation.mutateAsync({
+        const result = await saveAssetMutation.mutateAsync({
           filename,
           url,
           fileSize: 0,
           mimeType,
         });
-      } catch (error) {
-        console.error('Failed to save asset:', error);
+        console.log('Asset saved successfully:', result);
+      } catch (error: any) {
+        console.error('Failed to save asset - full error:', error);
+        const errorMessage = error?.message || error?.toString() || 'Unknown error';
         toast({
           title: "Upload failed",
-          description: `Failed to save ${filename} to library`,
+          description: `Failed to save ${filename}: ${errorMessage}`,
           variant: "destructive",
         });
       }
