@@ -206,6 +206,7 @@ export type ProductOption = typeof productOptions.$inferSelect;
 // Quotes table (parent quote)
 export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  quoteNumber: integer("quote_number").unique(),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   customerName: varchar("customer_name", { length: 255 }),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -217,6 +218,7 @@ export const quotes = pgTable("quotes", {
 }, (table) => [
   index("quotes_user_id_idx").on(table.userId),
   index("quotes_created_at_idx").on(table.createdAt),
+  index("quotes_quote_number_idx").on(table.quoteNumber),
 ]);
 
 // Quote Line Items table
@@ -254,6 +256,7 @@ export const quoteLineItems = pgTable("quote_line_items", {
 
 export const insertQuoteSchema = createInsertSchema(quotes).omit({
   id: true,
+  quoteNumber: true,
   createdAt: true,
 }).extend({
   subtotal: z.coerce.number().min(0),
