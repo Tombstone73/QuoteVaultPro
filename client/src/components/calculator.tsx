@@ -8,8 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator as CalcIcon, ExternalLink, Save, Plus, X, Trash2 } from "lucide-react";
+import { Calculator as CalcIcon, ExternalLink, Save, Plus, X, Trash2, Grid3x3, List } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import type { Product, InsertQuote, ProductOption, ProductVariant, InsertQuoteLineItem } from "@shared/schema";
 
 // Line item draft type (before saving to server)
@@ -39,6 +40,7 @@ export default function CalculatorComponent() {
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [priceBreakdown, setPriceBreakdown] = useState<any>(null);
   const [lineItems, setLineItems] = useState<LineItemDraft[]>([]);
+  const [productViewMode, setProductViewMode] = useState<"dropdown" | "gallery">("dropdown");
   const [fieldErrors, setFieldErrors] = useState<{
     product?: boolean;
     width?: boolean;
@@ -449,34 +451,131 @@ export default function CalculatorComponent() {
             <CardDescription>Choose a product and enter specifications</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="product" data-testid="label-product">Product Type</Label>
-              <Select 
-                value={selectedProductId} 
-                onValueChange={(value) => {
-                  setSelectedProductId(value);
-                  setFieldErrors(prev => ({ ...prev, product: false }));
-                }}
-              >
-                <SelectTrigger 
-                  id="product" 
-                  data-testid="select-product"
-                  className={fieldErrors.product ? "border-red-500 focus:border-red-500" : ""}
+            <div className="flex items-center justify-between mb-4">
+              <Label htmlFor={productViewMode === "dropdown" ? "product" : undefined} data-testid="label-product">
+                Product Type
+              </Label>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant={productViewMode === "dropdown" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setProductViewMode("dropdown")}
+                  data-testid="button-view-dropdown"
                 >
-                  <SelectValue placeholder="Select a product" />
-                </SelectTrigger>
-                <SelectContent>
-                  {products?.filter(p => p.isActive).map((product) => (
-                    <SelectItem key={product.id} value={product.id} data-testid={`option-product-${product.id}`}>
-                      {product.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {fieldErrors.product && (
-                <p className="text-sm text-red-500">Please select a product</p>
-              )}
+                  <List className="w-4 h-4 mr-2" />
+                  List
+                </Button>
+                <Button
+                  variant={productViewMode === "gallery" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setProductViewMode("gallery")}
+                  data-testid="button-view-gallery"
+                >
+                  <Grid3x3 className="w-4 h-4 mr-2" />
+                  Gallery
+                </Button>
+              </div>
             </div>
+
+            {productViewMode === "dropdown" ? (
+              <div className="space-y-2">
+                <Select 
+                  value={selectedProductId} 
+                  onValueChange={(value) => {
+                    setSelectedProductId(value);
+                    setFieldErrors(prev => ({ ...prev, product: false }));
+                  }}
+                >
+                  <SelectTrigger 
+                    id="product" 
+                    data-testid="select-product"
+                    className={fieldErrors.product ? "border-red-500 focus:border-red-500" : ""}
+                  >
+                    <SelectValue placeholder="Select a product" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products?.filter(p => p.isActive).map((product) => (
+                      <SelectItem key={product.id} value={product.id} data-testid={`option-product-${product.id}`}>
+                        {product.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {fieldErrors.product && (
+                  <p className="text-sm text-red-500">Please select a product</p>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div
+                  role="listbox"
+                  aria-label="Product gallery"
+                  className="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-[500px] overflow-y-auto pr-2"
+                  data-testid="product-gallery"
+                >
+                  {products?.filter(p => p.isActive).map((product) => {
+                    const isSelected = selectedProductId === product.id;
+                    const thumbnailUrl = product.thumbnailUrls?.[0];
+                    
+                    return (
+                      <button
+                        key={product.id}
+                        type="button"
+                        role="option"
+                        aria-selected={isSelected}
+                        className={`text-left rounded-md border bg-card transition-all hover-elevate active-elevate-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                          isSelected 
+                            ? "ring-2 ring-primary" 
+                            : fieldErrors.product 
+                            ? "ring-2 ring-red-500" 
+                            : ""
+                        }`}
+                        onClick={() => {
+                          setSelectedProductId(product.id);
+                          setFieldErrors(prev => ({ ...prev, product: false }));
+                        }}
+                        data-testid={`product-card-${product.id}`}
+                      >
+                        <div className="overflow-hidden rounded-t-md">
+                          <div className="aspect-square relative bg-muted">
+                            {thumbnailUrl ? (
+                              <img
+                                src={thumbnailUrl}
+                                alt={product.name}
+                                className="w-full h-full object-cover"
+                                data-testid={`product-image-${product.id}`}
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                                <CalcIcon className="w-12 h-12" />
+                              </div>
+                            )}
+                            {isSelected && (
+                              <Badge className="absolute top-2 right-2 pointer-events-none" data-testid={`badge-selected-${product.id}`}>
+                                Selected
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="p-3">
+                          <div className="font-medium text-sm line-clamp-2" title={product.name}>
+                            {product.name}
+                          </div>
+                          {product.category && (
+                            <div className="text-xs text-muted-foreground mt-1">
+                              {product.category}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                {fieldErrors.product && (
+                  <p className="text-sm text-red-500">Please select a product</p>
+                )}
+              </div>
+            )}
 
             {productVariants && productVariants.filter(v => v.isActive).length > 0 && (
               <div className="space-y-2">
