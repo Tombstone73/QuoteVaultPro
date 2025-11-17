@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -136,8 +137,15 @@ export default function EditQuote() {
         <Button variant="ghost" size="icon" onClick={handleBack} data-testid="button-back">
           <ArrowLeft className="w-4 h-4" />
         </Button>
-        <div>
-          <h1 className="text-2xl font-bold">Edit Quote</h1>
+        <div className="flex-1">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold">Edit Quote</h1>
+            {quote.quoteNumber && (
+              <Badge variant="outline" className="font-mono text-base" data-testid="badge-quote-number">
+                #{quote.quoteNumber}
+              </Badge>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             Created {format(new Date(quote.createdAt), "MMM d, yyyy")}
           </p>

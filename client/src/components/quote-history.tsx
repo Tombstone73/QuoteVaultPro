@@ -187,6 +187,7 @@ export default function QuoteHistory() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead data-testid="header-quote-number">Quote #</TableHead>
                     <TableHead data-testid="header-date">Date</TableHead>
                     <TableHead data-testid="header-customer">Customer</TableHead>
                     <TableHead data-testid="header-items">Items</TableHead>
@@ -197,6 +198,11 @@ export default function QuoteHistory() {
                 <TableBody>
                   {quotes.map((quote) => (
                     <TableRow key={quote.id} data-testid={`row-quote-${quote.id}`}>
+                      <TableCell data-testid={`cell-quote-number-${quote.id}`}>
+                        <Badge variant="outline" className="font-mono">
+                          {quote.quoteNumber || 'N/A'}
+                        </Badge>
+                      </TableCell>
                       <TableCell data-testid={`cell-date-${quote.id}`}>
                         {format(new Date(quote.createdAt), 'MMM d, yyyy')}
                       </TableCell>
