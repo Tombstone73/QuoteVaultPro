@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,17 +9,24 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Search, Edit } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { FileText, Search, Edit, Mail } from "lucide-react";
 import { format } from "date-fns";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import type { Quote, Product, QuoteWithRelations } from "@shared/schema";
 
 export default function QuoteHistory() {
+  const { toast } = useToast();
   const [searchCustomer, setSearchCustomer] = useState("");
   const [searchProduct, setSearchProduct] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
+  const [recipientEmail, setRecipientEmail] = useState("");
 
   const { data: quotes, isLoading } = useQuery<QuoteWithRelations[]>({
     queryKey: [
@@ -58,6 +65,47 @@ export default function QuoteHistory() {
     setEndDate("");
     setMinPrice("");
     setMaxPrice("");
+  };
+
+  const emailQuoteMutation = useMutation({
+    mutationFn: async ({ quoteId, email }: { quoteId: string; email: string }) => {
+      return apiRequest("POST", `/api/quotes/${quoteId}/email`, { recipientEmail: email });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Success",
+        description: "Quote email sent successfully!",
+      });
+      setEmailDialogOpen(false);
+      setRecipientEmail("");
+      setSelectedQuoteId(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to send quote email",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleEmailQuote = (quoteId: string) => {
+    setSelectedQuoteId(quoteId);
+    setEmailDialogOpen(true);
+  };
+
+  const handleSendEmail = () => {
+    if (!recipientEmail) {
+      toast({
+        title: "Error",
+        description: "Please enter an email address",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (selectedQuoteId) {
+      emailQuoteMutation.mutate({ quoteId: selectedQuoteId, email: recipientEmail });
+    }
   };
 
   if (isLoading) {
@@ -241,12 +289,23 @@ export default function QuoteHistory() {
                         ${parseFloat(quote.totalPrice).toFixed(2)}
                       </TableCell>
                       <TableCell>
-                        <Link href={`/quotes/${quote.id}/edit`}>
-                          <Button variant="ghost" size="sm" data-testid={`button-edit-${quote.id}`}>
-                            <Edit className="w-4 h-4 mr-1" />
-                            Edit
+                        <div className="flex gap-1">
+                          <Link href={`/quotes/${quote.id}/edit`}>
+                            <Button variant="ghost" size="sm" data-testid={`button-edit-${quote.id}`}>
+                              <Edit className="w-4 h-4 mr-1" />
+                              Edit
+                            </Button>
+                          </Link>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEmailQuote(quote.id)}
+                            data-testid={`button-email-${quote.id}`}
+                          >
+                            <Mail className="w-4 h-4 mr-1" />
+                            Email
                           </Button>
-                        </Link>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -256,6 +315,55 @@ export default function QuoteHistory() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="w-5 h-5" />
+              Email Quote
+            </DialogTitle>
+            <DialogDescription>
+              Send this quote to a recipient via email
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="recipientEmail">Recipient Email</Label>
+              <Input
+                id="recipientEmail"
+                type="email"
+                placeholder="customer@example.com"
+                value={recipientEmail}
+                onChange={(e) => setRecipientEmail(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleSendEmail();
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEmailDialogOpen(false);
+                setRecipientEmail("");
+                setSelectedQuoteId(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSendEmail}
+              disabled={emailQuoteMutation.isPending}
+            >
+              {emailQuoteMutation.isPending ? "Sending..." : "Send Email"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

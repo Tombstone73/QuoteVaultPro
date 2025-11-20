@@ -6,6 +6,7 @@ import { storage } from "./storage";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 import NestingCalculator from "./NestingCalculator.js";
+import { emailService } from "./emailService";
 
 // Use local auth for development, Replit auth for production
 const auth = process.env.NODE_ENV === "development" ? localAuth : replitAuth;
@@ -20,6 +21,8 @@ import {
   updateProductVariantSchema,
   insertGlobalVariableSchema,
   updateGlobalVariableSchema,
+  insertEmailSettingsSchema,
+  updateEmailSettingsSchema,
   type InsertProduct,
   type UpdateProduct
 } from "@shared/schema";
@@ -1568,6 +1571,118 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting formula template:", error);
       res.status(500).json({ message: "Failed to delete formula template" });
+    }
+  });
+
+  // Email Settings routes
+  app.get("/api/email-settings", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const settings = await storage.getAllEmailSettings();
+      res.json(settings);
+    } catch (error) {
+      console.error("Error fetching email settings:", error);
+      res.status(500).json({ message: "Failed to fetch email settings" });
+    }
+  });
+
+  app.get("/api/email-settings/default", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const settings = await storage.getDefaultEmailSettings();
+      if (!settings) {
+        return res.status(404).json({ message: "No default email settings found" });
+      }
+      res.json(settings);
+    } catch (error) {
+      console.error("Error fetching default email settings:", error);
+      res.status(500).json({ message: "Failed to fetch default email settings" });
+    }
+  });
+
+  app.post("/api/email-settings", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const settingsData = insertEmailSettingsSchema.parse(req.body);
+      const settings = await storage.createEmailSettings(settingsData);
+      res.json(settings);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating email settings:", error);
+      res.status(500).json({ message: "Failed to create email settings" });
+    }
+  });
+
+  app.patch("/api/email-settings/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const settingsData = updateEmailSettingsSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = settingsData;
+      const settings = await storage.updateEmailSettings(req.params.id, updateData);
+      res.json(settings);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating email settings:", error);
+      res.status(500).json({ message: "Failed to update email settings" });
+    }
+  });
+
+  app.delete("/api/email-settings/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      await storage.deleteEmailSettings(req.params.id);
+      res.json({ message: "Email settings deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting email settings:", error);
+      res.status(500).json({ message: "Failed to delete email settings" });
+    }
+  });
+
+  // Email sending routes
+  app.post("/api/email/test", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { recipientEmail } = req.body;
+      if (!recipientEmail) {
+        return res.status(400).json({ message: "Recipient email is required" });
+      }
+
+      await emailService.sendTestEmail(recipientEmail);
+      res.json({ message: "Test email sent successfully" });
+    } catch (error) {
+      console.error("Error sending test email:", error);
+      res.status(500).json({
+        message: error instanceof Error ? error.message : "Failed to send test email"
+      });
+    }
+  });
+
+  app.post("/api/quotes/:id/email", isAuthenticated, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { recipientEmail } = req.body;
+
+      if (!recipientEmail) {
+        return res.status(400).json({ message: "Recipient email is required" });
+      }
+
+      // Verify user has access to this quote
+      const userId = getUserId(req.user);
+      const userIsAdmin = req.user.role === 'admin';
+      const quote = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      await emailService.sendQuoteEmail(id, recipientEmail);
+      res.json({ message: "Quote email sent successfully" });
+    } catch (error) {
+      console.error("Error sending quote email:", error);
+      res.status(500).json({
+        message: error instanceof Error ? error.message : "Failed to send quote email"
+      });
     }
   });
 
