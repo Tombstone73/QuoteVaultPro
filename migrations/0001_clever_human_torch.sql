@@ -1,0 +1,1 @@
+ALTER TABLE "global_variables" ALTER COLUMN "value" SET DATA TYPE text;

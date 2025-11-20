@@ -3,7 +3,13 @@ import { createServer, type Server } from "http";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated, isAdmin } from "./replitAuth";
+import * as localAuth from "./localAuth";
+import * as replitAuth from "./replitAuth";
+import NestingCalculator from "./NestingCalculator.js";
+
+// Use local auth for development, Replit auth for production
+const auth = process.env.NODE_ENV === "development" ? localAuth : replitAuth;
+const { setupAuth, isAuthenticated, isAdmin } = auth;
 import {
   insertProductSchema,
   updateProductSchema,
@@ -25,13 +31,19 @@ import {
 } from "./objectStorage";
 import { ObjectPermission } from "./objectAcl";
 
+// Helper function to get userId from request user object
+// Handles both Replit auth (claims.sub) and local auth (id) formats
+function getUserId(user: any): string | undefined {
+  return user?.claims?.sub || user?.id;
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
 
   app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
+      const userId = getUserId(req.user);
+      const user = await storage.getUser(userId!);
       res.json(user);
     } catch (error) {
       console.error("Error fetching user:", error);
@@ -39,8 +51,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // User management routes (admin only)
+  app.get("/api/users", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const users = await storage.getAllUsers();
+      res.json(users);
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
+  app.patch("/api/users/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+
+      // Prevent users from removing their own admin status
+      const currentUserId = getUserId(req.user);
+      if (id === currentUserId && updates.isAdmin === false) {
+        return res.status(400).json({ message: "You cannot remove your own admin status" });
+      }
+
+      const user = await storage.updateUser(id, updates);
+      res.json(user);
+    } catch (error) {
+      console.error("Error updating user:", error);
+      res.status(500).json({ message: "Failed to update user" });
+    }
+  });
+
+  app.delete("/api/users/:id", isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const currentUserId = getUserId(req.user);
+
+      // Prevent users from deleting themselves
+      if (id === currentUserId) {
+        return res.status(400).json({ message: "You cannot delete your own account" });
+      }
+
+      await storage.deleteUser(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      res.status(500).json({ message: "Failed to delete user" });
+    }
+  });
+
   app.get("/objects/:objectPath(*)", async (req: any, res) => {
-    const userId = req.user?.claims?.sub;
+    const userId = getUserId(req.user);
     const objectStorageService = new ObjectStorageService();
     try {
       const objectFile = await objectStorageService.getObjectEntityFile(
@@ -85,7 +145,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "objectPath is required" });
       }
 
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const objectStorageService = new ObjectStorageService();
 
       const normalizedPath = await objectStorageService.trySetObjectEntityAclPolicy(
@@ -121,11 +181,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "filename, url, fileSize, and mimeType are required" });
       }
 
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const asset = await storage.createMediaAsset({
         filename,
         url,
-        uploadedBy: userId,
+        uploadedBy: userId!,
         fileSize,
         mimeType,
       });
@@ -484,7 +544,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "thumbnailUrls must be an array" });
       }
 
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const objectStorageService = new ObjectStorageService();
       const normalizedPaths: string[] = [];
 
@@ -761,29 +821,127 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sqft = (widthNum * heightNum) / 144; // Convert sq inches to sq feet
 
       // Build formula context with dimensions, quantity, variant base price, and global variables
+      const basePricePerSqft = variant ? parseFloat(variant.basePricePerSqft) : 0;
       const formulaContext: Record<string, number> = {
         width: widthNum,
         height: heightNum,
         quantity: quantityNum,
         sqft,
-        basePricePerSqft: variant ? parseFloat(variant.basePricePerSqft) : 0,
+        basePricePerSqft,
+        // Single-letter aliases for convenience
+        w: widthNum,
+        h: heightNum,
+        q: quantityNum,
+        p: basePricePerSqft, // price per sqft alias
         ...globalVarsContext,
       };
 
-      // Safely evaluate base price using mathjs
+      // Calculate base price using nesting calculator or formula
       let basePrice = 0;
-      try {
-        const formula = product.pricingFormula;
-        basePrice = evaluate(formula, formulaContext);
+      let nestingDetails: any = undefined;
 
-        // Validate base price is a finite number
-        if (!Number.isFinite(basePrice)) {
-          console.error("Base pricing formula produced invalid result:", basePrice);
-          return res.status(400).json({ message: "Product pricing formula produced an invalid result" });
+      console.log(`[PRICING DEBUG] Product: ${product.name}, useNestingCalculator: ${product.useNestingCalculator}, sheetWidth: ${product.sheetWidth}, sheetHeight: ${product.sheetHeight}`);
+
+      if (product.useNestingCalculator && product.sheetWidth && product.sheetHeight) {
+        // Use Nesting Calculator
+        console.log(`[PRICING DEBUG] Using Nesting Calculator for product ${product.name}`);
+        try {
+          const sheetWidth = parseFloat(product.sheetWidth);
+          const sheetHeight = parseFloat(product.sheetHeight);
+
+          // Calculate sheet cost based on variant price per sqft
+          const sheetSqft = (sheetWidth * sheetHeight) / 144;
+          const sheetCost = basePricePerSqft * sheetSqft;
+
+          console.log(`[NESTING DEBUG] Sheet: ${sheetWidth}×${sheetHeight}, SqFt: ${sheetSqft}, Price/SqFt: $${basePricePerSqft}, Sheet Cost: $${sheetCost.toFixed(2)}`);
+
+          if (product.materialType === "roll") {
+            // Simplified roll calculation (optimize for width only)
+            const rollWidth = sheetWidth;
+            const piecesAcrossWidth = Math.floor(rollWidth / widthNum);
+
+            if (piecesAcrossWidth === 0) {
+              return res.status(400).json({ message: "Piece width exceeds roll width" });
+            }
+
+            const linearInchesPerPiece = heightNum;
+            const totalLinearInches = Math.ceil(quantityNum / piecesAcrossWidth) * linearInchesPerPiece;
+            const linearFeet = totalLinearInches / 12;
+
+            // Price per linear foot from variant
+            const pricePerLinearFoot = basePricePerSqft * (rollWidth / 12);
+            basePrice = linearFeet * pricePerLinearFoot;
+
+            nestingDetails = {
+              piecesAcrossWidth,
+              linearFeet: parseFloat(linearFeet.toFixed(2)),
+              pattern: `${piecesAcrossWidth} pieces across ${rollWidth}" width`,
+              efficiency: 100, // Roll materials don't have waste in the same way
+              costPerPiece: parseFloat((basePrice / quantityNum).toFixed(2)),
+            };
+          } else {
+            // Standard sheet nesting using NestingCalculator with waste accounting
+            const minPricePerItem = product.minPricePerItem ? parseFloat(product.minPricePerItem) : null;
+
+            // Use variant-level volume pricing if available, otherwise fall back to product-level
+            const volumePricing = (variant && variant.volumePricing) ? variant.volumePricing : (product.nestingVolumePricing || null);
+
+            const calc = new NestingCalculator(sheetWidth, sheetHeight, sheetCost, minPricePerItem, volumePricing);
+            const pricingResult = calc.calculatePricingWithWaste(widthNum, heightNum, quantityNum);
+
+            // Check for errors (oversized pieces)
+            if (pricingResult.error) {
+              return res.status(400).json({ message: pricingResult.message });
+            }
+
+            basePrice = pricingResult.totalPrice;
+
+            // Build detailed nesting information
+            nestingDetails = {
+              piecesPerSheet: pricingResult.maxPiecesPerSheet,
+              nestingPattern: pricingResult.nestingPattern,
+              orientation: pricingResult.orientation,
+              sheetWidth: pricingResult.sheetWidth,
+              sheetHeight: pricingResult.sheetHeight,
+              fullSheets: pricingResult.fullSheets,
+              fullSheetsCost: pricingResult.fullSheetsCost,
+              remainingPieces: pricingResult.remainingPieces,
+              partialSheet: pricingResult.partialSheetDetails,
+              totalPrice: pricingResult.totalPrice,
+              averageCostPerPiece: pricingResult.averageCostPerPiece,
+            };
+          }
+
+          // Validate base price is a finite number
+          if (!Number.isFinite(basePrice)) {
+            console.error("Nesting calculator produced invalid result:", basePrice);
+            return res.status(400).json({ message: "Nesting calculation produced an invalid result" });
+          }
+        } catch (error) {
+          console.error("Error in nesting calculator:", error);
+          return res.status(400).json({ message: "Nesting calculation failed" });
         }
-      } catch (error) {
-        console.error("Error evaluating formula:", error);
-        return res.status(400).json({ message: "Invalid pricing formula" });
+      } else {
+        // Use formula evaluation
+        console.log(`[PRICING DEBUG] Using Formula Evaluation for product ${product.name}`);
+        if (!product.pricingFormula) {
+          return res.status(400).json({ message: "Product must have either a pricing formula or nesting calculator enabled" });
+        }
+
+        try {
+          const formula = product.pricingFormula;
+          console.log(`[PRICING DEBUG] Formula: ${formula}`);
+          basePrice = evaluate(formula, formulaContext);
+
+          // Validate base price is a finite number
+          if (!Number.isFinite(basePrice)) {
+            console.error("Base pricing formula produced invalid result:", basePrice);
+            return res.status(400).json({ message: "Product pricing formula produced an invalid result" });
+          }
+        } catch (error) {
+          console.error("Error evaluating formula:", error);
+          return res.status(400).json({ message: "Invalid pricing formula" });
+        }
       }
 
       // Fetch product options and calculate option costs
@@ -915,7 +1073,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const total = basePrice + optionsPrice;
+      let subtotal = basePrice + optionsPrice;
+      let priceBreakDiscount = 0;
+      let priceBreakInfo: { type: string; tier: string; discount: number } | undefined;
+
+      // Apply price breaks if enabled
+      if (product.priceBreaks && typeof product.priceBreaks === 'object') {
+        const priceBreaks = product.priceBreaks as any;
+        if (priceBreaks.enabled && priceBreaks.tiers && Array.isArray(priceBreaks.tiers)) {
+          // Determine the value to compare based on price break type
+          let compareValue = 0;
+          switch (priceBreaks.type) {
+            case "quantity":
+              compareValue = quantityNum;
+              break;
+            case "sheets":
+              compareValue = quantityNum; // For sheets, use quantity directly
+              break;
+            case "sqft":
+              compareValue = sqft;
+              break;
+            default:
+              compareValue = quantityNum;
+          }
+
+          // Find the applicable tier
+          const applicableTier = priceBreaks.tiers
+            .filter((tier: any) => {
+              const minValue = tier.minValue || 0;
+              const maxValue = tier.maxValue;
+              return compareValue >= minValue && (maxValue === undefined || maxValue === null || compareValue <= maxValue);
+            })
+            .sort((a: any, b: any) => (b.minValue || 0) - (a.minValue || 0))[0];
+
+          if (applicableTier) {
+            // Apply the discount based on type
+            switch (applicableTier.discountType) {
+              case "percentage":
+                priceBreakDiscount = subtotal * (applicableTier.discountValue / 100);
+                break;
+              case "fixed":
+                priceBreakDiscount = applicableTier.discountValue;
+                break;
+              case "multiplier":
+                subtotal = subtotal * applicableTier.discountValue;
+                priceBreakDiscount = 0; // Multiplier is applied directly, not as a discount
+                break;
+            }
+
+            priceBreakInfo = {
+              type: priceBreaks.type,
+              tier: `${applicableTier.minValue}${applicableTier.maxValue ? `-${applicableTier.maxValue}` : '+'}`,
+              discount: priceBreakDiscount,
+            };
+          }
+        }
+      }
+
+      const total = subtotal - priceBreakDiscount;
 
       // Final validation of total price
       if (!Number.isFinite(total)) {
@@ -929,10 +1144,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           basePrice,
           addOnsPrice: 0, // Deprecated - keeping for backwards compatibility
           optionsPrice,
+          subtotal,
+          priceBreakDiscount,
+          priceBreakInfo,
           total,
           formula: product.pricingFormula,
           selectedOptions: selectedOptionsArray,
           variantInfo: variantName || undefined,
+          nestingDetails: nestingDetails || undefined,
         },
         variant: variant ? {
           id: variant.id,
@@ -947,7 +1166,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/quotes", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const { customerName, lineItems } = req.body;
 
       if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
@@ -998,7 +1217,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/quotes", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const filters = {
         searchCustomer: req.query.searchCustomer as string | undefined,
         searchProduct: req.query.searchProduct as string | undefined,
@@ -1018,7 +1237,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const userIsAdmin = req.user.role === 'admin';
       const { id } = req.params;
 
@@ -1038,7 +1257,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const userIsAdmin = req.user.role === 'admin';
       const { id } = req.params;
       const { customerName, subtotal, taxRate, marginPercentage, discountAmount, totalPrice } = req.body;
@@ -1080,7 +1299,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const userIsAdmin = req.user.role === 'admin';
       const { id } = req.params;
 
@@ -1100,7 +1319,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/quotes/:id/line-items", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const userIsAdmin = req.user.role === 'admin';
       const { id } = req.params;
       const lineItem = req.body;
@@ -1145,7 +1364,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const userIsAdmin = req.user.role === 'admin';
       const { id, lineItemId } = req.params;
       const lineItem = req.body;
@@ -1179,7 +1398,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = getUserId(req.user);
       const userIsAdmin = req.user.role === 'admin';
       const { id, lineItemId } = req.params;
 
@@ -1278,6 +1497,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching pricing rules:", error);
       res.status(500).json({ message: "Failed to fetch pricing rules" });
+    }
+  });
+
+  // Formula templates routes (admin only)
+  app.get("/api/formula-templates", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const templates = await storage.getAllFormulaTemplates();
+      console.log(`[DEBUG] Returning ${templates.length} formula templates:`, templates.map(t => ({ id: t.id, name: t.name })));
+      res.json(templates);
+    } catch (error) {
+      console.error("Error fetching formula templates:", error);
+      res.status(500).json({ message: "Failed to fetch formula templates" });
+    }
+  });
+
+  app.get("/api/formula-templates/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const template = await storage.getFormulaTemplateById(id);
+      if (!template) {
+        return res.status(404).json({ message: "Formula template not found" });
+      }
+      res.json(template);
+    } catch (error) {
+      console.error("Error fetching formula template:", error);
+      res.status(500).json({ message: "Failed to fetch formula template" });
+    }
+  });
+
+  app.get("/api/formula-templates/:id/products", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const products = await storage.getProductsByFormulaTemplate(id);
+      res.json(products);
+    } catch (error) {
+      console.error("Error fetching products for formula template:", error);
+      res.status(500).json({ message: "Failed to fetch products" });
+    }
+  });
+
+  app.post("/api/formula-templates", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      console.log("[DEBUG] Creating formula template with data:", req.body);
+      const template = await storage.createFormulaTemplate(req.body);
+      console.log("[DEBUG] Created formula template:", { id: template.id, name: template.name });
+      res.json(template);
+    } catch (error) {
+      console.error("Error creating formula template:", error);
+      res.status(500).json({ message: "Failed to create formula template" });
+    }
+  });
+
+  app.patch("/api/formula-templates/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const template = await storage.updateFormulaTemplate(id, req.body);
+      res.json(template);
+    } catch (error) {
+      console.error("Error updating formula template:", error);
+      res.status(500).json({ message: "Failed to update formula template" });
+    }
+  });
+
+  app.delete("/api/formula-templates/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteFormulaTemplate(id);
+      res.json({ message: "Formula template deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting formula template:", error);
+      res.status(500).json({ message: "Failed to delete formula template" });
     }
   });
 
