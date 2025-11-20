@@ -46,7 +46,16 @@ export const upsertUserSchema = createInsertSchema(users).pick({
   isAdmin: true,
 });
 
+export const updateUserSchema = createInsertSchema(users).pick({
+  email: true,
+  firstName: true,
+  lastName: true,
+  profileImageUrl: true,
+  isAdmin: true,
+}).partial();
+
 export type UpsertUser = z.infer<typeof upsertUserSchema>;
+export type UpdateUser = z.infer<typeof updateUserSchema>;
 export type User = typeof users.$inferSelect;
 
 // Media Assets table
@@ -76,12 +85,36 @@ export const products = pgTable("products", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description").notNull(),
-  pricingFormula: text("pricing_formula").notNull(),
+  pricingFormula: text("pricing_formula"), // Made optional - not required when using nesting calculator
   variantLabel: varchar("variant_label", { length: 100 }).default("Variant"),
   category: varchar("category", { length: 100 }),
   storeUrl: varchar("store_url", { length: 512 }),
   showStoreLink: boolean("show_store_link").default(true).notNull(),
   thumbnailUrls: text("thumbnail_urls").array().default(sql`'{}'::text[]`).notNull(),
+  priceBreaks: jsonb("price_breaks").$type<{
+    enabled: boolean;
+    type: "quantity" | "sheets" | "sqft";
+    tiers: Array<{
+      minValue: number;
+      maxValue?: number;
+      discountType: "percentage" | "fixed" | "multiplier";
+      discountValue: number;
+    }>;
+  }>().default(sql`'{"enabled":false,"type":"quantity","tiers":[]}'::jsonb`).notNull(),
+  // Nesting Calculator fields
+  useNestingCalculator: boolean("use_nesting_calculator").default(false).notNull(),
+  sheetWidth: decimal("sheet_width", { precision: 10, scale: 2 }),
+  sheetHeight: decimal("sheet_height", { precision: 10, scale: 2 }),
+  materialType: varchar("material_type", { length: 50 }).$type<"sheet" | "roll">().default("sheet"),
+  minPricePerItem: decimal("min_price_per_item", { precision: 10, scale: 2 }),
+  nestingVolumePricing: jsonb("nesting_volume_pricing").$type<{
+    enabled: boolean;
+    tiers: Array<{
+      minSheets: number;
+      maxSheets?: number;
+      pricePerSheet: number;
+    }>;
+  }>().default(sql`'{"enabled":false,"tiers":[]}'::jsonb`).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -91,9 +124,23 @@ export const insertProductSchema = createInsertSchema(products).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+}).extend({
+  pricingFormula: z.string().optional().nullable(),
+  sheetWidth: z.coerce.number().positive().optional().nullable(),
+  sheetHeight: z.coerce.number().positive().optional().nullable(),
+  minPricePerItem: z.coerce.number().positive().optional().nullable(),
 });
 
-export const updateProductSchema = insertProductSchema.partial();
+export const updateProductSchema = createInsertSchema(products).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  pricingFormula: z.string().optional().nullable(),
+  sheetWidth: z.coerce.number().positive().optional().nullable(),
+  sheetHeight: z.coerce.number().positive().optional().nullable(),
+  minPricePerItem: z.coerce.number().positive().optional().nullable(),
+}).partial();
 
 export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type UpdateProduct = z.infer<typeof updateProductSchema>;
@@ -106,6 +153,14 @@ export const productVariants = pgTable("product_variants", {
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   basePricePerSqft: decimal("base_price_per_sqft", { precision: 10, scale: 4 }).notNull(),
+  volumePricing: jsonb("volume_pricing").$type<{
+    enabled: boolean;
+    tiers: Array<{
+      minSheets: number;
+      maxSheets?: number;
+      pricePerSheet: number;
+    }>;
+  }>().default(sql`'{"enabled":false,"tiers":[]}'::jsonb`).notNull(),
   isDefault: boolean("is_default").default(false).notNull(),
   displayOrder: integer("display_order").default(0).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
@@ -136,7 +191,7 @@ export type ProductVariant = typeof productVariants.$inferSelect;
 export const globalVariables = pgTable("global_variables", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 100 }).notNull().unique(),
-  value: decimal("value", { precision: 10, scale: 4 }).notNull(),
+  value: text("value").notNull(), // Changed from decimal to text to support both numbers and strings
   description: text("description"),
   category: varchar("category", { length: 100 }),
   isActive: boolean("is_active").default(true).notNull(),
@@ -152,7 +207,7 @@ export const insertGlobalVariableSchema = createInsertSchema(globalVariables).om
   createdAt: true,
   updatedAt: true,
 }).extend({
-  value: z.coerce.number(),
+  value: z.string(), // Changed from z.coerce.number() to z.string() to support both numbers and strings
 });
 
 export const updateGlobalVariableSchema = insertGlobalVariableSchema.partial().extend({
@@ -306,6 +361,35 @@ export const updatePricingRuleSchema = insertPricingRuleSchema.partial().require
 export type InsertPricingRule = z.infer<typeof insertPricingRuleSchema>;
 export type UpdatePricingRule = z.infer<typeof updatePricingRuleSchema>;
 export type PricingRule = typeof pricingRules.$inferSelect;
+
+// Formula Templates table
+export const formulaTemplates = pgTable("formula_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 255 }).notNull().unique(),
+  description: text("description"),
+  formula: text("formula").notNull(),
+  category: varchar("category", { length: 100 }),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("formula_templates_name_idx").on(table.name),
+  index("formula_templates_category_idx").on(table.category),
+]);
+
+export const insertFormulaTemplateSchema = createInsertSchema(formulaTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateFormulaTemplateSchema = insertFormulaTemplateSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertFormulaTemplate = z.infer<typeof insertFormulaTemplateSchema>;
+export type UpdateFormulaTemplate = z.infer<typeof updateFormulaTemplateSchema>;
+export type FormulaTemplate = typeof formulaTemplates.$inferSelect;
 
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({

@@ -70,11 +70,21 @@ export default function CalculatorComponent() {
     setSelectedVariant(null);
   }, [selectedProductId]);
 
+  // Auto-select default variant when variants load
+  useEffect(() => {
+    if (productVariants && productVariants.length > 0 && !selectedVariant) {
+      const defaultVariant = productVariants.find(v => v.isDefault && v.isActive);
+      if (defaultVariant) {
+        setSelectedVariant(defaultVariant.id);
+      }
+    }
+  }, [productVariants, selectedVariant]);
+
   // Set default values when product options load
   useEffect(() => {
     if (productOptions && productOptions.length > 0) {
       const defaults: Record<string, any> = {};
-      
+
       // Build parent-child map
       const childrenByParent = new Map<string, ProductOption[]>();
       productOptions.forEach(opt => {
@@ -85,7 +95,7 @@ export default function CalculatorComponent() {
           childrenByParent.get(opt.parentOptionId)!.push(opt);
         }
       });
-      
+
       // Set defaults for top-level options first
       productOptions.forEach(option => {
         if (!option.parentOptionId) {
@@ -100,7 +110,7 @@ export default function CalculatorComponent() {
           }
         }
       });
-      
+
       // Only set defaults for child options if parent toggle is enabled
       productOptions.forEach(option => {
         if (option.parentOptionId) {
@@ -119,10 +129,35 @@ export default function CalculatorComponent() {
           }
         }
       });
-      
+
       setOptionValues(defaults);
     }
   }, [productOptions]);
+
+  // Auto-calculate price when inputs change
+  useEffect(() => {
+    // Only auto-calculate if all required fields are filled
+    if (!selectedProductId || !width || !height || !quantity) {
+      return;
+    }
+
+    const widthNum = parseFloat(width);
+    const heightNum = parseFloat(height);
+    const quantityNum = parseInt(quantity);
+
+    // Only calculate if all values are valid positive numbers
+    if (!Number.isFinite(widthNum) || widthNum <= 0 ||
+        !Number.isFinite(heightNum) || heightNum <= 0 ||
+        !Number.isFinite(quantityNum) || quantityNum <= 0) {
+      return;
+    }
+
+    // Clear any field errors since we have valid inputs
+    setFieldErrors({});
+
+    // Trigger the calculation
+    calculateMutation.mutate();
+  }, [selectedProductId, selectedVariant, width, height, quantity, optionValues]);
 
   const calculateMutation = useMutation({
     mutationFn: async () => {
@@ -706,15 +741,15 @@ export default function CalculatorComponent() {
               <Button
                 onClick={handleCalculate}
                 disabled={calculateMutation.isPending}
+                variant="outline"
                 className="flex-1"
                 data-testid="button-calculate"
               >
-                {calculateMutation.isPending ? "Calculating..." : "Calculate Price"}
+                {calculateMutation.isPending ? "Calculating..." : "Recalculate"}
               </Button>
               <Button
                 onClick={handleAddToQuote}
                 disabled={!calculatedPrice || calculateMutation.isPending}
-                variant="secondary"
                 className="flex-1"
                 data-testid="button-add-to-quote"
               >
@@ -722,11 +757,50 @@ export default function CalculatorComponent() {
                 Add to Quote
               </Button>
             </div>
+            {selectedProductId && width && height && quantity && (
+              <p className="text-xs text-muted-foreground text-center">
+                💡 Price updates automatically as you change options
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-6 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
+        {/* Quick Actions Card - Always visible at top of right column */}
+        <Card data-testid="card-quick-actions">
+          <CardHeader>
+            <CardTitle>Quick Actions</CardTitle>
+            <CardDescription>
+              {selectedProductId && width && height && quantity
+                ? "Price updates automatically"
+                : "Calculate and add items to your quote"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-2">
+              <Button
+                onClick={handleCalculate}
+                disabled={calculateMutation.isPending}
+                variant="outline"
+                className="w-full"
+                data-testid="button-calculate-right"
+              >
+                {calculateMutation.isPending ? "Calculating..." : "Recalculate"}
+              </Button>
+              <Button
+                onClick={handleAddToQuote}
+                disabled={!calculatedPrice || calculateMutation.isPending}
+                className="w-full"
+                data-testid="button-add-to-quote-right"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add to Quote
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
         {lineItems.length > 0 && (
           <Card data-testid="card-line-items">
             <CardHeader>
@@ -851,7 +925,104 @@ export default function CalculatorComponent() {
                       </span>
                     </div>
                   )}
-                  
+
+                  {priceBreakdown.nestingDetails && (
+                    <div className="space-y-2 border-t pt-2 mt-2">
+                      <div className="text-sm font-medium text-muted-foreground">Nesting Details:</div>
+                      <div className="pl-4 space-y-1 text-sm">
+                        {/* Sheet information */}
+                        {priceBreakdown.nestingDetails.piecesPerSheet && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Max pieces per sheet:</span>
+                            <span className="font-medium">
+                              {priceBreakdown.nestingDetails.piecesPerSheet}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Nesting pattern */}
+                        {priceBreakdown.nestingDetails.nestingPattern && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Pattern:</span>
+                            <span className="text-xs font-medium text-blue-600">
+                              {priceBreakdown.nestingDetails.nestingPattern}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Full sheets */}
+                        {priceBreakdown.nestingDetails.fullSheets !== undefined && priceBreakdown.nestingDetails.fullSheets > 0 && (
+                          <div className="flex justify-between border-t pt-1 mt-1">
+                            <span className="text-muted-foreground">Full sheets:</span>
+                            <span className="font-medium">
+                              {priceBreakdown.nestingDetails.fullSheets} × ${(priceBreakdown.nestingDetails.fullSheetsCost / priceBreakdown.nestingDetails.fullSheets).toFixed(2)} = ${priceBreakdown.nestingDetails.fullSheetsCost.toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Partial sheet with waste */}
+                        {priceBreakdown.nestingDetails.partialSheet && (
+                          <div className="space-y-1 border-t pt-1 mt-1">
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Partial sheet:</span>
+                              <span className="font-medium">{priceBreakdown.nestingDetails.partialSheet.pieces} pieces</span>
+                            </div>
+                            {priceBreakdown.nestingDetails.partialSheet.pattern && (
+                              <div className="flex justify-between pl-2">
+                                <span className="text-muted-foreground text-xs">Layout:</span>
+                                <span className="text-xs text-blue-600">
+                                  {priceBreakdown.nestingDetails.partialSheet.pattern}
+                                </span>
+                              </div>
+                            )}
+                            <div className="flex justify-between pl-2">
+                              <span className="text-muted-foreground text-xs">Material used:</span>
+                              <span className="text-xs">
+                                {priceBreakdown.nestingDetails.partialSheet.chargeWidth}" × {priceBreakdown.nestingDetails.partialSheet.chargeHeight || priceBreakdown.nestingDetails.partialSheet.roundedHeight}"
+                                ({priceBreakdown.nestingDetails.partialSheet.materialUsedSqft} sqft)
+                              </span>
+                            </div>
+                            {priceBreakdown.nestingDetails.partialSheet.wasteSqft > 0 && (
+                              <div className="flex justify-between pl-2">
+                                <span className="text-muted-foreground text-xs">Waste:</span>
+                                <span className={`text-xs ${priceBreakdown.nestingDetails.partialSheet.usableWaste ? 'text-green-600' : 'text-amber-600'}`}>
+                                  {priceBreakdown.nestingDetails.partialSheet.wasteWidth}" × {priceBreakdown.nestingDetails.partialSheet.wasteHeight}"
+                                  ({priceBreakdown.nestingDetails.partialSheet.wasteSqft} sqft)
+                                  {priceBreakdown.nestingDetails.partialSheet.usableWaste && (
+                                    <span className="ml-1">✓ Sellable</span>
+                                  )}
+                                </span>
+                              </div>
+                            )}
+                            <div className="flex justify-between pl-2">
+                              <span className="text-muted-foreground text-xs">Cost:</span>
+                              <span className="text-xs font-medium">
+                                ${priceBreakdown.nestingDetails.partialSheet.cost.toFixed(2)}
+                                (${priceBreakdown.nestingDetails.partialSheet.costPerPiece.toFixed(2)}/pc)
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Average cost per piece */}
+                        {priceBreakdown.nestingDetails.averageCostPerPiece && (
+                          <div className="flex justify-between border-t pt-1 mt-1 font-medium">
+                            <span className="text-muted-foreground">Average per piece:</span>
+                            <span className="font-mono">${priceBreakdown.nestingDetails.averageCostPerPiece.toFixed(2)}</span>
+                          </div>
+                        )}
+
+                        {/* Roll materials (legacy support) */}
+                        {priceBreakdown.nestingDetails.linearFeet && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Linear feet:</span>
+                            <span className="font-medium">{priceBreakdown.nestingDetails.linearFeet} ft</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="pt-2 border-t">
                     <div className="flex justify-between font-medium">
                       <span>Total:</span>
@@ -860,11 +1031,6 @@ export default function CalculatorComponent() {
                       </span>
                     </div>
                   </div>
-                </div>
-
-                <div className="text-xs text-muted-foreground bg-muted p-3 rounded-md">
-                  <p className="font-medium mb-1">Formula Used:</p>
-                  <code className="font-mono" data-testid="text-formula">{priceBreakdown.formula}</code>
                 </div>
               </CardContent>
             </Card>

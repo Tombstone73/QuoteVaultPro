@@ -8,6 +8,7 @@ import {
   quoteLineItems,
   pricingRules,
   mediaAssets,
+  formulaTemplates,
   type User,
   type UpsertUser,
   type Product,
@@ -33,6 +34,9 @@ import {
   type UpdatePricingRule,
   type MediaAsset,
   type InsertMediaAsset,
+  type FormulaTemplate,
+  type InsertFormulaTemplate,
+  type UpdateFormulaTemplate,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, like, sql } from "drizzle-orm";
@@ -40,7 +44,11 @@ import { eq, and, gte, lte, like, sql } from "drizzle-orm";
 export interface IStorage {
   // User operations
   getUser(id: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
+  getAllUsers(): Promise<User[]>;
   upsertUser(user: UpsertUser): Promise<User>;
+  updateUser(id: string, updates: Partial<User>): Promise<User>;
+  deleteUser(id: string): Promise<void>;
 
   // Product operations
   getAllProducts(): Promise<Product[]>;
@@ -119,6 +127,14 @@ export interface IStorage {
   getMediaAssetById(id: string): Promise<MediaAsset | undefined>;
   createMediaAsset(asset: InsertMediaAsset): Promise<MediaAsset>;
   deleteMediaAsset(id: string): Promise<void>;
+
+  // Formula templates operations
+  getAllFormulaTemplates(): Promise<FormulaTemplate[]>;
+  getFormulaTemplateById(id: string): Promise<FormulaTemplate | undefined>;
+  createFormulaTemplate(template: InsertFormulaTemplate): Promise<FormulaTemplate>;
+  updateFormulaTemplate(id: string, updates: Partial<FormulaTemplate>): Promise<FormulaTemplate>;
+  deleteFormulaTemplate(id: string): Promise<void>;
+  getProductsByFormulaTemplate(templateId: string): Promise<Product[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -126,6 +142,38 @@ export class DatabaseStorage implements IStorage {
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.email, email));
+    return user;
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    return await db.select().from(users).orderBy(users.email);
+  }
+
+  async updateUser(id: string, updates: Partial<User>): Promise<User> {
+    const updateData: any = {
+      ...updates,
+      updatedAt: new Date(),
+    };
+
+    const [user] = await db
+      .update(users)
+      .set(updateData)
+      .where(eq(users.id, id))
+      .returning();
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    return user;
+  }
+
+  async deleteUser(id: string): Promise<void> {
+    await db.delete(users).where(eq(users.id, id));
   }
 
   async upsertUser(userData: UpsertUser): Promise<User> {
@@ -919,6 +967,66 @@ export class DatabaseStorage implements IStorage {
 
   async deleteMediaAsset(id: string): Promise<void> {
     await db.delete(mediaAssets).where(eq(mediaAssets.id, id));
+  }
+
+  // Formula templates operations
+  async getAllFormulaTemplates(): Promise<FormulaTemplate[]> {
+    return await db
+      .select()
+      .from(formulaTemplates)
+      .where(eq(formulaTemplates.isActive, true))
+      .orderBy(formulaTemplates.category, formulaTemplates.name);
+  }
+
+  async getFormulaTemplateById(id: string): Promise<FormulaTemplate | undefined> {
+    const [template] = await db
+      .select()
+      .from(formulaTemplates)
+      .where(eq(formulaTemplates.id, id));
+    return template;
+  }
+
+  async createFormulaTemplate(template: InsertFormulaTemplate): Promise<FormulaTemplate> {
+    const [newTemplate] = await db
+      .insert(formulaTemplates)
+      .values(template)
+      .returning();
+    return newTemplate;
+  }
+
+  async updateFormulaTemplate(id: string, updates: Partial<FormulaTemplate>): Promise<FormulaTemplate> {
+    const updateData: any = {
+      ...updates,
+      updatedAt: new Date(),
+    };
+
+    const [template] = await db
+      .update(formulaTemplates)
+      .set(updateData)
+      .where(eq(formulaTemplates.id, id))
+      .returning();
+
+    if (!template) {
+      throw new Error("Formula template not found");
+    }
+
+    return template;
+  }
+
+  async deleteFormulaTemplate(id: string): Promise<void> {
+    await db.delete(formulaTemplates).where(eq(formulaTemplates.id, id));
+  }
+
+  async getProductsByFormulaTemplate(templateId: string): Promise<Product[]> {
+    // Get the formula template first
+    const template = await this.getFormulaTemplateById(templateId);
+    if (!template) {
+      return [];
+    }
+
+    // Find all products that use this exact formula
+    const allProducts = await db.select().from(products).where(eq(products.isActive, true));
+    return allProducts.filter(product => product.pricingFormula === template.formula);
   }
 }
 

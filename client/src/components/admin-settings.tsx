@@ -12,12 +12,13 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { ObjectUploader } from "@/components/object-uploader";
 import { MediaPicker } from "@/components/media-picker";
+import UserManagement from "@/components/user-management";
 import type {
   Product,
   InsertProduct,
@@ -31,15 +32,19 @@ import type {
   GlobalVariable,
   InsertGlobalVariable,
   UpdateGlobalVariable,
-  MediaAsset
+  MediaAsset,
+  FormulaTemplate,
+  InsertFormulaTemplate,
+  UpdateFormulaTemplate
 } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { 
-  insertProductSchema, 
+import {
+  insertProductSchema,
   insertProductOptionSchema,
   insertProductVariantSchema,
-  insertGlobalVariableSchema
+  insertGlobalVariableSchema,
+  insertFormulaTemplateSchema
 } from "@shared/schema";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -452,6 +457,8 @@ function QuoteNumberSettings() {
 
 export default function AdminSettings() {
   const { toast } = useToast();
+  const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showQuoteNumbering, setShowQuoteNumbering] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingOption, setEditingOption] = useState<ProductOption | null>(null);
@@ -460,7 +467,11 @@ export default function AdminSettings() {
   const [isAddVariantDialogOpen, setIsAddVariantDialogOpen] = useState(false);
   const [editingVariable, setEditingVariable] = useState<GlobalVariable | null>(null);
   const [isAddVariableDialogOpen, setIsAddVariableDialogOpen] = useState(false);
+  const [editingFormulaTemplate, setEditingFormulaTemplate] = useState<FormulaTemplate | null>(null);
+  const [isAddFormulaTemplateDialogOpen, setIsAddFormulaTemplateDialogOpen] = useState(false);
+  const [viewingTemplateProducts, setViewingTemplateProducts] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [templateSearchTerm, setTemplateSearchTerm] = useState("");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
@@ -476,10 +487,24 @@ export default function AdminSettings() {
       name: "",
       description: "",
       category: "",
-      pricingFormula: "width * height * 0.05 * quantity",
+      pricingFormula: "sqft * p * q",
       storeUrl: "",
       showStoreLink: true,
       thumbnailUrls: [],
+      priceBreaks: {
+        enabled: false,
+        type: "quantity",
+        tiers: [],
+      },
+      useNestingCalculator: false,
+      sheetWidth: null,
+      sheetHeight: null,
+      materialType: "sheet",
+      minPricePerItem: null,
+      nestingVolumePricing: {
+        enabled: false,
+        tiers: [],
+      },
       isActive: true,
     },
   });
@@ -511,6 +536,7 @@ export default function AdminSettings() {
       name: "",
       description: "",
       basePricePerSqft: 0,
+      volumePricing: { enabled: false, tiers: [] },
       isDefault: false,
       displayOrder: 0,
       isActive: true,
@@ -525,7 +551,7 @@ export default function AdminSettings() {
     resolver: zodResolver(insertGlobalVariableSchema),
     defaultValues: {
       name: "",
-      value: 0,
+      value: "",
       description: "",
       category: "",
       isActive: true,
@@ -534,6 +560,45 @@ export default function AdminSettings() {
 
   const editVariableForm = useForm<InsertGlobalVariable>({
     resolver: zodResolver(insertGlobalVariableSchema),
+  });
+
+  const formulaTemplateForm = useForm<InsertFormulaTemplate>({
+    resolver: zodResolver(insertFormulaTemplateSchema),
+    defaultValues: {
+      name: "",
+      description: "",
+      formula: "sqft * p * q",
+      category: "",
+      isActive: true,
+    },
+  });
+
+  const editFormulaTemplateForm = useForm<InsertFormulaTemplate>({
+    resolver: zodResolver(insertFormulaTemplateSchema),
+  });
+
+  const { data: formulaTemplates, isLoading: formulaTemplatesLoading } = useQuery<FormulaTemplate[]>({
+    queryKey: ["/api/formula-templates"],
+    queryFn: async () => {
+      console.log("[DEBUG] Fetching formula templates...");
+      const response = await fetch("/api/formula-templates", { credentials: "include" });
+      console.log("[DEBUG] Response status:", response.status, response.statusText);
+      const data = await response.json();
+      console.log("[DEBUG] Response data:", data);
+      return data;
+    },
+  });
+
+  // Debug logging
+  console.log("[DEBUG] Formula Templates:", {
+    loading: formulaTemplatesLoading,
+    data: formulaTemplates,
+    count: formulaTemplates?.length || 0
+  });
+
+  const { data: templateProducts } = useQuery<Product[]>({
+    queryKey: [`/api/formula-templates/${viewingTemplateProducts}/products`],
+    enabled: !!viewingTemplateProducts,
   });
 
   const addProductMutation = useMutation({
@@ -828,14 +893,24 @@ export default function AdminSettings() {
     mutationFn: async ({ productId, data }: { productId: string; data: Omit<InsertProductVariant, "productId"> }) => {
       return await apiRequest("POST", `/api/products/${productId}/variants`, data);
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       toast({
         title: "Variant Added",
         description: "The product variant has been added successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/all-variants"] });
+      // Invalidate and wait for refetch to complete
+      await queryClient.invalidateQueries({ queryKey: ["/api/all-variants"] });
+      // Close the add variant dialog
       setIsAddVariantDialogOpen(false);
-      variantForm.reset();
+      // Reset form
+      variantForm.reset({
+        name: "",
+        description: "",
+        basePricePerSqft: 0,
+        isDefault: false,
+        displayOrder: 0,
+        isActive: true,
+      });
     },
     onError: (error: Error) => {
       toast({
@@ -850,17 +925,16 @@ export default function AdminSettings() {
     mutationFn: async ({ productId, id, data }: { productId: string; id: string; data: Omit<InsertProductVariant, "productId"> }) => {
       return await apiRequest("PATCH", `/api/products/${productId}/variants/${id}`, data);
     },
-    onSuccess: (updatedVariant, variables) => {
+    onSuccess: async (updatedVariant, variables) => {
       toast({
         title: "Variant Updated",
         description: "The product variant has been updated successfully.",
       });
-      
-      //  DON'T invalidate or update cache - keep product dialog open
-      // The user can manually refresh to see changes, or close/reopen the dialog
-      // Invalidating causes the product dialog to close due to re-renders
-      
-      // Close only the variant dialog
+
+      // Invalidate to show updated variant immediately
+      await queryClient.invalidateQueries({ queryKey: ["/api/all-variants"] });
+
+      // Close the variant edit dialog
       setEditingVariant(null);
       editVariantForm.reset();
     },
@@ -963,6 +1037,9 @@ export default function AdminSettings() {
 
   const handleEditProduct = (product: Product) => {
     setEditingProduct(product);
+    // Reset dialog states when opening a product
+    setIsAddVariantDialogOpen(false);
+    setIsAddOptionDialogOpen(false);
     editProductForm.reset({
       name: product.name,
       description: product.description,
@@ -970,6 +1047,12 @@ export default function AdminSettings() {
       pricingFormula: product.pricingFormula,
       storeUrl: product.storeUrl || "",
       showStoreLink: product.showStoreLink,
+      useNestingCalculator: product.useNestingCalculator || false,
+      sheetWidth: product.sheetWidth ? parseFloat(product.sheetWidth as any) : null,
+      sheetHeight: product.sheetHeight ? parseFloat(product.sheetHeight as any) : null,
+      materialType: product.materialType || "sheet",
+      minPricePerItem: product.minPricePerItem ? parseFloat(product.minPricePerItem as any) : null,
+      nestingVolumePricing: product.nestingVolumePricing || { enabled: false, tiers: [] },
       isActive: product.isActive,
     });
   };
@@ -980,28 +1063,133 @@ export default function AdminSettings() {
       name: variant.name,
       description: variant.description || "",
       basePricePerSqft: Number(variant.basePricePerSqft),
+      volumePricing: variant.volumePricing || { enabled: false, tiers: [] },
       isDefault: variant.isDefault,
       displayOrder: variant.displayOrder,
       isActive: variant.isActive,
     });
   };
 
+  const handleCloneVariant = (variant: ProductVariant, productId: string) => {
+    // Get the highest display order from existing variants
+    const existingVariants = allVariants?.find(pv => pv.productId === productId)?.variants || [];
+    const maxDisplayOrder = existingVariants.length > 0
+      ? Math.max(...existingVariants.map(v => v.displayOrder))
+      : 0;
+
+    // Pre-fill the add variant form with cloned data
+    variantForm.reset({
+      name: `${variant.name} (Copy)`,
+      description: variant.description || "",
+      basePricePerSqft: Number(variant.basePricePerSqft),
+      volumePricing: variant.volumePricing || { enabled: false, tiers: [] },
+      isDefault: false, // Don't clone the default status
+      displayOrder: maxDisplayOrder + 1,
+      isActive: variant.isActive,
+    });
+
+    // Open the add variant dialog
+    setIsAddVariantDialogOpen(true);
+  };
+
   const handleEditVariable = (variable: GlobalVariable) => {
     setEditingVariable(variable);
     editVariableForm.reset({
       name: variable.name,
-      value: Number(variable.value),
+      value: variable.value,
       description: variable.description || "",
       category: variable.category || "",
       isActive: variable.isActive,
     });
   };
 
-  const filteredVariables = globalVariables?.filter((variable) =>
-    variable.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    variable.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    variable.category?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const handleEditFormulaTemplate = (template: FormulaTemplate) => {
+    setEditingFormulaTemplate(template);
+    editFormulaTemplateForm.reset({
+      name: template.name,
+      description: template.description || "",
+      formula: template.formula,
+      category: template.category || "",
+      isActive: template.isActive,
+    });
+  };
+
+  const addFormulaTemplateMutation = useMutation({
+    mutationFn: async (data: InsertFormulaTemplate) => {
+      console.log("[DEBUG] Creating formula template:", data);
+      const result = await apiRequest("POST", "/api/formula-templates", data);
+      console.log("[DEBUG] Formula template created:", result);
+      return result;
+    },
+    onSuccess: (data) => {
+      console.log("[DEBUG] onSuccess called with:", data);
+      toast({
+        title: "Formula Template Added",
+        description: "The formula template has been added successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/formula-templates"] });
+      setIsAddFormulaTemplateDialogOpen(false);
+      formulaTemplateForm.reset();
+    },
+    onError: (error: Error) => {
+      console.error("[DEBUG] Error creating formula template:", error);
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const updateFormulaTemplateMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: InsertFormulaTemplate }) => {
+      return await apiRequest("PATCH", `/api/formula-templates/${id}`, data);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Formula Template Updated",
+        description: "The formula template has been updated successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/formula-templates"] });
+      setEditingFormulaTemplate(null);
+      editFormulaTemplateForm.reset();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteFormulaTemplateMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await apiRequest("DELETE", `/api/formula-templates/${id}`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Formula Template Deleted",
+        description: "The formula template has been deleted successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/formula-templates"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const filteredVariables = globalVariables
+    ?.filter((variable) => variable.name !== 'next_quote_number') // Exclude quote numbering system
+    ?.filter((variable) =>
+      variable.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      variable.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      variable.category?.toLowerCase().includes(searchTerm.toLowerCase())
+    );
 
   if (productsLoading) {
     return (
@@ -1011,8 +1199,72 @@ export default function AdminSettings() {
     );
   }
 
+  // Show user management if requested
+  if (showUserManagement) {
+    return (
+      <div className="space-y-6">
+        <UserManagement onClose={() => setShowUserManagement(false)} />
+      </div>
+    );
+  }
+
+  // Show quote numbering if requested
+  if (showQuoteNumbering) {
+    return (
+      <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Hash className="w-5 h-5" />
+                <CardTitle>Quote Numbering System</CardTitle>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setShowQuoteNumbering(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            <CardDescription>
+              Configure the starting number for new quotes
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <QuoteNumberSettings />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
+      {/* Quick Access Buttons */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card>
+          <CardContent className="pt-6">
+            <Button
+              onClick={() => setShowUserManagement(true)}
+              className="w-full"
+              variant="outline"
+            >
+              <Users className="w-4 h-4 mr-2" />
+              Manage Users
+            </Button>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <Button
+              onClick={() => setShowQuoteNumbering(true)}
+              className="w-full"
+              variant="outline"
+            >
+              <Hash className="w-4 h-4 mr-2" />
+              Quote Numbering
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
       <Card data-testid="card-admin-settings">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -1028,8 +1280,8 @@ export default function AdminSettings() {
             <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
               <TabsTrigger value="media" data-testid="tab-media">Media Library</TabsTrigger>
-              <TabsTrigger value="variables" data-testid="tab-variables">Global Variables</TabsTrigger>
-              <TabsTrigger value="formulas" data-testid="tab-formulas">Pricing Formulas</TabsTrigger>
+              <TabsTrigger value="variables" data-testid="tab-variables">Pricing Variables</TabsTrigger>
+              <TabsTrigger value="formulas" data-testid="tab-formulas">Formula Templates</TabsTrigger>
             </TabsList>
 
             <TabsContent value="products" className="space-y-4">
@@ -1114,7 +1366,7 @@ export default function AdminSettings() {
                         Add Product
                       </Button>
                     </DialogTrigger>
-                  <DialogContent className="max-w-2xl" data-testid="dialog-add-product">
+                  <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="dialog-add-product">
                     <DialogHeader>
                       <DialogTitle>Add New Product</DialogTitle>
                       <DialogDescription>
@@ -1181,26 +1433,65 @@ export default function AdminSettings() {
                             </FormItem>
                           )}
                         />
-                        <FormField
-                          control={addProductForm.control}
-                          name="pricingFormula"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel data-testid="label-product-formula">Pricing Formula</FormLabel>
-                              <FormControl>
-                                <Input
-                                  placeholder="width * height * 0.05 * quantity"
-                                  {...field}
-                                  data-testid="input-product-formula"
-                                />
-                              </FormControl>
-                              <FormDescription>
-                                Use: width, height, quantity. Example: width * height * 0.05 * quantity
-                              </FormDescription>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
+                        <div className="space-y-2">
+                          <Label>Formula Template (Optional)</Label>
+                          <Select
+                            onValueChange={(value) => {
+                              if (value) {
+                                const template = formulaTemplates?.find(t => t.id === value);
+                                if (template) {
+                                  addProductForm.setValue("pricingFormula", template.formula);
+                                }
+                              }
+                            }}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a formula template..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {formulaTemplates && formulaTemplates.length > 0 ? (
+                                formulaTemplates.map((template) => (
+                                  <SelectItem key={template.id} value={template.id}>
+                                    <div className="flex flex-col">
+                                      <span className="font-medium">{template.name}</span>
+                                      {template.description && (
+                                        <span className="text-xs text-muted-foreground">{template.description}</span>
+                                      )}
+                                    </div>
+                                  </SelectItem>
+                                ))
+                              ) : (
+                                <SelectItem value="none" disabled>No templates available</SelectItem>
+                              )}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            Select a template to auto-fill the formula below, or write your own
+                          </p>
+                        </div>
+                        {!addProductForm.watch("useNestingCalculator") && (
+                          <FormField
+                            control={addProductForm.control}
+                            name="pricingFormula"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel data-testid="label-product-formula">Pricing Formula</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    placeholder="sqft * p * q"
+                                    {...field}
+                                    value={field.value || ""}
+                                    data-testid="input-product-formula"
+                                  />
+                                </FormControl>
+                                <FormDescription>
+                                  Use: w (width), h (height), q (quantity), sqft, p (price/sqft). Example: sqft * p * q
+                                </FormDescription>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        )}
                         <FormField
                           control={addProductForm.control}
                           name="variantLabel"
@@ -1222,6 +1513,251 @@ export default function AdminSettings() {
                             </FormItem>
                           )}
                         />
+
+                        {/* Nesting Calculator Section */}
+                        <div className="space-y-4 border-t pt-4">
+                          <FormField
+                            control={addProductForm.control}
+                            name="useNestingCalculator"
+                            render={({ field }) => (
+                              <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
+                                <div className="space-y-0.5">
+                                  <FormLabel className="text-base">Use Nesting Calculator</FormLabel>
+                                  <FormDescription>
+                                    Calculate optimal piece nesting on sheets instead of using formulas
+                                  </FormDescription>
+                                </div>
+                                <FormControl>
+                                  <Switch
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                  />
+                                </FormControl>
+                              </FormItem>
+                            )}
+                          />
+
+                          {addProductForm.watch("useNestingCalculator") && (
+                            <>
+                              <div className="bg-blue-50 border border-blue-200 rounded-md p-3 text-sm text-blue-800">
+                                <strong>⚠️ Required:</strong> Enter sheet dimensions below to use the nesting calculator. The pricing formula is not needed when nesting calculator is enabled.
+                              </div>
+                              <FormField
+                                control={addProductForm.control}
+                                name="materialType"
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>Material Type</FormLabel>
+                                    <Select
+                                      onValueChange={field.onChange}
+                                      defaultValue={field.value}
+                                    >
+                                      <FormControl>
+                                        <SelectTrigger>
+                                          <SelectValue placeholder="Select material type" />
+                                        </SelectTrigger>
+                                      </FormControl>
+                                      <SelectContent>
+                                        <SelectItem value="sheet">Sheet (e.g., foam board, coroplast)</SelectItem>
+                                        <SelectItem value="roll">Roll (e.g., vinyl)</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <FormDescription>
+                                      Sheet materials use 2D nesting, rolls optimize for width only
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <FormField
+                                  control={addProductForm.control}
+                                  name="sheetWidth"
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>
+                                        {addProductForm.watch("materialType") === "roll" ? "Roll Width" : "Sheet Width"} (inches)
+                                      </FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          type="number"
+                                          step="0.01"
+                                          placeholder={addProductForm.watch("materialType") === "roll" ? "Enter roll width" : "Enter sheet width"}
+                                          {...field}
+                                          value={field.value ?? ""}
+                                          onChange={(e) => field.onChange(e.target.value ? parseFloat(e.target.value) : null)}
+                                        />
+                                      </FormControl>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+
+                                <FormField
+                                  control={addProductForm.control}
+                                  name="sheetHeight"
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>
+                                        {addProductForm.watch("materialType") === "roll" ? "Roll Length" : "Sheet Height"} (inches)
+                                      </FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          type="number"
+                                          step="0.01"
+                                          placeholder={addProductForm.watch("materialType") === "roll" ? "Enter roll length" : "Enter sheet height"}
+                                          {...field}
+                                          value={field.value ?? ""}
+                                          onChange={(e) => field.onChange(e.target.value ? parseFloat(e.target.value) : null)}
+                                        />
+                                      </FormControl>
+                                      <FormDescription>
+                                        {addProductForm.watch("materialType") === "roll"
+                                          ? "For 150' roll, enter 1800 inches"
+                                          : "Example: 96 for 48×96 sheet"}
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                              </div>
+
+                              <FormField
+                                control={addProductForm.control}
+                                name="minPricePerItem"
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>Minimum Price Per Item (Optional)</FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="10.00"
+                                        {...field}
+                                        value={field.value ?? ""}
+                                        onChange={(e) => field.onChange(e.target.value ? parseFloat(e.target.value) : null)}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      Ensures each piece meets a minimum price threshold
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <div className="space-y-4 rounded-md border p-4">
+                                <div className="flex items-center justify-between">
+                                  <div>
+                                    <h4 className="text-sm font-medium">Volume Pricing Tiers</h4>
+                                    <p className="text-sm text-muted-foreground">
+                                      Set different prices per sheet based on quantity
+                                    </p>
+                                  </div>
+                                  <FormField
+                                    control={addProductForm.control}
+                                    name="nestingVolumePricing.enabled"
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormControl>
+                                          <Switch
+                                            checked={field.value}
+                                            onCheckedChange={field.onChange}
+                                          />
+                                        </FormControl>
+                                      </FormItem>
+                                    )}
+                                  />
+                                </div>
+
+                                {addProductForm.watch("nestingVolumePricing.enabled") && (
+                                  <div className="space-y-3">
+                                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+                                      {addProductForm.watch("nestingVolumePricing.tiers")?.map((tier: any, index: number) => (
+                                        <div key={index} className="flex items-center gap-2 p-2 border rounded">
+                                          <div className="flex-1 grid grid-cols-3 gap-2">
+                                            <div>
+                                              <label className="text-xs text-muted-foreground">Min Sheets</label>
+                                              <Input
+                                                type="number"
+                                                value={tier.minSheets}
+                                                onChange={(e) => {
+                                                  const tiers = [...(addProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                  tiers[index] = { ...tiers[index], minSheets: parseInt(e.target.value) || 0 };
+                                                  addProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                }}
+                                                className="h-8"
+                                              />
+                                            </div>
+                                            <div>
+                                              <label className="text-xs text-muted-foreground">Max Sheets (optional)</label>
+                                              <Input
+                                                type="number"
+                                                value={tier.maxSheets || ""}
+                                                onChange={(e) => {
+                                                  const tiers = [...(addProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                  tiers[index] = { ...tiers[index], maxSheets: e.target.value ? parseInt(e.target.value) : undefined };
+                                                  addProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                }}
+                                                placeholder="No limit"
+                                                className="h-8"
+                                              />
+                                            </div>
+                                            <div>
+                                              <label className="text-xs text-muted-foreground">Price Per Sheet</label>
+                                              <Input
+                                                type="number"
+                                                step="0.01"
+                                                value={tier.pricePerSheet}
+                                                onChange={(e) => {
+                                                  const tiers = [...(addProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                  tiers[index] = { ...tiers[index], pricePerSheet: parseFloat(e.target.value) || 0 };
+                                                  addProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                }}
+                                                className="h-8"
+                                              />
+                                            </div>
+                                          </div>
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8"
+                                            onClick={() => {
+                                              const tiers = [...(addProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                              tiers.splice(index, 1);
+                                              addProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                            }}
+                                          >
+                                            <Trash2 className="h-4 w-4" />
+                                          </Button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => {
+                                        const tiers = [...(addProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                        tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                        addProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                      }}
+                                    >
+                                      <Plus className="h-4 w-4 mr-1" />
+                                      Add Tier
+                                    </Button>
+                                    <p className="text-xs text-muted-foreground">
+                                      Example: 1-4 sheets @ $18, 5-9 sheets @ $16, 10+ sheets @ $14
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+
                         <FormField
                           control={addProductForm.control}
                           name="storeUrl"
@@ -1382,7 +1918,13 @@ export default function AdminSettings() {
                             <div className="flex justify-end gap-2">
                               <Dialog
                                 open={editingProduct?.id === product.id}
-                                onOpenChange={(open) => !open && setEditingProduct(null)}
+                                onOpenChange={(open) => {
+                                  if (!open) {
+                                    setEditingProduct(null);
+                                    setIsAddVariantDialogOpen(false);
+                                    setIsAddOptionDialogOpen(false);
+                                  }
+                                }}
                               >
                                 <DialogTrigger asChild>
                                   <Button
@@ -1403,7 +1945,9 @@ export default function AdminSettings() {
                                   </DialogHeader>
                                   <Form {...editProductForm}>
                                     <form
-                                      onSubmit={editProductForm.handleSubmit((data) => {
+                                      onSubmit={editProductForm.handleSubmit(() => {
+                                        // Get all form values, not just dirty fields
+                                        const data = editProductForm.getValues();
                                         const cleanData: any = {};
                                         Object.entries(data).forEach(([k, v]) => {
                                           // Convert empty strings to null, preserve null/undefined to let backend handle defaults
@@ -1460,22 +2004,60 @@ export default function AdminSettings() {
                                           </FormItem>
                                         )}
                                       />
-                                      <FormField
-                                        control={editProductForm.control}
-                                        name="pricingFormula"
-                                        render={({ field }) => (
-                                          <FormItem>
-                                            <FormLabel>Pricing Formula</FormLabel>
-                                            <FormControl>
-                                              <Input {...field} data-testid={`input-edit-formula-${product.id}`} />
-                                            </FormControl>
-                                            <FormDescription>
-                                              Use: width, height, quantity
-                                            </FormDescription>
-                                            <FormMessage />
-                                          </FormItem>
-                                        )}
-                                      />
+                                      <div className="space-y-2">
+                                        <Label>Formula Template (Optional)</Label>
+                                        <Select
+                                          onValueChange={(value) => {
+                                            if (value) {
+                                              const template = formulaTemplates?.find(t => t.id === value);
+                                              if (template) {
+                                                editProductForm.setValue("pricingFormula", template.formula);
+                                              }
+                                            }
+                                          }}
+                                        >
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="Select a formula template..." />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {formulaTemplates && formulaTemplates.length > 0 ? (
+                                              formulaTemplates.map((template) => (
+                                                <SelectItem key={template.id} value={template.id}>
+                                                  <div className="flex flex-col">
+                                                    <span className="font-medium">{template.name}</span>
+                                                    {template.description && (
+                                                      <span className="text-xs text-muted-foreground">{template.description}</span>
+                                                    )}
+                                                  </div>
+                                                </SelectItem>
+                                              ))
+                                            ) : (
+                                              <SelectItem value="none" disabled>No templates available</SelectItem>
+                                            )}
+                                          </SelectContent>
+                                        </Select>
+                                        <p className="text-xs text-muted-foreground">
+                                          Select a template to auto-fill the formula below
+                                        </p>
+                                      </div>
+                                      {!editProductForm.watch("useNestingCalculator") && (
+                                        <FormField
+                                          control={editProductForm.control}
+                                          name="pricingFormula"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Pricing Formula</FormLabel>
+                                              <FormControl>
+                                                <Input {...field} value={field.value || ""} data-testid={`input-edit-formula-${product.id}`} />
+                                              </FormControl>
+                                              <FormDescription>
+                                                Use: w (width), h (height), q (quantity), sqft, p (price/sqft)
+                                              </FormDescription>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                      )}
                                       <FormField
                                         control={editProductForm.control}
                                         name="variantLabel"
@@ -1497,6 +2079,251 @@ export default function AdminSettings() {
                                           </FormItem>
                                         )}
                                       />
+
+                                      {/* Nesting Calculator Section */}
+                                      <div className="space-y-4 border-t pt-4">
+                                        <FormField
+                                          control={editProductForm.control}
+                                          name="useNestingCalculator"
+                                          render={({ field }) => (
+                                            <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
+                                              <div className="space-y-0.5">
+                                                <FormLabel className="text-base">Use Nesting Calculator</FormLabel>
+                                                <FormDescription>
+                                                  Calculate optimal piece nesting on sheets instead of using formulas
+                                                </FormDescription>
+                                              </div>
+                                              <FormControl>
+                                                <Switch
+                                                  checked={field.value}
+                                                  onCheckedChange={field.onChange}
+                                                />
+                                              </FormControl>
+                                            </FormItem>
+                                          )}
+                                        />
+
+                                        {editProductForm.watch("useNestingCalculator") && (
+                                          <>
+                                            <div className="bg-blue-50 border border-blue-200 rounded-md p-3 text-sm text-blue-800">
+                                              <strong>⚠️ Required:</strong> Enter sheet dimensions below to use the nesting calculator. The pricing formula is not needed when nesting calculator is enabled.
+                                            </div>
+                                            <FormField
+                                              control={editProductForm.control}
+                                              name="materialType"
+                                              render={({ field }) => (
+                                                <FormItem>
+                                                  <FormLabel>Material Type</FormLabel>
+                                                  <Select
+                                                    onValueChange={field.onChange}
+                                                    value={field.value}
+                                                  >
+                                                    <FormControl>
+                                                      <SelectTrigger>
+                                                        <SelectValue placeholder="Select material type" />
+                                                      </SelectTrigger>
+                                                    </FormControl>
+                                                    <SelectContent>
+                                                      <SelectItem value="sheet">Sheet (e.g., foam board, coroplast)</SelectItem>
+                                                      <SelectItem value="roll">Roll (e.g., vinyl)</SelectItem>
+                                                    </SelectContent>
+                                                  </Select>
+                                                  <FormDescription>
+                                                    Sheet materials use 2D nesting, rolls optimize for width only
+                                                  </FormDescription>
+                                                  <FormMessage />
+                                                </FormItem>
+                                              )}
+                                            />
+
+                                            <div className="grid grid-cols-2 gap-4">
+                                              <FormField
+                                                control={editProductForm.control}
+                                                name="sheetWidth"
+                                                render={({ field }) => (
+                                                  <FormItem>
+                                                    <FormLabel>
+                                                      {editProductForm.watch("materialType") === "roll" ? "Roll Width" : "Sheet Width"} (inches)
+                                                    </FormLabel>
+                                                    <FormControl>
+                                                      <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        placeholder={editProductForm.watch("materialType") === "roll" ? "Enter roll width" : "Enter sheet width"}
+                                                        {...field}
+                                                        value={field.value ?? ""}
+                                                        onChange={(e) => field.onChange(e.target.value ? parseFloat(e.target.value) : null)}
+                                                      />
+                                                    </FormControl>
+                                                    <FormMessage />
+                                                  </FormItem>
+                                                )}
+                                              />
+
+                                              <FormField
+                                                control={editProductForm.control}
+                                                name="sheetHeight"
+                                                render={({ field }) => (
+                                                  <FormItem>
+                                                    <FormLabel>
+                                                      {editProductForm.watch("materialType") === "roll" ? "Roll Length" : "Sheet Height"} (inches)
+                                                    </FormLabel>
+                                                    <FormControl>
+                                                      <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        placeholder={editProductForm.watch("materialType") === "roll" ? "Enter roll length" : "Enter sheet height"}
+                                                        {...field}
+                                                        value={field.value ?? ""}
+                                                        onChange={(e) => field.onChange(e.target.value ? parseFloat(e.target.value) : null)}
+                                                      />
+                                                    </FormControl>
+                                                    <FormDescription>
+                                                      {editProductForm.watch("materialType") === "roll"
+                                                        ? "For 150' roll, enter 1800 inches"
+                                                        : "Example: 96 for 48×96 sheet"}
+                                                    </FormDescription>
+                                                    <FormMessage />
+                                                  </FormItem>
+                                                )}
+                                              />
+                                            </div>
+
+                                            <FormField
+                                              control={editProductForm.control}
+                                              name="minPricePerItem"
+                                              render={({ field }) => (
+                                                <FormItem>
+                                                  <FormLabel>Minimum Price Per Item (Optional)</FormLabel>
+                                                  <FormControl>
+                                                    <Input
+                                                      type="number"
+                                                      step="0.01"
+                                                      placeholder="10.00"
+                                                      {...field}
+                                                      value={field.value ?? ""}
+                                                      onChange={(e) => field.onChange(e.target.value ? parseFloat(e.target.value) : null)}
+                                                    />
+                                                  </FormControl>
+                                                  <FormDescription>
+                                                    Ensures each piece meets a minimum price threshold
+                                                  </FormDescription>
+                                                  <FormMessage />
+                                                </FormItem>
+                                              )}
+                                            />
+
+                                            <div className="space-y-4 rounded-md border p-4">
+                                              <div className="flex items-center justify-between">
+                                                <div>
+                                                  <h4 className="text-sm font-medium">Volume Pricing Tiers</h4>
+                                                  <p className="text-sm text-muted-foreground">
+                                                    Set different prices per sheet based on quantity
+                                                  </p>
+                                                </div>
+                                                <FormField
+                                                  control={editProductForm.control}
+                                                  name="nestingVolumePricing.enabled"
+                                                  render={({ field }) => (
+                                                    <FormItem>
+                                                      <FormControl>
+                                                        <Switch
+                                                          checked={field.value}
+                                                          onCheckedChange={field.onChange}
+                                                        />
+                                                      </FormControl>
+                                                    </FormItem>
+                                                  )}
+                                                />
+                                              </div>
+
+                                              {editProductForm.watch("nestingVolumePricing.enabled") && (
+                                                <div className="space-y-3">
+                                                  <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+                                                    {editProductForm.watch("nestingVolumePricing.tiers")?.map((tier: any, index: number) => (
+                                                      <div key={index} className="flex items-center gap-2 p-2 border rounded">
+                                                        <div className="flex-1 grid grid-cols-3 gap-2">
+                                                          <div>
+                                                            <label className="text-xs text-muted-foreground">Min Sheets</label>
+                                                            <Input
+                                                              type="number"
+                                                              value={tier.minSheets}
+                                                              onChange={(e) => {
+                                                                const tiers = [...(editProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                                tiers[index] = { ...tiers[index], minSheets: parseInt(e.target.value) || 0 };
+                                                                editProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                              }}
+                                                              className="h-8"
+                                                            />
+                                                          </div>
+                                                          <div>
+                                                            <label className="text-xs text-muted-foreground">Max Sheets (optional)</label>
+                                                            <Input
+                                                              type="number"
+                                                              value={tier.maxSheets || ""}
+                                                              onChange={(e) => {
+                                                                const tiers = [...(editProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                                tiers[index] = { ...tiers[index], maxSheets: e.target.value ? parseInt(e.target.value) : undefined };
+                                                                editProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                              }}
+                                                              placeholder="No limit"
+                                                              className="h-8"
+                                                            />
+                                                          </div>
+                                                          <div>
+                                                            <label className="text-xs text-muted-foreground">Price Per Sheet</label>
+                                                            <Input
+                                                              type="number"
+                                                              step="0.01"
+                                                              value={tier.pricePerSheet}
+                                                              onChange={(e) => {
+                                                                const tiers = [...(editProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                                tiers[index] = { ...tiers[index], pricePerSheet: parseFloat(e.target.value) || 0 };
+                                                                editProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                              }}
+                                                              className="h-8"
+                                                            />
+                                                          </div>
+                                                        </div>
+                                                        <Button
+                                                          type="button"
+                                                          variant="ghost"
+                                                          size="icon"
+                                                          className="h-8 w-8"
+                                                          onClick={() => {
+                                                            const tiers = [...(editProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                            tiers.splice(index, 1);
+                                                            editProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                          }}
+                                                        >
+                                                          <Trash2 className="h-4 w-4" />
+                                                        </Button>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                  <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => {
+                                                      const tiers = [...(editProductForm.watch("nestingVolumePricing.tiers") || [])];
+                                                      tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                                      editProductForm.setValue("nestingVolumePricing.tiers", tiers);
+                                                    }}
+                                                  >
+                                                    <Plus className="h-4 w-4 mr-1" />
+                                                    Add Tier
+                                                  </Button>
+                                                  <p className="text-xs text-muted-foreground">
+                                                    Example: 1-4 sheets @ $18, 5-9 sheets @ $16, 10+ sheets @ $14
+                                                  </p>
+                                                </div>
+                                              )}
+                                            </div>
+                                          </>
+                                        )}
+                                      </div>
+
                                       <FormField
                                         control={editProductForm.control}
                                         name="storeUrl"
@@ -1720,6 +2547,118 @@ export default function AdminSettings() {
                                                       </FormItem>
                                                     )}
                                                   />
+
+                                                  {/* Volume Pricing for Nesting Calculator Products */}
+                                                  {product.useNestingCalculator && (
+                                                    <div className="space-y-4 rounded-md border p-4">
+                                                      <div className="flex items-center justify-between">
+                                                        <div>
+                                                          <h4 className="text-sm font-medium">Volume Pricing Tiers</h4>
+                                                          <p className="text-sm text-muted-foreground">
+                                                            Set different prices per sheet based on quantity
+                                                          </p>
+                                                        </div>
+                                                        <FormField
+                                                          control={variantForm.control}
+                                                          name="volumePricing.enabled"
+                                                          render={({ field }) => (
+                                                            <FormItem>
+                                                              <FormControl>
+                                                                <Switch
+                                                                  checked={field.value}
+                                                                  onCheckedChange={field.onChange}
+                                                                />
+                                                              </FormControl>
+                                                            </FormItem>
+                                                          )}
+                                                        />
+                                                      </div>
+
+                                                      {variantForm.watch("volumePricing.enabled") && (
+                                                        <div className="space-y-3">
+                                                          <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+                                                            {variantForm.watch("volumePricing.tiers")?.map((tier: any, index: number) => (
+                                                              <div key={index} className="flex items-center gap-2 p-2 border rounded">
+                                                                <div className="flex-1 grid grid-cols-3 gap-2">
+                                                                  <div>
+                                                                    <label className="text-xs text-muted-foreground">Min Sheets</label>
+                                                                    <Input
+                                                                      type="number"
+                                                                      value={tier.minSheets}
+                                                                      onChange={(e) => {
+                                                                        const tiers = [...(variantForm.watch("volumePricing.tiers") || [])];
+                                                                        tiers[index] = { ...tiers[index], minSheets: parseInt(e.target.value) || 0 };
+                                                                        variantForm.setValue("volumePricing.tiers", tiers);
+                                                                      }}
+                                                                      className="h-8"
+                                                                    />
+                                                                  </div>
+                                                                  <div>
+                                                                    <label className="text-xs text-muted-foreground">Max Sheets (optional)</label>
+                                                                    <Input
+                                                                      type="number"
+                                                                      value={tier.maxSheets || ""}
+                                                                      onChange={(e) => {
+                                                                        const tiers = [...(variantForm.watch("volumePricing.tiers") || [])];
+                                                                        tiers[index] = { ...tiers[index], maxSheets: e.target.value ? parseInt(e.target.value) : undefined };
+                                                                        variantForm.setValue("volumePricing.tiers", tiers);
+                                                                      }}
+                                                                      placeholder="No limit"
+                                                                      className="h-8"
+                                                                    />
+                                                                  </div>
+                                                                  <div>
+                                                                    <label className="text-xs text-muted-foreground">Price Per Sheet</label>
+                                                                    <Input
+                                                                      type="number"
+                                                                      step="0.01"
+                                                                      value={tier.pricePerSheet}
+                                                                      onChange={(e) => {
+                                                                        const tiers = [...(variantForm.watch("volumePricing.tiers") || [])];
+                                                                        tiers[index] = { ...tiers[index], pricePerSheet: parseFloat(e.target.value) || 0 };
+                                                                        variantForm.setValue("volumePricing.tiers", tiers);
+                                                                      }}
+                                                                      className="h-8"
+                                                                    />
+                                                                  </div>
+                                                                </div>
+                                                                <Button
+                                                                  type="button"
+                                                                  variant="ghost"
+                                                                  size="icon"
+                                                                  className="h-8 w-8"
+                                                                  onClick={() => {
+                                                                    const tiers = [...(variantForm.watch("volumePricing.tiers") || [])];
+                                                                    tiers.splice(index, 1);
+                                                                    variantForm.setValue("volumePricing.tiers", tiers);
+                                                                  }}
+                                                                >
+                                                                  <Trash2 className="h-4 w-4" />
+                                                                </Button>
+                                                              </div>
+                                                            ))}
+                                                          </div>
+                                                          <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            size="sm"
+                                                            onClick={() => {
+                                                              const tiers = [...(variantForm.watch("volumePricing.tiers") || [])];
+                                                              tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                                              variantForm.setValue("volumePricing.tiers", tiers);
+                                                            }}
+                                                          >
+                                                            <Plus className="h-4 w-4 mr-1" />
+                                                            Add Tier
+                                                          </Button>
+                                                          <p className="text-xs text-muted-foreground">
+                                                            Example: 1-9 sheets @ $70, 10+ sheets @ $60
+                                                          </p>
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  )}
+
                                                   <DialogFooter>
                                                     <Button
                                                       type="submit"
@@ -1877,6 +2816,118 @@ export default function AdminSettings() {
                                                                     </FormItem>
                                                                   )}
                                                                 />
+
+                                                                {/* Volume Pricing for Nesting Calculator Products */}
+                                                                {product.useNestingCalculator && (
+                                                                  <div className="space-y-4 rounded-md border p-4">
+                                                                    <div className="flex items-center justify-between">
+                                                                      <div>
+                                                                        <h4 className="text-sm font-medium">Volume Pricing Tiers</h4>
+                                                                        <p className="text-sm text-muted-foreground">
+                                                                          Set different prices per sheet based on quantity
+                                                                        </p>
+                                                                      </div>
+                                                                      <FormField
+                                                                        control={editVariantForm.control}
+                                                                        name="volumePricing.enabled"
+                                                                        render={({ field }) => (
+                                                                          <FormItem>
+                                                                            <FormControl>
+                                                                              <Switch
+                                                                                checked={field.value}
+                                                                                onCheckedChange={field.onChange}
+                                                                              />
+                                                                            </FormControl>
+                                                                          </FormItem>
+                                                                        )}
+                                                                      />
+                                                                    </div>
+
+                                                                    {editVariantForm.watch("volumePricing.enabled") && (
+                                                                      <div className="space-y-3">
+                                                                        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+                                                                          {editVariantForm.watch("volumePricing.tiers")?.map((tier: any, index: number) => (
+                                                                            <div key={index} className="flex items-center gap-2 p-2 border rounded">
+                                                                              <div className="flex-1 grid grid-cols-3 gap-2">
+                                                                                <div>
+                                                                                  <label className="text-xs text-muted-foreground">Min Sheets</label>
+                                                                                  <Input
+                                                                                    type="number"
+                                                                                    value={tier.minSheets}
+                                                                                    onChange={(e) => {
+                                                                                      const tiers = [...(editVariantForm.watch("volumePricing.tiers") || [])];
+                                                                                      tiers[index] = { ...tiers[index], minSheets: parseInt(e.target.value) || 0 };
+                                                                                      editVariantForm.setValue("volumePricing.tiers", tiers);
+                                                                                    }}
+                                                                                    className="h-8"
+                                                                                  />
+                                                                                </div>
+                                                                                <div>
+                                                                                  <label className="text-xs text-muted-foreground">Max Sheets (optional)</label>
+                                                                                  <Input
+                                                                                    type="number"
+                                                                                    value={tier.maxSheets || ""}
+                                                                                    onChange={(e) => {
+                                                                                      const tiers = [...(editVariantForm.watch("volumePricing.tiers") || [])];
+                                                                                      tiers[index] = { ...tiers[index], maxSheets: e.target.value ? parseInt(e.target.value) : undefined };
+                                                                                      editVariantForm.setValue("volumePricing.tiers", tiers);
+                                                                                    }}
+                                                                                    placeholder="No limit"
+                                                                                    className="h-8"
+                                                                                  />
+                                                                                </div>
+                                                                                <div>
+                                                                                  <label className="text-xs text-muted-foreground">Price Per Sheet</label>
+                                                                                  <Input
+                                                                                    type="number"
+                                                                                    step="0.01"
+                                                                                    value={tier.pricePerSheet}
+                                                                                    onChange={(e) => {
+                                                                                      const tiers = [...(editVariantForm.watch("volumePricing.tiers") || [])];
+                                                                                      tiers[index] = { ...tiers[index], pricePerSheet: parseFloat(e.target.value) || 0 };
+                                                                                      editVariantForm.setValue("volumePricing.tiers", tiers);
+                                                                                    }}
+                                                                                    className="h-8"
+                                                                                  />
+                                                                                </div>
+                                                                              </div>
+                                                                              <Button
+                                                                                type="button"
+                                                                                variant="ghost"
+                                                                                size="icon"
+                                                                                className="h-8 w-8"
+                                                                                onClick={() => {
+                                                                                  const tiers = [...(editVariantForm.watch("volumePricing.tiers") || [])];
+                                                                                  tiers.splice(index, 1);
+                                                                                  editVariantForm.setValue("volumePricing.tiers", tiers);
+                                                                                }}
+                                                                              >
+                                                                                <Trash2 className="h-4 w-4" />
+                                                                              </Button>
+                                                                            </div>
+                                                                          ))}
+                                                                        </div>
+                                                                        <Button
+                                                                          type="button"
+                                                                          variant="outline"
+                                                                          size="sm"
+                                                                          onClick={() => {
+                                                                            const tiers = [...(editVariantForm.watch("volumePricing.tiers") || [])];
+                                                                            tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                                                            editVariantForm.setValue("volumePricing.tiers", tiers);
+                                                                          }}
+                                                                        >
+                                                                          <Plus className="h-4 w-4 mr-1" />
+                                                                          Add Tier
+                                                                        </Button>
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                          Example: 1-9 sheets @ $70, 10+ sheets @ $60
+                                                                        </p>
+                                                                      </div>
+                                                                    )}
+                                                                  </div>
+                                                                )}
+
                                                                 <DialogFooter>
                                                                   <Button
                                                                     type="submit"
@@ -1890,6 +2941,16 @@ export default function AdminSettings() {
                                                             </Form>
                                                           </DialogContent>
                                                         </Dialog>
+                                                        <Button
+                                                          type="button"
+                                                          variant="outline"
+                                                          size="icon"
+                                                          onClick={() => handleCloneVariant(variant, product.id)}
+                                                          data-testid={`button-clone-variant-${variant.id}`}
+                                                          title="Clone variant"
+                                                        >
+                                                          <Copy className="w-4 h-4" />
+                                                        </Button>
                                                         <AlertDialog>
                                                           <AlertDialogTrigger asChild>
                                                             <Button
@@ -2195,7 +3256,7 @@ export default function AdminSettings() {
                                                           />
                                                         </FormControl>
                                                         <FormDescription className="text-xs">
-                                                          JavaScript expression. Available: width, height, quantity, setupCost
+                                                          JavaScript expression. Available: w, h, q, sqft, setupCost
                                                         </FormDescription>
                                                         <FormMessage />
                                                       </FormItem>
@@ -2687,7 +3748,81 @@ export default function AdminSettings() {
             </TabsContent>
 
             <TabsContent value="variables" className="space-y-4">
-              <QuoteNumberSettings />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">Pricing Variables</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Manage global variables for use in pricing formulas
+                    </p>
+                  </div>
+                </div>
+
+                <Card data-testid="card-formula-guide">
+                  <CardHeader>
+                    <CardTitle>How to Use Variables in Formulas</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div>
+                      <h4 className="font-medium mb-2">Built-in Variables:</h4>
+                      <p className="text-sm text-muted-foreground mb-2">
+                        These variables are automatically available in all formulas:
+                      </p>
+                      <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                        <li><code className="bg-muted px-1 rounded">width</code> or <code className="bg-muted px-1 rounded">w</code> - Product width in inches</li>
+                        <li><code className="bg-muted px-1 rounded">height</code> or <code className="bg-muted px-1 rounded">h</code> - Product height in inches</li>
+                        <li><code className="bg-muted px-1 rounded">quantity</code> or <code className="bg-muted px-1 rounded">q</code> - Number of items</li>
+                        <li><code className="bg-muted px-1 rounded">sqft</code> - Square footage (width × height ÷ 144)</li>
+                        <li><code className="bg-muted px-1 rounded">basePricePerSqft</code> or <code className="bg-muted px-1 rounded">p</code> - Price per sq ft from variant</li>
+                      </ul>
+                      <p className="text-xs text-muted-foreground mt-2 italic">
+                        💡 Tip: Use single letters (w, h, q, p) for shorter formulas!
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-2 font-semibold">
+                        ⚠️ Note: Set price per sq ft in Product Variants, not in the formula!
+                      </p>
+                    </div>
+                    <div>
+                      <h4 className="font-medium mb-2">Your Custom Variables:</h4>
+                      {globalVariables && globalVariables.length > 0 ? (
+                        <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                          {globalVariables
+                            .filter(v => v.name !== 'next_quote_number')
+                            .map(variable => (
+                              <li key={variable.id}>
+                                <code className="bg-muted px-1 rounded">{variable.name}</code> = {Number(variable.value).toFixed(4)}
+                                {variable.description && <span className="ml-2">- {variable.description}</span>}
+                              </li>
+                            ))}
+                        </ul>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No custom variables yet. Add variables below to use them in formulas.</p>
+                      )}
+                    </div>
+                    <div>
+                      <h4 className="font-medium mb-2">Example Formulas:</h4>
+                      <div className="space-y-2 text-sm">
+                        <div className="bg-muted p-2 rounded">
+                          <code className="font-mono">sqft * p * q</code>
+                          <p className="text-muted-foreground mt-1">Simple: sqft × price per sqft × quantity</p>
+                        </div>
+                        <div className="bg-muted p-2 rounded">
+                          <code className="font-mono">(sqft * p * q) + SETUP_FEE</code>
+                          <p className="text-muted-foreground mt-1">With setup fee from global variable</p>
+                        </div>
+                        <div className="bg-muted p-2 rounded">
+                          <code className="font-mono">max(MIN_ORDER, sqft * p * q)</code>
+                          <p className="text-muted-foreground mt-1">Minimum order price</p>
+                        </div>
+                        <div className="bg-muted p-2 rounded">
+                          <code className="font-mono">sqft * p * q * (q &gt; 100 ? 0.9 : 1)</code>
+                          <p className="text-muted-foreground mt-1">10% discount for orders over 100</p>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
               
               <div className="flex justify-between items-center gap-4">
                 <div className="flex-1 max-w-md">
@@ -2737,15 +3872,16 @@ export default function AdminSettings() {
                             <FormItem>
                               <FormLabel data-testid="label-variable-value">Value</FormLabel>
                               <FormControl>
-                                <Input 
-                                  type="number" 
-                                  step="0.0001"
-                                  placeholder="0"
+                                <Input
+                                  type="text"
+                                  placeholder="0.05 or BASE_COST"
                                   {...field}
-                                  onChange={(e) => field.onChange(Number(e.target.value))}
                                   data-testid="input-variable-value"
                                 />
                               </FormControl>
+                              <FormDescription>
+                                Can be a number (e.g., 0.05) or a variable name (e.g., BASE_COST)
+                              </FormDescription>
                               <FormMessage />
                             </FormItem>
                           )}
@@ -2891,14 +4027,15 @@ export default function AdminSettings() {
                                           <FormItem>
                                             <FormLabel>Value</FormLabel>
                                             <FormControl>
-                                              <Input 
-                                                type="number" 
-                                                step="0.0001"
+                                              <Input
+                                                type="text"
                                                 {...field}
-                                                onChange={(e) => field.onChange(Number(e.target.value))}
                                                 data-testid={`input-edit-variable-value-${variable.id}`}
                                               />
                                             </FormControl>
+                                            <FormDescription>
+                                              Can be a number (e.g., 0.05) or a variable name (e.g., BASE_COST)
+                                            </FormDescription>
                                             <FormMessage />
                                           </FormItem>
                                         )}
@@ -2996,41 +4133,298 @@ export default function AdminSettings() {
             </TabsContent>
 
             <TabsContent value="formulas" className="space-y-4">
-              <div className="space-y-4">
-                <h3 className="text-lg font-semibold">Pricing Formula Guide</h3>
-                <Card data-testid="card-formula-guide">
-                  <CardHeader>
-                    <CardTitle>How to Write Pricing Formulas</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div>
-                      <h4 className="font-medium mb-2">Available Variables:</h4>
-                      <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                        <li><code className="bg-muted px-1 rounded">width</code> - Product width in inches</li>
-                        <li><code className="bg-muted px-1 rounded">height</code> - Product height in inches</li>
-                        <li><code className="bg-muted px-1 rounded">quantity</code> - Number of items</li>
-                      </ul>
-                    </div>
-                    <div>
-                      <h4 className="font-medium mb-2">Example Formulas:</h4>
-                      <div className="space-y-2 text-sm">
-                        <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">width * height * 0.05 * quantity</code>
-                          <p className="text-muted-foreground mt-1">Simple area-based pricing</p>
-                        </div>
-                        <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">(width * height * 0.05 * quantity) + 10</code>
-                          <p className="text-muted-foreground mt-1">Area-based with setup fee</p>
-                        </div>
-                        <div className="bg-muted p-2 rounded">
-                          <code className="font-mono">Math.max(50, width * height * 0.05 * quantity)</code>
-                          <p className="text-muted-foreground mt-1">Minimum order price of $50</p>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+              <div className="flex justify-between items-center gap-4">
+                <div className="flex-1 max-w-md">
+                  <Input
+                    placeholder="Search formula templates..."
+                    value={templateSearchTerm}
+                    onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                  />
+                </div>
+                <Dialog open={isAddFormulaTemplateDialogOpen} onOpenChange={setIsAddFormulaTemplateDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Formula Template
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                      <DialogTitle>Add New Formula Template</DialogTitle>
+                      <DialogDescription>
+                        Create a reusable formula template for pricing calculations
+                      </DialogDescription>
+                    </DialogHeader>
+                    <Form {...formulaTemplateForm}>
+                      <form onSubmit={formulaTemplateForm.handleSubmit((data) => addFormulaTemplateMutation.mutate(data))} className="space-y-4">
+                        <FormField
+                          control={formulaTemplateForm.control}
+                          name="name"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Template Name</FormLabel>
+                              <FormControl>
+                                <Input placeholder="Area-based pricing" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={formulaTemplateForm.control}
+                          name="formula"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Formula</FormLabel>
+                              <FormControl>
+                                <Textarea
+                                  placeholder="sqft * p * q"
+                                  {...field}
+                                  className="font-mono"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={formulaTemplateForm.control}
+                          name="description"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Description</FormLabel>
+                              <FormControl>
+                                <Textarea
+                                  placeholder="Description of what this formula does..."
+                                  {...field}
+                                  value={field.value || ""}
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={formulaTemplateForm.control}
+                          name="category"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Category</FormLabel>
+                              <FormControl>
+                                <Input placeholder="Standard" {...field} value={field.value || ""} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <DialogFooter>
+                          <Button type="submit" disabled={addFormulaTemplateMutation.isPending}>
+                            {addFormulaTemplateMutation.isPending ? "Adding..." : "Add Template"}
+                          </Button>
+                        </DialogFooter>
+                      </form>
+                    </Form>
+                  </DialogContent>
+                </Dialog>
               </div>
+
+              <div className="border rounded-md">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Formula</TableHead>
+                      <TableHead>Description</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead>Products</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {formulaTemplatesLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={6}>
+                          <Skeleton className="h-8 w-full" />
+                        </TableCell>
+                      </TableRow>
+                    ) : formulaTemplates && formulaTemplates.length > 0 ? (
+                      formulaTemplates
+                        .filter(template =>
+                          template.name.toLowerCase().includes(templateSearchTerm.toLowerCase()) ||
+                          template.description?.toLowerCase().includes(templateSearchTerm.toLowerCase())
+                        )
+                        .map((template) => (
+                          <TableRow key={template.id}>
+                            <TableCell className="font-medium">{template.name}</TableCell>
+                            <TableCell className="font-mono text-sm max-w-xs truncate">{template.formula}</TableCell>
+                            <TableCell className="max-w-xs truncate">
+                              {template.description || <span className="text-muted-foreground">—</span>}
+                            </TableCell>
+                            <TableCell>
+                              {template.category ? (
+                                <Badge variant="outline">{template.category}</Badge>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setViewingTemplateProducts(template.id)}
+                              >
+                                View Products
+                              </Button>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-2">
+                                <Dialog
+                                  open={editingFormulaTemplate?.id === template.id}
+                                  onOpenChange={(open) => !open && setEditingFormulaTemplate(null)}
+                                >
+                                  <DialogTrigger asChild>
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={() => handleEditFormulaTemplate(template)}
+                                    >
+                                      <Edit className="w-4 h-4" />
+                                    </Button>
+                                  </DialogTrigger>
+                                  <DialogContent className="max-w-2xl">
+                                    <DialogHeader>
+                                      <DialogTitle>Edit Formula Template</DialogTitle>
+                                    </DialogHeader>
+                                    <Form {...editFormulaTemplateForm}>
+                                      <form
+                                        onSubmit={editFormulaTemplateForm.handleSubmit((data) =>
+                                          updateFormulaTemplateMutation.mutate({ id: template.id, data })
+                                        )}
+                                        className="space-y-4"
+                                      >
+                                        <FormField
+                                          control={editFormulaTemplateForm.control}
+                                          name="name"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Template Name</FormLabel>
+                                              <FormControl>
+                                                <Input {...field} />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <FormField
+                                          control={editFormulaTemplateForm.control}
+                                          name="formula"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Formula</FormLabel>
+                                              <FormControl>
+                                                <Textarea {...field} className="font-mono" />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <FormField
+                                          control={editFormulaTemplateForm.control}
+                                          name="description"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Description</FormLabel>
+                                              <FormControl>
+                                                <Textarea {...field} value={field.value || ""} />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <FormField
+                                          control={editFormulaTemplateForm.control}
+                                          name="category"
+                                          render={({ field }) => (
+                                            <FormItem>
+                                              <FormLabel>Category</FormLabel>
+                                              <FormControl>
+                                                <Input {...field} value={field.value || ""} />
+                                              </FormControl>
+                                              <FormMessage />
+                                            </FormItem>
+                                          )}
+                                        />
+                                        <DialogFooter>
+                                          <Button type="submit" disabled={updateFormulaTemplateMutation.isPending}>
+                                            {updateFormulaTemplateMutation.isPending ? "Updating..." : "Update Template"}
+                                          </Button>
+                                        </DialogFooter>
+                                      </form>
+                                    </Form>
+                                  </DialogContent>
+                                </Dialog>
+
+                                <AlertDialog>
+                                  <AlertDialogTrigger asChild>
+                                    <Button variant="outline" size="icon">
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  </AlertDialogTrigger>
+                                  <AlertDialogContent>
+                                    <AlertDialogHeader>
+                                      <AlertDialogTitle>Delete Formula Template</AlertDialogTitle>
+                                      <AlertDialogDescription>
+                                        Are you sure you want to delete "{template.name}"? This action cannot be undone.
+                                      </AlertDialogDescription>
+                                    </AlertDialogHeader>
+                                    <AlertDialogFooter>
+                                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                      <AlertDialogAction onClick={() => deleteFormulaTemplateMutation.mutate(template.id)}>
+                                        Delete
+                                      </AlertDialogAction>
+                                    </AlertDialogFooter>
+                                  </AlertDialogContent>
+                                </AlertDialog>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                          No formula templates yet. Add your first template to get started.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Products using this template dialog */}
+              <Dialog open={!!viewingTemplateProducts} onOpenChange={(open) => !open && setViewingTemplateProducts(null)}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Products Using This Formula</DialogTitle>
+                    <DialogDescription>
+                      These products are currently using this formula template
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-2">
+                    {templateProducts && templateProducts.length > 0 ? (
+                      templateProducts.map((product) => (
+                        <div key={product.id} className="p-3 border rounded-md">
+                          <div className="font-medium">{product.name}</div>
+                          <div className="text-sm text-muted-foreground">{product.description}</div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-8 text-muted-foreground">
+                        No products are currently using this formula template.
+                      </div>
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
             </TabsContent>
           </Tabs>
         </CardContent>

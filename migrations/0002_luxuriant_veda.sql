@@ -1,0 +1,1 @@
+ALTER TABLE "products" ADD COLUMN "price_breaks" jsonb DEFAULT '{"enabled":false,"type":"quantity","tiers":[]}'::jsonb NOT NULL;
