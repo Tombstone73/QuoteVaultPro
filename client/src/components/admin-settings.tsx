@@ -125,7 +125,7 @@ function MediaLibraryTab() {
 
   const deleteAssetMutation = useMutation({
     mutationFn: async (id: string) => {
-      return apiRequest(`/api/media/${id}`, "DELETE");
+      return await apiRequest("DELETE", `/api/media/${id}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/media"] });
