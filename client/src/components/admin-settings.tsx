@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +35,10 @@ import type {
   MediaAsset,
   FormulaTemplate,
   InsertFormulaTemplate,
-  UpdateFormulaTemplate
+  UpdateFormulaTemplate,
+  EmailSettings,
+  InsertEmailSettings,
+  UpdateEmailSettings
 } from "@shared/schema";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -44,7 +47,8 @@ import {
   insertProductOptionSchema,
   insertProductVariantSchema,
   insertGlobalVariableSchema,
-  insertFormulaTemplateSchema
+  insertFormulaTemplateSchema,
+  insertEmailSettingsSchema
 } from "@shared/schema";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -452,6 +456,353 @@ function QuoteNumberSettings() {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// Email Settings Tab Component
+function EmailSettingsTab() {
+  const { toast } = useToast();
+  const [isEditing, setIsEditing] = useState(false);
+  const [testEmailAddress, setTestEmailAddress] = useState("");
+  const [isSendingTest, setIsSendingTest] = useState(false);
+
+  // Fetch email settings
+  const { data: emailSettings, isLoading } = useQuery<EmailSettings | null>({
+    queryKey: ["/api/email-settings/default"],
+    queryFn: async () => {
+      try {
+        const response = await apiRequest("GET", "/api/email-settings/default");
+        return await response.json();
+      } catch (error: any) {
+        if (error.message?.includes("404")) {
+          return null; // No settings configured yet
+        }
+        throw error;
+      }
+    },
+  });
+
+  // Form setup
+  const form = useForm<InsertEmailSettings>({
+    resolver: zodResolver(insertEmailSettingsSchema),
+    defaultValues: {
+      provider: "gmail",
+      fromAddress: "",
+      fromName: "",
+      clientId: "",
+      clientSecret: "",
+      refreshToken: "",
+      isActive: true,
+      isDefault: true,
+    },
+  });
+
+  // Update form when data loads
+  useState(() => {
+    if (emailSettings) {
+      form.reset({
+        provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
+        fromAddress: emailSettings.fromAddress,
+        fromName: emailSettings.fromName,
+        clientId: emailSettings.clientId || "",
+        clientSecret: emailSettings.clientSecret || "",
+        refreshToken: emailSettings.refreshToken || "",
+        isActive: emailSettings.isActive,
+        isDefault: emailSettings.isDefault,
+      });
+    }
+  });
+
+  // Create/Update mutation
+  const saveMutation = useMutation({
+    mutationFn: async (data: InsertEmailSettings) => {
+      if (emailSettings?.id) {
+        return apiRequest("PATCH", `/api/email-settings/${emailSettings.id}`, data);
+      } else {
+        return apiRequest("POST", "/api/email-settings", data);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/email-settings/default"] });
+      toast({
+        title: "Success",
+        description: "Email settings saved successfully",
+      });
+      setIsEditing(false);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to save email settings",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Test email mutation
+  const testEmailMutation = useMutation({
+    mutationFn: async (recipientEmail: string) => {
+      return apiRequest("POST", "/api/email/test", { recipientEmail });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Success",
+        description: "Test email sent successfully! Check your inbox.",
+      });
+      setTestEmailAddress("");
+      setIsSendingTest(false);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to send test email",
+        variant: "destructive",
+      });
+      setIsSendingTest(false);
+    },
+  });
+
+  const onSubmit = (data: InsertEmailSettings) => {
+    saveMutation.mutate(data);
+  };
+
+  const handleSendTest = () => {
+    if (!testEmailAddress) {
+      toast({
+        title: "Error",
+        description: "Please enter an email address",
+        variant: "destructive",
+      });
+      return;
+    }
+    testEmailMutation.mutate(testEmailAddress);
+  };
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Email Settings</CardTitle>
+          <CardDescription>Loading...</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-64 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Mail className="w-5 h-5" />
+            Email Configuration
+          </CardTitle>
+          <CardDescription>
+            Configure Gmail OAuth settings to send quote emails
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!emailSettings && !isEditing ? (
+            <div className="text-center py-8">
+              <Mail className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+              <h3 className="text-lg font-semibold mb-2">No Email Settings Configured</h3>
+              <p className="text-muted-foreground mb-4">
+                Set up your Gmail OAuth credentials to start sending quote emails
+              </p>
+              <Button onClick={() => setIsEditing(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Configure Email
+              </Button>
+            </div>
+          ) : null}
+
+          {(emailSettings || isEditing) && (
+            <Form {...form}>
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                <FormField
+                  control={form.control}
+                  name="fromAddress"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Gmail Address</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type="email"
+                          placeholder="your-email@gmail.com"
+                          disabled={!isEditing}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        The Gmail address that will send emails
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="fromName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>From Name</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          placeholder="Titan Graphics"
+                          disabled={!isEditing}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        The name that will appear in sent emails
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="clientId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>OAuth Client ID</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type="password"
+                          placeholder="••••••••••••••••"
+                          disabled={!isEditing}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        From Google Cloud Console OAuth credentials
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="clientSecret"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>OAuth Client Secret</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type="password"
+                          placeholder="••••••••••••••••"
+                          disabled={!isEditing}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        From Google Cloud Console OAuth credentials
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="refreshToken"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>OAuth Refresh Token</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          {...field}
+                          placeholder="1//••••••••••••••••"
+                          disabled={!isEditing}
+                          rows={3}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        From OAuth 2.0 Playground
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <div className="flex gap-2">
+                  {isEditing ? (
+                    <>
+                      <Button type="submit" disabled={saveMutation.isPending}>
+                        {saveMutation.isPending ? "Saving..." : "Save Settings"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setIsEditing(false);
+                          if (emailSettings) {
+                            form.reset({
+                              provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
+                              fromAddress: emailSettings.fromAddress,
+                              fromName: emailSettings.fromName,
+                              clientId: emailSettings.clientId || "",
+                              clientSecret: emailSettings.clientSecret || "",
+                              refreshToken: emailSettings.refreshToken || "",
+                              isActive: emailSettings.isActive,
+                              isDefault: emailSettings.isDefault,
+                            });
+                          }
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <Button type="button" onClick={() => setIsEditing(true)}>
+                      <Edit className="w-4 h-4 mr-2" />
+                      Edit Settings
+                    </Button>
+                  )}
+                </div>
+              </form>
+            </Form>
+          )}
+        </CardContent>
+      </Card>
+
+      {emailSettings && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Send className="w-5 h-5" />
+              Test Email
+            </CardTitle>
+            <CardDescription>
+              Send a test email to verify your configuration
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-2">
+              <Input
+                type="email"
+                placeholder="test@example.com"
+                value={testEmailAddress}
+                onChange={(e) => setTestEmailAddress(e.target.value)}
+                disabled={isSendingTest}
+              />
+              <Button
+                onClick={handleSendTest}
+                disabled={isSendingTest || !testEmailAddress}
+              >
+                {isSendingTest ? "Sending..." : "Send Test"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }
 
@@ -1277,11 +1628,12 @@ export default function AdminSettings() {
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="products" data-testid="tabs-admin-settings">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
               <TabsTrigger value="media" data-testid="tab-media">Media Library</TabsTrigger>
               <TabsTrigger value="variables" data-testid="tab-variables">Pricing Variables</TabsTrigger>
               <TabsTrigger value="formulas" data-testid="tab-formulas">Formula Templates</TabsTrigger>
+              <TabsTrigger value="email" data-testid="tab-email">Email Settings</TabsTrigger>
             </TabsList>
 
             <TabsContent value="products" className="space-y-4">
@@ -4425,6 +4777,11 @@ export default function AdminSettings() {
                   </div>
                 </DialogContent>
               </Dialog>
+            </TabsContent>
+
+            {/* Email Settings Tab */}
+            <TabsContent value="email" className="space-y-4">
+              <EmailSettingsTab />
             </TabsContent>
           </Tabs>
         </CardContent>

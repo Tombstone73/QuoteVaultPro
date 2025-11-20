@@ -453,3 +453,52 @@ export type QuoteWithRelations = Quote & {
     variant?: ProductVariant | null;
   })[];
 };
+
+// Email Settings table
+export const emailSettings = pgTable("email_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  provider: varchar("provider", { length: 50 }).notNull().default("gmail"), // gmail, sendgrid, smtp, etc.
+  fromAddress: varchar("from_address", { length: 255 }).notNull(),
+  fromName: varchar("from_name", { length: 255 }).notNull(),
+
+  // OAuth credentials (for Gmail)
+  clientId: text("client_id"),
+  clientSecret: text("client_secret"),
+  refreshToken: text("refresh_token"),
+
+  // SMTP credentials (for future use)
+  smtpHost: varchar("smtp_host", { length: 255 }),
+  smtpPort: integer("smtp_port"),
+  smtpUsername: varchar("smtp_username", { length: 255 }),
+  smtpPassword: text("smtp_password"),
+
+  isActive: boolean("is_active").default(true).notNull(),
+  isDefault: boolean("is_default").default(true).notNull(), // For multiple accounts
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertEmailSettingsSchema = createInsertSchema(emailSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  provider: z.enum(["gmail", "sendgrid", "smtp"]).default("gmail"),
+  fromAddress: z.string().email("Invalid email address"),
+  fromName: z.string().min(1, "From name is required"),
+  clientId: z.string().optional(),
+  clientSecret: z.string().optional(),
+  refreshToken: z.string().optional(),
+  smtpHost: z.string().optional(),
+  smtpPort: z.number().int().positive().optional(),
+  smtpUsername: z.string().optional(),
+  smtpPassword: z.string().optional(),
+});
+
+export const updateEmailSettingsSchema = insertEmailSettingsSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertEmailSettings = z.infer<typeof insertEmailSettingsSchema>;
+export type UpdateEmailSettings = z.infer<typeof updateEmailSettingsSchema>;
+export type EmailSettings = typeof emailSettings.$inferSelect;

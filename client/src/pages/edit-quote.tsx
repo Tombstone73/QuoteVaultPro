@@ -8,8 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Trash2, Plus } from "lucide-react";
+import { ArrowLeft, Save, Trash2, Plus, Mail } from "lucide-react";
 import { format } from "date-fns";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { QuoteWithRelations } from "@shared/schema";
@@ -24,6 +25,8 @@ export default function EditQuote() {
   const [taxRate, setTaxRate] = useState(0);
   const [marginPercentage, setMarginPercentage] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [recipientEmail, setRecipientEmail] = useState("");
 
   const { data: quote, isLoading } = useQuery<QuoteWithRelations>({
     queryKey: ["/api/quotes", quoteId],
@@ -80,10 +83,31 @@ export default function EditQuote() {
       queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
     },
     onError: () => {
-      toast({ 
-        title: "Error", 
+      toast({
+        title: "Error",
         description: "Failed to delete line item",
         variant: "destructive"
+      });
+    },
+  });
+
+  const emailQuoteMutation = useMutation({
+    mutationFn: async (email: string) => {
+      return apiRequest("POST", `/api/quotes/${quoteId}/email`, { recipientEmail: email });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Success",
+        description: "Quote email sent successfully!",
+      });
+      setEmailDialogOpen(false);
+      setRecipientEmail("");
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to send quote email",
+        variant: "destructive",
       });
     },
   });
@@ -107,6 +131,18 @@ export default function EditQuote() {
 
   const handleBack = () => {
     setLocation("/");
+  };
+
+  const handleSendEmail = () => {
+    if (!recipientEmail) {
+      toast({
+        title: "Error",
+        description: "Please enter an email address",
+        variant: "destructive",
+      });
+      return;
+    }
+    emailQuoteMutation.mutate(recipientEmail);
   };
 
   if (isLoading) {
@@ -150,6 +186,14 @@ export default function EditQuote() {
             Created {format(new Date(quote.createdAt), "MMM d, yyyy")}
           </p>
         </div>
+        <Button
+          variant="outline"
+          onClick={() => setEmailDialogOpen(true)}
+          data-testid="button-email-quote"
+        >
+          <Mail className="w-4 h-4 mr-2" />
+          Email Quote
+        </Button>
       </div>
 
       <Card data-testid="card-customer-info">
@@ -339,6 +383,54 @@ export default function EditQuote() {
           Cancel
         </Button>
       </div>
+
+      <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="w-5 h-5" />
+              Email Quote
+            </DialogTitle>
+            <DialogDescription>
+              Send this quote to a recipient via email
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="recipientEmail">Recipient Email</Label>
+              <Input
+                id="recipientEmail"
+                type="email"
+                placeholder="customer@example.com"
+                value={recipientEmail}
+                onChange={(e) => setRecipientEmail(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleSendEmail();
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEmailDialogOpen(false);
+                setRecipientEmail("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSendEmail}
+              disabled={emailQuoteMutation.isPending}
+            >
+              {emailQuoteMutation.isPending ? "Sending..." : "Send Email"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import {
   pricingRules,
   mediaAssets,
   formulaTemplates,
+  emailSettings,
   type User,
   type UpsertUser,
   type Product,
@@ -37,6 +38,9 @@ import {
   type FormulaTemplate,
   type InsertFormulaTemplate,
   type UpdateFormulaTemplate,
+  type EmailSettings,
+  type InsertEmailSettings,
+  type UpdateEmailSettings,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, like, sql } from "drizzle-orm";
@@ -135,6 +139,14 @@ export interface IStorage {
   updateFormulaTemplate(id: string, updates: Partial<FormulaTemplate>): Promise<FormulaTemplate>;
   deleteFormulaTemplate(id: string): Promise<void>;
   getProductsByFormulaTemplate(templateId: string): Promise<Product[]>;
+
+  // Email settings operations
+  getAllEmailSettings(): Promise<EmailSettings[]>;
+  getEmailSettingsById(id: string): Promise<EmailSettings | undefined>;
+  getDefaultEmailSettings(): Promise<EmailSettings | undefined>;
+  createEmailSettings(settings: InsertEmailSettings): Promise<EmailSettings>;
+  updateEmailSettings(id: string, settings: Partial<InsertEmailSettings>): Promise<EmailSettings>;
+  deleteEmailSettings(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1027,6 +1039,74 @@ export class DatabaseStorage implements IStorage {
     // Find all products that use this exact formula
     const allProducts = await db.select().from(products).where(eq(products.isActive, true));
     return allProducts.filter(product => product.pricingFormula === template.formula);
+  }
+
+  // Email settings operations
+  async getAllEmailSettings(): Promise<EmailSettings[]> {
+    return await db
+      .select()
+      .from(emailSettings)
+      .where(eq(emailSettings.isActive, true))
+      .orderBy(emailSettings.isDefault, emailSettings.createdAt);
+  }
+
+  async getEmailSettingsById(id: string): Promise<EmailSettings | undefined> {
+    const [settings] = await db
+      .select()
+      .from(emailSettings)
+      .where(eq(emailSettings.id, id));
+    return settings;
+  }
+
+  async getDefaultEmailSettings(): Promise<EmailSettings | undefined> {
+    const [settings] = await db
+      .select()
+      .from(emailSettings)
+      .where(and(eq(emailSettings.isActive, true), eq(emailSettings.isDefault, true)))
+      .limit(1);
+    return settings;
+  }
+
+  async createEmailSettings(settings: InsertEmailSettings): Promise<EmailSettings> {
+    // If this is set as default, unset all other defaults first
+    if (settings.isDefault) {
+      await db
+        .update(emailSettings)
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where(eq(emailSettings.isDefault, true));
+    }
+
+    const [newSettings] = await db
+      .insert(emailSettings)
+      .values(settings as typeof emailSettings.$inferInsert)
+      .returning();
+    return newSettings;
+  }
+
+  async updateEmailSettings(id: string, settingsData: Partial<InsertEmailSettings>): Promise<EmailSettings> {
+    // If this is being set as default, unset all other defaults first
+    if (settingsData.isDefault) {
+      await db
+        .update(emailSettings)
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where(and(eq(emailSettings.isDefault, true), sql`${emailSettings.id} != ${id}`));
+    }
+
+    const updateData = {
+      ...settingsData,
+      updatedAt: new Date(),
+    };
+
+    const [updated] = await db
+      .update(emailSettings)
+      .set(updateData)
+      .where(eq(emailSettings.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteEmailSettings(id: string): Promise<void> {
+    await db.delete(emailSettings).where(eq(emailSettings.id, id));
   }
 }
 
