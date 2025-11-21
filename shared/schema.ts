@@ -505,3 +505,173 @@ export const updateEmailSettingsSchema = insertEmailSettingsSchema.partial().ext
 export type InsertEmailSettings = z.infer<typeof insertEmailSettingsSchema>;
 export type UpdateEmailSettings = z.infer<typeof updateEmailSettingsSchema>;
 export type EmailSettings = typeof emailSettings.$inferSelect;
+
+// Audit Logs table
+export const auditLogs = pgTable("audit_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id),
+  userName: varchar("user_name"),
+  actionType: varchar("action_type").notNull(), // CREATE, UPDATE, DELETE, LOGIN, LOGOUT, etc.
+  entityType: varchar("entity_type").notNull(), // user, product, quote, customer, etc.
+  entityId: varchar("entity_id"),
+  entityName: varchar("entity_name"),
+  description: text("description").notNull(),
+  oldValues: jsonb("old_values"),
+  newValues: jsonb("new_values"),
+  ipAddress: varchar("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("idx_audit_logs_user_id").on(table.userId),
+  index("idx_audit_logs_action_type").on(table.actionType),
+  index("idx_audit_logs_entity_type").on(table.entityType),
+  index("idx_audit_logs_created_at").on(table.createdAt),
+]);
+
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;
+
+// Company Settings table
+export const companySettings = pgTable("company_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyName: varchar("company_name", { length: 255 }).notNull(),
+  address: text("address"),
+  phone: varchar("phone", { length: 50 }),
+  email: varchar("email", { length: 255 }),
+  website: varchar("website", { length: 255 }),
+  logoUrl: text("logo_url"),
+  taxRate: decimal("tax_rate", { precision: 5, scale: 2 }).default("0").notNull(),
+  defaultMargin: decimal("default_margin", { precision: 5, scale: 2 }).default("0").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCompanySettingsSchema = createInsertSchema(companySettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateCompanySettingsSchema = insertCompanySettingsSchema.partial();
+
+export type InsertCompanySettings = z.infer<typeof insertCompanySettingsSchema>;
+export type UpdateCompanySettings = z.infer<typeof updateCompanySettingsSchema>;
+export type CompanySettings = typeof companySettings.$inferSelect;
+
+// Customers table
+export const customers = pgTable("customers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyName: varchar("company_name", { length: 255 }).notNull(),
+  customerType: varchar("customer_type", { length: 50 }).default("business"), // business, individual
+  email: varchar("email", { length: 255 }),
+  phone: varchar("phone", { length: 50 }),
+  website: varchar("website", { length: 255 }),
+  billingAddress: text("billing_address"),
+  shippingAddress: text("shipping_address"),
+  taxId: varchar("tax_id", { length: 100 }),
+  creditLimit: decimal("credit_limit", { precision: 10, scale: 2 }).default("0"),
+  currentBalance: decimal("current_balance", { precision: 10, scale: 2 }).default("0"),
+  status: varchar("status", { length: 50 }).default("active"), // active, inactive, suspended
+  assignedTo: varchar("assigned_to").references(() => users.id),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCustomerSchema = createInsertSchema(customers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateCustomerSchema = insertCustomerSchema.partial();
+
+export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
+export type UpdateCustomer = z.infer<typeof updateCustomerSchema>;
+export type Customer = typeof customers.$inferSelect;
+
+// Customer Contacts table
+export const customerContacts = pgTable("customer_contacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  firstName: varchar("first_name", { length: 100 }).notNull(),
+  lastName: varchar("last_name", { length: 100 }).notNull(),
+  title: varchar("title", { length: 100 }),
+  email: varchar("email", { length: 255 }),
+  phone: varchar("phone", { length: 50 }),
+  mobile: varchar("mobile", { length: 50 }),
+  isPrimary: boolean("is_primary").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCustomerContactSchema = createInsertSchema(customerContacts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateCustomerContactSchema = insertCustomerContactSchema.partial();
+
+export type InsertCustomerContact = z.infer<typeof insertCustomerContactSchema>;
+export type UpdateCustomerContact = z.infer<typeof updateCustomerContactSchema>;
+export type CustomerContact = typeof customerContacts.$inferSelect;
+
+// Customer Notes table
+export const customerNotes = pgTable("customer_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  note: text("note").notNull(),
+  isInternal: boolean("is_internal").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateCustomerNoteSchema = insertCustomerNoteSchema.partial();
+
+export type InsertCustomerNote = z.infer<typeof insertCustomerNoteSchema>;
+export type UpdateCustomerNote = z.infer<typeof updateCustomerNoteSchema>;
+export type CustomerNote = typeof customerNotes.$inferSelect;
+
+// Customer Credit Transactions table
+export const customerCreditTransactions = pgTable("customer_credit_transactions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  transactionType: varchar("transaction_type", { length: 50 }).notNull(), // charge, payment, adjustment
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  description: text("description").notNull(),
+  referenceNumber: varchar("reference_number", { length: 100 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertCustomerCreditTransactionSchema = createInsertSchema(customerCreditTransactions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const updateCustomerCreditTransactionSchema = insertCustomerCreditTransactionSchema.partial();
+
+export type InsertCustomerCreditTransaction = z.infer<typeof insertCustomerCreditTransactionSchema>;
+export type UpdateCustomerCreditTransaction = z.infer<typeof updateCustomerCreditTransactionSchema>;
+export type CustomerCreditTransaction = typeof customerCreditTransactions.$inferSelect;
+
+// Customer with relations type
+export type CustomerWithRelations = Customer & {
+  contacts: CustomerContact[];
+  notes: (CustomerNote & { user: User })[];
+  creditTransactions: (CustomerCreditTransaction & { user: User })[];
+  assignedUser?: User | null;
+};

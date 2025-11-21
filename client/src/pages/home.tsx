@@ -8,7 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield } from "lucide-react";
+import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
 import QuoteHistory from "@/components/quote-history";
 import AdminDashboard from "@/components/admin-dashboard";
@@ -127,9 +127,21 @@ export default function Home() {
                     <p className="text-xs leading-none text-muted-foreground" data-testid="text-user-email">
                       {user.email || "No email"}
                     </p>
-                    {isAdmin && (
-                      <p className="text-xs leading-none text-primary font-medium" data-testid="text-admin-badge">
+                    {user.role === "owner" && (
+                      <p className="text-xs leading-none text-purple-600 font-medium flex items-center gap-1" data-testid="text-owner-badge">
+                        <Crown className="w-3 h-3" />
+                        Owner
+                      </p>
+                    )}
+                    {user.role === "admin" && (
+                      <p className="text-xs leading-none text-primary font-medium flex items-center gap-1" data-testid="text-admin-badge">
+                        <Shield className="w-3 h-3" />
                         Admin
+                      </p>
+                    )}
+                    {user.role === "manager" && (
+                      <p className="text-xs leading-none text-muted-foreground font-medium" data-testid="text-manager-badge">
+                        Manager
                       </p>
                     )}
                   </div>

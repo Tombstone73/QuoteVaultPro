@@ -48,13 +48,17 @@ export async function setupAuth(app: Express) {
           if (!user) {
             // Create a test user
             const userId = `local-${Date.now()}`;
+            const isOwner = email === "dale@titan-graphics.com" || email.includes("owner");
+            const isAdminUser = email.includes("admin") || isOwner;
+            
             await storage.upsertUser({
               id: userId,
               email: email,
               firstName: "Test",
               lastName: "User",
               profileImageUrl: null,
-              isAdmin: email.includes("admin"), // Make admin if email contains "admin"
+              isAdmin: isAdminUser,
+              role: isOwner ? "owner" : (isAdminUser ? "admin" : "employee"),
             });
             user = await storage.getUserByEmail(email);
           }
@@ -104,6 +108,7 @@ export async function setupAuth(app: Express) {
           lastName: "User",
           profileImageUrl: null,
           isAdmin: true, // Make test user an admin
+          role: "owner", // Make test user an owner for full access
         });
         user = await storage.getUserByEmail("test@local.dev");
       }

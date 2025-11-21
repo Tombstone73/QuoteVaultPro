@@ -1818,7 +1818,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         assignedTo: req.query.assignedTo as string | undefined,
       };
       const customers = await storage.getAllCustomers(filters);
-      res.json(customers);
+      
+      // Calculate availableCredit for each customer
+      const customersWithCredit = customers.map(customer => ({
+        ...customer,
+        availableCredit: (parseFloat(customer.creditLimit || "0") - parseFloat(customer.currentBalance || "0")).toString(),
+      }));
+      
+      res.json(customersWithCredit);
     } catch (error) {
       console.error("Error fetching customers:", error);
       res.status(500).json({ message: "Failed to fetch customers" });
@@ -1840,15 +1847,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/customers", isAuthenticated, async (req: any, res) => {
     try {
-      const userId = getUserId(req.user);
-      const customerData = insertCustomerSchema.parse({
-        ...req.body,
-        createdBy: userId,
-      });
+      console.log("Received customer data:", req.body);
+      const customerData = insertCustomerSchema.parse(req.body);
+      console.log("Parsed customer data:", customerData);
       const customer = await storage.createCustomer(customerData);
+      console.log("Created customer:", customer);
       res.json(customer);
     } catch (error) {
       if (error instanceof z.ZodError) {
+        console.error("Zod validation error:", error.errors);
         return res.status(400).json({ message: fromZodError(error).message });
       }
       console.error("Error creating customer:", error);
