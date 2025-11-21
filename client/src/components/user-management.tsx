@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Edit, Trash2, X, Users, Shield, ShieldOff } from "lucide-react";
+import { Edit, Trash2, X, Users, Shield, ShieldOff, Crown, Briefcase, UserCircle } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import type { User } from "@shared/schema";
@@ -161,13 +161,26 @@ export default function UserManagement({ onClose }: UserManagementProps) {
                     : "-"}
                 </TableCell>
                 <TableCell>
-                  {user.isAdmin ? (
+                  {user.role === "owner" ? (
+                    <Badge variant="default" className="gap-1 bg-purple-600 hover:bg-purple-700">
+                      <Crown className="w-3 h-3" />
+                      Owner
+                    </Badge>
+                  ) : user.role === "admin" ? (
                     <Badge variant="default" className="gap-1">
                       <Shield className="w-3 h-3" />
                       Admin
                     </Badge>
+                  ) : user.role === "manager" ? (
+                    <Badge variant="secondary" className="gap-1">
+                      <Briefcase className="w-3 h-3" />
+                      Manager
+                    </Badge>
                   ) : (
-                    <Badge variant="secondary">User</Badge>
+                    <Badge variant="outline" className="gap-1">
+                      <UserCircle className="w-3 h-3" />
+                      Employee
+                    </Badge>
                   )}
                 </TableCell>
                 <TableCell>

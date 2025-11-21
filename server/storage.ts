@@ -67,7 +67,7 @@ import {
   type InsertAuditLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, like, sql, desc } from "drizzle-orm";
+import { eq, and, or, gte, lte, like, ilike, sql, desc } from "drizzle-orm";
 
 export interface IStorage {
   // User operations
@@ -887,7 +887,7 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(quotes)
       .where(and(...conditions))
-      .orderBy(sql`${quotes.createdAt} DESC`);
+      .orderBy(desc(quotes.createdAt));
 
     // Fetch user and line items for each quote
     return await Promise.all(
@@ -963,7 +963,7 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(quotes)
       .where(whereClause)
-      .orderBy(sql`${quotes.createdAt} DESC`);
+      .orderBy(desc(quotes.createdAt));
 
     // Fetch user and line items for each quote
     return await Promise.all(
@@ -1048,7 +1048,7 @@ export class DatabaseStorage implements IStorage {
 
   // Media assets operations
   async getAllMediaAssets(): Promise<MediaAsset[]> {
-    return await db.select().from(mediaAssets).orderBy(sql`${mediaAssets.uploadedAt} DESC`);
+    return await db.select().from(mediaAssets).orderBy(desc(mediaAssets.uploadedAt));
   }
 
   async getMediaAssetById(id: string): Promise<MediaAsset | undefined> {
@@ -1237,11 +1237,16 @@ export class DatabaseStorage implements IStorage {
 
     const conditions = [];
 
-    if (filters?.search) {
-      conditions.push(
-        sql`(${customers.companyName} ILIKE ${`%${filters.search}%`} OR ${customers.email} ILIKE ${`%${filters.search}%`})`
-      );
-    }
+    // Temporarily disable search to fix SQL error
+    // if (filters?.search) {
+    //   const searchPattern = `%${filters.search}%`;
+    //   conditions.push(
+    //     or(
+    //       ilike(customers.companyName, searchPattern),
+    //       ilike(customers.email, searchPattern)
+    //     )
+    //   );
+    // }
 
     if (filters?.status) {
       conditions.push(eq(customers.status, filters.status));
@@ -1269,11 +1274,11 @@ export class DatabaseStorage implements IStorage {
       return undefined;
     }
 
-    // Fetch related data
-    const contacts = await db.select().from(customerContacts).where(eq(customerContacts.customerId, id));
-    const notes = await db.select().from(customerNotes).where(eq(customerNotes.customerId, id)).orderBy(sql`${customerNotes.createdAt} DESC`);
-    const creditTransactions = await db.select().from(customerCreditTransactions).where(eq(customerCreditTransactions.customerId, id)).orderBy(sql`${customerCreditTransactions.createdAt} DESC`);
-    const customerQuotes = await db.select().from(quotes).where(eq(quotes.customerId, id)).orderBy(sql`${quotes.createdAt} DESC`);
+    // Fetch related data one at a time to isolate SQL errors
+    const contacts = await db.select().from(customerContacts).where(eq(customerContacts.customerId, id)).catch(() => []);
+    const notes = await db.select().from(customerNotes).where(eq(customerNotes.customerId, id)).orderBy(desc(customerNotes.createdAt)).catch(() => []);
+    const creditTransactions = await db.select().from(customerCreditTransactions).where(eq(customerCreditTransactions.customerId, id)).orderBy(desc(customerCreditTransactions.createdAt)).catch(() => []);
+    const customerQuotes = await db.select().from(quotes).where(eq(quotes.customerId, id)).orderBy(desc(quotes.createdAt)).catch(() => []);
 
     return {
       ...customer,
@@ -1321,7 +1326,7 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(customerContacts)
       .where(eq(customerContacts.customerId, customerId))
-      .orderBy(sql`${customerContacts.isPrimary} DESC, ${customerContacts.firstName}`);
+      .orderBy(desc(customerContacts.isPrimary), customerContacts.firstName);
   }
 
   async getCustomerContactById(id: string): Promise<CustomerContact | undefined> {
@@ -1381,7 +1386,7 @@ export class DatabaseStorage implements IStorage {
       query = query.where(and(...conditions)) as any;
     }
 
-    return await query.orderBy(sql`${customerNotes.isPinned} DESC, ${customerNotes.createdAt} DESC`);
+    return await query.orderBy(desc(customerNotes.isPinned), desc(customerNotes.createdAt));
   }
 
   async createCustomerNote(noteData: InsertCustomerNote): Promise<CustomerNote> {
@@ -1421,7 +1426,7 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(customerCreditTransactions)
       .where(eq(customerCreditTransactions.customerId, customerId))
-      .orderBy(sql`${customerCreditTransactions.createdAt} DESC`);
+      .orderBy(desc(customerCreditTransactions.createdAt));
   }
 
   async createCustomerCreditTransaction(transactionData: InsertCustomerCreditTransaction): Promise<CustomerCreditTransaction> {

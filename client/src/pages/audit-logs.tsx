@@ -124,24 +124,24 @@ export default function AuditLogs() {
               />
             </div>
 
-            <Select value={actionTypeFilter} onValueChange={setActionTypeFilter}>
+            <Select value={actionTypeFilter || "all"} onValueChange={(value) => setActionTypeFilter(value === "all" ? "" : value)}>
               <SelectTrigger>
                 <SelectValue placeholder="Action Type" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Actions</SelectItem>
+                <SelectItem value="all">All Actions</SelectItem>
                 <SelectItem value="create">Create</SelectItem>
                 <SelectItem value="update">Update</SelectItem>
                 <SelectItem value="delete">Delete</SelectItem>
               </SelectContent>
             </Select>
 
-            <Select value={entityTypeFilter} onValueChange={setEntityTypeFilter}>
+            <Select value={entityTypeFilter || "all"} onValueChange={(value) => setEntityTypeFilter(value === "all" ? "" : value)}>
               <SelectTrigger>
                 <SelectValue placeholder="Entity Type" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Entities</SelectItem>
+                <SelectItem value="all">All Entities</SelectItem>
                 <SelectItem value="contact">Contact</SelectItem>
                 <SelectItem value="customer">Customer</SelectItem>
                 <SelectItem value="quote">Quote</SelectItem>

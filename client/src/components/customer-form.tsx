@@ -15,8 +15,8 @@ import type { Customer } from "@shared/schema";
 
 const customerSchema = z.object({
   companyName: z.string().min(1, "Company name is required"),
-  customerType: z.enum(["retail", "wholesale", "corporate"]),
-  status: z.enum(["active", "inactive", "suspended", "on_hold"]),
+  customerType: z.enum(["business", "individual"]),
+  status: z.enum(["active", "inactive", "suspended"]),
   email: z.string().email("Invalid email").optional().or(z.literal("")),
   phone: z.string().optional(),
   website: z.string().optional(),
@@ -24,7 +24,6 @@ const customerSchema = z.object({
   billingAddress: z.string().optional(),
   shippingAddress: z.string().optional(),
   creditLimit: z.number().min(0).optional(),
-  paymentTerms: z.string().optional(),
   notes: z.string().optional(),
 });
 
@@ -54,8 +53,8 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
     resolver: zodResolver(customerSchema),
     defaultValues: customer ? {
       companyName: customer.companyName,
-      customerType: customer.customerType as "retail" | "wholesale" | "corporate",
-      status: customer.status as "active" | "inactive" | "suspended" | "on_hold",
+      customerType: customer.customerType as "business" | "individual",
+      status: customer.status as "active" | "inactive" | "suspended",
       email: customer.email || "",
       phone: customer.phone || "",
       website: customer.website || "",
@@ -63,11 +62,10 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       billingAddress: customer.billingAddress || "",
       shippingAddress: customer.shippingAddress || "",
       creditLimit: customer.creditLimit ? Number(customer.creditLimit) : 0,
-      paymentTerms: customer.paymentTerms || "",
       notes: customer.notes || "",
     } : {
       companyName: "",
-      customerType: "retail",
+      customerType: "business",
       status: "active",
       email: "",
       phone: "",
@@ -76,20 +74,27 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       billingAddress: "",
       shippingAddress: "",
       creditLimit: 0,
-      paymentTerms: "Net 30",
       notes: "",
     },
   });
 
   const createMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
+      // Convert creditLimit to string for database
+      const payload = {
+        ...data,
+        creditLimit: data.creditLimit?.toString() || "0",
+      };
       const response = await fetch("/api/customers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
         credentials: "include",
       });
-      if (!response.ok) throw new Error("Failed to create customer");
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to create customer");
+      }
       return response.json();
     },
     onSuccess: () => {
@@ -105,10 +110,15 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
   const updateMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
+      // Convert creditLimit to string for database
+      const payload = {
+        ...data,
+        creditLimit: data.creditLimit?.toString() || "0",
+      };
       const response = await fetch(`/api/customers/${customer?.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
         credentials: "include",
       });
       if (!response.ok) throw new Error("Failed to update customer");
@@ -216,9 +226,8 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="retail">Retail</SelectItem>
-                    <SelectItem value="wholesale">Wholesale</SelectItem>
-                    <SelectItem value="corporate">Corporate</SelectItem>
+                    <SelectItem value="business">Business</SelectItem>
+                    <SelectItem value="individual">Individual</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -236,7 +245,6 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                     <SelectItem value="active">Active</SelectItem>
                     <SelectItem value="inactive">Inactive</SelectItem>
                     <SelectItem value="suspended">Suspended</SelectItem>
-                    <SelectItem value="on_hold">On Hold</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -333,15 +341,6 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                   step="0.01"
                   {...register("creditLimit", { valueAsNumber: true })}
                   placeholder="0.00"
-                />
-              </div>
-
-              <div className="col-span-2">
-                <Label htmlFor="paymentTerms">Payment Terms</Label>
-                <Input
-                  id="paymentTerms"
-                  {...register("paymentTerms")}
-                  placeholder="Net 30"
                 />
               </div>
             </div>
