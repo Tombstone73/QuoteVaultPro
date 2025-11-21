@@ -10,6 +10,11 @@ import {
   mediaAssets,
   formulaTemplates,
   emailSettings,
+  companySettings,
+  customers,
+  customerContacts,
+  customerNotes,
+  customerCreditTransactions,
   type User,
   type UpsertUser,
   type Product,
@@ -41,9 +46,28 @@ import {
   type EmailSettings,
   type InsertEmailSettings,
   type UpdateEmailSettings,
+  type CompanySettings,
+  type InsertCompanySettings,
+  type UpdateCompanySettings,
+  type Customer,
+  type InsertCustomer,
+  type UpdateCustomer,
+  type CustomerWithRelations,
+  type CustomerContact,
+  type InsertCustomerContact,
+  type UpdateCustomerContact,
+  type CustomerNote,
+  type InsertCustomerNote,
+  type UpdateCustomerNote,
+  type CustomerCreditTransaction,
+  type InsertCustomerCreditTransaction,
+  type UpdateCustomerCreditTransaction,
+  auditLogs,
+  type AuditLog,
+  type InsertAuditLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, like, sql } from "drizzle-orm";
+import { eq, and, gte, lte, like, sql, desc } from "drizzle-orm";
 
 export interface IStorage {
   // User operations
@@ -147,6 +171,56 @@ export interface IStorage {
   createEmailSettings(settings: InsertEmailSettings): Promise<EmailSettings>;
   updateEmailSettings(id: string, settings: Partial<InsertEmailSettings>): Promise<EmailSettings>;
   deleteEmailSettings(id: string): Promise<void>;
+
+  // Company settings operations
+  getCompanySettings(): Promise<CompanySettings | undefined>;
+  createCompanySettings(settings: InsertCompanySettings): Promise<CompanySettings>;
+  updateCompanySettings(id: string, settings: Partial<InsertCompanySettings>): Promise<CompanySettings>;
+
+  // Customer operations
+  getAllCustomers(filters?: {
+    search?: string;
+    status?: string;
+    customerType?: string;
+    assignedTo?: string;
+  }): Promise<Customer[]>;
+  getCustomerById(id: string): Promise<CustomerWithRelations | undefined>;
+  createCustomer(customer: InsertCustomer): Promise<Customer>;
+  updateCustomer(id: string, customer: Partial<InsertCustomer>): Promise<Customer>;
+  deleteCustomer(id: string): Promise<void>;
+
+  // Customer contacts operations
+  getCustomerContacts(customerId: string): Promise<CustomerContact[]>;
+  getCustomerContactById(id: string): Promise<CustomerContact | undefined>;
+  createCustomerContact(contact: InsertCustomerContact): Promise<CustomerContact>;
+  updateCustomerContact(id: string, contact: Partial<InsertCustomerContact>): Promise<CustomerContact>;
+  deleteCustomerContact(id: string): Promise<void>;
+
+  // Customer notes operations
+  getCustomerNotes(customerId: string, filters?: {
+    noteType?: string;
+    assignedTo?: string;
+  }): Promise<CustomerNote[]>;
+  createCustomerNote(note: InsertCustomerNote): Promise<CustomerNote>;
+  updateCustomerNote(id: string, note: Partial<InsertCustomerNote>): Promise<CustomerNote>;
+  deleteCustomerNote(id: string): Promise<void>;
+
+  // Customer credit transactions operations
+  getCustomerCreditTransactions(customerId: string): Promise<CustomerCreditTransaction[]>;
+  createCustomerCreditTransaction(transaction: InsertCustomerCreditTransaction): Promise<CustomerCreditTransaction>;
+  updateCustomerCreditTransaction(id: string, transaction: Partial<InsertCustomerCreditTransaction>): Promise<CustomerCreditTransaction>;
+  updateCustomerBalance(customerId: string, amount: number, type: 'credit' | 'debit', reason: string, createdBy: string): Promise<Customer>;
+
+  // Audit log operations
+  createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
+  getAuditLogs(filters?: {
+    userId?: string;
+    actionType?: string;
+    entityType?: string;
+    startDate?: Date;
+    endDate?: Date;
+    limit?: number;
+  }): Promise<AuditLog[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -198,12 +272,17 @@ export class DatabaseStorage implements IStorage {
         profileImageUrl: userData.profileImageUrl,
         updatedAt: new Date(),
       };
-      
+
       // Only include isAdmin if it's explicitly provided
       if (userData.isAdmin !== undefined) {
         updateFields.isAdmin = userData.isAdmin;
       }
-      
+
+      // Only include role if it's explicitly provided
+      if (userData.role !== undefined) {
+        updateFields.role = userData.role;
+      }
+
       const [user] = await db
         .insert(users)
         .values(userData)
@@ -220,7 +299,7 @@ export class DatabaseStorage implements IStorage {
           .select()
           .from(users)
           .where(sql`${users.email} = ${userData.email}`);
-        
+
         if (existingUser) {
           // Update the existing user's profile, keep their original id
           const updateFields: any = {
@@ -229,10 +308,15 @@ export class DatabaseStorage implements IStorage {
             profileImageUrl: userData.profileImageUrl,
             updatedAt: new Date(),
           };
-          
+
           // Only include isAdmin if it's explicitly provided
           if (userData.isAdmin !== undefined) {
             updateFields.isAdmin = userData.isAdmin;
+          }
+
+          // Only include role if it's explicitly provided
+          if (userData.role !== undefined) {
+            updateFields.role = userData.role;
           }
           
           const [updatedUser] = await db
@@ -1107,6 +1191,367 @@ export class DatabaseStorage implements IStorage {
 
   async deleteEmailSettings(id: string): Promise<void> {
     await db.delete(emailSettings).where(eq(emailSettings.id, id));
+  }
+
+  // Company settings operations
+  async getCompanySettings(): Promise<CompanySettings | undefined> {
+    const [settings] = await db.select().from(companySettings).limit(1);
+    return settings;
+  }
+
+  async createCompanySettings(settingsData: InsertCompanySettings): Promise<CompanySettings> {
+    const [settings] = await db.insert(companySettings).values(settingsData).returning();
+    if (!settings) {
+      throw new Error("Failed to create company settings");
+    }
+    return settings;
+  }
+
+  async updateCompanySettings(id: string, settingsData: Partial<InsertCompanySettings>): Promise<CompanySettings> {
+    const updateData: any = {
+      ...settingsData,
+      updatedAt: new Date(),
+    };
+
+    const [settings] = await db
+      .update(companySettings)
+      .set(updateData)
+      .where(eq(companySettings.id, id))
+      .returning();
+
+    if (!settings) {
+      throw new Error("Company settings not found");
+    }
+
+    return settings;
+  }
+
+  // Customer operations
+  async getAllCustomers(filters?: {
+    search?: string;
+    status?: string;
+    customerType?: string;
+    assignedTo?: string;
+  }): Promise<Customer[]> {
+    let query = db.select().from(customers);
+
+    const conditions = [];
+
+    if (filters?.search) {
+      conditions.push(
+        sql`(${customers.companyName} ILIKE ${`%${filters.search}%`} OR ${customers.email} ILIKE ${`%${filters.search}%`})`
+      );
+    }
+
+    if (filters?.status) {
+      conditions.push(eq(customers.status, filters.status));
+    }
+
+    if (filters?.customerType) {
+      conditions.push(eq(customers.customerType, filters.customerType as any));
+    }
+
+    if (filters?.assignedTo) {
+      conditions.push(eq(customers.assignedTo, filters.assignedTo));
+    }
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    return await query.orderBy(customers.companyName);
+  }
+
+  async getCustomerById(id: string): Promise<CustomerWithRelations | undefined> {
+    const [customer] = await db.select().from(customers).where(eq(customers.id, id));
+
+    if (!customer) {
+      return undefined;
+    }
+
+    // Fetch related data
+    const contacts = await db.select().from(customerContacts).where(eq(customerContacts.customerId, id));
+    const notes = await db.select().from(customerNotes).where(eq(customerNotes.customerId, id)).orderBy(sql`${customerNotes.createdAt} DESC`);
+    const creditTransactions = await db.select().from(customerCreditTransactions).where(eq(customerCreditTransactions.customerId, id)).orderBy(sql`${customerCreditTransactions.createdAt} DESC`);
+    const customerQuotes = await db.select().from(quotes).where(eq(quotes.customerId, id)).orderBy(sql`${quotes.createdAt} DESC`);
+
+    return {
+      ...customer,
+      contacts,
+      notes,
+      creditTransactions,
+      quotes: customerQuotes,
+    };
+  }
+
+  async createCustomer(customerData: InsertCustomer): Promise<Customer> {
+    const [customer] = await db.insert(customers).values(customerData).returning();
+    if (!customer) {
+      throw new Error("Failed to create customer");
+    }
+    return customer;
+  }
+
+  async updateCustomer(id: string, customerData: Partial<InsertCustomer>): Promise<Customer> {
+    const updateData: any = {
+      ...customerData,
+      updatedAt: new Date(),
+    };
+
+    const [customer] = await db
+      .update(customers)
+      .set(updateData)
+      .where(eq(customers.id, id))
+      .returning();
+
+    if (!customer) {
+      throw new Error("Customer not found");
+    }
+
+    return customer;
+  }
+
+  async deleteCustomer(id: string): Promise<void> {
+    await db.delete(customers).where(eq(customers.id, id));
+  }
+
+  // Customer contacts operations
+  async getCustomerContacts(customerId: string): Promise<CustomerContact[]> {
+    return await db
+      .select()
+      .from(customerContacts)
+      .where(eq(customerContacts.customerId, customerId))
+      .orderBy(sql`${customerContacts.isPrimary} DESC, ${customerContacts.firstName}`);
+  }
+
+  async getCustomerContactById(id: string): Promise<CustomerContact | undefined> {
+    const [contact] = await db.select().from(customerContacts).where(eq(customerContacts.id, id));
+    return contact;
+  }
+
+  async createCustomerContact(contactData: InsertCustomerContact): Promise<CustomerContact> {
+    const [contact] = await db.insert(customerContacts).values(contactData).returning();
+    if (!contact) {
+      throw new Error("Failed to create customer contact");
+    }
+    return contact;
+  }
+
+  async updateCustomerContact(id: string, contactData: Partial<InsertCustomerContact>): Promise<CustomerContact> {
+    const updateData: any = {
+      ...contactData,
+      updatedAt: new Date(),
+    };
+
+    const [contact] = await db
+      .update(customerContacts)
+      .set(updateData)
+      .where(eq(customerContacts.id, id))
+      .returning();
+
+    if (!contact) {
+      throw new Error("Customer contact not found");
+    }
+
+    return contact;
+  }
+
+  async deleteCustomerContact(id: string): Promise<void> {
+    await db.delete(customerContacts).where(eq(customerContacts.id, id));
+  }
+
+  // Customer notes operations
+  async getCustomerNotes(customerId: string, filters?: {
+    noteType?: string;
+    assignedTo?: string;
+  }): Promise<CustomerNote[]> {
+    let query = db.select().from(customerNotes).where(eq(customerNotes.customerId, customerId));
+
+    const conditions = [eq(customerNotes.customerId, customerId)];
+
+    if (filters?.noteType) {
+      conditions.push(eq(customerNotes.noteType, filters.noteType as any));
+    }
+
+    if (filters?.assignedTo) {
+      conditions.push(eq(customerNotes.assignedTo, filters.assignedTo));
+    }
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    return await query.orderBy(sql`${customerNotes.isPinned} DESC, ${customerNotes.createdAt} DESC`);
+  }
+
+  async createCustomerNote(noteData: InsertCustomerNote): Promise<CustomerNote> {
+    const [note] = await db.insert(customerNotes).values(noteData).returning();
+    if (!note) {
+      throw new Error("Failed to create customer note");
+    }
+    return note;
+  }
+
+  async updateCustomerNote(id: string, noteData: Partial<InsertCustomerNote>): Promise<CustomerNote> {
+    const updateData: any = {
+      ...noteData,
+      updatedAt: new Date(),
+    };
+
+    const [note] = await db
+      .update(customerNotes)
+      .set(updateData)
+      .where(eq(customerNotes.id, id))
+      .returning();
+
+    if (!note) {
+      throw new Error("Customer note not found");
+    }
+
+    return note;
+  }
+
+  async deleteCustomerNote(id: string): Promise<void> {
+    await db.delete(customerNotes).where(eq(customerNotes.id, id));
+  }
+
+  // Customer credit transactions operations
+  async getCustomerCreditTransactions(customerId: string): Promise<CustomerCreditTransaction[]> {
+    return await db
+      .select()
+      .from(customerCreditTransactions)
+      .where(eq(customerCreditTransactions.customerId, customerId))
+      .orderBy(sql`${customerCreditTransactions.createdAt} DESC`);
+  }
+
+  async createCustomerCreditTransaction(transactionData: InsertCustomerCreditTransaction): Promise<CustomerCreditTransaction> {
+    const [transaction] = await db.insert(customerCreditTransactions).values(transactionData).returning();
+    if (!transaction) {
+      throw new Error("Failed to create customer credit transaction");
+    }
+    return transaction;
+  }
+
+  async updateCustomerCreditTransaction(id: string, transactionData: Partial<InsertCustomerCreditTransaction>): Promise<CustomerCreditTransaction> {
+    const updateData: any = {
+      ...transactionData,
+      updatedAt: new Date(),
+    };
+
+    const [transaction] = await db
+      .update(customerCreditTransactions)
+      .set(updateData)
+      .where(eq(customerCreditTransactions.id, id))
+      .returning();
+
+    if (!transaction) {
+      throw new Error("Customer credit transaction not found");
+    }
+
+    return transaction;
+  }
+
+  async updateCustomerBalance(
+    customerId: string,
+    amount: number,
+    type: 'credit' | 'debit',
+    reason: string,
+    createdBy: string
+  ): Promise<Customer> {
+    // Get current customer
+    const [customer] = await db.select().from(customers).where(eq(customers.id, customerId));
+    if (!customer) {
+      throw new Error("Customer not found");
+    }
+
+    const currentBalance = parseFloat(customer.currentBalance);
+    const creditLimit = parseFloat(customer.creditLimit);
+
+    // Calculate new balance
+    const balanceBefore = currentBalance;
+    const balanceAfter = type === 'credit'
+      ? currentBalance + amount
+      : currentBalance - amount;
+
+    const availableCredit = creditLimit - balanceAfter;
+
+    // Create transaction record
+    await db.insert(customerCreditTransactions).values({
+      customerId,
+      transactionType: type,
+      amount: amount.toString(),
+      balanceBefore: balanceBefore.toString(),
+      balanceAfter: balanceAfter.toString(),
+      reason,
+      createdBy,
+      status: 'approved',
+      approvedBy: createdBy,
+      approvedAt: new Date(),
+    });
+
+    // Update customer balance
+    const [updatedCustomer] = await db
+      .update(customers)
+      .set({
+        currentBalance: balanceAfter.toString(),
+        availableCredit: availableCredit.toString(),
+        updatedAt: new Date(),
+      })
+      .where(eq(customers.id, customerId))
+      .returning();
+
+    if (!updatedCustomer) {
+      throw new Error("Failed to update customer balance");
+    }
+
+    return updatedCustomer;
+  }
+
+  // Audit log operations
+  async createAuditLog(log: InsertAuditLog): Promise<AuditLog> {
+    const [auditLog] = await db.insert(auditLogs).values(log).returning();
+    return auditLog;
+  }
+
+  async getAuditLogs(filters?: {
+    userId?: string;
+    actionType?: string;
+    entityType?: string;
+    startDate?: Date;
+    endDate?: Date;
+    limit?: number;
+  }): Promise<AuditLog[]> {
+    const conditions = [];
+
+    if (filters?.userId) {
+      conditions.push(eq(auditLogs.userId, filters.userId));
+    }
+    if (filters?.actionType) {
+      conditions.push(eq(auditLogs.actionType, filters.actionType));
+    }
+    if (filters?.entityType) {
+      conditions.push(eq(auditLogs.entityType, filters.entityType));
+    }
+    if (filters?.startDate) {
+      conditions.push(gte(auditLogs.createdAt, filters.startDate));
+    }
+    if (filters?.endDate) {
+      conditions.push(lte(auditLogs.createdAt, filters.endDate));
+    }
+
+    let query = db.select().from(auditLogs);
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    query = query.orderBy(desc(auditLogs.createdAt)) as any;
+
+    if (filters?.limit) {
+      query = query.limit(filters.limit) as any;
+    }
+
+    return await query;
   }
 }
 

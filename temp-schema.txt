@@ -33,7 +33,6 @@ export const users = pgTable("users", {
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
   isAdmin: boolean("is_admin").default(false).notNull(),
-  role: varchar("role", { length: 50 }).default("employee").notNull(), // owner, admin, manager, employee
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -45,7 +44,6 @@ export const upsertUserSchema = createInsertSchema(users).pick({
   lastName: true,
   profileImageUrl: true,
   isAdmin: true,
-  role: true,
 });
 
 export const updateUserSchema = createInsertSchema(users).pick({
@@ -54,7 +52,6 @@ export const updateUserSchema = createInsertSchema(users).pick({
   lastName: true,
   profileImageUrl: true,
   isAdmin: true,
-  role: true,
 }).partial();
 
 export type UpsertUser = z.infer<typeof upsertUserSchema>;

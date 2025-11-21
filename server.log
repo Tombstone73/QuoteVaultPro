@@ -1,0 +1,146 @@
+
+> rest-express@1.0.0 dev
+> cross-env NODE_ENV=development tsx server/index.ts
+
+NODE_ENV in routes.ts: "development"
+Using auth: localAuth
+Starting server...
+NODE_ENV: development
+Registering routes...
+Routes registered successfully
+Re-optimizing dependencies because lockfile has changed
+5:23:08 PM [express] serving on port 5000
+
+A PostCSS plugin did not pass the `from` option to `postcss.parse`. This may cause imported assets to be incorrectly transformed. If you've recently added a PostCSS plugin that raised this warning, please contact the package author to fix the issue.
+5:23:45 PM [express] GET /api/auth/user 304 in 123ms :: {"id":"local-test-user","email":"test@local.…
+5:23:45 PM [express] GET /api/products 304 in 160ms :: [{"id":"deb746f7-b2c5-4402-b9cc-d2bd7983bb6f"…
+5:23:55 PM [express] GET /api/auth/user 304 in 145ms :: {"id":"local-test-user","email":"test@local.…
+5:23:55 PM [express] GET /api/products 304 in 126ms :: [{"id":"deb746f7-b2c5-4402-b9cc-d2bd7983bb6f"…
+5:23:58 PM [express] GET /api/customers/[object%20Object] 404 in 159ms :: {"message":"Customer not f…
+[2m5:26:29 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/customers.tsx, /src/index.css?v=ykje19OlTIMOykyKF4D2U[22m
+[2m5:26:40 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/customers.tsx, /src/index.css?v=ykje19OlTIMOykyKF4D2U[22m
+[2m5:27:01 PM[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/customers.tsx, /src/index.css?v=ykje19OlTIMOykyKF4D2U[22m
+[replit-cartographer] Error processing C:/Users/dale9/Downloads/QuoteVaultPro/QuoteVaultPro/QuoteVaultPro/client/src/pages/customers.tsx: SyntaxError: Expected corresponding JSX closing tag for <Card>. (128:10)
+    at toParseError (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parse-error.ts:95:45)
+    at raise (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\tokenizer\index.ts:1503:19)
+    at jsxParseElementAt (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:527:18)
+    at jsxParseElementAt (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:483:34)
+    at jsxParseElementAt (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:483:34)
+    at jsxParseElement (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:559:19)
+    at parseExprAtom (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:573:21)
+    at parseExprSubscripts (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:734:23)
+    at parseUpdate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:713:21)
+    at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:675:23)
+    at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3855:20)
+    at parseMaybeUnaryOrPrivate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:409:14)
+    at parseExprOps (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:421:23)
+    at parseMaybeConditional (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:376:23)
+    at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:301:21)
+    at fn (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3708:23)
+    at tryParse (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\util.ts:174:20)
+    at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3707:20)
+    at callback (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:257:12)
+    at allowInAnd (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:3192:12)
+    at parseMaybeAssignAllowIn (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:256:17)
+    at parseMaybeAssignAllowInOrVoidPattern (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:3306:17)
+    at parseParenAndDistinguishExpression (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:1813:16)
+    at parseExprAtom (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:1162:21)
+    at parseExprAtom (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:583:22)
+    at parseExprSubscripts (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:734:23)
+    at parseUpdate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:713:21)
+    at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:675:23)
+    at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3855:20)
+    at parseMaybeUnaryOrPrivate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:409:14)
+    at parseExprOps (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:421:23)
+    at parseMaybeConditional (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:376:23)
+    at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:301:21)
+    at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3727:22)
+    at parseExpressionBase (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:226:23)
+    at callback (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:217:39)
+    at allowInAnd (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:3187:16)
+    at parseExpression (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:217:17)
+    at parseReturnStatement (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1110:28)
+    at parseStatementContent (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:538:21)
+    at parseStatementContent (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3185:20)
+    at parseStatementLike (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:477:17)
+    at parseStatementListItem (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:426:17)
+    at parseBlockOrModuleBlockBody (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1439:16)
+    at parseBlockBody (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1412:10)
+    at parseBlock (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1380:10)
+    at parseFunctionBody (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:2616:24)
+    at parseFunctionBodyAndFinish (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:2585:10)
+    at parseFunctionBodyAndFinish (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:2646:20)
+    at <anonymous> (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1690:12) {
+  code: 'BABEL_PARSER_SYNTAX_ERROR',
+  reasonCode: 'MissingClosingTagElement',
+  loc: Position { line: 128, column: 10, index: 5649 },
+  pos: 5649,
+  syntaxPlugin: 'jsx'
+}
+[2m5:27:02 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\client\src\pages\customers.tsx: Expected corresponding JSX closing tag for <Card>. (128:10)
+
+[0m [90m 126 |[31m             [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+ [90m 127 |[31m           [33m<[31m[33m/[31m[33mCardHeader[31m[33m>[31m
+[31m[1m>[22m[31m[90m 128 |[31m           [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+ [90m     |[31m           [31m[1m^[22m[31m
+ [90m 129 |[31m         [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+ [90m 130 |[31m       [33m<[31m[33m/[31m[33mheader[31m[33m>[31m
+ [90m 131 |[31m[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mC:/Users/dale9/Downloads/QuoteVaultPro/QuoteVaultPro/QuoteVaultPro/client/src/pages/customers.tsx[39m:128:10
+[33m  126|              </div>
+  127|            </CardHeader>
+  128|            </div>
+     |            ^
+  129|          </div>
+  130|        </header>[39m
+      at toParseError (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parse-error.ts:95:45)
+      at raise (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\tokenizer\index.ts:1503:19)
+      at jsxParseElementAt (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:527:18)
+      at jsxParseElementAt (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:483:34)
+      at jsxParseElementAt (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:483:34)
+      at jsxParseElement (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:559:19)
+      at parseExprAtom (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:573:21)
+      at parseExprSubscripts (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:734:23)
+      at parseUpdate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:713:21)
+      at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:675:23)
+      at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3855:20)
+      at parseMaybeUnaryOrPrivate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:409:14)
+      at parseExprOps (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:421:23)
+      at parseMaybeConditional (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:376:23)
+      at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:301:21)
+      at fn (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3708:23)
+      at tryParse (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\util.ts:174:20)
+      at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3707:20)
+      at callback (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:257:12)
+      at allowInAnd (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:3192:12)
+      at parseMaybeAssignAllowIn (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:256:17)
+      at parseMaybeAssignAllowInOrVoidPattern (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:3306:17)
+      at parseParenAndDistinguishExpression (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:1813:16)
+      at parseExprAtom (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:1162:21)
+      at parseExprAtom (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\jsx\index.ts:583:22)
+      at parseExprSubscripts (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:734:23)
+      at parseUpdate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:713:21)
+      at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:675:23)
+      at parseMaybeUnary (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3855:20)
+      at parseMaybeUnaryOrPrivate (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:409:14)
+      at parseExprOps (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:421:23)
+      at parseMaybeConditional (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:376:23)
+      at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:301:21)
+      at parseMaybeAssign (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3727:22)
+      at parseExpressionBase (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:226:23)
+      at callback (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:217:39)
+      at allowInAnd (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:3187:16)
+      at parseExpression (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:217:17)
+      at parseReturnStatement (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1110:28)
+      at parseStatementContent (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:538:21)
+      at parseStatementContent (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:3185:20)
+      at parseStatementLike (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:477:17)
+      at parseStatementListItem (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:426:17)
+      at parseBlockOrModuleBlockBody (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1439:16)
+      at parseBlockBody (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1412:10)
+      at parseBlock (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1380:10)
+      at parseFunctionBody (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:2616:24)
+      at parseFunctionBodyAndFinish (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\expression.ts:2585:10)
+      at parseFunctionBodyAndFinish (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\plugins\typescript\index.ts:2646:20)
+      at <anonymous> (C:\Users\dale9\Downloads\QuoteVaultPro\QuoteVaultPro\QuoteVaultPro\node_modules\@babel\parser\src\parser\statement.ts:1690:12)

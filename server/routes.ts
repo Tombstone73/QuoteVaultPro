@@ -9,8 +9,26 @@ import NestingCalculator from "./NestingCalculator.js";
 import { emailService } from "./emailService";
 
 // Use local auth for development, Replit auth for production
-const auth = process.env.NODE_ENV === "development" ? localAuth : replitAuth;
+const nodeEnv = (process.env.NODE_ENV || '').trim();
+console.log('NODE_ENV in routes.ts:', JSON.stringify(nodeEnv));
+console.log('Using auth:', nodeEnv === "development" ? 'localAuth' : 'replitAuth');
+const auth = nodeEnv === "development" ? localAuth : replitAuth;
 const { setupAuth, isAuthenticated, isAdmin } = auth;
+
+// Role-based access control middleware
+const isOwner = (req: any, res: any, next: any) => {
+  if (req.user?.role === 'owner') {
+    return next();
+  }
+  return res.status(403).json({ message: "Access denied. Owner role required." });
+};
+
+const isAdminOrOwner = (req: any, res: any, next: any) => {
+  if (req.user?.role === 'owner' || req.user?.role === 'admin') {
+    return next();
+  }
+  return res.status(403).json({ message: "Access denied. Admin or Owner role required." });
+};
 import {
   insertProductSchema,
   updateProductSchema,
@@ -23,6 +41,16 @@ import {
   updateGlobalVariableSchema,
   insertEmailSettingsSchema,
   updateEmailSettingsSchema,
+  insertCompanySettingsSchema,
+  updateCompanySettingsSchema,
+  insertCustomerSchema,
+  updateCustomerSchema,
+  insertCustomerContactSchema,
+  updateCustomerContactSchema,
+  insertCustomerNoteSchema,
+  updateCustomerNoteSchema,
+  insertCustomerCreditTransactionSchema,
+  updateCustomerCreditTransactionSchema,
   type InsertProduct,
   type UpdateProduct
 } from "@shared/schema";
@@ -1683,6 +1711,412 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         message: error instanceof Error ? error.message : "Failed to send quote email"
       });
+    }
+  });
+
+  // Company Settings routes
+  app.get("/api/company-settings", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const settings = await storage.getCompanySettings();
+      if (!settings) {
+        return res.status(404).json({ message: "Company settings not found" });
+      }
+      res.json(settings);
+    } catch (error) {
+      console.error("Error fetching company settings:", error);
+      res.status(500).json({ message: "Failed to fetch company settings" });
+    }
+  });
+
+  app.post("/api/company-settings", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const settingsData = insertCompanySettingsSchema.parse(req.body);
+      const settings = await storage.createCompanySettings(settingsData);
+      res.json(settings);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating company settings:", error);
+      res.status(500).json({ message: "Failed to create company settings" });
+    }
+  });
+
+  app.patch("/api/company-settings/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const settingsData = updateCompanySettingsSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = settingsData;
+      const settings = await storage.updateCompanySettings(req.params.id, updateData);
+      res.json(settings);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating company settings:", error);
+      res.status(500).json({ message: "Failed to update company settings" });
+    }
+  });
+
+  // Global search endpoint
+  app.get("/api/search", isAuthenticated, async (req, res) => {
+    try {
+      const query = req.query.q as string;
+      if (!query || query.length < 2) {
+        return res.json([]);
+      }
+
+      const results: any[] = [];
+
+      // Search customers
+      const customers = await storage.getAllCustomers({ search: query });
+      customers.slice(0, 5).forEach((customer: any) => {
+        results.push({
+          type: "customer",
+          id: customer.id,
+          title: customer.companyName,
+          subtitle: customer.email || customer.phone || undefined,
+          url: `/customers/${customer.id}`,
+        });
+      });
+
+      // Search quotes
+      const quotes = await storage.getQuotes();
+      const matchingQuotes = quotes
+        .filter((quote: any) =>
+          quote.quoteNumber?.toLowerCase().includes(query.toLowerCase()) ||
+          quote.customerName?.toLowerCase().includes(query.toLowerCase())
+        )
+        .slice(0, 5);
+
+      matchingQuotes.forEach((quote: any) => {
+        results.push({
+          type: "quote",
+          id: quote.id,
+          title: `Quote #${quote.quoteNumber || quote.id.slice(0, 8)}`,
+          subtitle: quote.customerName || undefined,
+          url: `/edit-quote/${quote.id}`,
+        });
+      });
+
+      res.json(results);
+    } catch (error) {
+      console.error("Error performing search:", error);
+      res.status(500).json({ message: "Search failed" });
+    }
+  });
+
+  // Customer routes
+  app.get("/api/customers", isAuthenticated, async (req, res) => {
+    try {
+      const filters = {
+        search: req.query.search as string | undefined,
+        status: req.query.status as string | undefined,
+        customerType: req.query.customerType as string | undefined,
+        assignedTo: req.query.assignedTo as string | undefined,
+      };
+      const customers = await storage.getAllCustomers(filters);
+      res.json(customers);
+    } catch (error) {
+      console.error("Error fetching customers:", error);
+      res.status(500).json({ message: "Failed to fetch customers" });
+    }
+  });
+
+  app.get("/api/customers/:id", isAuthenticated, async (req, res) => {
+    try {
+      const customer = await storage.getCustomerById(req.params.id);
+      if (!customer) {
+        return res.status(404).json({ message: "Customer not found" });
+      }
+      res.json(customer);
+    } catch (error) {
+      console.error("Error fetching customer:", error);
+      res.status(500).json({ message: "Failed to fetch customer" });
+    }
+  });
+
+  app.post("/api/customers", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const customerData = insertCustomerSchema.parse({
+        ...req.body,
+        createdBy: userId,
+      });
+      const customer = await storage.createCustomer(customerData);
+      res.json(customer);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating customer:", error);
+      res.status(500).json({ message: "Failed to create customer" });
+    }
+  });
+
+  app.patch("/api/customers/:id", isAuthenticated, async (req, res) => {
+    try {
+      const customerData = updateCustomerSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = customerData;
+      const customer = await storage.updateCustomer(req.params.id, updateData);
+      res.json(customer);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating customer:", error);
+      res.status(500).json({ message: "Failed to update customer" });
+    }
+  });
+
+  app.delete("/api/customers/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      await storage.deleteCustomer(req.params.id);
+      res.json({ message: "Customer deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting customer:", error);
+      res.status(500).json({ message: "Failed to delete customer" });
+    }
+  });
+
+  // Customer Contacts routes
+  app.get("/api/customers/:customerId/contacts", isAuthenticated, async (req, res) => {
+    try {
+      const contacts = await storage.getCustomerContacts(req.params.customerId);
+      res.json(contacts);
+    } catch (error) {
+      console.error("Error fetching customer contacts:", error);
+      res.status(500).json({ message: "Failed to fetch customer contacts" });
+    }
+  });
+
+  app.post("/api/customers/:customerId/contacts", isAuthenticated, async (req, res) => {
+    try {
+      const contactData = insertCustomerContactSchema.parse({
+        ...req.body,
+        customerId: req.params.customerId,
+      });
+      const contact = await storage.createCustomerContact(contactData);
+      res.json(contact);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating customer contact:", error);
+      res.status(500).json({ message: "Failed to create customer contact" });
+    }
+  });
+
+  app.patch("/api/customer-contacts/:id", isAuthenticated, async (req, res) => {
+    try {
+      const contactData = updateCustomerContactSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = contactData;
+      const contact = await storage.updateCustomerContact(req.params.id, updateData);
+      res.json(contact);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating customer contact:", error);
+      res.status(500).json({ message: "Failed to update customer contact" });
+    }
+  });
+
+  app.delete("/api/customer-contacts/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const contactId = req.params.id;
+
+      // Get contact details before deletion for audit log
+      const contact = await storage.getCustomerContactById(contactId);
+      if (!contact) {
+        return res.status(404).json({ message: "Contact not found" });
+      }
+
+      // Delete the contact
+      await storage.deleteCustomerContact(contactId);
+
+      // Create audit log
+      const userId = getUserId(req.user);
+      const userName = req.user?.name || req.user?.email || 'Unknown';
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'delete',
+        entityType: 'contact',
+        entityId: contactId,
+        entityName: `${contact.firstName} ${contact.lastName}`,
+        description: `Deleted contact ${contact.firstName} ${contact.lastName} (${contact.email || 'no email'})`,
+        oldValues: contact,
+        newValues: null,
+        ipAddress: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('user-agent'),
+      });
+
+      res.json({ message: "Customer contact deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting customer contact:", error);
+      res.status(500).json({ message: "Failed to delete customer contact" });
+    }
+  });
+
+  // Customer Notes routes
+  app.get("/api/customers/:customerId/notes", isAuthenticated, async (req, res) => {
+    try {
+      const filters = {
+        noteType: req.query.noteType as string | undefined,
+        assignedTo: req.query.assignedTo as string | undefined,
+      };
+      const notes = await storage.getCustomerNotes(req.params.customerId, filters);
+      res.json(notes);
+    } catch (error) {
+      console.error("Error fetching customer notes:", error);
+      res.status(500).json({ message: "Failed to fetch customer notes" });
+    }
+  });
+
+  app.post("/api/customers/:customerId/notes", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const noteData = insertCustomerNoteSchema.parse({
+        ...req.body,
+        customerId: req.params.customerId,
+        createdBy: userId,
+      });
+      const note = await storage.createCustomerNote(noteData);
+      res.json(note);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating customer note:", error);
+      res.status(500).json({ message: "Failed to create customer note" });
+    }
+  });
+
+  app.patch("/api/customer-notes/:id", isAuthenticated, async (req, res) => {
+    try {
+      const noteData = updateCustomerNoteSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = noteData;
+      const note = await storage.updateCustomerNote(req.params.id, updateData);
+      res.json(note);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating customer note:", error);
+      res.status(500).json({ message: "Failed to update customer note" });
+    }
+  });
+
+  app.delete("/api/customer-notes/:id", isAuthenticated, async (req, res) => {
+    try {
+      await storage.deleteCustomerNote(req.params.id);
+      res.json({ message: "Customer note deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting customer note:", error);
+      res.status(500).json({ message: "Failed to delete customer note" });
+    }
+  });
+
+  // Customer Credit Transactions routes
+  app.get("/api/customers/:customerId/credit-transactions", isAuthenticated, async (req, res) => {
+    try {
+      const transactions = await storage.getCustomerCreditTransactions(req.params.customerId);
+      res.json(transactions);
+    } catch (error) {
+      console.error("Error fetching customer credit transactions:", error);
+      res.status(500).json({ message: "Failed to fetch customer credit transactions" });
+    }
+  });
+
+  app.post("/api/customers/:customerId/credit-transactions", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const transactionData = insertCustomerCreditTransactionSchema.parse({
+        ...req.body,
+        customerId: req.params.customerId,
+        createdBy: userId,
+      });
+      const transaction = await storage.createCustomerCreditTransaction(transactionData);
+      res.json(transaction);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating customer credit transaction:", error);
+      res.status(500).json({ message: "Failed to create customer credit transaction" });
+    }
+  });
+
+  app.patch("/api/customer-credit-transactions/:id", isAuthenticated, isAdmin, async (req, res) => {
+    try {
+      const transactionData = updateCustomerCreditTransactionSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = transactionData;
+      const transaction = await storage.updateCustomerCreditTransaction(req.params.id, updateData);
+      res.json(transaction);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating customer credit transaction:", error);
+      res.status(500).json({ message: "Failed to update customer credit transaction" });
+    }
+  });
+
+  app.post("/api/customers/:customerId/apply-credit", isAuthenticated, isAdmin, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { amount, type, reason } = req.body;
+
+      if (!amount || !type || !reason) {
+        return res.status(400).json({ message: "Amount, type, and reason are required" });
+      }
+
+      const customer = await storage.updateCustomerBalance(
+        req.params.customerId,
+        parseFloat(amount),
+        type,
+        reason,
+        userId!
+      );
+      res.json(customer);
+    } catch (error) {
+      console.error("Error applying credit to customer:", error);
+      res.status(500).json({ message: "Failed to apply credit to customer" });
+    }
+  });
+
+  // Audit Logs routes (owner only)
+  app.get("/api/audit-logs", isAuthenticated, isOwner, async (req, res) => {
+    try {
+      const filters: any = {};
+
+      if (req.query.userId) filters.userId = req.query.userId as string;
+      if (req.query.actionType) filters.actionType = req.query.actionType as string;
+      if (req.query.entityType) filters.entityType = req.query.entityType as string;
+      if (req.query.startDate) filters.startDate = new Date(req.query.startDate as string);
+      if (req.query.endDate) filters.endDate = new Date(req.query.endDate as string);
+      if (req.query.limit) filters.limit = parseInt(req.query.limit as string, 10);
+
+      const logs = await storage.getAuditLogs(filters);
+      res.json(logs);
+    } catch (error) {
+      console.error("Error fetching audit logs:", error);
+      res.status(500).json({ message: "Failed to fetch audit logs" });
     }
   });
 

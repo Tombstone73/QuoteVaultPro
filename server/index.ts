@@ -48,7 +48,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  console.log('Starting server...');
+  console.log('NODE_ENV:', process.env.NODE_ENV);
+  console.log('Registering routes...');
   const server = await registerRoutes(app);
+  console.log('Routes registered successfully');
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

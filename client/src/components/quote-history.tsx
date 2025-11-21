@@ -255,7 +255,15 @@ export default function QuoteHistory() {
                         {format(new Date(quote.createdAt), 'MMM d, yyyy')}
                       </TableCell>
                       <TableCell data-testid={`cell-customer-${quote.id}`}>
-                        {quote.customerName || (
+                        {quote.customerId ? (
+                          <Link href={`/customers/${quote.customerId}`}>
+                            <Button variant="link" className="p-0 h-auto font-normal">
+                              {quote.customerName || "View Customer"}
+                            </Button>
+                          </Link>
+                        ) : quote.customerName ? (
+                          <span>{quote.customerName}</span>
+                        ) : (
                           <span className="text-muted-foreground italic">Not specified</span>
                         )}
                       </TableCell>
