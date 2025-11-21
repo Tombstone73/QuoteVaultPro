@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useRoute, useLocation } from "wouter";
+import { useRoute, useLocation, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,11 +9,26 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Trash2, Plus, Mail } from "lucide-react";
+import { ArrowLeft, Save, Trash2, Plus, Mail, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { QuoteWithRelations } from "@shared/schema";
+
+type Customer = {
+  id: string;
+  companyName: string;
+  displayName: string | null;
+};
+
+type CustomerContact = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  isPrimary: boolean;
+};
 
 export default function EditQuote() {
   const [, params] = useRoute("/quotes/:id/edit");
@@ -22,11 +37,24 @@ export default function EditQuote() {
   const quoteId = params?.id;
 
   const [customerName, setCustomerName] = useState("");
+  const [customerId, setCustomerId] = useState<string | null>(null);
+  const [contactId, setContactId] = useState<string | null>(null);
   const [taxRate, setTaxRate] = useState(0);
   const [marginPercentage, setMarginPercentage] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
+
+  // Fetch customers list
+  const { data: customers } = useQuery<Customer[]>({
+    queryKey: ["/api/customers"],
+  });
+
+  // Fetch contacts for selected customer
+  const { data: contacts } = useQuery<CustomerContact[]>({
+    queryKey: [`/api/customers/${customerId}/contacts`],
+    enabled: !!customerId,
+  });
 
   const { data: quote, isLoading } = useQuery<QuoteWithRelations>({
     queryKey: ["/api/quotes", quoteId],
@@ -44,6 +72,8 @@ export default function EditQuote() {
   useEffect(() => {
     if (quote) {
       setCustomerName(quote.customerName || "");
+      setCustomerId(quote.customerId || null);
+      setContactId(quote.contactId || null);
       setTaxRate(parseFloat(quote.taxRate || "0") * 100); // Convert to percentage
       setMarginPercentage(parseFloat(quote.marginPercentage || "0") * 100);
       setDiscountAmount(parseFloat(quote.discountAmount || "0"));
@@ -115,6 +145,8 @@ export default function EditQuote() {
   const handleSave = () => {
     updateQuoteMutation.mutate({
       customerName: customerName || null,
+      customerId: customerId || null,
+      contactId: contactId || null,
       subtotal,
       taxRate: taxRate / 100, // Convert back to decimal
       marginPercentage: marginPercentage / 100,
@@ -200,17 +232,82 @@ export default function EditQuote() {
         <CardHeader>
           <CardTitle>Customer Information</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="customerName">Customer Name</Label>
-            <Input
-              id="customerName"
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Enter customer name"
-              data-testid="input-customer-name"
-            />
+            <Label htmlFor="customer">Customer</Label>
+            <Select
+              value={customerId || "none"}
+              onValueChange={(value) => {
+                if (value === "none") {
+                  setCustomerId(null);
+                  setContactId(null);
+                  setCustomerName("");
+                } else {
+                  setCustomerId(value);
+                  setContactId(null);
+                  const customer = customers?.find(c => c.id === value);
+                  setCustomerName(customer?.companyName || "");
+                }
+              }}
+            >
+              <SelectTrigger data-testid="select-customer">
+                <SelectValue placeholder="Select a customer" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No Customer (Manual Entry)</SelectItem>
+                {customers?.map((customer) => (
+                  <SelectItem key={customer.id} value={customer.id}>
+                    {customer.companyName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {customerId && (
+              <Link href={`/customers/${customerId}`}>
+                <Button variant="link" size="sm" className="p-0 h-auto">
+                  <ExternalLink className="w-3 h-3 mr-1" />
+                  View Customer Details
+                </Button>
+              </Link>
+            )}
           </div>
+
+          {customerId && contacts && contacts.length > 0 && (
+            <div className="space-y-2">
+              <Label htmlFor="contact">Contact</Label>
+              <Select
+                value={contactId || "none"}
+                onValueChange={(value) => setContactId(value === "none" ? null : value)}
+              >
+                <SelectTrigger data-testid="select-contact">
+                  <SelectValue placeholder="Select a contact" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No Contact</SelectItem>
+                  {contacts.map((contact) => (
+                    <SelectItem key={contact.id} value={contact.id}>
+                      {contact.firstName} {contact.lastName}
+                      {contact.isPrimary && " (Primary)"}
+                      {contact.email && ` - ${contact.email}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {!customerId && (
+            <div className="space-y-2">
+              <Label htmlFor="customerName">Customer Name (Manual Entry)</Label>
+              <Input
+                id="customerName"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                placeholder="Enter customer name"
+                data-testid="input-customer-name"
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 

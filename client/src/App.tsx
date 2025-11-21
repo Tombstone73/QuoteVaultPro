@@ -8,6 +8,10 @@ import Landing from "@/pages/landing";
 import Home from "@/pages/home";
 import EditQuote from "@/pages/edit-quote";
 import Admin from "@/pages/admin";
+import Customers from "@/pages/customers";
+import CustomerDetail from "@/pages/customer-detail";
+import CompanySettings from "@/pages/company-settings";
+import DebugUser from "@/pages/debug-user";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -21,6 +25,10 @@ function Router() {
         <>
           <Route path="/quotes/:id/edit" component={EditQuote} />
           <Route path="/admin" component={Admin} />
+          <Route path="/customers/:id" component={CustomerDetail} />
+          <Route path="/customers" component={Customers} />
+          <Route path="/settings" component={CompanySettings} />
+          <Route path="/debug-user" component={DebugUser} />
           <Route path="/" component={Home} />
         </>
       )}

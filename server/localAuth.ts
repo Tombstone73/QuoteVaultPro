@@ -90,24 +90,29 @@ export async function setupAuth(app: Express) {
   // Auto-login endpoint for easy development
   app.get("/api/auto-login", async (req, res) => {
     try {
-      // Create or get a default test user
-      const testEmail = "test@local.dev";
-      let user = await storage.getUserByEmail(testEmail);
-      
+      // Get email from query parameter, or use default test user
+      const email = (req.query.email as string) || "test@local.dev";
+      let user = await storage.getUserByEmail(email);
+
       if (!user) {
+        // If user doesn't exist, create a default test user
         const userId = `local-test-user`;
         await storage.upsertUser({
           id: userId,
-          email: testEmail,
+          email: "test@local.dev",
           firstName: "Test",
           lastName: "User",
           profileImageUrl: null,
           isAdmin: true, // Make test user an admin
         });
-        user = await storage.getUserByEmail(testEmail);
+        user = await storage.getUserByEmail("test@local.dev");
       }
-      
-      req.login(user!, (err) => {
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      req.login(user, (err) => {
         if (err) {
           return res.status(500).json({ message: "Login failed" });
         }

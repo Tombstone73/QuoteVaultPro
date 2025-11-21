@@ -8,11 +8,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Calculator, FileText, LogOut, Settings, User, Eye } from "lucide-react";
+import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
 import QuoteHistory from "@/components/quote-history";
 import AdminDashboard from "@/components/admin-dashboard";
 import AdminSettings from "@/components/admin-settings";
+import CustomersPage from "@/pages/customers";
+import AuditLogs from "@/pages/audit-logs";
+import GlobalSearch from "@/components/global-search";
 
 export default function Home() {
   const { user, isLoading, isAuthenticated, isAdmin } = useAuth();
@@ -25,6 +28,9 @@ export default function Home() {
     }
     return "admin";
   });
+
+  // Check if user is owner
+  const isOwner = user?.role === "owner";
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -81,6 +87,10 @@ export default function Home() {
               <h1 className="text-xl font-semibold" data-testid="text-app-title">Pricing Calculator</h1>
             </div>
 
+            <div className="flex-1 max-w-md mx-4">
+              <GlobalSearch />
+            </div>
+
             <div className="flex items-center gap-4">
               {isAdmin && (
                 <div className="flex items-center gap-2" data-testid="container-view-toggle">
@@ -126,12 +136,20 @@ export default function Home() {
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {isAdmin && (
-                  <DropdownMenuItem asChild>
-                    <Link href="/admin" data-testid="link-admin-settings">
-                      <Settings className="w-4 h-4 mr-2" />
-                      Admin Settings
-                    </Link>
-                  </DropdownMenuItem>
+                  <>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin" data-testid="link-admin-settings">
+                        <Settings className="w-4 h-4 mr-2" />
+                        Admin Settings
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/settings" data-testid="link-company-settings">
+                        <Settings className="w-4 h-4 mr-2" />
+                        Company Settings
+                      </Link>
+                    </DropdownMenuItem>
+                  </>
                 )}
                 <DropdownMenuItem asChild>
                   <a href="/api/logout" data-testid="button-logout">
@@ -148,7 +166,13 @@ export default function Home() {
 
       <main className="container mx-auto px-4 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-main">
-          <TabsList className="grid w-full max-w-2xl mx-auto" style={{ gridTemplateColumns: showAdminFeatures ? 'repeat(4, 1fr)' : 'repeat(2, 1fr)' }}>
+          <TabsList className="grid w-full max-w-3xl mx-auto" style={{
+            gridTemplateColumns: showAdminFeatures
+              ? 'repeat(5, 1fr)'
+              : viewMode === 'customer'
+                ? 'repeat(2, 1fr)'
+                : 'repeat(3, 1fr)'
+          }}>
             <TabsTrigger value="calculator" data-testid="tab-calculator">
               <Calculator className="w-4 h-4 mr-2" />
               Calculator
@@ -157,6 +181,12 @@ export default function Home() {
               <FileText className="w-4 h-4 mr-2" />
               My Quotes
             </TabsTrigger>
+            {viewMode === 'admin' && (
+              <TabsTrigger value="customers" data-testid="tab-customers">
+                <Users className="w-4 h-4 mr-2" />
+                Companies
+              </TabsTrigger>
+            )}
             {showAdminFeatures && (
               <>
                 <TabsTrigger value="admin" data-testid="tab-admin">
@@ -169,6 +199,12 @@ export default function Home() {
                 </TabsTrigger>
               </>
             )}
+            {isOwner && (
+              <TabsTrigger value="audit-logs" data-testid="tab-audit-logs">
+                <Shield className="w-4 h-4 mr-2" />
+                Audit Log
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <div className="mt-8">
@@ -180,6 +216,12 @@ export default function Home() {
               <QuoteHistory />
             </TabsContent>
 
+            {viewMode === 'admin' && (
+              <TabsContent value="customers" data-testid="content-customers">
+                <CustomersPage embedded={true} />
+              </TabsContent>
+            )}
+
             {showAdminFeatures && (
               <>
                 <TabsContent value="admin" data-testid="content-admin">
@@ -190,6 +232,12 @@ export default function Home() {
                   <AdminSettings />
                 </TabsContent>
               </>
+            )}
+
+            {isOwner && (
+              <TabsContent value="audit-logs" data-testid="content-audit-logs">
+                <AuditLogs />
+              </TabsContent>
             )}
           </div>
         </Tabs>
