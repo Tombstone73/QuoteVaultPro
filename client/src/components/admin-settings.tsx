@@ -1902,7 +1902,7 @@ export default function AdminSettings() {
                                     <FormLabel>Material Type</FormLabel>
                                     <Select
                                       onValueChange={field.onChange}
-                                      defaultValue={field.value}
+                                      defaultValue={field.value || undefined}
                                     >
                                       <FormControl>
                                         <SelectTrigger>
@@ -2093,7 +2093,9 @@ export default function AdminSettings() {
                                       size="sm"
                                       onClick={() => {
                                         const tiers = [...(addProductForm.watch("nestingVolumePricing.tiers") || [])];
-                                        tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                        const lastTier = tiers.length > 0 ? tiers[tiers.length - 1] : null;
+                                        const minSheets = (lastTier && typeof lastTier.maxSheets === 'number') ? lastTier.maxSheets + 1 : 1;
+                                        tiers.push({ minSheets, pricePerSheet: 0 });
                                         addProductForm.setValue("nestingVolumePricing.tiers", tiers);
                                       }}
                                     >
@@ -2468,7 +2470,7 @@ export default function AdminSettings() {
                                                   <FormLabel>Material Type</FormLabel>
                                                   <Select
                                                     onValueChange={field.onChange}
-                                                    value={field.value}
+                                                    value={field.value || undefined}
                                                   >
                                                     <FormControl>
                                                       <SelectTrigger>
@@ -2659,7 +2661,9 @@ export default function AdminSettings() {
                                                     size="sm"
                                                     onClick={() => {
                                                       const tiers = [...(editProductForm.watch("nestingVolumePricing.tiers") || [])];
-                                                      tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                                      const lastTier = tiers.length > 0 ? tiers[tiers.length - 1] : null;
+                                                      const minSheets = (lastTier && typeof lastTier.maxSheets === 'number') ? lastTier.maxSheets + 1 : 1;
+                                                      tiers.push({ minSheets, pricePerSheet: 0 });
                                                       editProductForm.setValue("nestingVolumePricing.tiers", tiers);
                                                     }}
                                                   >
@@ -2996,7 +3000,9 @@ export default function AdminSettings() {
                                                             size="sm"
                                                             onClick={() => {
                                                               const tiers = [...(variantForm.watch("volumePricing.tiers") || [])];
-                                                              tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                                              const lastTier = tiers.length > 0 ? tiers[tiers.length - 1] : null;
+                                                              const minSheets = (lastTier && typeof lastTier.maxSheets === 'number') ? lastTier.maxSheets + 1 : 1;
+                                                              tiers.push({ minSheets, pricePerSheet: 0 });
                                                               variantForm.setValue("volumePricing.tiers", tiers);
                                                             }}
                                                           >
@@ -3265,7 +3271,9 @@ export default function AdminSettings() {
                                                                           size="sm"
                                                                           onClick={() => {
                                                                             const tiers = [...(editVariantForm.watch("volumePricing.tiers") || [])];
-                                                                            tiers.push({ minSheets: tiers.length > 0 ? (tiers[tiers.length - 1].maxSheets || 0) + 1 : 1, pricePerSheet: 0 });
+                                                                            const lastTier = tiers.length > 0 ? tiers[tiers.length - 1] : null;
+                                                                            const minSheets = (lastTier && typeof lastTier.maxSheets === 'number') ? lastTier.maxSheets + 1 : 1;
+                                                                            tiers.push({ minSheets, pricePerSheet: 0 });
                                                                             editVariantForm.setValue("volumePricing.tiers", tiers);
                                                                           }}
                                                                         >

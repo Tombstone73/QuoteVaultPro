@@ -2,6 +2,7 @@ import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { syncUsersToCustomers } from "./db/syncUsersToCustomers";
 
 const app = express();
 
@@ -47,36 +48,50 @@ app.use((req, res, next) => {
   next();
 });
 
-(async () => {
-  console.log('Starting server...');
-  console.log('NODE_ENV:', process.env.NODE_ENV);
-  console.log('Registering routes...');
-  const server = await registerRoutes(app);
-  console.log('Routes registered successfully');
+// Handle unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+// Register routes and start server
+registerRoutes(app).then(async (server) => {
+  // Run user-to-customer sync in development
+  if (app.get("env") === "development") {
+    try {
+      console.log('[Startup] Running user-to-customer sync...');
+      await syncUsersToCustomers();
+    } catch (error) {
+      console.error('[Startup] User sync failed:', error);
+      // Don't crash the server, just log the error
+    }
+  }
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
-
     res.status(status).json({ message });
     throw err;
   });
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
+  // Setup Vite in development mode
   if (app.get("env") === "development") {
-    await setupVite(app, server);
+    try {
+      await setupVite(app, server);
+      console.log('[Server] Vite configured successfully');
+    } catch (error) {
+      console.error('[Server] Vite setup failed:', error);
+      throw error;
+    }
   } else {
     serveStatic(app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
+  // Start listening
   const port = parseInt(process.env.PORT || '5000', 10);
-  // reusePort is not supported on Windows, only use on Linux/Mac
   const listenOptions: any = {
     port,
     host: "0.0.0.0",
@@ -84,7 +99,20 @@ app.use((req, res, next) => {
   if (process.platform !== 'win32') {
     listenOptions.reusePort = true;
   }
-  server.listen(listenOptions, () => {
-    log(`serving on port ${port}`);
+  
+  return new Promise((resolve, reject) => {
+    server.listen(listenOptions, () => {
+      log(`serving on port ${port}`);
+      console.log('[Server] Ready to accept connections');
+      // Don't resolve - keep the promise pending to keep process alive
+    });
+
+    server.on('error', (error: any) => {
+      console.error('[Server] Error:', error);
+      reject(error);
+    });
   });
-})();
+}).catch((error) => {
+  console.error('[Server] Fatal error:', error);
+  process.exit(1);
+});

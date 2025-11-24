@@ -7,13 +7,88 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Building2, Mail, Phone, MapPin, Globe, Edit, DollarSign, FileText, Users, MessageSquare, CreditCard, Trash2 } from "lucide-react";
+import { ArrowLeft, Building2, Mail, Phone, MapPin, Globe, Edit, DollarSign, FileText, Users, MessageSquare, CreditCard, Trash2, Package, Plus, Calendar } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import CustomerForm from "@/components/customer-form";
 import ContactForm from "@/components/contact-form";
 import NoteForm from "@/components/note-form";
 import CreditForm from "@/components/credit-form";
+import { useOrders } from "@/hooks/useOrders";
+import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
+import { format } from "date-fns";
+
+// Component for showing customer orders
+function OrdersForCustomer({ customerId }: { customerId: string }) {
+  const { data: orders, isLoading } = useOrders({ customerId });
+
+  const formatCurrency = (amount: string) => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+    }).format(parseFloat(amount));
+  };
+
+  const formatDate = (dateString: string | null) => {
+    if (!dateString) return "-";
+    try {
+      return format(new Date(dateString), "MMM d, yyyy");
+    } catch {
+      return "-";
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="py-8">
+          <div className="flex items-center justify-center gap-2">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+            <span className="text-muted-foreground">Loading orders...</span>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Orders</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {!orders || orders.length === 0 ? (
+          <p className="text-center text-muted-foreground py-8">No orders yet</p>
+        ) : (
+          <div className="space-y-2">
+            {orders.map((order: any) => (
+              <Link key={order.id} href={`/orders/${order.id}`}>
+                <div className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent cursor-pointer">
+                  <div className="flex-1">
+                    <div className="font-medium font-mono">{order.orderNumber}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {formatDate(order.createdAt)}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <OrderStatusBadge status={order.status} />
+                    <OrderPriorityBadge priority={order.priority} />
+                    <div className="text-right">
+                      <div className="font-medium">{formatCurrency(order.total)}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {Array.isArray(order.lineItems) ? order.lineItems.length : 0} items
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 type CustomerContact = {
   id: string;
@@ -246,9 +321,9 @@ export default function CustomerDetail() {
               <CardTitle className="text-sm font-medium text-muted-foreground">Current Balance</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">${parseFloat(customer.currentBalance).toFixed(2)}</div>
+              <div className="text-2xl font-bold">${parseFloat(customer.currentBalance || '0').toFixed(2)}</div>
               <p className="text-xs text-muted-foreground mt-1">
-                ${parseFloat(customer.availableCredit).toFixed(2)} available credit
+                ${(parseFloat(customer.creditLimit || '0') - parseFloat(customer.currentBalance || '0')).toFixed(2)} available credit
               </p>
             </CardContent>
           </Card>
@@ -258,8 +333,8 @@ export default function CustomerDetail() {
               <CardTitle className="text-sm font-medium text-muted-foreground">Credit Limit</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">${parseFloat(customer.creditLimit).toFixed(2)}</div>
-              <p className="text-xs text-muted-foreground mt-1">{customer.paymentTerms}</p>
+              <div className="text-2xl font-bold">${parseFloat(customer.creditLimit || '0').toFixed(2)}</div>
+              <p className="text-xs text-muted-foreground mt-1">{customer.creditTerms || 'Net 30'}</p>
             </CardContent>
           </Card>
 
@@ -289,6 +364,10 @@ export default function CustomerDetail() {
             <TabsTrigger value="quotes">
               <FileText className="w-4 h-4 mr-2" />
               Quotes ({customer.quotes.length})
+            </TabsTrigger>
+            <TabsTrigger value="orders">
+              <Package className="w-4 h-4 mr-2" />
+              Orders
             </TabsTrigger>
             <TabsTrigger value="activity">
               <MessageSquare className="w-4 h-4 mr-2" />
@@ -360,17 +439,6 @@ export default function CustomerDetail() {
                 </CardContent>
               </Card>
             </div>
-
-            {customer.notes && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Notes</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm whitespace-pre-wrap">{customer.notes}</p>
-                </CardContent>
-              </Card>
-            )}
           </TabsContent>
 
           <TabsContent value="contacts">
@@ -489,6 +557,10 @@ export default function CustomerDetail() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="orders">
+            <OrdersForCustomer customerId={customer.id} />
+          </TabsContent>
+
           <TabsContent value="activity">
             <Card>
               <CardHeader>
@@ -554,7 +626,7 @@ export default function CustomerDetail() {
       <CustomerForm
         open={showEditForm}
         onOpenChange={setShowEditForm}
-        customer={customer}
+        customer={customer as any}
       />
 
       <ContactForm
@@ -578,8 +650,8 @@ export default function CustomerDetail() {
           open={showCreditForm}
           onOpenChange={setShowCreditForm}
           customerId={id!}
-          currentBalance={parseFloat(customer.currentBalance)}
-          creditLimit={parseFloat(customer.creditLimit)}
+          currentBalance={parseFloat(customer.currentBalance || '0')}
+          creditLimit={parseFloat(customer.creditLimit || '0')}
         />
       )}
 

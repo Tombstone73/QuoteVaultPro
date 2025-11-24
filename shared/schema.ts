@@ -14,6 +14,40 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+// ============================================================
+// PRODUCT TYPE SYSTEM - Central definition for all modules
+// ============================================================
+
+/**
+ * ProductType enum - defines all product categories supported by TitanOS
+ * Each type has its own pricing engine and configuration schema
+ */
+export type ProductType =
+  | 'wide_roll'      // Wide-format roll-to-roll (banners, vinyl, etc.)
+  | 'wide_flatbed'   // Wide-format flatbed (rigid substrates, direct print)
+  | 'small_format'   // Small-format (business cards, flyers, brochures, etc.)
+  | 'apparel'        // Apparel/garment decoration (DTG, screen print, embroidery)
+  | 'fabrication';   // Fabrication/finishing (signage assembly, routing, etc.)
+
+export const PRODUCT_TYPES: ProductType[] = ['wide_roll', 'wide_flatbed', 'small_format', 'apparel', 'fabrication'];
+
+export const PRODUCT_TYPE_LABELS: Record<ProductType, string> = {
+  wide_roll: 'Wide Format - Roll',
+  wide_flatbed: 'Wide Format - Flatbed',
+  small_format: 'Small Format',
+  apparel: 'Apparel',
+  fabrication: 'Fabrication',
+};
+
+export const DEFAULT_PRODUCT_TYPE: ProductType = 'wide_roll';
+
+export function isValidProductType(value: string): value is ProductType {
+  return PRODUCT_TYPES.includes(value as ProductType);
+}
+
+// Zod schema for ProductType validation
+export const productTypeSchema = z.enum(['wide_roll', 'wide_flatbed', 'small_format', 'apparel', 'fabrication']);
+
 // Session storage table (required for Replit Auth)
 export const sessions = pgTable(
   "sessions",
@@ -266,7 +300,10 @@ export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   quoteNumber: integer("quote_number").unique(),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'set null' }),
+  contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   customerName: varchar("customer_name", { length: 255 }),
+  source: varchar("source", { length: 50 }).notNull().default('internal'),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
   taxRate: decimal("tax_rate", { precision: 5, scale: 4 }).default("0").notNull(),
   marginPercentage: decimal("margin_percentage", { precision: 5, scale: 4 }).default("0").notNull(),
@@ -275,8 +312,11 @@ export const quotes = pgTable("quotes", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("quotes_user_id_idx").on(table.userId),
+  index("quotes_customer_id_idx").on(table.customerId),
+  index("quotes_contact_id_idx").on(table.contactId),
   index("quotes_created_at_idx").on(table.createdAt),
   index("quotes_quote_number_idx").on(table.quoteNumber),
+  index("quotes_source_idx").on(table.source),
 ]);
 
 // Quote Line Items table
@@ -287,9 +327,11 @@ export const quoteLineItems = pgTable("quote_line_items", {
   productName: varchar("product_name", { length: 255 }).notNull(),
   variantId: varchar("variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
   variantName: varchar("variant_name", { length: 255 }),
+  productType: varchar("product_type", { length: 50 }).notNull().default('wide_roll'),
   width: decimal("width", { precision: 10, scale: 2 }).notNull(),
   height: decimal("height", { precision: 10, scale: 2 }).notNull(),
   quantity: integer("quantity").notNull(),
+  specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   selectedOptions: jsonb("selected_options").$type<Array<{
     optionId: string;
     optionName: string;
@@ -310,6 +352,7 @@ export const quoteLineItems = pgTable("quote_line_items", {
 }, (table) => [
   index("quote_line_items_quote_id_idx").on(table.quoteId),
   index("quote_line_items_product_id_idx").on(table.productId),
+  index("quote_line_items_product_type_idx").on(table.productType),
 ]);
 
 export const insertQuoteSchema = createInsertSchema(quotes).omit({
@@ -317,6 +360,9 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   quoteNumber: true,
   createdAt: true,
 }).extend({
+  customerId: z.string().optional().nullable(),
+  contactId: z.string().optional().nullable(),
+  source: z.enum(['internal', 'customer_quick_quote']).default('internal'),
   subtotal: z.coerce.number().min(0),
   taxRate: z.coerce.number().min(0).max(1),
   marginPercentage: z.coerce.number().min(0).max(1),
@@ -332,11 +378,13 @@ export const insertQuoteLineItemSchema = createInsertSchema(quoteLineItems).omit
   id: true,
   createdAt: true,
 }).extend({
+  productType: productTypeSchema.default('wide_roll'),
   width: z.coerce.number().positive(),
   height: z.coerce.number().positive(),
   quantity: z.coerce.number().int().positive(),
   linePrice: z.coerce.number().positive(),
   displayOrder: z.coerce.number().int(),
+  specsJson: z.record(z.any()).optional().nullable(),
 });
 
 export type InsertQuote = z.infer<typeof insertQuoteSchema>;
@@ -577,11 +625,15 @@ export const customers = pgTable("customers", {
   creditLimit: decimal("credit_limit", { precision: 10, scale: 2 }).default("0"),
   currentBalance: decimal("current_balance", { precision: 10, scale: 2 }).default("0"),
   status: varchar("status", { length: 50 }).default("active"), // active, inactive, suspended
+  userId: varchar("user_id").references(() => users.id, { onDelete: 'set null' }), // Link to user account for customer login
   assignedTo: varchar("assigned_to").references(() => users.id),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("customers_user_id_idx").on(table.userId),
+  index("customers_email_idx").on(table.email),
+]);
 
 export const insertCustomerSchema = createInsertSchema(customers).omit({
   id: true,
@@ -673,5 +725,236 @@ export type CustomerWithRelations = Customer & {
   contacts: CustomerContact[];
   notes: (CustomerNote & { user: User })[];
   creditTransactions: (CustomerCreditTransaction & { user: User })[];
+  quotes?: Quote[];
   assignedUser?: User | null;
+};
+
+// Orders table (Job Management - derived from quotes or standalone)
+export const orders = pgTable("orders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderNumber: varchar("order_number", { length: 50 }).notNull().unique(),
+  quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
+  contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
+  status: varchar("status", { length: 50 }).notNull().default("new"), // new, scheduled, in_production, ready_for_pickup, shipped, completed, on_hold, canceled
+  priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low
+  dueDate: timestamp("due_date", { withTimezone: true }),
+  promisedDate: timestamp("promised_date", { withTimezone: true }),
+  subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
+  tax: decimal("tax", { precision: 10, scale: 2 }).notNull().default("0"),
+  total: decimal("total", { precision: 10, scale: 2 }).notNull().default("0"),
+  discount: decimal("discount", { precision: 10, scale: 2 }).notNull().default("0"),
+  notesInternal: text("notes_internal"),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("orders_order_number_idx").on(table.orderNumber),
+  index("orders_customer_id_idx").on(table.customerId),
+  index("orders_status_idx").on(table.status),
+  index("orders_due_date_idx").on(table.dueDate),
+  index("orders_created_at_idx").on(table.createdAt),
+  index("orders_created_by_user_id_idx").on(table.createdByUserId),
+]);
+
+export const insertOrderSchema = createInsertSchema(orders).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  orderNumber: z.string().min(1),
+  status: z.enum(["new", "scheduled", "in_production", "ready_for_pickup", "shipped", "completed", "on_hold", "canceled"]).default("new"),
+  priority: z.enum(["rush", "normal", "low"]).default("normal"),
+  subtotal: z.coerce.number().min(0),
+  tax: z.coerce.number().min(0),
+  total: z.coerce.number().min(0),
+  discount: z.coerce.number().min(0).default(0),
+  dueDate: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
+  promisedDate: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
+});
+
+export const updateOrderSchema = insertOrderSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertOrder = z.infer<typeof insertOrderSchema>;
+export type UpdateOrder = z.infer<typeof updateOrderSchema>;
+export type Order = typeof orders.$inferSelect;
+
+// Order Line Items table
+export const orderLineItems = pgTable("order_line_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  quoteLineItemId: varchar("quote_line_item_id").references(() => quoteLineItems.id, { onDelete: 'set null' }),
+  productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'restrict' }),
+  productVariantId: varchar("product_variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
+  productType: varchar("product_type", { length: 50 }).notNull().default('wide_roll'),
+  description: text("description").notNull(), // Snapshot of what we sold
+  width: decimal("width", { precision: 10, scale: 2 }),
+  height: decimal("height", { precision: 10, scale: 2 }),
+  quantity: integer("quantity").notNull(),
+  sqft: decimal("sqft", { precision: 10, scale: 2 }),
+  unitPrice: decimal("unit_price", { precision: 10, scale: 2 }).notNull(),
+  totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull(),
+  status: varchar("status", { length: 50 }).notNull().default("queued"), // queued, printing, finishing, done, canceled
+  specsJson: jsonb("specs_json").$type<Record<string, any>>(),
+  selectedOptions: jsonb("selected_options").$type<Array<{
+    optionId: string;
+    optionName: string;
+    value: string | number | boolean;
+    setupCost: number;
+    calculatedCost: number;
+  }>>().default(sql`'[]'::jsonb`).notNull(),
+  nestingConfigSnapshot: jsonb("nesting_config_snapshot").$type<{
+    sheetWidth?: number;
+    sheetHeight?: number;
+    itemsPerSheet?: number;
+    totalSheets?: number;
+    pricePerSheet?: number;
+    formula?: string;
+  }>(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_line_items_order_id_idx").on(table.orderId),
+  index("order_line_items_product_id_idx").on(table.productId),
+  index("order_line_items_status_idx").on(table.status),
+  index("order_line_items_product_type_idx").on(table.productType),
+]);
+
+export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  productType: productTypeSchema.default('wide_roll'),
+  quantity: z.coerce.number().int().positive(),
+  unitPrice: z.coerce.number().min(0),
+  totalPrice: z.coerce.number().min(0),
+  width: z.coerce.number().positive().optional().nullable(),
+  height: z.coerce.number().positive().optional().nullable(),
+  sqft: z.coerce.number().positive().optional().nullable(),
+  status: z.enum(["queued", "printing", "finishing", "done", "canceled"]).default("queued"),
+  specsJson: z.record(z.any()).optional().nullable(),
+});
+
+export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertOrderLineItem = z.infer<typeof insertOrderLineItemSchema>;
+export type UpdateOrderLineItem = z.infer<typeof updateOrderLineItemSchema>;
+export type OrderLineItem = typeof orderLineItems.$inferSelect;
+
+// Jobs table for production tracking
+export const jobs = pgTable("jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  productType: varchar("product_type", { length: 50 }).notNull(),
+  status: varchar("status", { length: 50 }).notNull().default("pending_prepress"), // pending_prepress, prepress, queued_production, in_production, finishing, qc, complete, canceled
+  priority: varchar("priority", { length: 20 }).notNull().default("normal"), // rush, normal, low
+  specsJson: jsonb("specs_json").$type<Record<string, any>>(),
+  assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: 'set null' }),
+  notesInternal: text("notes_internal"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("jobs_order_line_item_id_idx").on(table.orderLineItemId),
+  index("jobs_product_type_idx").on(table.productType),
+  index("jobs_status_idx").on(table.status),
+  index("jobs_assigned_to_user_id_idx").on(table.assignedToUserId),
+]);
+
+export const insertJobSchema = createInsertSchema(jobs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  productType: productTypeSchema,
+  status: z.enum(["pending_prepress", "prepress", "queued_production", "in_production", "finishing", "qc", "complete", "canceled"]).default("pending_prepress"),
+  priority: z.enum(["rush", "normal", "low"]).default("normal"),
+  specsJson: z.record(z.any()).optional().nullable(),
+});
+
+export const updateJobSchema = insertJobSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertJob = z.infer<typeof insertJobSchema>;
+export type UpdateJob = z.infer<typeof updateJobSchema>;
+export type Job = typeof jobs.$inferSelect;
+
+// Order relations
+export const ordersRelations = relations(orders, ({ one, many }) => ({
+  customer: one(customers, {
+    fields: [orders.customerId],
+    references: [customers.id],
+  }),
+  contact: one(customerContacts, {
+    fields: [orders.contactId],
+    references: [customerContacts.id],
+  }),
+  quote: one(quotes, {
+    fields: [orders.quoteId],
+    references: [quotes.id],
+  }),
+  createdByUser: one(users, {
+    fields: [orders.createdByUserId],
+    references: [users.id],
+  }),
+  lineItems: many(orderLineItems),
+}));
+
+export const orderLineItemsRelations = relations(orderLineItems, ({ one, many }) => ({
+  order: one(orders, {
+    fields: [orderLineItems.orderId],
+    references: [orders.id],
+  }),
+  product: one(products, {
+    fields: [orderLineItems.productId],
+    references: [products.id],
+  }),
+  productVariant: one(productVariants, {
+    fields: [orderLineItems.productVariantId],
+    references: [productVariants.id],
+  }),
+  quoteLineItem: one(quoteLineItems, {
+    fields: [orderLineItems.quoteLineItemId],
+    references: [quoteLineItems.id],
+  }),
+  jobs: many(jobs),
+}));
+
+// Jobs relations
+export const jobsRelations = relations(jobs, ({ one }) => ({
+  orderLineItem: one(orderLineItems, {
+    fields: [jobs.orderLineItemId],
+    references: [orderLineItems.id],
+  }),
+  assignedToUser: one(users, {
+    fields: [jobs.assignedToUserId],
+    references: [users.id],
+  }),
+}));
+
+// Order with relations type
+export type OrderWithRelations = Order & {
+  customer: Customer;
+  contact?: CustomerContact | null;
+  quote?: Quote | null;
+  createdByUser: User;
+  lineItems: (OrderLineItem & {
+    product: Product;
+    productVariant?: ProductVariant | null;
+  })[];
 };

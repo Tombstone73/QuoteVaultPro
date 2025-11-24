@@ -11,6 +11,8 @@ import { useToast } from "@/hooks/use-toast";
 import { Calculator as CalcIcon, ExternalLink, Save, Plus, X, Trash2, Grid3x3, List } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/hooks/useAuth";
+import { useLocation } from "wouter";
 import type { Product, InsertQuote, ProductOption, ProductVariant, InsertQuoteLineItem } from "@shared/schema";
 
 // Line item draft type (before saving to server)
@@ -30,6 +32,8 @@ type LineItemDraft = {
 
 export default function CalculatorComponent() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const [, navigate] = useLocation();
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
   const [width, setWidth] = useState<string>("");
@@ -192,18 +196,21 @@ export default function CalculatorComponent() {
       
       const quoteData = {
         customerName: customerName || undefined,
-        lineItems: lineItems.map(item => ({
+        source: 'customer_quick_quote', // Mark as customer-originated
+        lineItems: lineItems.map((item, idx) => ({
           productId: item.productId,
           productName: item.productName,
           variantId: item.variantId || undefined,
           variantName: item.variantName || undefined,
+          productType: 'wide_roll', // Default, adjust based on product if needed
           width: item.width,
           height: item.height,
           quantity: item.quantity,
+          specsJson: {}, // Could store additional config if needed
           selectedOptions: item.selectedOptions,
           linePrice: item.linePrice,
           priceBreakdown: item.priceBreakdown,
-          displayOrder: 0,
+          displayOrder: idx,
         })),
       };
 
@@ -211,11 +218,17 @@ export default function CalculatorComponent() {
       return await response.json();
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      
       toast({
-        title: "Quote Saved",
+        title: "Quote Saved!",
         description: "Your quote has been saved successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      
+      // Navigate to my quotes after a brief delay
+      setTimeout(() => {
+        navigate("/my-quotes");
+      }, 1000);
       
       // Clear everything after successful save
       setLineItems([]);
@@ -1042,16 +1055,18 @@ export default function CalculatorComponent() {
           <Card data-testid="card-save-quote">
             <CardHeader>
               <CardTitle>Save Quote</CardTitle>
-              <CardDescription>Save this quote to your history</CardDescription>
+              <CardDescription>
+                {user ? "Save this quote to your account" : "Log in to save quotes"}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
                 <Label htmlFor="customerName" data-testid="label-customer-name">
-                  Customer Name (Optional)
+                  {user?.role === 'admin' || user?.role === 'owner' ? 'Customer Name (Optional)' : 'Reference Name (Optional)'}
                 </Label>
                 <Input
                   id="customerName"
-                  placeholder="Enter customer name"
+                  placeholder={user?.role === 'admin' || user?.role === 'owner' ? 'Enter customer name' : 'Enter a name for this quote'}
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
                   data-testid="input-customer-name"
@@ -1059,15 +1074,29 @@ export default function CalculatorComponent() {
               </div>
             </CardContent>
             <CardFooter className="flex gap-2">
-              <Button
-                onClick={() => saveQuoteMutation.mutate()}
-                disabled={saveQuoteMutation.isPending}
-                className="flex-1"
-                data-testid="button-save-quote"
-              >
-                <Save className="w-4 h-4 mr-2" />
-                {saveQuoteMutation.isPending ? "Saving..." : "Save Quote"}
-              </Button>
+              {user && !['admin', 'owner', 'manager'].includes(user.role || '') && (
+                <Button
+                  onClick={() => saveQuoteMutation.mutate()}
+                  disabled={saveQuoteMutation.isPending}
+                  className="flex-1"
+                  data-testid="button-save-quote"
+                >
+                  <Save className="w-4 h-4 mr-2" />
+                  {saveQuoteMutation.isPending ? "Saving..." : "Save Quote"}
+                </Button>
+              )}
+              {(!user || ['admin', 'owner', 'manager'].includes(user.role || '')) && (
+                <Button
+                  onClick={() => saveQuoteMutation.mutate()}
+                  disabled={saveQuoteMutation.isPending}
+                  variant="outline"
+                  className="flex-1"
+                  data-testid="button-save-quote-staff"
+                >
+                  <Save className="w-4 h-4 mr-2" />
+                  {saveQuoteMutation.isPending ? "Saving..." : "Quick Save"}
+                </Button>
+              )}
               <Button
                 onClick={handleClearQuote}
                 disabled={saveQuoteMutation.isPending}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -8,18 +8,20 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown } from "lucide-react";
+import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown, Package } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
 import QuoteHistory from "@/components/quote-history";
 import AdminDashboard from "@/components/admin-dashboard";
 import AdminSettings from "@/components/admin-settings";
 import CustomersPage from "@/pages/customers";
+import OrdersPage from "@/pages/orders";
 import AuditLogs from "@/pages/audit-logs";
 import GlobalSearch from "@/components/global-search";
 
 export default function Home() {
   const { user, isLoading, isAuthenticated, isAdmin } = useAuth();
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("calculator");
   const [viewMode, setViewMode] = useState<"admin" | "customer">(() => {
     if (typeof window !== "undefined") {
@@ -57,6 +59,19 @@ export default function Home() {
     setViewMode(newMode);
     if (newMode === "customer" && (activeTab === "admin" || activeTab === "settings")) {
       setActiveTab("calculator");
+    }
+  };
+
+  const handleTabChange = (value: string) => {
+    if (value === "quotes") {
+      // Navigate to appropriate quotes page instead of showing tab content
+      if (viewMode === "admin" && isAdmin) {
+        navigate("/quotes");
+      } else {
+        navigate("/my-quotes");
+      }
+    } else {
+      setActiveTab(value);
     }
   };
 
@@ -150,6 +165,12 @@ export default function Home() {
                 {isAdmin && (
                   <>
                     <DropdownMenuItem asChild>
+                      <Link href="/users" data-testid="link-user-management">
+                        <Users className="w-4 h-4 mr-2" />
+                        User Management
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
                       <Link href="/admin" data-testid="link-admin-settings">
                         <Settings className="w-4 h-4 mr-2" />
                         Admin Settings
@@ -177,13 +198,13 @@ export default function Home() {
       </header>
 
       <main className="container mx-auto px-4 py-8">
-        <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-main">
+        <Tabs value={activeTab} onValueChange={handleTabChange} data-testid="tabs-main">
           <TabsList className="grid w-full max-w-3xl mx-auto" style={{
             gridTemplateColumns: showAdminFeatures
-              ? 'repeat(5, 1fr)'
+              ? 'repeat(6, 1fr)'
               : viewMode === 'customer'
                 ? 'repeat(2, 1fr)'
-                : 'repeat(3, 1fr)'
+                : 'repeat(4, 1fr)'
           }}>
             <TabsTrigger value="calculator" data-testid="tab-calculator">
               <Calculator className="w-4 h-4 mr-2" />
@@ -191,13 +212,19 @@ export default function Home() {
             </TabsTrigger>
             <TabsTrigger value="quotes" data-testid="tab-quotes">
               <FileText className="w-4 h-4 mr-2" />
-              My Quotes
+              {viewMode === 'admin' ? 'Quotes' : 'My Quotes'}
             </TabsTrigger>
             {viewMode === 'admin' && (
-              <TabsTrigger value="customers" data-testid="tab-customers">
-                <Users className="w-4 h-4 mr-2" />
-                Companies
-              </TabsTrigger>
+              <>
+                <TabsTrigger value="customers" data-testid="tab-customers">
+                  <Users className="w-4 h-4 mr-2" />
+                  Companies
+                </TabsTrigger>
+                <TabsTrigger value="orders" data-testid="tab-orders">
+                  <Package className="w-4 h-4 mr-2" />
+                  Orders
+                </TabsTrigger>
+              </>
             )}
             {showAdminFeatures && (
               <>
@@ -224,14 +251,17 @@ export default function Home() {
               <CalculatorComponent />
             </TabsContent>
 
-            <TabsContent value="quotes" data-testid="content-quotes">
-              <QuoteHistory />
-            </TabsContent>
+            {/* Quotes tab now navigates directly, no content needed */}
 
             {viewMode === 'admin' && (
-              <TabsContent value="customers" data-testid="content-customers">
-                <CustomersPage embedded={true} />
-              </TabsContent>
+              <>
+                <TabsContent value="customers" data-testid="content-customers">
+                  <CustomersPage embedded={true} />
+                </TabsContent>
+                <TabsContent value="orders" data-testid="content-orders">
+                  <OrdersPage />
+                </TabsContent>
+              </>
             )}
 
             {showAdminFeatures && (

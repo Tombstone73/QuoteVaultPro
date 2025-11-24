@@ -15,6 +15,9 @@ import {
   customerContacts,
   customerNotes,
   customerCreditTransactions,
+  orders,
+  orderLineItems,
+  jobs,
   type User,
   type UpsertUser,
   type Product,
@@ -62,6 +65,16 @@ import {
   type CustomerCreditTransaction,
   type InsertCustomerCreditTransaction,
   type UpdateCustomerCreditTransaction,
+  type Order,
+  type InsertOrder,
+  type UpdateOrder,
+  type OrderWithRelations,
+  type OrderLineItem,
+  type InsertOrderLineItem,
+  type UpdateOrderLineItem,
+  type Job,
+  type InsertJob,
+  type UpdateJob,
   auditLogs,
   type AuditLog,
   type InsertAuditLog,
@@ -210,6 +223,45 @@ export interface IStorage {
   createCustomerCreditTransaction(transaction: InsertCustomerCreditTransaction): Promise<CustomerCreditTransaction>;
   updateCustomerCreditTransaction(id: string, transaction: Partial<InsertCustomerCreditTransaction>): Promise<CustomerCreditTransaction>;
   updateCustomerBalance(customerId: string, amount: number, type: 'credit' | 'debit', reason: string, createdBy: string): Promise<Customer>;
+
+  // Order operations
+  getAllOrders(filters?: {
+    search?: string;
+    status?: string;
+    priority?: string;
+    customerId?: string;
+    startDate?: Date;
+    endDate?: Date;
+  }): Promise<Order[]>;
+  getOrderById(id: string): Promise<OrderWithRelations | undefined>;
+  createOrder(data: {
+    customerId: string;
+    contactId?: string | null;
+    quoteId?: string | null;
+    status?: string;
+    priority?: string;
+    dueDate?: Date | null;
+    promisedDate?: Date | null;
+    discount?: number;
+    notesInternal?: string | null;
+    createdByUserId: string;
+    lineItems: Omit<InsertOrderLineItem, 'orderId'>[];
+  }): Promise<OrderWithRelations>;
+  updateOrder(id: string, order: Partial<InsertOrder>): Promise<Order>;
+  deleteOrder(id: string): Promise<void>;
+  convertQuoteToOrder(quoteId: string, createdByUserId: string, options?: {
+    dueDate?: Date;
+    promisedDate?: Date;
+    priority?: string;
+    notesInternal?: string;
+  }): Promise<OrderWithRelations>;
+
+  // Order line item operations
+  getOrderLineItems(orderId: string): Promise<OrderLineItem[]>;
+  getOrderLineItemById(id: string): Promise<OrderLineItem | undefined>;
+  createOrderLineItem(lineItem: InsertOrderLineItem): Promise<OrderLineItem>;
+  updateOrderLineItem(id: string, lineItem: Partial<InsertOrderLineItem>): Promise<OrderLineItem>;
+  deleteOrderLineItem(id: string): Promise<void>;
 
   // Audit log operations
   createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
@@ -597,7 +649,10 @@ export class DatabaseStorage implements IStorage {
   // Quote operations
   async createQuote(data: {
     userId: string;
+    customerId?: string;
+    contactId?: string;
     customerName?: string;
+    source?: string;
     lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
   }): Promise<QuoteWithRelations> {
     // Calculate subtotal from line items
@@ -624,7 +679,10 @@ export class DatabaseStorage implements IStorage {
       const quoteData = {
         userId: data.userId,
         quoteNumber,
+        customerId: data.customerId || null,
+        contactId: data.contactId || null,
         customerName: data.customerName,
+        source: data.source || 'internal',
         subtotal: subtotal.toString(),
         totalPrice: subtotal.toString(),
       } as typeof quotes.$inferInsert;
@@ -650,9 +708,11 @@ export class DatabaseStorage implements IStorage {
       productName: item.productName,
       variantId: item.variantId,
       variantName: item.variantName,
+      productType: (item as any).productType || 'wide_roll',
       width: item.width.toString(),
       height: item.height.toString(),
       quantity: item.quantity,
+      specsJson: (item as any).specsJson || null,
       selectedOptions: item.selectedOptions as Array<{
         optionId: string;
         optionName: string;
@@ -798,9 +858,11 @@ export class DatabaseStorage implements IStorage {
       productName: lineItem.productName,
       variantId: lineItem.variantId,
       variantName: lineItem.variantName,
+      productType: (lineItem as any).productType || 'wide_roll',
       width: lineItem.width.toString(),
       height: lineItem.height.toString(),
       quantity: lineItem.quantity,
+      specsJson: (lineItem as any).specsJson || null,
       selectedOptions: lineItem.selectedOptions as Array<{
         optionId: string;
         optionName: string;
@@ -858,8 +920,33 @@ export class DatabaseStorage implements IStorage {
     endDate?: string;
     minPrice?: string;
     maxPrice?: string;
+    userRole?: string;
+    source?: string;
   }): Promise<QuoteWithRelations[]> {
-    const conditions = [eq(quotes.userId, userId)];
+    const conditions = [];
+    
+    // Role-based filtering:
+    // - owner/admin: can see all quotes (no userId filter)
+    // - manager/employee: see only internal quotes they created
+    // - customer: see only their own customer_quick_quote quotes
+    const isStaff = filters?.userRole && ['owner', 'admin', 'manager', 'employee'].includes(filters.userRole);
+    const isAdminOrOwner = filters?.userRole && ['owner', 'admin'].includes(filters.userRole);
+    
+    if (!isAdminOrOwner) {
+      // Non-admin staff and customers are restricted to their own quotes
+      conditions.push(eq(quotes.userId, userId));
+    }
+    
+    // Source filtering based on role
+    if (filters?.source) {
+      // Explicit source filter from query params
+      conditions.push(eq(quotes.source, filters.source));
+    } else if (isStaff && !isAdminOrOwner) {
+      // Regular staff (manager/employee) see only internal quotes
+      conditions.push(eq(quotes.source, 'internal'));
+    }
+    // Admin/Owner with no explicit source filter see all
+    // Customers with no explicit source filter see all their quotes (both types)
 
     if (filters?.searchCustomer) {
       conditions.push(like(quotes.customerName, `%${filters.searchCustomer}%`));
@@ -1274,17 +1361,40 @@ export class DatabaseStorage implements IStorage {
       return undefined;
     }
 
-    // Fetch related data one at a time to isolate SQL errors
+    // Fetch related data with user relations
     const contacts = await db.select().from(customerContacts).where(eq(customerContacts.customerId, id)).catch(() => []);
-    const notes = await db.select().from(customerNotes).where(eq(customerNotes.customerId, id)).orderBy(desc(customerNotes.createdAt)).catch(() => []);
-    const creditTransactions = await db.select().from(customerCreditTransactions).where(eq(customerCreditTransactions.customerId, id)).orderBy(desc(customerCreditTransactions.createdAt)).catch(() => []);
+    
+    const notesWithUsers = await db
+      .select()
+      .from(customerNotes)
+      .leftJoin(users, eq(customerNotes.userId, users.id))
+      .where(eq(customerNotes.customerId, id))
+      .orderBy(desc(customerNotes.createdAt))
+      .catch(() => []);
+    const notes = notesWithUsers.map(row => ({
+      ...row.customer_notes,
+      user: row.users || { id: '', email: null, firstName: null, lastName: null, profileImageUrl: null, isAdmin: false, role: 'employee', createdAt: new Date(), updatedAt: new Date() }
+    })) as (CustomerNote & { user: User })[];
+    
+    const transactionsWithUsers = await db
+      .select()
+      .from(customerCreditTransactions)
+      .leftJoin(users, eq(customerCreditTransactions.userId, users.id))
+      .where(eq(customerCreditTransactions.customerId, id))
+      .orderBy(desc(customerCreditTransactions.createdAt))
+      .catch(() => []);
+    const creditTransactions = transactionsWithUsers.map(row => ({
+      ...row.customer_credit_transactions,
+      user: row.users || { id: '', email: null, firstName: null, lastName: null, profileImageUrl: null, isAdmin: false, role: 'employee', createdAt: new Date(), updatedAt: new Date() }
+    })) as (CustomerCreditTransaction & { user: User })[];
+    
     const customerQuotes = await db.select().from(quotes).where(eq(quotes.customerId, id)).orderBy(desc(quotes.createdAt)).catch(() => []);
 
     return {
       ...customer,
       contacts,
-      notes,
-      creditTransactions,
+      notes: notes as any, // Type cast needed due to notes field conflict (text field vs array relation)
+      creditTransactions: creditTransactions as any,
       quotes: customerQuotes,
     };
   }
@@ -1370,23 +1480,12 @@ export class DatabaseStorage implements IStorage {
     noteType?: string;
     assignedTo?: string;
   }): Promise<CustomerNote[]> {
-    let query = db.select().from(customerNotes).where(eq(customerNotes.customerId, customerId));
-
-    const conditions = [eq(customerNotes.customerId, customerId)];
-
-    if (filters?.noteType) {
-      conditions.push(eq(customerNotes.noteType, filters.noteType as any));
-    }
-
-    if (filters?.assignedTo) {
-      conditions.push(eq(customerNotes.assignedTo, filters.assignedTo));
-    }
-
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
-    }
-
-    return await query.orderBy(desc(customerNotes.isPinned), desc(customerNotes.createdAt));
+    // Simplified query - removed non-existent fields (noteType, assignedTo, isPinned)
+    return await db
+      .select()
+      .from(customerNotes)
+      .where(eq(customerNotes.customerId, customerId))
+      .orderBy(desc(customerNotes.createdAt));
   }
 
   async createCustomerNote(noteData: InsertCustomerNote): Promise<CustomerNote> {
@@ -1469,29 +1568,21 @@ export class DatabaseStorage implements IStorage {
       throw new Error("Customer not found");
     }
 
-    const currentBalance = parseFloat(customer.currentBalance);
-    const creditLimit = parseFloat(customer.creditLimit);
+    const currentBalance = parseFloat(customer.currentBalance || '0');
+    const creditLimit = parseFloat(customer.creditLimit || '0');
 
     // Calculate new balance
-    const balanceBefore = currentBalance;
     const balanceAfter = type === 'credit'
       ? currentBalance + amount
       : currentBalance - amount;
 
-    const availableCredit = creditLimit - balanceAfter;
-
     // Create transaction record
     await db.insert(customerCreditTransactions).values({
       customerId,
+      userId: createdBy,
       transactionType: type,
       amount: amount.toString(),
-      balanceBefore: balanceBefore.toString(),
-      balanceAfter: balanceAfter.toString(),
-      reason,
-      createdBy,
-      status: 'approved',
-      approvedBy: createdBy,
-      approvedAt: new Date(),
+      description: reason,
     });
 
     // Update customer balance
@@ -1499,7 +1590,6 @@ export class DatabaseStorage implements IStorage {
       .update(customers)
       .set({
         currentBalance: balanceAfter.toString(),
-        availableCredit: availableCredit.toString(),
         updatedAt: new Date(),
       })
       .where(eq(customers.id, customerId))
@@ -1557,6 +1647,391 @@ export class DatabaseStorage implements IStorage {
     }
 
     return await query;
+  }
+
+  // Order operations
+  async getAllOrders(filters?: {
+    search?: string;
+    status?: string;
+    priority?: string;
+    customerId?: string;
+    startDate?: Date;
+    endDate?: Date;
+  }): Promise<any[]> {
+    const conditions = [];
+
+    if (filters?.status) {
+      conditions.push(eq(orders.status, filters.status));
+    }
+    if (filters?.priority) {
+      conditions.push(eq(orders.priority, filters.priority));
+    }
+    if (filters?.customerId) {
+      conditions.push(eq(orders.customerId, filters.customerId));
+    }
+    if (filters?.startDate) {
+      conditions.push(gte(orders.createdAt, filters.startDate));
+    }
+    if (filters?.endDate) {
+      conditions.push(lte(orders.createdAt, filters.endDate));
+    }
+    if (filters?.search) {
+      conditions.push(
+        or(
+          ilike(orders.orderNumber, `%${filters.search}%`),
+          ilike(orders.notesInternal, `%${filters.search}%`)
+        )
+      );
+    }
+
+    let query = db.select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      quoteId: orders.quoteId,
+      customerId: orders.customerId,
+      contactId: orders.contactId,
+      status: orders.status,
+      priority: orders.priority,
+      dueDate: orders.dueDate,
+      promisedDate: orders.promisedDate,
+      subtotal: orders.subtotal,
+      tax: orders.tax,
+      total: orders.total,
+      discount: orders.discount,
+      notesInternal: orders.notesInternal,
+      createdByUserId: orders.createdByUserId,
+      createdAt: orders.createdAt,
+      updatedAt: orders.updatedAt,
+      customer: customers,
+    })
+    .from(orders)
+    .leftJoin(customers, eq(orders.customerId, customers.id));
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    const ordersResult = await query.orderBy(desc(orders.createdAt));
+
+    // Fetch line items for each order
+    const ordersWithLineItems = await Promise.all(
+      ordersResult.map(async (order) => {
+        const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, order.id));
+        return { ...order, lineItems };
+      })
+    );
+
+    return ordersWithLineItems;
+  }
+
+  async getOrderById(id: string): Promise<OrderWithRelations | undefined> {
+    const [order] = await db.select().from(orders).where(eq(orders.id, id));
+    if (!order) return undefined;
+
+    // Fetch related data
+    const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId));
+    const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
+    const [createdByUser] = await db.select().from(users).where(eq(users.id, order.createdByUserId));
+    
+    let contact = null;
+    if (order.contactId) {
+      [contact] = await db.select().from(customerContacts).where(eq(customerContacts.id, order.contactId));
+    }
+
+    let quote = null;
+    if (order.quoteId) {
+      [quote] = await db.select().from(quotes).where(eq(quotes.id, order.quoteId));
+    }
+
+    // Fetch product data for line items
+    const lineItemsWithProducts = await Promise.all(
+      lineItems.map(async (item) => {
+        const [product] = await db.select().from(products).where(eq(products.id, item.productId));
+        let productVariant = null;
+        if (item.productVariantId) {
+          [productVariant] = await db.select().from(productVariants).where(eq(productVariants.id, item.productVariantId));
+        }
+        return {
+          ...item,
+          product,
+          productVariant,
+        };
+      })
+    );
+
+    return {
+      ...order,
+      customer,
+      contact,
+      quote,
+      createdByUser,
+      lineItems: lineItemsWithProducts,
+    };
+  }
+
+  async createOrder(data: {
+    customerId: string;
+    contactId?: string | null;
+    quoteId?: string | null;
+    status?: string;
+    priority?: string;
+    dueDate?: Date | null;
+    promisedDate?: Date | null;
+    discount?: number;
+    notesInternal?: string | null;
+    createdByUserId: string;
+    lineItems: Omit<InsertOrderLineItem, 'orderId'>[];
+  }): Promise<OrderWithRelations> {
+    // Calculate totals from line items
+    const subtotal = data.lineItems.reduce((sum, item) => sum + Number(item.totalPrice), 0);
+    const discount = Number(data.discount) || 0;
+    
+    // For now, use a simple tax calculation (could be enhanced with tax rate lookup)
+    const companySettingsResult = await this.getCompanySettings();
+    const taxRate = companySettingsResult ? parseFloat(companySettingsResult.taxRate) / 100 : 0;
+    const tax = (subtotal - discount) * taxRate;
+    const total = subtotal - discount + tax;
+
+    // Use a transaction with row-level locking to ensure atomic order number assignment
+    const newOrder = await db.transaction(async (tx) => {
+      // Lock the row to prevent concurrent access
+      const result = await tx.execute(sql`
+        SELECT * FROM ${globalVariables}
+        WHERE ${globalVariables.name} = 'orderNumber'
+        FOR UPDATE
+      `);
+
+      const orderNumberVar = result.rows[0] as any;
+
+      if (!orderNumberVar) {
+        throw new Error('Order numbering system not initialized');
+      }
+
+      const orderNumberInt = Math.floor(Number(orderNumberVar.value));
+      const orderNumber = `ORD-${String(orderNumberInt).padStart(5, '0')}`;
+
+      // Create the order
+      const orderData = {
+        orderNumber,
+        customerId: data.customerId,
+        contactId: data.contactId || null,
+        quoteId: data.quoteId || null,
+        status: data.status || 'new',
+        priority: data.priority || 'normal',
+        dueDate: data.dueDate || null,
+        promisedDate: data.promisedDate || null,
+        subtotal: subtotal.toFixed(2),
+        tax: tax.toFixed(2),
+        total: total.toFixed(2),
+        discount: discount.toFixed(2),
+        notesInternal: data.notesInternal || null,
+        createdByUserId: data.createdByUserId,
+      } as typeof orders.$inferInsert;
+
+      const [order] = await tx.insert(orders).values(orderData).returning();
+
+      // Increment the next order number
+      await tx
+        .update(globalVariables)
+        .set({
+          value: (orderNumberInt + 1).toString(),
+          updatedAt: new Date(),
+        })
+        .where(eq(globalVariables.id, orderNumberVar.id));
+
+      return order;
+    });
+
+    // Create line items
+    const lineItemsData = data.lineItems.map((item) => ({
+      orderId: newOrder.id,
+      quoteLineItemId: item.quoteLineItemId || null,
+      productId: item.productId,
+      productVariantId: item.productVariantId || null,
+      description: item.description,
+      width: item.width?.toString() || null,
+      height: item.height?.toString() || null,
+      quantity: item.quantity,
+      sqft: item.sqft?.toString() || null,
+      unitPrice: item.unitPrice.toString(),
+      totalPrice: item.totalPrice.toString(),
+      status: item.status || 'queued',
+      nestingConfigSnapshot: item.nestingConfigSnapshot || null,
+    })) as typeof orderLineItems.$inferInsert[];
+
+    await db.insert(orderLineItems).values(lineItemsData);
+
+    // Fetch and return the complete order
+    const completeOrder = await this.getOrderById(newOrder.id);
+    if (!completeOrder) {
+      throw new Error('Failed to fetch created order');
+    }
+
+    return completeOrder;
+  }
+
+  async updateOrder(id: string, orderData: Partial<InsertOrder>): Promise<OrderWithRelations> {
+    const updateData: any = {
+      ...orderData,
+      updatedAt: new Date(),
+    };
+
+    const [order] = await db
+      .update(orders)
+      .set(updateData)
+      .where(eq(orders.id, id))
+      .returning();
+
+    if (!order) {
+      throw new Error("Order not found");
+    }
+
+    // Return full order with relations to ensure frontend gets updated customer data
+    const fullOrder = await this.getOrderById(id);
+    if (!fullOrder) {
+      throw new Error("Order not found after update");
+    }
+
+    return fullOrder;
+  }
+
+  async deleteOrder(id: string): Promise<void> {
+    // Line items will be cascade deleted due to foreign key constraint
+    await db.delete(orders).where(eq(orders.id, id));
+  }
+
+  async convertQuoteToOrder(
+    quoteId: string,
+    createdByUserId: string,
+    options?: {
+      customerId?: string;
+      contactId?: string;
+      dueDate?: Date;
+      promisedDate?: Date;
+      priority?: string;
+      notesInternal?: string;
+      createJobs?: boolean;
+    }
+  ): Promise<OrderWithRelations> {
+    // Fetch the complete quote with line items
+    const quote = await this.getQuoteById(quoteId);
+    if (!quote) {
+      throw new Error('Quote not found');
+    }
+
+    // Check if quote has already been converted
+    const existingOrders = await db.select().from(orders).where(eq(orders.quoteId, quoteId));
+    if (existingOrders.length > 0) {
+      throw new Error('Quote has already been converted to an order');
+    }
+
+    // Get customer from options or quote (now quotes have customerId)
+    const customerId = options?.customerId || (quote as any).customerId;
+    if (!customerId) {
+      throw new Error('Customer ID is required to convert quote to order');
+    }
+
+    const contactId = options?.contactId || (quote as any).contactId || null;
+
+    // Convert quote line items to order line items format
+    const orderLineItems = quote.lineItems.map((qli) => ({
+      quoteLineItemId: qli.id,
+      productId: qli.productId,
+      productVariantId: qli.variantId || null,
+      productType: (qli as any).productType || 'wide_roll', // Copy product_type
+      description: `${qli.productName}${qli.variantName ? ` - ${qli.variantName}` : ''}\n${qli.width}"W x ${qli.height}"H, Qty: ${qli.quantity}`,
+      width: parseFloat(qli.width),
+      height: parseFloat(qli.height),
+      quantity: qli.quantity,
+      sqft: (parseFloat(qli.width) * parseFloat(qli.height) * qli.quantity) / 144,
+      unitPrice: parseFloat(qli.linePrice) / qli.quantity,
+      totalPrice: parseFloat(qli.linePrice),
+      status: 'queued' as const,
+      specsJson: (qli as any).specsJson || null, // Copy specs
+      selectedOptions: (qli as any).selectedOptions || [], // Copy selected options snapshot for audit
+      nestingConfigSnapshot: qli.priceBreakdown ? {
+        formula: qli.priceBreakdown.formula,
+      } : null,
+    }));
+
+    // Create the order
+    const order = await this.createOrder({
+      customerId,
+      contactId,
+      quoteId: quote.id,
+      status: 'new',
+      priority: options?.priority || 'normal',
+      dueDate: options?.dueDate || null,
+      promisedDate: options?.promisedDate || null,
+      discount: parseFloat(quote.discountAmount),
+      notesInternal: options?.notesInternal || `Converted from quote ${quote.quoteNumber}`,
+      createdByUserId,
+      lineItems: orderLineItems,
+    });
+
+    // Optionally create jobs for each order line item
+    if (options?.createJobs && order.lineItems) {
+      for (const lineItem of order.lineItems) {
+        await db.insert(jobs).values({
+          orderLineItemId: lineItem.id,
+          productType: (lineItem as any).productType || 'wide_roll',
+          status: 'pending_prepress',
+          priority: options.priority || 'normal',
+          specsJson: (lineItem as any).specsJson || null,
+          assignedToUserId: null,
+          notesInternal: null,
+        });
+      }
+    }
+
+    return order;
+  }
+
+  // Order line item operations
+  async getOrderLineItems(orderId: string): Promise<OrderLineItem[]> {
+    return await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+  }
+
+  async getOrderLineItemById(id: string): Promise<OrderLineItem | undefined> {
+    const [lineItem] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, id));
+    return lineItem;
+  }
+
+  async createOrderLineItem(lineItemData: InsertOrderLineItem): Promise<OrderLineItem> {
+    const data = {
+      ...lineItemData,
+      width: lineItemData.width?.toString() || null,
+      height: lineItemData.height?.toString() || null,
+      sqft: lineItemData.sqft?.toString() || null,
+      unitPrice: lineItemData.unitPrice.toString(),
+      totalPrice: lineItemData.totalPrice.toString(),
+    } as typeof orderLineItems.$inferInsert;
+    
+    const [lineItem] = await db.insert(orderLineItems).values(data).returning();
+    return lineItem;
+  }
+
+  async updateOrderLineItem(id: string, lineItemData: Partial<InsertOrderLineItem>): Promise<OrderLineItem> {
+    const updateData: any = {
+      ...lineItemData,
+      updatedAt: new Date(),
+    };
+
+    const [lineItem] = await db
+      .update(orderLineItems)
+      .set(updateData)
+      .where(eq(orderLineItems.id, id))
+      .returning();
+
+    if (!lineItem) {
+      throw new Error("Order line item not found");
+    }
+
+    return lineItem;
+  }
+
+  async deleteOrderLineItem(id: string): Promise<void> {
+    await db.delete(orderLineItems).where(eq(orderLineItems.id, id));
   }
 }
 

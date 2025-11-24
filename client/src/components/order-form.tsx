@@ -1,0 +1,746 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useLocation } from "wouter";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useToast } from "@/hooks/use-toast";
+import { Trash2, Plus, Calculator, Loader2 } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+
+interface OrderLineItemDraft {
+  tempId: string;
+  productId: string;
+  productName: string;
+  productVariantId: string | null;
+  productType: string;
+  description: string;
+  width: number | null;
+  height: number | null;
+  quantity: number;
+  sqft: number | null;
+  unitPrice: number;
+  totalPrice: number;
+  status: string;
+  specsJson: Record<string, any>;
+}
+
+interface OrderFormProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess?: (orderId: string) => void;
+}
+
+export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormProps) {
+  const { toast } = useToast();
+  const [, navigate] = useLocation();
+
+  // Customer selection
+  const [searchCustomer, setSearchCustomer] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
+  const [selectedContactId, setSelectedContactId] = useState<string>("");
+
+  // Order details
+  const [status, setStatus] = useState("new");
+  const [priority, setPriority] = useState("normal");
+  const [dueDate, setDueDate] = useState("");
+  const [promisedDate, setPromisedDate] = useState("");
+  const [discount, setDiscount] = useState(0);
+  const [notesInternal, setNotesInternal] = useState("");
+
+  // Line items
+  const [lineItems, setLineItems] = useState<OrderLineItemDraft[]>([]);
+
+  // Item being added/edited
+  const [showItemDialog, setShowItemDialog] = useState(false);
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [selectedProductId, setSelectedProductId] = useState("");
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+  const [width, setWidth] = useState("");
+  const [height, setHeight] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch customers
+  const { data: customers } = useQuery<any[]>({
+    queryKey: ["/api/customers"],
+    queryFn: async () => {
+      const response = await fetch("/api/customers", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch customers");
+      return response.json();
+    },
+  });
+
+  // Fetch contacts for selected customer
+  const { data: contacts } = useQuery<any[]>({
+    queryKey: ["/api/customers", selectedCustomerId, "contacts"],
+    queryFn: async () => {
+      if (!selectedCustomerId) return [];
+      const response = await fetch(`/api/customers/${selectedCustomerId}/contacts`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch contacts");
+      return response.json();
+    },
+    enabled: !!selectedCustomerId,
+  });
+
+  // Fetch products
+  const { data: products } = useQuery<any[]>({
+    queryKey: ["/api/products"],
+    queryFn: async () => {
+      const response = await fetch("/api/products", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch products");
+      return response.json();
+    },
+  });
+
+  // Fetch variants for selected product
+  const { data: variants } = useQuery<any[]>({
+    queryKey: ["/api/products", selectedProductId, "variants"],
+    queryFn: async () => {
+      if (!selectedProductId) return [];
+      const response = await fetch(`/api/products/${selectedProductId}/variants`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch variants");
+      return response.json();
+    },
+    enabled: !!selectedProductId,
+  });
+
+  // Auto-calculate price with debounce
+  const triggerAutoCalculate = useCallback(async () => {
+    if (!selectedProductId || !width || !height || !quantity) {
+      setCalculatedPrice(null);
+      return;
+    }
+
+    const widthNum = parseFloat(width);
+    const heightNum = parseFloat(height);
+    const quantityNum = parseInt(quantity);
+
+    if (isNaN(widthNum) || widthNum <= 0 || isNaN(heightNum) || heightNum <= 0 || isNaN(quantityNum) || quantityNum <= 0) {
+      setCalculatedPrice(null);
+      return;
+    }
+
+    setIsCalculating(true);
+
+    try {
+      const response = await apiRequest("POST", "/api/quotes/calculate", {
+        productId: selectedProductId,
+        variantId: selectedVariantId,
+        width: widthNum,
+        height: heightNum,
+        quantity: quantityNum,
+        selectedOptions: {},
+      });
+      const data = await response.json();
+      
+      // The API returns 'price' which is the TOTAL price for all items
+      // We need to calculate the unit price by dividing by quantity
+      const totalPrice = data.price;
+      const unitPrice = quantityNum > 0 ? totalPrice / quantityNum : 0;
+      setCalculatedPrice(unitPrice);
+    } catch (error) {
+      setCalculatedPrice(null);
+    } finally {
+      setIsCalculating(false);
+    }
+  }, [selectedProductId, selectedVariantId, width, height, quantity]);
+
+  // Debounced auto-calculation
+  useEffect(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      triggerAutoCalculate();
+    }, 500);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, [triggerAutoCalculate]);
+
+  // Auto-select default variant when product changes
+  useEffect(() => {
+    if (variants && variants.length > 0 && selectedProductId && !editingItemId) {
+      const defaultVariant = variants.find((v: any) => v.isDefault);
+      if (defaultVariant) {
+        console.log("Auto-selecting default variant:", defaultVariant.id, defaultVariant.name);
+        setSelectedVariantId(defaultVariant.id);
+      }
+    }
+  }, [variants?.length, selectedProductId, editingItemId]);
+
+  const handleAddLineItem = () => {
+    if (!selectedProductId || !calculatedPrice) {
+      toast({
+        title: "Missing Information",
+        description: "Please select a product and calculate price",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const product = products?.find(p => p.id === selectedProductId);
+    const variant = variants?.find(v => v.id === selectedVariantId);
+    
+    const widthNum = parseFloat(width) || 0;
+    const heightNum = parseFloat(height) || 0;
+    const quantityNum = parseInt(quantity) || 1;
+    const sqft = widthNum && heightNum ? (widthNum * heightNum * quantityNum) / 144 : null;
+
+    const newItem: OrderLineItemDraft = {
+      tempId: editingItemId || `temp-${Date.now()}`,
+      productId: selectedProductId,
+      productName: product?.name || "",
+      productVariantId: selectedVariantId,
+      productType: product?.productType || "wide_roll",
+      description: `${product?.name}${variant ? ` - ${variant.name}` : ""}`,
+      width: widthNum || null,
+      height: heightNum || null,
+      quantity: quantityNum,
+      sqft,
+      unitPrice: calculatedPrice,
+      totalPrice: calculatedPrice * quantityNum,
+      status: "queued",
+      specsJson: {
+        width: widthNum,
+        height: heightNum,
+      },
+    };
+
+    if (editingItemId) {
+      setLineItems(lineItems.map(item => item.tempId === editingItemId ? newItem : item));
+    } else {
+      setLineItems([...lineItems, newItem]);
+    }
+
+    // Reset form
+    setSelectedProductId("");
+    setSelectedVariantId(null);
+    setWidth("");
+    setHeight("");
+    setQuantity("1");
+    setCalculatedPrice(null);
+    setEditingItemId(null);
+    setShowItemDialog(false);
+  };
+
+  const handleEditLineItem = (item: OrderLineItemDraft) => {
+    setEditingItemId(item.tempId);
+    setSelectedProductId(item.productId);
+    setSelectedVariantId(item.productVariantId);
+    setWidth(item.width?.toString() || "");
+    setHeight(item.height?.toString() || "");
+    setQuantity(item.quantity.toString());
+    setCalculatedPrice(item.unitPrice);
+    setShowItemDialog(true);
+  };
+
+  const handleDeleteLineItem = (tempId: string) => {
+    setLineItems(lineItems.filter(item => item.tempId !== tempId));
+  };
+
+  const createOrderMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to create order");
+      }
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Success",
+        description: "Order created successfully",
+      });
+      onOpenChange(false);
+      if (onSuccess && data?.id) {
+        onSuccess(data.id);
+      }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!selectedCustomerId) {
+      toast({
+        title: "Validation Error",
+        description: "Please select a customer",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (lineItems.length === 0) {
+      toast({
+        title: "Validation Error",
+        description: "Please add at least one line item",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const subtotal = lineItems.reduce((sum, item) => sum + item.totalPrice, 0);
+    const tax = 0; // Calculate tax if needed
+    const total = subtotal + tax - discount;
+
+    const orderData = {
+      customerId: selectedCustomerId,
+      contactId: selectedContactId || null,
+      status,
+      priority,
+      dueDate: dueDate ? new Date(dueDate) : null,
+      promisedDate: promisedDate ? new Date(promisedDate) : null,
+      discount: Number(discount),
+      notesInternal: notesInternal || null,
+      lineItems: lineItems.map(item => ({
+        productId: item.productId,
+        productVariantId: item.productVariantId,
+        productType: item.productType,
+        description: item.description,
+        width: item.width,
+        height: item.height,
+        quantity: item.quantity,
+        sqft: item.sqft,
+        unitPrice: Number(item.unitPrice),
+        totalPrice: Number(item.totalPrice),
+        status: item.status,
+        specsJson: item.specsJson,
+      })),
+    };
+
+    createOrderMutation.mutate(orderData);
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+    }).format(amount);
+  };
+
+  const filteredCustomers = customers?.filter(c =>
+    c.companyName.toLowerCase().includes(searchCustomer.toLowerCase())
+  ) || [];
+
+  const subtotal = lineItems.reduce((sum, item) => sum + item.totalPrice, 0);
+  const tax = 0;
+  const total = subtotal + tax - discount;
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Create New Order</DialogTitle>
+          </DialogHeader>
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {/* Customer Selection */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Customer Information</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="customerId">Customer *</Label>
+                    <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select customer" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <div className="p-2">
+                          <Input
+                            placeholder="Search customers..."
+                            value={searchCustomer}
+                            onChange={(e) => setSearchCustomer(e.target.value)}
+                            className="mb-2"
+                          />
+                        </div>
+                        {filteredCustomers.map((customer) => (
+                          <SelectItem key={customer.id} value={customer.id}>
+                            {customer.companyName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="contactId">Contact</Label>
+                    <Select value={selectedContactId} onValueChange={setSelectedContactId} disabled={!selectedCustomerId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select contact (optional)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {contacts?.map((contact) => (
+                          <SelectItem key={contact.id} value={contact.id}>
+                            {contact.firstName} {contact.lastName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Order Details */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Order Details</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="status">Status</Label>
+                    <Select value={status} onValueChange={setStatus}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="new">New</SelectItem>
+                        <SelectItem value="scheduled">Scheduled</SelectItem>
+                        <SelectItem value="in_production">In Production</SelectItem>
+                        <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
+                        <SelectItem value="shipped">Shipped</SelectItem>
+                        <SelectItem value="completed">Completed</SelectItem>
+                        <SelectItem value="on_hold">On Hold</SelectItem>
+                        <SelectItem value="canceled">Canceled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="priority">Priority</Label>
+                    <Select value={priority} onValueChange={setPriority}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="rush">Rush</SelectItem>
+                        <SelectItem value="normal">Normal</SelectItem>
+                        <SelectItem value="low">Low</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="dueDate">Due Date</Label>
+                    <Input
+                      type="date"
+                      value={dueDate}
+                      onChange={(e) => setDueDate(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="promisedDate">Promised Date</Label>
+                    <Input
+                      type="date"
+                      value={promisedDate}
+                      onChange={(e) => setPromisedDate(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="discount">Discount Amount</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={discount}
+                      onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Label htmlFor="notesInternal">Internal Notes</Label>
+                  <Textarea
+                    value={notesInternal}
+                    onChange={(e) => setNotesInternal(e.target.value)}
+                    placeholder="Add internal notes about this order..."
+                    rows={3}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Line Items */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Line Items</CardTitle>
+                  <Button type="button" size="sm" onClick={() => setShowItemDialog(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Item
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {lineItems.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p>No line items added yet</p>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setShowItemDialog(true)} className="mt-2">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add First Item
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Product</TableHead>
+                          <TableHead>Specs</TableHead>
+                          <TableHead className="text-right">Qty</TableHead>
+                          <TableHead className="text-right">Unit Price</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
+                          <TableHead className="text-right">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {lineItems.map((item) => (
+                          <TableRow key={item.tempId}>
+                            <TableCell>{item.description}</TableCell>
+                            <TableCell>
+                              {item.width && item.height ? (
+                                <span>{item.width}" × {item.height}"</span>
+                              ) : (
+                                <span className="text-muted-foreground">-</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">{item.quantity}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(item.unitPrice)}</TableCell>
+                            <TableCell className="text-right font-medium">{formatCurrency(item.totalPrice)}</TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleEditLineItem(item)}
+                                className="mr-1"
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDeleteLineItem(item.tempId)}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+
+                    {/* Totals */}
+                    <div className="mt-4 space-y-2 text-right">
+                      <div className="flex justify-end gap-4">
+                        <span className="text-muted-foreground">Subtotal:</span>
+                        <span className="font-medium">{formatCurrency(subtotal)}</span>
+                      </div>
+                      {discount > 0 && (
+                        <div className="flex justify-end gap-4 text-red-500">
+                          <span>Discount:</span>
+                          <span>-{formatCurrency(discount)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-end gap-4">
+                        <span className="text-muted-foreground">Tax:</span>
+                        <span className="font-medium">{formatCurrency(tax)}</span>
+                      </div>
+                      <div className="flex justify-end gap-4 text-lg font-bold border-t pt-2">
+                        <span>Total:</span>
+                        <span>{formatCurrency(total)}</span>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Form Actions */}
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={createOrderMutation.isPending || lineItems.length === 0}>
+                {createOrderMutation.isPending ? "Creating..." : "Create Order"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add/Edit Line Item Dialog */}
+      <Dialog open={showItemDialog} onOpenChange={setShowItemDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editingItemId ? "Edit Line Item" : "Add Line Item"}</DialogTitle>
+            <CardDescription>Configure product and pricing will calculate automatically</CardDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Product *</Label>
+                <Select value={selectedProductId} onValueChange={(value) => {
+                  setSelectedProductId(value);
+                  setSelectedVariantId(null);
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select product" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products?.map((product) => (
+                      <SelectItem key={product.id} value={product.id}>
+                        {product.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label>Variant {variants && variants.length > 0 && "*"}</Label>
+                <Select 
+                  value={selectedVariantId || "_none"} 
+                  onValueChange={(value) => setSelectedVariantId(value === "_none" ? null : value)}
+                  disabled={!selectedProductId || !variants?.length}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select variant" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(!variants || variants.length === 0) && <SelectItem value="_none">None</SelectItem>}
+                    {variants?.map((variant) => (
+                      <SelectItem key={variant.id} value={variant.id}>
+                        {variant.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <Label>Width (inches) *</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={width}
+                  onChange={(e) => setWidth(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+
+              <div>
+                <Label>Height (inches) *</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={height}
+                  onChange={(e) => setHeight(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+
+              <div>
+                <Label>Quantity *</Label>
+                <Input
+                  type="number"
+                  min="1"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* Calculated Price Display */}
+            <div className="rounded-lg border p-4 bg-muted/50">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Calculated Price:</span>
+                {isCalculating ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-sm">Calculating...</span>
+                  </div>
+                ) : calculatedPrice !== null ? (
+                  <span className="text-xl font-bold">{formatCurrency(calculatedPrice)}</span>
+                ) : (
+                  <span className="text-sm text-muted-foreground">Enter dimensions to calculate</span>
+                )}
+              </div>
+              {calculatedPrice !== null && quantity && (
+                <div className="mt-2 text-sm text-muted-foreground">
+                  Total: {formatCurrency(calculatedPrice * parseInt(quantity || "1"))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setShowItemDialog(false);
+                setEditingItemId(null);
+                setSelectedProductId("");
+                setSelectedVariantId(null);
+                setWidth("");
+                setHeight("");
+                setQuantity("1");
+                setCalculatedPrice(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleAddLineItem}
+              disabled={!selectedProductId || !calculatedPrice}
+            >
+              {editingItemId ? "Update Item" : "Add Item"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
