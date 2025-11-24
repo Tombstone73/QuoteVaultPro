@@ -1316,11 +1316,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const userIsAdmin = req.user.role === 'admin';
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
 
-      // Admins can access any quote, regular users only their own
-      const quote = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+      // Internal users can access any quote, customers only their own
+      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
       
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
@@ -1336,7 +1337,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const userIsAdmin = req.user.role === 'admin';
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
       const { customerName, subtotal, taxRate, marginPercentage, discountAmount, totalPrice } = req.body;
 
@@ -1349,8 +1351,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         totalPrice,
       });
 
-      // Admins can update any quote, regular users only their own
-      const existing = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+      // Internal users can update any quote, customers only their own
+      const existing = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
       if (!existing) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1378,11 +1380,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const userIsAdmin = req.user.role === 'admin';
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
 
-      // Admins can delete any quote, regular users only their own
-      const existing = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+      // Internal users can delete any quote, customers only their own
+      const existing = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
       if (!existing) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1398,12 +1401,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/quotes/:id/line-items", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const userIsAdmin = req.user.role === 'admin';
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
       const lineItem = req.body;
 
-      // Admins can add line items to any quote, regular users only their own
-      const quote = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+      // Internal users can add line items to any quote, customers only their own
+      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1445,12 +1449,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const userIsAdmin = req.user.role === 'admin';
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id, lineItemId } = req.params;
       const lineItem = req.body;
 
-      // Admins can update line items in any quote, regular users only their own
-      const quote = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+      // Internal users can update line items in any quote, customers only their own
+      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1479,11 +1484,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const userIsAdmin = req.user.role === 'admin';
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id, lineItemId } = req.params;
 
-      // Admins can delete line items from any quote, regular users only their own
-      const quote = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+      // Internal users can delete line items from any quote, customers only their own
+      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1746,8 +1752,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Verify user has access to this quote
       const userId = getUserId(req.user);
-      const userIsAdmin = req.user.role === 'admin';
-      const quote = await storage.getQuoteById(id, userIsAdmin ? undefined : userId);
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
 
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });

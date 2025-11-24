@@ -58,61 +58,62 @@ process.on('uncaughtException', (error) => {
 });
 
 // Register routes and start server
-registerRoutes(app).then(async (server) => {
-  // Run user-to-customer sync in development
-  if (app.get("env") === "development") {
-    try {
-      console.log('[Startup] Running user-to-customer sync...');
-      await syncUsersToCustomers();
-    } catch (error) {
-      console.error('[Startup] User sync failed:', error);
-      // Don't crash the server, just log the error
+(async () => {
+  try {
+    const server = await registerRoutes(app);
+    
+    // Run user-to-customer sync in development
+    if (app.get("env") === "development") {
+      try {
+        console.log('[Startup] Running user-to-customer sync...');
+        await syncUsersToCustomers();
+      } catch (error) {
+        console.error('[Startup] User sync failed:', error);
+        // Don't crash the server, just log the error
+      }
     }
-  }
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-    res.status(status).json({ message });
-    throw err;
-  });
+    app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+      const status = err.status || err.statusCode || 500;
+      const message = err.message || "Internal Server Error";
+      console.error('[Server] Error handler:', err);
+      res.status(status).json({ message });
+    });
 
-  // Setup Vite in development mode
-  if (app.get("env") === "development") {
-    try {
-      await setupVite(app, server);
-      console.log('[Server] Vite configured successfully');
-    } catch (error) {
-      console.error('[Server] Vite setup failed:', error);
-      throw error;
+    // Setup Vite in development mode
+    if (app.get("env") === "development") {
+      try {
+        await setupVite(app, server);
+        console.log('[Server] Vite configured successfully');
+      } catch (error) {
+        console.error('[Server] Vite setup failed:', error);
+        throw error;
+      }
+    } else {
+      serveStatic(app);
     }
-  } else {
-    serveStatic(app);
-  }
 
-  // Start listening
-  const port = parseInt(process.env.PORT || '5000', 10);
-  const listenOptions: any = {
-    port,
-    host: "0.0.0.0",
-  };
-  if (process.platform !== 'win32') {
-    listenOptions.reusePort = true;
-  }
-  
-  return new Promise((resolve, reject) => {
+    // Start listening
+    const port = parseInt(process.env.PORT || '5000', 10);
+    const listenOptions: any = {
+      port,
+      host: "0.0.0.0",
+    };
+    if (process.platform !== 'win32') {
+      listenOptions.reusePort = true;
+    }
+    
     server.listen(listenOptions, () => {
       log(`serving on port ${port}`);
       console.log('[Server] Ready to accept connections');
-      // Don't resolve - keep the promise pending to keep process alive
     });
 
     server.on('error', (error: any) => {
       console.error('[Server] Error:', error);
-      reject(error);
+      process.exit(1);
     });
-  });
-}).catch((error) => {
-  console.error('[Server] Fatal error:', error);
-  process.exit(1);
-});
+  } catch (error) {
+    console.error('[Server] Fatal error:', error);
+    process.exit(1);
+  }
+})();

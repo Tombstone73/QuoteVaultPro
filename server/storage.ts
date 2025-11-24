@@ -196,7 +196,7 @@ export interface IStorage {
     status?: string;
     customerType?: string;
     assignedTo?: string;
-  }): Promise<Customer[]>;
+  }): Promise<(Customer & { contacts?: CustomerContact[] })[]>;
   getCustomerById(id: string): Promise<CustomerWithRelations | undefined>;
   createCustomer(customer: InsertCustomer): Promise<Customer>;
   updateCustomer(id: string, customer: Partial<InsertCustomer>): Promise<Customer>;
@@ -1319,39 +1319,130 @@ export class DatabaseStorage implements IStorage {
     status?: string;
     customerType?: string;
     assignedTo?: string;
-  }): Promise<Customer[]> {
-    let query = db.select().from(customers);
+  }): Promise<(Customer & { contacts?: CustomerContact[] })[]> {
+    // If search is provided, we need to search across customers AND contacts
+    if (filters?.search) {
+      const searchPattern = `%${filters.search}%`;
+      
+      // Get all customers that match the search
+      const customerConditions = [
+        or(
+          ilike(customers.companyName, searchPattern),
+          ilike(customers.email, searchPattern)
+        )
+      ];
 
+      if (filters.status) {
+        customerConditions.push(eq(customers.status, filters.status));
+      }
+      if (filters.customerType) {
+        customerConditions.push(eq(customers.customerType, filters.customerType as any));
+      }
+      if (filters.assignedTo) {
+        customerConditions.push(eq(customers.assignedTo, filters.assignedTo));
+      }
+
+      const matchedCustomers = await db
+        .select()
+        .from(customers)
+        .where(and(...customerConditions))
+        .orderBy(customers.companyName);
+
+      // Also search for customers by contact name/email
+      const matchedContacts = await db
+        .select()
+        .from(customerContacts)
+        .where(
+          or(
+            ilike(customerContacts.firstName, searchPattern),
+            ilike(customerContacts.lastName, searchPattern),
+            ilike(customerContacts.email, searchPattern)
+          )
+        );
+
+      // Get unique customer IDs from contact matches
+      const contactCustomerIds = [...new Set(matchedContacts.map(c => c.customerId))];
+      
+      // Fetch customers from contact matches that aren't already in matchedCustomers
+      const existingCustomerIds = new Set(matchedCustomers.map(c => c.id));
+      const additionalCustomerIds = contactCustomerIds.filter(id => !existingCustomerIds.has(id));
+      
+      let additionalCustomers: Customer[] = [];
+      if (additionalCustomerIds.length > 0) {
+        const additionalConditions = [
+          sql`${customers.id} IN (${sql.raw(additionalCustomerIds.map(id => `'${id}'`).join(','))})`
+        ];
+        
+        if (filters.status) {
+          additionalConditions.push(eq(customers.status, filters.status));
+        }
+        if (filters.customerType) {
+          additionalConditions.push(eq(customers.customerType, filters.customerType as any));
+        }
+        if (filters.assignedTo) {
+          additionalConditions.push(eq(customers.assignedTo, filters.assignedTo));
+        }
+
+        additionalCustomers = await db
+          .select()
+          .from(customers)
+          .where(and(...additionalConditions))
+          .orderBy(customers.companyName);
+      }
+
+      // Combine and deduplicate
+      const allCustomers = [...matchedCustomers, ...additionalCustomers];
+      
+      // Fetch contacts for all matched customers
+      const allCustomerIds = allCustomers.map(c => c.id);
+      const allContacts = allCustomerIds.length > 0
+        ? await db
+            .select()
+            .from(customerContacts)
+            .where(sql`${customerContacts.customerId} IN (${sql.raw(allCustomerIds.map(id => `'${id}'`).join(','))})`)
+        : [];
+
+      // Attach contacts to customers
+      return allCustomers.map(customer => ({
+        ...customer,
+        contacts: allContacts.filter(c => c.customerId === customer.id),
+      }));
+    }
+
+    // No search - simple query
     const conditions = [];
-
-    // Temporarily disable search to fix SQL error
-    // if (filters?.search) {
-    //   const searchPattern = `%${filters.search}%`;
-    //   conditions.push(
-    //     or(
-    //       ilike(customers.companyName, searchPattern),
-    //       ilike(customers.email, searchPattern)
-    //     )
-    //   );
-    // }
-
+    
     if (filters?.status) {
       conditions.push(eq(customers.status, filters.status));
     }
-
     if (filters?.customerType) {
       conditions.push(eq(customers.customerType, filters.customerType as any));
     }
-
     if (filters?.assignedTo) {
       conditions.push(eq(customers.assignedTo, filters.assignedTo));
     }
 
+    let query = db.select().from(customers);
     if (conditions.length > 0) {
       query = query.where(and(...conditions)) as any;
     }
 
-    return await query.orderBy(customers.companyName);
+    const allCustomers = await query.orderBy(customers.companyName);
+    
+    // Fetch contacts for all customers
+    const allCustomerIds = allCustomers.map(c => c.id);
+    const allContacts = allCustomerIds.length > 0
+      ? await db
+          .select()
+          .from(customerContacts)
+          .where(sql`${customerContacts.customerId} IN (${sql.raw(allCustomerIds.map(id => `'${id}'`).join(','))})`)
+      : [];
+
+    // Attach contacts to customers
+    return allCustomers.map(customer => ({
+      ...customer,
+      contacts: allContacts.filter(c => c.customerId === customer.id),
+    }));
   }
 
   async getCustomerById(id: string): Promise<CustomerWithRelations | undefined> {

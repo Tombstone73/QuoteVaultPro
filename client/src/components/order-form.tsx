@@ -9,9 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Trash2, Plus, Calculator, Loader2 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 
 interface OrderLineItemDraft {
   tempId: string;
@@ -41,9 +43,9 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
   const [, navigate] = useLocation();
 
   // Customer selection
-  const [searchCustomer, setSearchCustomer] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
   const [selectedContactId, setSelectedContactId] = useState<string>("");
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithContacts | undefined>(undefined);
 
   // Order details
   const [status, setStatus] = useState("new");
@@ -66,29 +68,13 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
   const [quantity, setQuantity] = useState("1");
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
+  const [priceOverrideMode, setPriceOverrideMode] = useState<'unit' | 'total' | null>(null);
+  const [unitPrice, setUnitPrice] = useState("");
+  const [totalPrice, setTotalPrice] = useState("");
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch customers
-  const { data: customers } = useQuery<any[]>({
-    queryKey: ["/api/customers"],
-    queryFn: async () => {
-      const response = await fetch("/api/customers", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch customers");
-      return response.json();
-    },
-  });
-
-  // Fetch contacts for selected customer
-  const { data: contacts } = useQuery<any[]>({
-    queryKey: ["/api/customers", selectedCustomerId, "contacts"],
-    queryFn: async () => {
-      if (!selectedCustomerId) return [];
-      const response = await fetch(`/api/customers/${selectedCustomerId}/contacts`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch contacts");
-      return response.json();
-    },
-    enabled: !!selectedCustomerId,
-  });
+  // Get contacts from selected customer
+  const contacts = selectedCustomer?.contacts || [];
 
   // Fetch products
   const { data: products } = useQuery<any[]>({
@@ -114,8 +100,10 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
 
   // Auto-calculate price with debounce
   const triggerAutoCalculate = useCallback(async () => {
-    if (!selectedProductId || !width || !height || !quantity) {
-      setCalculatedPrice(null);
+    if (!selectedProductId || !width || !height || !quantity || priceOverrideMode) {
+      if (!priceOverrideMode) {
+        setCalculatedPrice(null);
+      }
       return;
     }
 
@@ -146,12 +134,51 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       const totalPrice = data.price;
       const unitPrice = quantityNum > 0 ? totalPrice / quantityNum : 0;
       setCalculatedPrice(unitPrice);
+      
+      // Only auto-fill if user hasn't manually overridden
+      if (!priceOverrideMode) {
+        setUnitPrice(unitPrice.toFixed(2));
+        setTotalPrice(totalPrice.toFixed(2));
+      }
     } catch (error) {
       setCalculatedPrice(null);
     } finally {
       setIsCalculating(false);
     }
-  }, [selectedProductId, selectedVariantId, width, height, quantity]);
+  }, [selectedProductId, selectedVariantId, width, height, quantity, priceOverrideMode]);
+
+  // Handle unit price override
+  const handleUnitPriceChange = (value: string) => {
+    setPriceOverrideMode('unit');
+    const unitPriceNum = parseFloat(value) || 0;
+    const quantityNum = parseInt(quantity) || 1;
+    setUnitPrice(value);
+    setTotalPrice((unitPriceNum * quantityNum).toFixed(2));
+  };
+
+  // Handle total price override
+  const handleTotalPriceChange = (value: string) => {
+    setPriceOverrideMode('total');
+    const totalPriceNum = parseFloat(value) || 0;
+    const quantityNum = parseInt(quantity) || 1;
+    const unitPriceNum = quantityNum > 0 ? totalPriceNum / quantityNum : 0;
+    setTotalPrice(value);
+    setUnitPrice(unitPriceNum.toFixed(2));
+  };
+
+  // Update prices when quantity changes
+  useEffect(() => {
+    const quantityNum = parseInt(quantity) || 1;
+    
+    if (priceOverrideMode === 'unit' && unitPrice) {
+      const unitPriceNum = parseFloat(unitPrice) || 0;
+      setTotalPrice((unitPriceNum * quantityNum).toFixed(2));
+    } else if (priceOverrideMode === 'total' && totalPrice) {
+      const totalPriceNum = parseFloat(totalPrice) || 0;
+      const unitPriceNum = quantityNum > 0 ? totalPriceNum / quantityNum : 0;
+      setUnitPrice(unitPriceNum.toFixed(2));
+    }
+  }, [quantity, priceOverrideMode]);
 
   // Debounced auto-calculation
   useEffect(() => {
@@ -182,10 +209,14 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
   }, [variants?.length, selectedProductId, editingItemId]);
 
   const handleAddLineItem = () => {
-    if (!selectedProductId || !calculatedPrice) {
+    // Allow saving with either calculated price or manual override
+    const finalUnitPrice = parseFloat(unitPrice) || calculatedPrice;
+    const finalTotalPrice = parseFloat(totalPrice) || (finalUnitPrice ? finalUnitPrice * parseInt(quantity || "1") : 0);
+    
+    if (!selectedProductId || (!finalUnitPrice && !finalTotalPrice)) {
       toast({
         title: "Missing Information",
-        description: "Please select a product and calculate price",
+        description: "Please select a product and enter/calculate a price",
         variant: "destructive",
       });
       return;
@@ -210,8 +241,8 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       height: heightNum || null,
       quantity: quantityNum,
       sqft,
-      unitPrice: calculatedPrice,
-      totalPrice: calculatedPrice * quantityNum,
+      unitPrice: finalUnitPrice || 0,
+      totalPrice: finalTotalPrice || 0,
       status: "queued",
       specsJson: {
         width: widthNum,
@@ -232,6 +263,9 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     setHeight("");
     setQuantity("1");
     setCalculatedPrice(null);
+    setPriceOverrideMode(null);
+    setUnitPrice("");
+    setTotalPrice("");
     setEditingItemId(null);
     setShowItemDialog(false);
   };
@@ -244,6 +278,9 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     setHeight(item.height?.toString() || "");
     setQuantity(item.quantity.toString());
     setCalculatedPrice(item.unitPrice);
+    setUnitPrice(item.unitPrice.toString());
+    setTotalPrice(item.totalPrice.toString());
+    setPriceOverrideMode(null);
     setShowItemDialog(true);
   };
 
@@ -344,10 +381,6 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     }).format(amount);
   };
 
-  const filteredCustomers = customers?.filter(c =>
-    c.companyName.toLowerCase().includes(searchCustomer.toLowerCase())
-  ) || [];
-
   const subtotal = lineItems.reduce((sum, item) => sum + item.totalPrice, 0);
   const tax = 0;
   const total = subtotal + tax - discount;
@@ -369,27 +402,17 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="customerId">Customer *</Label>
-                    <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select customer" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <div className="p-2">
-                          <Input
-                            placeholder="Search customers..."
-                            value={searchCustomer}
-                            onChange={(e) => setSearchCustomer(e.target.value)}
-                            className="mb-2"
-                          />
-                        </div>
-                        {filteredCustomers.map((customer) => (
-                          <SelectItem key={customer.id} value={customer.id}>
-                            {customer.companyName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <CustomerSelect
+                      value={selectedCustomerId}
+                      onChange={(customerId, customer, contactId) => {
+                        setSelectedCustomerId(customerId || "");
+                        setSelectedCustomer(customer);
+                        setSelectedContactId(contactId || "");
+                      }}
+                      autoFocus={true}
+                      label="Customer *"
+                      placeholder="Search customers by name, email, or contact..."
+                    />
                   </div>
 
                   <div>
@@ -402,6 +425,8 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                         {contacts?.map((contact) => (
                           <SelectItem key={contact.id} value={contact.id}>
                             {contact.firstName} {contact.lastName}
+                            {contact.email && ` - ${contact.email}`}
+                            {contact.isPrimary && " (Primary)"}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -692,25 +717,96 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
             </div>
 
             {/* Calculated Price Display */}
-            <div className="rounded-lg border p-4 bg-muted/50">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Calculated Price:</span>
-                {isCalculating ? (
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span className="text-sm">Calculating...</span>
-                  </div>
-                ) : calculatedPrice !== null ? (
+            {calculatedPrice !== null && !priceOverrideMode && (
+              <div className="rounded-lg border p-4 bg-muted/50">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium flex items-center gap-2">
+                    <Calculator className="w-4 h-4" />
+                    Calculated Unit Price:
+                  </span>
                   <span className="text-xl font-bold">{formatCurrency(calculatedPrice)}</span>
-                ) : (
-                  <span className="text-sm text-muted-foreground">Enter dimensions to calculate</span>
-                )}
-              </div>
-              {calculatedPrice !== null && quantity && (
-                <div className="mt-2 text-sm text-muted-foreground">
-                  Total: {formatCurrency(calculatedPrice * parseInt(quantity || "1"))}
                 </div>
-              )}
+                <div className="mt-2 text-sm text-muted-foreground">
+                  Total for {quantity} item(s): {formatCurrency(calculatedPrice * parseInt(quantity || "1"))}
+                </div>
+              </div>
+            )}
+
+            {isCalculating && (
+              <div className="rounded-lg border p-4 bg-muted/50">
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-sm">Calculating price...</span>
+                </div>
+              </div>
+            )}
+
+            {/* Price Override Section */}
+            <div className="border-t pt-4">
+              <h4 className="text-sm font-medium mb-3">Price Override (optional)</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="unitPrice">Unit Price (each)</Label>
+                    {priceOverrideMode === 'unit' && (
+                      <Badge variant="secondary" className="text-xs">
+                        Manual Override
+                      </Badge>
+                    )}
+                  </div>
+                  <Input
+                    id="unitPrice"
+                    type="number"
+                    step="0.01"
+                    placeholder={calculatedPrice ? calculatedPrice.toFixed(2) : "0.00"}
+                    value={unitPrice}
+                    onChange={(e) => handleUnitPriceChange(e.target.value)}
+                    className={priceOverrideMode === 'unit' ? 'border-amber-500 bg-amber-50' : ''}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Override calculated price per piece
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="totalPrice">Total Price (all items)</Label>
+                    {priceOverrideMode === 'total' && (
+                      <Badge variant="secondary" className="text-xs">
+                        Manual Override
+                      </Badge>
+                    )}
+                  </div>
+                  <Input
+                    id="totalPrice"
+                    type="number"
+                    step="0.01"
+                    placeholder={calculatedPrice ? (calculatedPrice * parseInt(quantity || "1")).toFixed(2) : "0.00"}
+                    value={totalPrice}
+                    onChange={(e) => handleTotalPriceChange(e.target.value)}
+                    className={priceOverrideMode === 'total' ? 'border-amber-500 bg-amber-50' : ''}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Override total price (recalculates unit price)
+                  </p>
+                </div>
+              </div>
+
+              {/* Display current pricing */}
+              <div className="mt-3 p-3 bg-muted rounded-md">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Unit Price:</span>
+                  <span className="font-medium">${parseFloat(unitPrice || "0").toFixed(2)} each</span>
+                </div>
+                <div className="flex justify-between text-sm mt-1">
+                  <span className="text-muted-foreground">Quantity:</span>
+                  <span className="font-medium">{quantity} item(s)</span>
+                </div>
+                <div className="flex justify-between text-sm font-semibold mt-2 pt-2 border-t">
+                  <span>Line Total:</span>
+                  <span>${parseFloat(totalPrice || "0").toFixed(2)}</span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -727,6 +823,9 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                 setHeight("");
                 setQuantity("1");
                 setCalculatedPrice(null);
+                setPriceOverrideMode(null);
+                setUnitPrice("");
+                setTotalPrice("");
               }}
             >
               Cancel
@@ -734,7 +833,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
             <Button
               type="button"
               onClick={handleAddLineItem}
-              disabled={!selectedProductId || !calculatedPrice}
+              disabled={!selectedProductId}
             >
               {editingItemId ? "Update Item" : "Add Item"}
             </Button>
