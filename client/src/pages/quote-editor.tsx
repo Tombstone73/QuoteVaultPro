@@ -12,6 +12,7 @@ import { ArrowLeft, Save, Plus, Calculator, Trash2, Loader2 } from "lucide-react
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
+import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import type { Product, ProductVariant, QuoteWithRelations } from "@shared/schema";
 
 type QuoteLineItemDraft = {
@@ -44,11 +45,10 @@ export default function QuoteEditor() {
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
-  // Customer search
-  const [customerSearch, setCustomerSearch] = useState("");
+  // Customer selection
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
-  const [customerName, setCustomerName] = useState("");
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithContacts | undefined>(undefined);
 
   // Line item being added
   const [lineItems, setLineItems] = useState<QuoteLineItemDraft[]>([]);
@@ -80,7 +80,6 @@ export default function QuoteEditor() {
     if (quote && !isNewQuote) {
       setSelectedCustomerId(quote.customerId || null);
       setSelectedContactId(quote.contactId || null);
-      setCustomerName(quote.customerName || "");
       setLineItems(quote.lineItems?.map((item, idx) => ({
         id: item.id,
         productId: item.productId,
@@ -109,28 +108,27 @@ export default function QuoteEditor() {
     enabled: !!selectedProductId,
   });
 
-  const { data: customers } = useQuery({
-    queryKey: ["/api/customers", { search: customerSearch }],
+  // Get contacts from selected customer
+  const contacts = selectedCustomer?.contacts || [];
+
+  // Fetch customer details with contacts when editing
+  const { data: customerData } = useQuery<CustomerWithContacts>({
+    queryKey: ["/api/customers", selectedCustomerId],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (customerSearch) params.set("search", customerSearch);
-      const url = `/api/customers${params.toString() ? `?${params.toString()}` : ""}`;
-      const response = await fetch(url, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to load customers");
+      if (!selectedCustomerId) throw new Error("No customer ID");
+      const response = await fetch(`/api/customers/${selectedCustomerId}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch customer");
       return response.json();
     },
+    enabled: !!selectedCustomerId && !selectedCustomer,
   });
 
-  const { data: contacts } = useQuery({
-    queryKey: ["/api/customers", selectedCustomerId, "contacts"],
-    queryFn: async () => {
-      if (!selectedCustomerId) return [];
-      const response = await fetch(`/api/customers/${selectedCustomerId}/contacts`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to load contacts");
-      return response.json();
-    },
-    enabled: !!selectedCustomerId,
-  });
+  // Update selectedCustomer when customerData is fetched
+  useEffect(() => {
+    if (customerData && !selectedCustomer) {
+      setSelectedCustomer(customerData);
+    }
+  }, [customerData, selectedCustomer]);
 
   // Auto-calculate price with debounce
   const triggerAutoCalculate = useCallback(async () => {
@@ -372,39 +370,18 @@ export default function QuoteEditor() {
               <CardDescription>Enter customer information</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="customerSearch">Customer *</Label>
-                <Input
-                  id="customerSearch"
-                  placeholder="Search customers..."
-                  value={customerSearch}
-                  onChange={(e) => setCustomerSearch(e.target.value)}
-                />
-                {customers && customers.length > 0 && (
-                  <div className="border rounded-md max-h-48 overflow-y-auto">
-                    {customers.map((customer: any) => (
-                      <button
-                        key={customer.id}
-                        type="button"
-                        className={`w-full text-left px-3 py-2 hover:bg-accent ${selectedCustomerId === customer.id ? 'bg-accent' : ''}`}
-                        onClick={() => {
-                          setSelectedCustomerId(customer.id);
-                          setCustomerName(customer.companyName);
-                          setCustomerSearch("");
-                        }}
-                      >
-                        <div className="font-medium">{customer.companyName}</div>
-                        <div className="text-sm text-muted-foreground">{customer.email}</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {selectedCustomerId && (
-                  <div className="text-sm text-muted-foreground">
-                    Selected: {customerName}
-                  </div>
-                )}
-              </div>
+              <CustomerSelect
+                value={selectedCustomerId}
+                onChange={(customerId, customer, contactId) => {
+                  setSelectedCustomerId(customerId);
+                  setSelectedCustomer(customer);
+                  setSelectedContactId(contactId || null);
+                }}
+                autoFocus={isNewQuote}
+                label="Customer *"
+                placeholder="Search customers by name, email, or contact..."
+                initialCustomer={quote?.customer as CustomerWithContacts}
+              />
 
               {selectedCustomerId && contacts && contacts.length > 0 && (
                 <div className="space-y-2">
@@ -416,7 +393,9 @@ export default function QuoteEditor() {
                     <SelectContent>
                       {contacts.map((contact: any) => (
                         <SelectItem key={contact.id} value={contact.id}>
-                          {contact.name} - {contact.email}
+                          {contact.firstName} {contact.lastName}
+                          {contact.email && ` - ${contact.email}`}
+                          {contact.isPrimary && " (Primary)"}
                         </SelectItem>
                       ))}
                     </SelectContent>
