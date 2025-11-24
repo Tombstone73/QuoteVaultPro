@@ -958,3 +958,84 @@ export type OrderWithRelations = Order & {
     productVariant?: ProductVariant | null;
   })[];
 };
+
+// Order Audit Log table - tracks all state changes, approvals, rejections, etc.
+export const orderAuditLog = pgTable("order_audit_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: 'set null' }),
+  userName: varchar("user_name", { length: 255 }), // Snapshot in case user is deleted
+  actionType: varchar("action_type", { length: 100 }).notNull(), // status_change, note_added, file_uploaded, approved, rejected, change_requested
+  fromStatus: varchar("from_status", { length: 50 }),
+  toStatus: varchar("to_status", { length: 50 }),
+  note: text("note"),
+  metadata: jsonb("metadata").$type<Record<string, any>>(), // Additional context (file IDs, etc.)
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_audit_log_order_id_idx").on(table.orderId),
+  index("order_audit_log_created_at_idx").on(table.createdAt),
+]);
+
+export const insertOrderAuditLogSchema = createInsertSchema(orderAuditLog).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertOrderAuditLog = z.infer<typeof insertOrderAuditLogSchema>;
+export type OrderAuditLog = typeof orderAuditLog.$inferSelect;
+
+// Order Attachments table - files uploaded by customers or staff
+export const orderAttachments = pgTable("order_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }), // Track if uploaded during quote checkout
+  uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  uploadedByName: varchar("uploaded_by_name", { length: 255 }), // Snapshot
+  fileName: varchar("file_name", { length: 500 }).notNull(),
+  fileUrl: text("file_url").notNull(), // GCS path
+  fileSize: integer("file_size"), // bytes
+  mimeType: varchar("mime_type", { length: 100 }),
+  description: text("description"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_attachments_order_id_idx").on(table.orderId),
+  index("order_attachments_quote_id_idx").on(table.quoteId),
+]);
+
+export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertOrderAttachment = z.infer<typeof insertOrderAttachmentSchema>;
+export type OrderAttachment = typeof orderAttachments.$inferSelect;
+
+// Quote workflow states - extend quotes table conceptually
+export const quoteWorkflowStates = pgTable("quote_workflow_states", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: 'cascade' }),
+  status: varchar("status", { length: 50 }).notNull().default("draft"), // draft, pending_customer_approval, customer_approved, staff_approved, rejected, converted_to_order
+  approvedByCustomerUserId: varchar("approved_by_customer_user_id").references(() => users.id, { onDelete: 'set null' }),
+  approvedByStaffUserId: varchar("approved_by_staff_user_id").references(() => users.id, { onDelete: 'set null' }),
+  rejectedByUserId: varchar("rejected_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  rejectionReason: text("rejection_reason"),
+  customerNotes: text("customer_notes"), // Notes from customer during approval/checkout
+  staffNotes: text("staff_notes"), // Internal staff notes
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("quote_workflow_states_quote_id_idx").on(table.quoteId),
+  index("quote_workflow_states_status_idx").on(table.status),
+]);
+
+export const insertQuoteWorkflowStateSchema = createInsertSchema(quoteWorkflowStates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateQuoteWorkflowStateSchema = insertQuoteWorkflowStateSchema.partial();
+
+export type InsertQuoteWorkflowState = z.infer<typeof insertQuoteWorkflowStateSchema>;
+export type UpdateQuoteWorkflowState = z.infer<typeof updateQuoteWorkflowStateSchema>;
+export type QuoteWorkflowState = typeof quoteWorkflowStates.$inferSelect;

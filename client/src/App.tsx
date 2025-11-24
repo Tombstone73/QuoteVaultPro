@@ -19,9 +19,14 @@ import CustomerDetail from "@/pages/customer-detail";
 import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
 import CreateOrder from "@/pages/create-order";
+import Contacts from "@/pages/contacts";
+import ContactDetail from "@/pages/contact-detail";
 import CompanySettings from "@/pages/company-settings";
 import DebugUser from "@/pages/debug-user";
 import NotFound from "@/pages/not-found";
+import MyQuotes from "@/pages/portal/my-quotes";
+import MyOrders from "@/pages/portal/my-orders";
+import QuoteCheckout from "@/pages/portal/quote-checkout";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -32,6 +37,11 @@ function Router() {
         <Route path="/" component={Landing} />
       ) : (
         <>
+          {/* Portal routes (customer-facing) */}
+          <Route path="/portal/my-quotes" component={MyQuotes} />
+          <Route path="/portal/my-orders" component={MyOrders} />
+          <Route path="/portal/quotes/:id/checkout" component={QuoteCheckout} />
+          
           {/* Quote routes */}
           <Route path="/quotes/new" component={QuoteEditor} />
           <Route path="/quotes/:id/edit" component={EditQuote} />
@@ -47,6 +57,10 @@ function Router() {
           {/* Customer routes */}
           <Route path="/customers/:id" component={CustomerDetail} />
           <Route path="/customers">{() => <Customers />}</Route>
+          
+          {/* Contact routes */}
+          <Route path="/contacts/:id" component={ContactDetail} />
+          <Route path="/contacts" component={Contacts} />
           
           {/* Order routes */}
           <Route path="/orders/new" component={CreateOrder} />
