@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,14 +10,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { FileText, Search, Edit, Mail } from "lucide-react";
+import { FileText, Search, Edit, Mail, Package } from "lucide-react";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { useConvertQuoteToOrder } from "@/hooks/useOrders";
+import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import type { Quote, Product, QuoteWithRelations } from "@shared/schema";
 
 export default function QuoteHistory() {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const [searchCustomer, setSearchCustomer] = useState("");
   const [searchProduct, setSearchProduct] = useState("all");
   const [startDate, setStartDate] = useState("");
@@ -25,8 +28,13 @@ export default function QuoteHistory() {
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [convertDialogOpen, setConvertDialogOpen] = useState(false);
   const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
   const [recipientEmail, setRecipientEmail] = useState("");
+  const [orderDueDate, setOrderDueDate] = useState("");
+  const [orderPriority, setOrderPriority] = useState<"normal" | "rush" | "low">("normal");
+
+  const convertToOrder = useConvertQuoteToOrder();
 
   const { data: quotes, isLoading } = useQuery<QuoteWithRelations[]>({
     queryKey: [
@@ -92,6 +100,34 @@ export default function QuoteHistory() {
   const handleEmailQuote = (quoteId: string) => {
     setSelectedQuoteId(quoteId);
     setEmailDialogOpen(true);
+  };
+
+  const handleConvertToOrder = (quoteId: string) => {
+    setSelectedQuoteId(quoteId);
+    setConvertDialogOpen(true);
+  };
+
+  const handleConfirmConvert = async () => {
+    if (!selectedQuoteId) return;
+    
+    try {
+      const result = await convertToOrder.mutateAsync({
+        quoteId: selectedQuoteId,
+        dueDate: orderDueDate || undefined,
+        priority: orderPriority,
+      });
+      
+      setConvertDialogOpen(false);
+      setSelectedQuoteId(null);
+      setOrderDueDate("");
+      setOrderPriority("normal");
+      
+      if (result?.id) {
+        navigate(`/orders/${result.id}`);
+      }
+    } catch (error) {
+      // Error toast handled by mutation
+    }
   };
 
   const handleSendEmail = () => {
@@ -239,6 +275,7 @@ export default function QuoteHistory() {
                     <TableHead data-testid="header-date">Date</TableHead>
                     <TableHead data-testid="header-customer">Customer</TableHead>
                     <TableHead data-testid="header-items">Items</TableHead>
+                    <TableHead data-testid="header-source">Source</TableHead>
                     <TableHead data-testid="header-price" className="text-right">Total</TableHead>
                     <TableHead data-testid="header-actions" className="w-[100px]">Actions</TableHead>
                   </TableRow>
@@ -269,29 +306,15 @@ export default function QuoteHistory() {
                       </TableCell>
                       <TableCell data-testid={`cell-items-${quote.id}`}>
                         {quote.lineItems && quote.lineItems.length > 0 ? (
-                          <div className="space-y-2">
-                            {quote.lineItems.map((item, idx) => (
-                              <div key={idx} className="text-sm">
-                                <div className="font-medium">
-                                  {item.productName}
-                                  {item.variantName && (
-                                    <span className="text-xs text-muted-foreground ml-1">({item.variantName})</span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-muted-foreground">
-                                  {item.width}" × {item.height}" • Qty: {item.quantity}
-                                  {item.selectedOptions && item.selectedOptions.length > 0 && (
-                                    <span className="ml-2">
-                                      • {item.selectedOptions.length} option{item.selectedOptions.length > 1 ? 's' : ''}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
+                          <Badge variant="secondary">
+                            {quote.lineItems.length} item{quote.lineItems.length !== 1 ? 's' : ''}
+                          </Badge>
                         ) : (
-                          <span className="text-muted-foreground italic text-sm">Legacy quote</span>
+                          <span className="text-muted-foreground italic text-sm">No items</span>
                         )}
+                      </TableCell>
+                      <TableCell data-testid={`cell-source-${quote.id}`}>
+                        <QuoteSourceBadge source={quote.source} />
                       </TableCell>
                       <TableCell className="text-right font-mono" data-testid={`cell-price-${quote.id}`}>
                         ${parseFloat(quote.totalPrice).toFixed(2)}
@@ -312,6 +335,15 @@ export default function QuoteHistory() {
                           >
                             <Mail className="w-4 h-4 mr-1" />
                             Email
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleConvertToOrder(quote.id)}
+                            data-testid={`button-convert-${quote.id}`}
+                          >
+                            <Package className="w-4 h-4 mr-1" />
+                            Order
                           </Button>
                         </div>
                       </TableCell>
@@ -368,6 +400,63 @@ export default function QuoteHistory() {
               disabled={emailQuoteMutation.isPending}
             >
               {emailQuoteMutation.isPending ? "Sending..." : "Send Email"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={convertDialogOpen} onOpenChange={setConvertDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Package className="w-5 h-5" />
+              Convert Quote to Order
+            </DialogTitle>
+            <DialogDescription>
+              Create a new order from this quote with optional scheduling information
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="orderDueDate">Due Date (Optional)</Label>
+              <Input
+                id="orderDueDate"
+                type="date"
+                value={orderDueDate}
+                onChange={(e) => setOrderDueDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="orderPriority">Priority</Label>
+              <Select value={orderPriority} onValueChange={(value: any) => setOrderPriority(value)}>
+                <SelectTrigger id="orderPriority">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="rush">Rush</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="low">Low</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConvertDialogOpen(false);
+                setSelectedQuoteId(null);
+                setOrderDueDate("");
+                setOrderPriority("normal");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmConvert}
+              disabled={convertToOrder.isPending}
+            >
+              {convertToOrder.isPending ? "Converting..." : "Convert to Order"}
             </Button>
           </DialogFooter>
         </DialogContent>

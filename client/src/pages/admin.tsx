@@ -1,8 +1,10 @@
 import { useAuth } from "@/hooks/useAuth";
-import { Redirect } from "wouter";
+import { Redirect, Link } from "wouter";
 import AdminDashboard from "@/components/admin-dashboard";
 import AdminSettings from "@/components/admin-settings";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Users } from "lucide-react";
 
 export default function Admin() {
   const { user, isLoading } = useAuth();
@@ -26,6 +28,14 @@ export default function Admin() {
           <h1 className="text-3xl font-bold">Admin Panel</h1>
           <p className="text-muted-foreground">Manage quotes, products, and settings</p>
         </div>
+        {user.role === "owner" && (
+          <Link href="/admin/users">
+            <Button variant="outline">
+              <Users className="w-4 h-4 mr-2" />
+              Manage Users
+            </Button>
+          </Link>
+        )}
       </div>
 
       <Tabs defaultValue="dashboard" className="space-y-6">

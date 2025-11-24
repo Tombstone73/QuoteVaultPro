@@ -3,10 +3,15 @@ import { createServer, type Server } from "http";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
+import { db } from "./db";
+import { customers } from "@shared/schema";
+import { eq } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
+// @ts-ignore - NestingCalculator.js is a plain JS file without types
 import NestingCalculator from "./NestingCalculator.js";
 import { emailService } from "./emailService";
+import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -51,6 +56,10 @@ import {
   updateCustomerNoteSchema,
   insertCustomerCreditTransactionSchema,
   updateCustomerCreditTransactionSchema,
+  insertOrderSchema,
+  updateOrderSchema,
+  insertOrderLineItemSchema,
+  updateOrderLineItemSchema,
   type InsertProduct,
   type UpdateProduct
 } from "@shared/schema";
@@ -177,6 +186,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
       const objectStorageService = new ObjectStorageService();
 
       const normalizedPath = await objectStorageService.trySetObjectEntityAclPolicy(
@@ -585,7 +597,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const normalizedPath = await objectStorageService.trySetObjectEntityAclPolicy(
           rawPath,
           {
-            owner: userId,
+            owner: userId || 'system',
             visibility: "public",
           }
         );
@@ -1198,10 +1210,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/quotes", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const { customerName, lineItems } = req.body;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      const { customerId, contactId, customerName, source, lineItems } = req.body;
 
       if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
         return res.status(400).json({ message: "At least one line item is required" });
+      }
+
+      // Determine final customerId based on source
+      let finalCustomerId = customerId;
+      
+      if (source === 'customer_quick_quote') {
+        // For customer quick quotes, ALWAYS ensure we have a customerId linked to the user
+        try {
+          finalCustomerId = await ensureCustomerForUser(userId);
+          console.log(`[QuoteCreation] Customer quick quote - ensured customerId ${finalCustomerId} for user ${userId}`);
+        } catch (error) {
+          console.error('[QuoteCreation] Failed to ensure customer for user:', error);
+          return res.status(500).json({ 
+            message: "Failed to create customer record for quote. Please contact support." 
+          });
+        }
+      } else if (source === 'internal' && !customerId) {
+        // For internal quotes, customerId should be provided by the form
+        return res.status(400).json({ 
+          message: "Customer ID is required for internal quotes. Please select a customer." 
+        });
       }
 
       // Validate each line item
@@ -1215,9 +1251,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           productName: item.productName,
           variantId: item.variantId || null,
           variantName: item.variantName || null,
+          productType: item.productType || 'wide_roll',
           width: parseFloat(item.width),
           height: parseFloat(item.height),
           quantity: parseInt(item.quantity),
+          specsJson: item.specsJson || null,
           selectedOptions: item.selectedOptions || [],
           linePrice: parseFloat(item.linePrice),
           priceBreakdown: item.priceBreakdown || {
@@ -1232,7 +1270,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const quote = await storage.createQuote({
         userId,
+        customerId: finalCustomerId,
+        contactId: contactId || undefined,
         customerName: customerName || undefined,
+        source: source || 'internal',
         lineItems: validatedLineItems,
       });
       
@@ -1249,6 +1290,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/quotes", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      const userRole = req.user.role || 'employee';
       const filters = {
         searchCustomer: req.query.searchCustomer as string | undefined,
         searchProduct: req.query.searchProduct as string | undefined,
@@ -1256,6 +1301,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         endDate: req.query.endDate as string | undefined,
         minPrice: req.query.minPrice as string | undefined,
         maxPrice: req.query.maxPrice as string | undefined,
+        userRole,
+        source: req.query.source as string | undefined,
       };
 
       const quotes = await storage.getUserQuotes(userId, filters);
@@ -1371,9 +1418,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         productName: lineItem.productName,
         variantId: lineItem.variantId || null,
         variantName: lineItem.variantName || null,
+        productType: lineItem.productType || 'wide_roll',
         width: parseFloat(lineItem.width),
         height: parseFloat(lineItem.height),
         quantity: parseInt(lineItem.quantity),
+        specsJson: lineItem.specsJson || null,
         selectedOptions: lineItem.selectedOptions || [],
         linePrice: parseFloat(lineItem.linePrice),
         priceBreakdown: lineItem.priceBreakdown || {
@@ -1744,12 +1793,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/company-settings/:id", isAuthenticated, isAdmin, async (req, res) => {
     try {
-      const settingsData = updateCompanySettingsSchema.parse({
-        ...req.body,
-        id: req.params.id,
-      });
-      const { id, ...updateData } = settingsData;
-      const settings = await storage.updateCompanySettings(req.params.id, updateData);
+      const settingsData = updateCompanySettingsSchema.parse(req.body);
+      const settings = await storage.updateCompanySettings(req.params.id, settingsData);
       res.json(settings);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1783,7 +1828,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Search quotes
-      const quotes = await storage.getQuotes();
+      const quotes = await storage.getAllQuotes();
       const matchingQuotes = quotes
         .filter((quote: any) =>
           quote.quoteNumber?.toLowerCase().includes(query.toLowerCase()) ||
@@ -1865,12 +1910,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/customers/:id", isAuthenticated, async (req, res) => {
     try {
-      const customerData = updateCustomerSchema.parse({
-        ...req.body,
-        id: req.params.id,
-      });
-      const { id, ...updateData } = customerData;
-      const customer = await storage.updateCustomer(req.params.id, updateData);
+      const customerData = updateCustomerSchema.parse(req.body);
+      const customer = await storage.updateCustomer(req.params.id, customerData);
       res.json(customer);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1921,12 +1962,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/customer-contacts/:id", isAuthenticated, async (req, res) => {
     try {
-      const contactData = updateCustomerContactSchema.parse({
-        ...req.body,
-        id: req.params.id,
-      });
-      const { id, ...updateData } = contactData;
-      const contact = await storage.updateCustomerContact(req.params.id, updateData);
+      const contactData = updateCustomerContactSchema.parse(req.body);
+      const contact = await storage.updateCustomerContact(req.params.id, contactData);
       res.json(contact);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -2010,12 +2047,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/customer-notes/:id", isAuthenticated, async (req, res) => {
     try {
-      const noteData = updateCustomerNoteSchema.parse({
-        ...req.body,
-        id: req.params.id,
-      });
-      const { id, ...updateData } = noteData;
-      const note = await storage.updateCustomerNote(req.params.id, updateData);
+      const noteData = updateCustomerNoteSchema.parse(req.body);
+      const note = await storage.updateCustomerNote(req.params.id, noteData);
       res.json(note);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -2068,12 +2101,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/customer-credit-transactions/:id", isAuthenticated, isAdmin, async (req, res) => {
     try {
-      const transactionData = updateCustomerCreditTransactionSchema.parse({
-        ...req.body,
-        id: req.params.id,
-      });
-      const { id, ...updateData } = transactionData;
-      const transaction = await storage.updateCustomerCreditTransaction(req.params.id, updateData);
+      const transactionData = updateCustomerCreditTransactionSchema.parse(req.body);
+      const transaction = await storage.updateCustomerCreditTransaction(req.params.id, transactionData);
       res.json(transaction);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -2107,6 +2136,356 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Orders routes
+  app.get("/api/orders", isAuthenticated, async (req, res) => {
+    try {
+      const filters = {
+        search: req.query.search as string | undefined,
+        status: req.query.status as string | undefined,
+        priority: req.query.priority as string | undefined,
+        customerId: req.query.customerId as string | undefined,
+        startDate: req.query.startDate ? new Date(req.query.startDate as string) : undefined,
+        endDate: req.query.endDate ? new Date(req.query.endDate as string) : undefined,
+      };
+      const orders = await storage.getAllOrders(filters);
+      res.json(orders);
+    } catch (error) {
+      console.error("Error fetching orders:", error);
+      res.status(500).json({ message: "Failed to fetch orders" });
+    }
+  });
+
+  app.get("/api/orders/:id", isAuthenticated, async (req, res) => {
+    try {
+      const order = await storage.getOrderById(req.params.id);
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+      res.json(order);
+    } catch (error) {
+      console.error("Error fetching order:", error);
+      res.status(500).json({ message: "Failed to fetch order" });
+    }
+  });
+
+  app.post("/api/orders", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "User not authenticated" });
+      }
+
+      // Validate the order data (excluding line items for now)
+      const { lineItems, ...orderFields } = req.body;
+      
+      if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        return res.status(400).json({ message: "At least one line item is required" });
+      }
+
+      // Create order with line items
+      const order = await storage.createOrder({
+        ...orderFields,
+        createdByUserId: userId,
+        lineItems: lineItems,
+      });
+
+      // Create audit log
+      await storage.createAuditLog({
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: 'CREATE',
+        entityType: 'order',
+        entityId: order.id,
+        entityName: order.orderNumber,
+        description: `Created order ${order.orderNumber}`,
+        newValues: order,
+      });
+
+      res.json(order);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.error("Zod validation error:", error.errors);
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating order:", error);
+      res.status(500).json({ message: "Failed to create order", error: (error as Error).message });
+    }
+  });
+
+  app.patch("/api/orders/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      
+      // Validate customerId if provided
+      if (req.body.customerId) {
+        const customer = await storage.getCustomerById(req.body.customerId);
+        if (!customer) {
+          return res.status(400).json({ message: "Invalid customer ID" });
+        }
+      }
+      
+      const orderData = updateOrderSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = orderData;
+      
+      // Get old values for audit
+      const oldOrder = await storage.getOrderById(req.params.id);
+      
+      // Update order - now returns full OrderWithRelations
+      const order = await storage.updateOrder(req.params.id, updateData);
+
+      // Create audit log
+      if (userId) {
+        await storage.createAuditLog({
+          userId,
+          userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+          actionType: 'UPDATE',
+          entityType: 'order',
+          entityId: order.id,
+          entityName: order.orderNumber,
+          description: `Updated order ${order.orderNumber}`,
+          oldValues: oldOrder,
+          newValues: order,
+        });
+      }
+
+      // Return full order with customer data
+      res.json(order);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating order:", error);
+      res.status(500).json({ message: "Failed to update order" });
+    }
+  });
+
+  app.delete("/api/orders/:id", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const order = await storage.getOrderById(req.params.id);
+      
+      await storage.deleteOrder(req.params.id);
+
+      // Create audit log
+      if (userId && order) {
+        await storage.createAuditLog({
+          userId,
+          userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+          actionType: 'DELETE',
+          entityType: 'order',
+          entityId: req.params.id,
+          entityName: order.orderNumber,
+          description: `Deleted order ${order.orderNumber}`,
+          oldValues: order,
+        });
+      }
+
+      res.json({ message: "Order deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting order:", error);
+      res.status(500).json({ message: "Failed to delete order" });
+    }
+  });
+
+  // Convert quote to order
+  app.post("/api/orders/from-quote/:quoteId", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "User not authenticated" });
+      }
+
+      const { quoteId } = req.params;
+      const { dueDate, promisedDate, priority, notesInternal, customerId, contactId } = req.body;
+      const userRole = req.user.role || 'employee';
+
+      console.log('[CONVERT QUOTE TO ORDER] Starting conversion:', {
+        quoteId,
+        userId,
+        userRole,
+        providedCustomerId: customerId,
+        providedContactId: contactId,
+        dueDate,
+        promisedDate,
+        priority,
+      });
+
+      // Get the quote to check its source and customerId
+      const quote = await storage.getQuoteById(quoteId);
+      if (!quote) {
+        console.error('[CONVERT QUOTE TO ORDER] Quote not found:', quoteId);
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      console.log('[CONVERT QUOTE TO ORDER] Quote details:', {
+        quoteId: quote.id,
+        quoteNumber: quote.quoteNumber,
+        quoteCustomerId: quote.customerId,
+        quoteContactId: quote.contactId,
+        quoteSource: quote.source,
+        lineItemsCount: quote.lineItems?.length || 0,
+      });
+
+      let finalCustomerId: string;
+      let finalContactId: string | null;
+
+      // Handle customer quick quote differently
+      if (quote.source === 'customer_quick_quote') {
+        // For customer quick quotes, check if quote already has customerId (new behavior)
+        // or fall back to finding customer by userId (preferred) or email
+        if (quote.customerId) {
+          // New quotes created after fix will already have customerId
+          finalCustomerId = quote.customerId;
+          finalContactId = null;
+          console.log('[CONVERT QUOTE TO ORDER] Using customerId from quote:', finalCustomerId);
+        } else if (userRole === 'customer' || !['owner', 'admin', 'manager', 'employee'].includes(userRole)) {
+          // Legacy path: Customer user converting their own old quote without customerId
+          // Try to find customer by userId first (preferred), then by email
+          try {
+            finalCustomerId = await ensureCustomerForUser(userId);
+            finalContactId = null;
+            console.log('[CONVERT QUOTE TO ORDER] Ensured customer for user:', {
+              userId,
+              customerId: finalCustomerId,
+            });
+          } catch (error) {
+            console.error('[CONVERT QUOTE TO ORDER] Failed to ensure customer for user:', error);
+            return res.status(400).json({ 
+              message: "Cannot convert quote to order: No customer account found. Please contact support to set up your customer account." 
+            });
+          }
+        } else {
+          // Staff converting a customer's quick quote - they must provide customerId
+          finalCustomerId = customerId;
+          finalContactId = contactId || null;
+          if (!finalCustomerId) {
+            console.error('[CONVERT QUOTE TO ORDER] Staff must provide customer ID for customer quick quote');
+            return res.status(400).json({ message: "Customer ID is required to convert this quote to an order" });
+          }
+        }
+      } else {
+        // Internal quote - use customerId from quote or provided value
+        finalCustomerId = customerId || quote.customerId;
+        finalContactId = contactId || quote.contactId;
+
+        if (!finalCustomerId) {
+          console.error('[CONVERT QUOTE TO ORDER] No customer ID for internal quote');
+          return res.status(400).json({ 
+            message: "This quote is missing a customer. Please edit the quote and select a customer before converting to an order." 
+          });
+        }
+      }
+
+      console.log('[CONVERT QUOTE TO ORDER] Using customer:', {
+        customerId: finalCustomerId,
+        contactId: finalContactId,
+      });
+
+      const order = await storage.convertQuoteToOrder(quoteId, userId, {
+        customerId: finalCustomerId,
+        contactId: finalContactId || undefined,
+        dueDate: dueDate ? new Date(dueDate) : undefined,
+        promisedDate: promisedDate ? new Date(promisedDate) : undefined,
+        priority,
+        notesInternal,
+      });
+
+      console.log('[CONVERT QUOTE TO ORDER] Order created successfully:', {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        customerId: order.customerId,
+        lineItemsCount: order.lineItems?.length || 0,
+      });
+
+      // Create audit log
+      await storage.createAuditLog({
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: 'CREATE',
+        entityType: 'order',
+        entityId: order.id,
+        entityName: order.orderNumber,
+        description: `Created order ${order.orderNumber} from quote ${quote.quoteNumber}`,
+        newValues: order,
+      });
+
+      res.json(order);
+    } catch (error) {
+      console.error("[CONVERT QUOTE TO ORDER] Error:", error);
+      console.error("[CONVERT QUOTE TO ORDER] Error stack:", (error as Error).stack);
+      res.status(500).json({ message: "Failed to convert quote to order", error: (error as Error).message });
+    }
+  });
+
+  // Order Line Items routes
+  app.get("/api/orders/:orderId/line-items", isAuthenticated, async (req, res) => {
+    try {
+      const lineItems = await storage.getOrderLineItems(req.params.orderId);
+      res.json(lineItems);
+    } catch (error) {
+      console.error("Error fetching order line items:", error);
+      res.status(500).json({ message: "Failed to fetch order line items" });
+    }
+  });
+
+  app.get("/api/order-line-items/:id", isAuthenticated, async (req, res) => {
+    try {
+      const lineItem = await storage.getOrderLineItemById(req.params.id);
+      if (!lineItem) {
+        return res.status(404).json({ message: "Order line item not found" });
+      }
+      res.json(lineItem);
+    } catch (error) {
+      console.error("Error fetching order line item:", error);
+      res.status(500).json({ message: "Failed to fetch order line item" });
+    }
+  });
+
+  app.post("/api/order-line-items", isAuthenticated, async (req, res) => {
+    try {
+      const lineItemData = insertOrderLineItemSchema.parse(req.body);
+      const lineItem = await storage.createOrderLineItem(lineItemData);
+      res.json(lineItem);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating order line item:", error);
+      res.status(500).json({ message: "Failed to create order line item" });
+    }
+  });
+
+  app.patch("/api/order-line-items/:id", isAuthenticated, async (req, res) => {
+    try {
+      const lineItemData = updateOrderLineItemSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const { id, ...updateData } = lineItemData;
+      const lineItem = await storage.updateOrderLineItem(req.params.id, updateData);
+      res.json(lineItem);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating order line item:", error);
+      res.status(500).json({ message: "Failed to update order line item" });
+    }
+  });
+
+  app.delete("/api/order-line-items/:id", isAuthenticated, isAdminOrOwner, async (req, res) => {
+    try {
+      await storage.deleteOrderLineItem(req.params.id);
+      res.json({ message: "Order line item deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting order line item:", error);
+      res.status(500).json({ message: "Failed to delete order line item" });
+    }
+  });
+
   // Audit Logs routes (owner only)
   app.get("/api/audit-logs", isAuthenticated, isOwner, async (req, res) => {
     try {
@@ -2124,6 +2503,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching audit logs:", error);
       res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
+  });
+
+  // Diagnostic route to check user-customer linkage (dev only)
+  app.get("/api/debug/user-customer-linkage", isAuthenticated, async (req: any, res) => {
+    if (process.env.NODE_ENV !== 'development') {
+      return res.status(404).json({ message: "Not found" });
+    }
+
+    try {
+      const allUsers = await db.select().from(users);
+      const allCustomers = await db.select().from(customers);
+      const sampleQuotes = await db.select().from(quotes).limit(10);
+
+      const userLinkage = allUsers.map(user => {
+        const linkedCustomer = allCustomers.find(c => c.userId === user.id);
+        const customerByEmail = allCustomers.find(c => c.email?.toLowerCase() === user.email?.toLowerCase());
+        return {
+          userId: user.id,
+          email: user.email,
+          role: user.role,
+          linkedCustomerId: linkedCustomer?.id || null,
+          linkedCustomerName: linkedCustomer?.companyName || null,
+          customerByEmailId: customerByEmail?.id || null,
+          customerByEmailName: customerByEmail?.companyName || null,
+          needsLink: !linkedCustomer && !!customerByEmail,
+        };
+      });
+
+      const quoteInfo = sampleQuotes.map(q => ({
+        id: q.id,
+        quoteNumber: q.quoteNumber,
+        source: q.source,
+        customerId: q.customerId,
+        userId: q.userId,
+        customerName: q.customerName,
+      }));
+
+      res.json({
+        summary: {
+          totalUsers: allUsers.length,
+          totalCustomers: allCustomers.length,
+          usersWithLinkedCustomer: userLinkage.filter(u => u.linkedCustomerId).length,
+          usersNeedingLink: userLinkage.filter(u => u.needsLink).length,
+        },
+        userLinkage,
+        sampleQuotes: quoteInfo,
+      });
+    } catch (error) {
+      console.error("Error checking linkage:", error);
+      res.status(500).json({ message: "Failed to check linkage" });
     }
   });
 

@@ -9,6 +9,7 @@
     "start": "cross-env NODE_ENV=production node dist/index.js",
     "check": "tsc",
     "db:push": "drizzle-kit push",
+    "db:sync-users": "tsx sync-users-customers.ts",
     "fix-user": "tsx fix-user-role.ts"
   },
   "dependencies": {

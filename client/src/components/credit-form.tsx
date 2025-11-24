@@ -63,7 +63,12 @@ export default function CreditForm({
       const response = await fetch(`/api/customers/${customerId}/apply-credit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          amount: data.amount,
+          type: data.transactionType, // Backend expects 'type' not 'transactionType'
+          reason: data.reason,
+          approvalStatus: data.approvalStatus,
+        }),
         credentials: "include",
       });
       if (!response.ok) {

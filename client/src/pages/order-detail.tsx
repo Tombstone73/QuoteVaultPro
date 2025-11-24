@@ -1,0 +1,960 @@
+import { useState } from "react";
+import { Link, useLocation, useParams } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem } from "@/hooks/useOrders";
+import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
+import type { OrderLineItem } from "@/hooks/useOrders";
+import { OrderStatusBadge, OrderPriorityBadge, LineItemStatusBadge } from "@/components/order-status-badge";
+import { format } from "date-fns";
+import { useToast } from "@/hooks/use-toast";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
+export default function OrderDetail() {
+  const { user } = useAuth();
+  const params = useParams();
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showCustomerDialog, setShowCustomerDialog] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [editingDueDate, setEditingDueDate] = useState(false);
+  const [editingPromisedDate, setEditingPromisedDate] = useState(false);
+  const [tempDueDate, setTempDueDate] = useState("");
+  const [tempPromisedDate, setTempPromisedDate] = useState("");
+  const [showLineItemDialog, setShowLineItemDialog] = useState(false);
+  const [editingLineItem, setEditingLineItem] = useState<(OrderLineItem & { product: any; productVariant?: any }) | null>(null);
+  const [lineItemToDelete, setLineItemToDelete] = useState<string | null>(null);
+  
+  // Inline price editing state
+  const [editingPriceItemId, setEditingPriceItemId] = useState<string | null>(null);
+  const [editingPriceType, setEditingPriceType] = useState<'unit' | 'total' | null>(null);
+  const [tempPrice, setTempPrice] = useState("");
+  
+  // Inline status editing state
+  const [editingStatusItemId, setEditingStatusItemId] = useState<string | null>(null);
+  const [tempStatus, setTempStatus] = useState("");
+
+  const orderId = params.id;
+  const { data: order, isLoading } = useOrder(orderId);
+  const deleteOrder = useDeleteOrder();
+  const updateOrder = useUpdateOrder(orderId!);
+  const updateLineItem = useUpdateOrderLineItem(orderId!);
+  const createLineItem = useCreateOrderLineItem(orderId!);
+  const deleteLineItem = useDeleteOrderLineItem(orderId!);
+
+  // Check if user is admin or owner
+  const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
+
+  // Fetch customers for the customer change dialog
+  const { data: customers = [] } = useQuery({
+    queryKey: ["/api/customers"],
+    queryFn: async () => {
+      const response = await fetch("/api/customers", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch customers");
+      return response.json();
+    },
+  });
+
+  // Customer change mutation
+  const changeCustomerMutation = useMutation({
+    mutationFn: async (customerId: string) => {
+      const response = await fetch(`/api/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId, contactId: null }), // Reset contact when changing customer
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to update customer");
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}`] });
+      toast({
+        title: "Success",
+        description: "Customer updated successfully",
+      });
+      setShowCustomerDialog(false);
+      setSelectedCustomerId(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const formatCurrency = (amount: string | number) => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+    }).format(typeof amount === "string" ? parseFloat(amount) : amount);
+  };
+
+  const formatDate = (dateString: string | null | undefined) => {
+    if (!dateString) return "-";
+    try {
+      return format(new Date(dateString), "PPP");
+    } catch {
+      return "-";
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!orderId) return;
+    try {
+      await deleteOrder.mutateAsync(orderId);
+      navigate("/orders");
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handleStatusChange = async (newStatus: string) => {
+    try {
+      await updateOrder.mutateAsync({ status: newStatus });
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handlePriorityChange = async (newPriority: string) => {
+    try {
+      await updateOrder.mutateAsync({ priority: newPriority });
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handleDueDateEdit = () => {
+    setTempDueDate(order?.dueDate ? format(new Date(order.dueDate), 'yyyy-MM-dd') : '');
+    setEditingDueDate(true);
+  };
+
+  const handleDueDateSave = async () => {
+    try {
+      // Convert string to Date or null
+      const dateValue = tempDueDate ? new Date(tempDueDate) : null;
+      await updateOrder.mutateAsync({ dueDate: dateValue });
+      setEditingDueDate(false);
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handleDueDateCancel = () => {
+    setEditingDueDate(false);
+    setTempDueDate('');
+  };
+
+  const handlePromisedDateEdit = () => {
+    setTempPromisedDate(order?.promisedDate ? format(new Date(order.promisedDate), 'yyyy-MM-dd') : '');
+    setEditingPromisedDate(true);
+  };
+
+  const handlePromisedDateSave = async () => {
+    try {
+      // Convert string to Date or null
+      const dateValue = tempPromisedDate ? new Date(tempPromisedDate) : null;
+      await updateOrder.mutateAsync({ promisedDate: dateValue });
+      setEditingPromisedDate(false);
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handlePromisedDateCancel = () => {
+    setEditingPromisedDate(false);
+    setTempPromisedDate('');
+  };
+
+  const handleCustomerChange = () => {
+    setSelectedCustomerId(order?.customerId || null);
+    setShowCustomerDialog(true);
+  };
+
+  const handleCustomerSelect = () => {
+    if (selectedCustomerId) {
+      changeCustomerMutation.mutate(selectedCustomerId);
+    }
+  };
+
+  const handleAddLineItem = () => {
+    setEditingLineItem(null);
+    setShowLineItemDialog(true);
+  };
+
+  const handleEditLineItem = (lineItem: OrderLineItem & { product: any; productVariant?: any }) => {
+    console.log("handleEditLineItem called with:", lineItem);
+    console.log("productVariantId:", lineItem.productVariantId, "Type:", typeof lineItem.productVariantId);
+    setEditingLineItem(lineItem);
+    setShowLineItemDialog(true);
+  };
+
+  const handleDeleteLineItem = async (lineItemId: string) => {
+    try {
+      await deleteLineItem.mutateAsync(lineItemId);
+      setLineItemToDelete(null);
+      
+      // Recalculate order totals
+      await recalculateOrderTotals();
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handleSaveLineItem = async (data: any) => {
+    if (editingLineItem) {
+      // Edit existing
+      await updateLineItem.mutateAsync({ id: editingLineItem.id, data });
+    } else {
+      // Create new
+      await createLineItem.mutateAsync(data);
+    }
+    
+    // Recalculate order totals
+    await recalculateOrderTotals();
+  };
+
+  const recalculateOrderTotals = async () => {
+    if (!order) return;
+    
+    // Fetch fresh order data
+    const response = await fetch(`/api/orders/${orderId}`, { credentials: "include" });
+    if (!response.ok) return;
+    const freshOrder = await response.json();
+    
+    // Calculate new totals from line items
+    const subtotal = freshOrder.lineItems.reduce((sum: number, item: any) => {
+      return sum + parseFloat(item.totalPrice);
+    }, 0);
+    
+    const discount = parseFloat(freshOrder.discount) || 0;
+    const tax = parseFloat(freshOrder.tax) || 0;
+    const total = subtotal - discount + tax;
+    
+    // Update order totals
+    await updateOrder.mutateAsync({
+      subtotal: subtotal.toFixed(2),
+      total: total.toFixed(2),
+    });
+  };
+
+  // Inline price editing handlers
+  const handleEditPrice = (itemId: string, priceType: 'unit' | 'total', currentValue: string) => {
+    setEditingPriceItemId(itemId);
+    setEditingPriceType(priceType);
+    setTempPrice(currentValue);
+  };
+
+  const handleSavePrice = async (item: OrderLineItem) => {
+    if (!tempPrice || !editingPriceType) return;
+
+    try {
+      const newPrice = parseFloat(tempPrice);
+      if (isNaN(newPrice) || newPrice < 0) {
+        toast({
+          title: "Invalid Price",
+          description: "Please enter a valid price",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      let unitPrice: number;
+      let totalPrice: number;
+
+      if (editingPriceType === 'unit') {
+        // User edited unit price, recalculate total
+        unitPrice = newPrice;
+        totalPrice = unitPrice * item.quantity;
+      } else {
+        // User edited total, recalculate unit price
+        totalPrice = newPrice;
+        unitPrice = totalPrice / item.quantity;
+      }
+
+      await updateLineItem.mutateAsync({
+        id: item.id,
+        data: {
+          unitPrice: unitPrice.toFixed(2),
+          totalPrice: totalPrice.toFixed(2),
+        },
+      });
+
+      // Recalculate order totals
+      await recalculateOrderTotals();
+
+      setEditingPriceItemId(null);
+      setEditingPriceType(null);
+      setTempPrice("");
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handleCancelPrice = () => {
+    setEditingPriceItemId(null);
+    setEditingPriceType(null);
+    setTempPrice("");
+  };
+
+  // Inline status editing handlers
+  const handleEditStatus = (itemId: string, currentStatus: string) => {
+    setEditingStatusItemId(itemId);
+    setTempStatus(currentStatus);
+  };
+
+  const handleSaveStatus = async (itemId: string) => {
+    if (!tempStatus) return;
+
+    try {
+      await updateLineItem.mutateAsync({
+        id: itemId,
+        data: {
+          status: tempStatus,
+        },
+      });
+
+      setEditingStatusItemId(null);
+      setTempStatus("");
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+
+  const handleCancelStatus = () => {
+    setEditingStatusItemId(null);
+    setTempStatus("");
+  };
+
+  const handleLineItemStatusChange = async (lineItemId: string, newStatus: string) => {
+    // This would need a hook similar to useUpdateOrderLineItem
+    // For now, just show a toast
+    toast({
+      title: "Feature coming soon",
+      description: "Line item status updates will be available soon",
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex items-center gap-2">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          <span>Loading order...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!order) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold mb-2">Order not found</h2>
+          <p className="text-muted-foreground mb-4">The order you're looking for doesn't exist.</p>
+          <Link href="/orders">
+            <Button>Back to Orders</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="border-b sticky top-0 bg-background z-50">
+        <div className="container mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Link href="/orders">
+                <Button variant="ghost" size="icon">
+                  <ArrowLeft className="w-5 h-5" />
+                </Button>
+              </Link>
+              <div>
+                <h1 className="text-2xl font-bold font-mono">{order.orderNumber}</h1>
+                <p className="text-sm text-muted-foreground">
+                  Created {formatDate(order.createdAt)}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {isAdminOrOwner && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setShowDeleteDialog(true)}
+                  disabled={deleteOrder.isPending}
+                >
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Delete
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="container mx-auto px-4 py-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Main Content */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Order Details */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Order Details</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">Status</label>
+                    <Select value={order.status} onValueChange={handleStatusChange}>
+                      <SelectTrigger className="mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="new">New</SelectItem>
+                        <SelectItem value="scheduled">Scheduled</SelectItem>
+                        <SelectItem value="in_production">In Production</SelectItem>
+                        <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
+                        <SelectItem value="shipped">Shipped</SelectItem>
+                        <SelectItem value="completed">Completed</SelectItem>
+                        <SelectItem value="on_hold">On Hold</SelectItem>
+                        <SelectItem value="canceled">Canceled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">Priority</label>
+                    <Select value={order.priority} onValueChange={handlePriorityChange}>
+                      <SelectTrigger className="mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="rush">Rush</SelectItem>
+                        <SelectItem value="normal">Normal</SelectItem>
+                        <SelectItem value="low">Low</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">Due Date</label>
+                    {editingDueDate ? (
+                      <div className="flex items-center gap-2 mt-1">
+                        <Input
+                          type="date"
+                          value={tempDueDate}
+                          onChange={(e) => setTempDueDate(e.target.value)}
+                          className="h-8"
+                        />
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={handleDueDateSave}>
+                          <Check className="h-4 w-4" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={handleDueDateCancel}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="text-sm">{formatDate(order.dueDate)}</div>
+                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handleDueDateEdit}>
+                          <Edit className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">Promised Date</label>
+                    {editingPromisedDate ? (
+                      <div className="flex items-center gap-2 mt-1">
+                        <Input
+                          type="date"
+                          value={tempPromisedDate}
+                          onChange={(e) => setTempPromisedDate(e.target.value)}
+                          className="h-8"
+                        />
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={handlePromisedDateSave}>
+                          <Check className="h-4 w-4" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={handlePromisedDateCancel}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="text-sm">{formatDate(order.promisedDate)}</div>
+                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handlePromisedDateEdit}>
+                          <Edit className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {order.notesInternal && (
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">Internal Notes</label>
+                    <div className="mt-1 text-sm p-3 bg-muted rounded-md whitespace-pre-wrap">
+                      {order.notesInternal}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Line Items */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Order Items</CardTitle>
+                    <CardDescription>{order.lineItems.length} items</CardDescription>
+                  </div>
+                  {isAdminOrOwner && (
+                    <Button onClick={handleAddLineItem} size="sm">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Item
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product</TableHead>
+                      <TableHead>Specs</TableHead>
+                      <TableHead>Quantity</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Unit Price</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      {isAdminOrOwner && <TableHead className="text-right">Actions</TableHead>}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {order.lineItems.map((item) => (
+                      <TableRow key={item.id}>
+                        <TableCell>
+                          <div>
+                            <div className="font-medium">{item.product.name}</div>
+                            {item.productVariant && (
+                              <div className="text-xs text-muted-foreground">
+                                {item.productVariant.name}
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm">
+                            {item.width && item.height ? (
+                              <div>{item.width}" × {item.height}"</div>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                            {item.sqft && (
+                              <div className="text-xs text-muted-foreground">
+                                {parseFloat(item.sqft).toFixed(2)} sq ft
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>{item.quantity.toLocaleString()}</TableCell>
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          {isAdminOrOwner && editingStatusItemId === item.id ? (
+                            <div className="flex items-center gap-1">
+                              <Select value={tempStatus} onValueChange={setTempStatus}>
+                                <SelectTrigger className="h-8 w-[120px]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="queued">Queued</SelectItem>
+                                  <SelectItem value="printing">Printing</SelectItem>
+                                  <SelectItem value="finishing">Finishing</SelectItem>
+                                  <SelectItem value="done">Done</SelectItem>
+                                  <SelectItem value="canceled">Canceled</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => handleSaveStatus(item.id)}
+                              >
+                                <Check className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={handleCancelStatus}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div 
+                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded inline-block" : ""}
+                              onClick={() => isAdminOrOwner && handleEditStatus(item.id, item.status)}
+                            >
+                              <LineItemStatusBadge status={item.status} />
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'unit' ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={tempPrice}
+                                onChange={(e) => setTempPrice(e.target.value)}
+                                className="h-7 w-24 text-right"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSavePrice(item);
+                                  if (e.key === 'Escape') handleCancelPrice();
+                                }}
+                              />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => handleSavePrice(item)}
+                              >
+                                <Check className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={handleCancelPrice}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div 
+                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
+                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'unit', item.unitPrice)}
+                            >
+                              {formatCurrency(item.unitPrice)}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-medium">
+                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'total' ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={tempPrice}
+                                onChange={(e) => setTempPrice(e.target.value)}
+                                className="h-7 w-24 text-right"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSavePrice(item);
+                                  if (e.key === 'Escape') handleCancelPrice();
+                                }}
+                              />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => handleSavePrice(item)}
+                              >
+                                <Check className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={handleCancelPrice}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div 
+                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
+                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'total', item.totalPrice)}
+                            >
+                              {formatCurrency(item.totalPrice)}
+                            </div>
+                          )}
+                        </TableCell>
+                        {isAdminOrOwner && (
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => handleEditLineItem(item)}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive hover:text-destructive"
+                                onClick={() => setLineItemToDelete(item.id)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+
+                <Separator className="my-4" />
+
+                {/* Totals */}
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Subtotal</span>
+                    <span>{formatCurrency(order.subtotal)}</span>
+                  </div>
+                  {parseFloat(order.discount) > 0 && (
+                    <div className="flex justify-between text-sm text-red-500">
+                      <span>Discount</span>
+                      <span>-{formatCurrency(order.discount)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Tax</span>
+                    <span>{formatCurrency(order.tax)}</span>
+                  </div>
+                  <Separator />
+                  <div className="flex justify-between font-bold text-lg">
+                    <span>Total</span>
+                    <span>{formatCurrency(order.total)}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Sidebar */}
+          <div className="space-y-6">
+            {/* Customer Info */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Customer</CardTitle>
+                  {isAdminOrOwner && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleCustomerChange}
+                      disabled={changeCustomerMutation.isPending}
+                    >
+                      <UserCog className="w-4 h-4 mr-1" />
+                      Change
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div>
+                  <Link href={`/customers/${order.customer.id}`}>
+                    <Button variant="link" className="p-0 h-auto font-medium text-base">
+                      {order.customer.companyName}
+                    </Button>
+                  </Link>
+                </div>
+                {order.contact && (
+                  <div className="text-sm space-y-1">
+                    <div className="font-medium">
+                      {order.contact.firstName} {order.contact.lastName}
+                    </div>
+                    {order.contact.email && (
+                      <div className="text-muted-foreground">{order.contact.email}</div>
+                    )}
+                    {order.contact.phone && (
+                      <div className="text-muted-foreground">{order.contact.phone}</div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Source Quote */}
+            {order.quote && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Source Quote</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Link href={`/quotes/${order.quoteId}`}>
+                    <Button variant="outline" size="sm" className="w-full">
+                      View Quote #{order.quote.quoteNumber}
+                    </Button>
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Created By */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Created By</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-muted-foreground" />
+                  <div>
+                    <div className="font-medium">
+                      {order.createdByUser.firstName} {order.createdByUser.lastName}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {order.createdByUser.email}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </main>
+
+      {/* Change Customer Dialog */}
+      <Dialog open={showCustomerDialog} onOpenChange={setShowCustomerDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Change Customer</DialogTitle>
+            <DialogDescription>
+              Select a new customer for this order. The contact will be reset.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[400px] overflow-y-auto">
+            <div className="space-y-2">
+              {customers.map((customer: any) => (
+                <div
+                  key={customer.id}
+                  className={`p-3 border rounded-lg cursor-pointer transition-colors ${
+                    selectedCustomerId === customer.id
+                      ? "border-primary bg-primary/5"
+                      : "hover:border-muted-foreground"
+                  }`}
+                  onClick={() => setSelectedCustomerId(customer.id)}
+                >
+                  <div className="font-medium">{customer.companyName}</div>
+                  {customer.email && (
+                    <div className="text-sm text-muted-foreground">{customer.email}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCustomerDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCustomerSelect}
+              disabled={!selectedCustomerId || changeCustomerMutation.isPending}
+            >
+              {changeCustomerMutation.isPending ? "Updating..." : "Update Customer"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Order</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete order {order.orderNumber}? This action cannot be undone.
+              All line items will also be deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Line Item Confirmation Dialog */}
+      <AlertDialog open={!!lineItemToDelete} onOpenChange={() => setLineItemToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Line Item</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this line item? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => lineItemToDelete && handleDeleteLineItem(lineItemToDelete)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Line Item Add/Edit Dialog */}
+      <OrderLineItemDialog
+        open={showLineItemDialog}
+        onOpenChange={setShowLineItemDialog}
+        lineItem={editingLineItem ? {
+          ...editingLineItem,
+          productVariantId: editingLineItem.productVariantId,
+          product: editingLineItem.product,
+          productVariant: editingLineItem.productVariant,
+        } : undefined}
+        orderId={orderId!}
+        onSave={handleSaveLineItem}
+        mode={editingLineItem ? "edit" : "add"}
+      />
+    </div>
+  );
+}
