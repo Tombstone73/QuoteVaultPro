@@ -78,6 +78,15 @@ import {
   auditLogs,
   type AuditLog,
   type InsertAuditLog,
+  orderAuditLog,
+  type OrderAuditLog,
+  type InsertOrderAuditLog,
+  orderAttachments,
+  type OrderAttachment,
+  type InsertOrderAttachment,
+  quoteWorkflowStates,
+  type QuoteWorkflowState,
+  type InsertQuoteWorkflowState,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, gte, lte, like, ilike, sql, desc } from "drizzle-orm";
@@ -253,7 +262,7 @@ export interface IStorage {
     dueDate?: Date;
     promisedDate?: Date;
     priority?: string;
-    notesInternal?: string;
+    notesInternal?: Date;
   }): Promise<OrderWithRelations>;
 
   // Order line item operations
@@ -273,6 +282,20 @@ export interface IStorage {
     endDate?: Date;
     limit?: number;
   }): Promise<AuditLog[]>;
+
+  // Order audit log operations
+  getOrderAuditLog(orderId: string): Promise<OrderAuditLog[]>;
+  createOrderAuditLog(log: InsertOrderAuditLog): Promise<OrderAuditLog>;
+
+  // Order attachments operations
+  getOrderAttachments(orderId: string): Promise<OrderAttachment[]>;
+  createOrderAttachment(attachment: InsertOrderAttachment): Promise<OrderAttachment>;
+  deleteOrderAttachment(id: string): Promise<void>;
+
+  // Quote workflow operations
+  getQuoteWorkflowState(quoteId: string): Promise<QuoteWorkflowState | undefined>;
+  createQuoteWorkflowState(state: InsertQuoteWorkflowState): Promise<QuoteWorkflowState>;
+  updateQuoteWorkflowState(quoteId: string, updates: Partial<InsertQuoteWorkflowState>): Promise<QuoteWorkflowState>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1361,7 +1384,7 @@ export class DatabaseStorage implements IStorage {
         );
 
       // Get unique customer IDs from contact matches
-      const contactCustomerIds = [...new Set(matchedContacts.map(c => c.customerId))];
+      const contactCustomerIds = Array.from(new Set(matchedContacts.map(c => c.customerId)));
       
       // Fetch customers from contact matches that aren't already in matchedCustomers
       const existingCustomerIds = new Set(matchedCustomers.map(c => c.id));
@@ -1693,6 +1716,338 @@ export class DatabaseStorage implements IStorage {
     return updatedCustomer;
   }
 
+  // =============================
+  // Order operations (core CRUD)
+  // =============================
+
+  private async generateNextOrderNumber(tx?: any): Promise<string> {
+    // Try globalVariables first (pattern similar to quotes). If missing, fallback to MAX(order_number)+1
+    const executor = tx || db;
+    try {
+      const result = await executor.execute(sql`
+        SELECT * FROM ${globalVariables}
+        WHERE ${globalVariables.name} = 'next_order_number'
+        FOR UPDATE
+      `);
+      const row = (result as any).rows?.[0];
+      if (row) {
+        const current = Math.floor(Number(row.value));
+        // Increment for next
+        await executor.update(globalVariables)
+          .set({ value: (current + 1).toString(), updatedAt: new Date() })
+          .where(eq(globalVariables.id, row.id));
+        return current.toString();
+      }
+    } catch (e) {
+      // Ignore and fallback
+    }
+    // Fallback: compute max existing numeric orderNumber
+    const maxResult = await db.execute(sql`SELECT MAX(CAST(order_number AS INTEGER)) AS max_num FROM orders WHERE order_number ~ '^[0-9]+$'`);
+    const maxNum = (maxResult as any).rows?.[0]?.max_num ? Number((maxResult as any).rows[0].max_num) : 999;
+    return (maxNum + 1).toString();
+  }
+
+  async getAllOrders(filters?: {
+    search?: string;
+    status?: string;
+    priority?: string;
+    customerId?: string;
+    startDate?: Date;
+    endDate?: Date;
+  }): Promise<Order[]> {
+    const conditions = [] as any[];
+    if (filters?.search) {
+      const pattern = `%${filters.search}%`;
+      conditions.push(or(
+        ilike(orders.orderNumber, pattern),
+        ilike(orders.notesInternal, pattern)
+      ));
+    }
+    if (filters?.status) conditions.push(eq(orders.status, filters.status));
+    if (filters?.priority) conditions.push(eq(orders.priority, filters.priority));
+    if (filters?.customerId) conditions.push(eq(orders.customerId, filters.customerId));
+    if (filters?.startDate) conditions.push(gte(orders.createdAt, filters.startDate));
+    if (filters?.endDate) conditions.push(lte(orders.createdAt, filters.endDate));
+
+    let query = db.select().from(orders) as any;
+    if (conditions.length) {
+      query = query.where(and(...conditions));
+    }
+    query = query.orderBy(desc(orders.createdAt));
+    const rows = await query;
+    
+    // Enrich orders with customer and contact data
+    const enrichedOrders = await Promise.all(rows.map(async (order: Order) => {
+      const [customer] = order.customerId 
+        ? await db.select().from(customers).where(eq(customers.id, order.customerId))
+        : [undefined];
+      
+      const [contact] = order.contactId 
+        ? await db.select().from(customerContacts).where(eq(customerContacts.id, order.contactId))
+        : [undefined];
+      
+      return { ...order, customer, contact };
+    }));
+    
+    return enrichedOrders;
+  }
+
+  async getOrderById(id: string): Promise<OrderWithRelations | undefined> {
+    const [order] = await db.select().from(orders).where(eq(orders.id, id));
+    if (!order) return undefined;
+    const rawLineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
+    const enrichedLineItems = await Promise.all(
+      rawLineItems.map(async (li) => {
+        const [product] = await db.select().from(products).where(eq(products.id, li.productId));
+        let productVariant = null as any;
+        if (li.productVariantId) {
+          [productVariant] = await db.select().from(productVariants).where(eq(productVariants.id, li.productVariantId));
+        }
+        return { ...li, product, productVariant } as any;
+      })
+    );
+    const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => []);
+    let contact: CustomerContact | null = null;
+    if (order.contactId) {
+      const contactRows = await db.select().from(customerContacts).where(eq(customerContacts.id, order.contactId));
+      contact = contactRows[0] || null;
+    }
+    const [createdByUser] = await db.select().from(users).where(eq(users.id, order.createdByUserId));
+    return {
+      ...order,
+      lineItems: enrichedLineItems,
+      customer,
+      contact,
+      createdByUser,
+    } as OrderWithRelations;
+  }
+
+  async createOrder(data: {
+    customerId: string;
+    contactId?: string | null;
+    quoteId?: string | null;
+    status?: string;
+    priority?: string;
+    dueDate?: Date | null;
+    promisedDate?: Date | null;
+    discount?: number;
+    notesInternal?: string | null;
+    createdByUserId: string;
+    lineItems: Omit<InsertOrderLineItem, 'orderId'>[];
+  }): Promise<OrderWithRelations> {
+    if (!data.customerId) throw new Error('customerId required');
+    if (!data.lineItems || data.lineItems.length === 0) throw new Error('At least one line item required');
+    const subtotal = data.lineItems.reduce((sum, li: any) => sum + Number(li.totalPrice || li.linePrice || 0), 0);
+    const discount = data.discount || 0;
+    const tax = 0; // Future: compute tax
+    const total = subtotal - discount + tax;
+
+    const created = await db.transaction(async (tx) => {
+      const orderNumber = await this.generateNextOrderNumber(tx);
+      const orderInsert: typeof orders.$inferInsert = {
+        orderNumber,
+        quoteId: data.quoteId || null,
+        customerId: data.customerId,
+        contactId: data.contactId || null,
+        status: data.status || 'new',
+        priority: data.priority || 'normal',
+        dueDate: data.dueDate || null,
+        promisedDate: data.promisedDate || null,
+        subtotal: subtotal.toString(),
+        tax: tax.toString(),
+        total: total.toString(),
+        discount: discount.toString(),
+        notesInternal: data.notesInternal || null,
+        createdByUserId: data.createdByUserId,
+      };
+      const [order] = await tx.insert(orders).values(orderInsert).returning();
+      const lineItemsData = data.lineItems.map((li) => {
+        const unit = li.unitPrice;
+        return {
+          orderId: order.id,
+          quoteLineItemId: (li as any).quoteLineItemId || null,
+          productId: li.productId,
+            productVariantId: (li as any).productVariantId || (li as any).variantId || null,
+          productType: (li as any).productType || 'wide_roll',
+          description: (li as any).description || (li as any).productName || 'Item',
+          width: li.width ? li.width.toString() : null,
+          height: li.height ? li.height.toString() : null,
+          quantity: li.quantity,
+          sqft: (li as any).sqft ? (li as any).sqft.toString() : null,
+          unitPrice: unit.toString(),
+          totalPrice: li.totalPrice.toString(),
+          status: 'queued',
+          specsJson: (li as any).specsJson || null,
+          selectedOptions: (li as any).selectedOptions || [],
+          nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
+        } as typeof orderLineItems.$inferInsert;
+      });
+      const createdLineItems = lineItemsData.length ? await tx.insert(orderLineItems).values(lineItemsData).returning() : [];
+      return { order, lineItems: createdLineItems };
+    });
+
+    const [customer] = await db.select().from(customers).where(eq(customers.id, data.customerId));
+    let contact: CustomerContact | null = null;
+    if (data.contactId) {
+      const contactRows = await db.select().from(customerContacts).where(eq(customerContacts.id, data.contactId));
+      contact = contactRows[0] || null;
+    }
+    const [createdByUser] = await db.select().from(users).where(eq(users.id, data.createdByUserId));
+    const enrichedLineItems = await Promise.all(
+      created.lineItems.map(async (li) => {
+        const [product] = await db.select().from(products).where(eq(products.id, li.productId));
+        let productVariant = null as any;
+        if (li.productVariantId) {
+          [productVariant] = await db.select().from(productVariants).where(eq(productVariants.id, li.productVariantId));
+        }
+        return { ...li, product, productVariant } as any;
+      })
+    );
+    return {
+      ...created.order,
+      lineItems: enrichedLineItems,
+      customer,
+      contact,
+      createdByUser,
+    } as OrderWithRelations;
+  }
+
+  async updateOrder(id: string, order: Partial<InsertOrder>): Promise<Order> {
+    const updateData: Record<string, any> = { ...order, updatedAt: new Date() };
+    if (order.subtotal !== undefined) updateData.subtotal = order.subtotal.toString();
+    if (order.tax !== undefined) updateData.tax = order.tax.toString();
+    if (order.total !== undefined) updateData.total = order.total.toString();
+    if (order.discount !== undefined) updateData.discount = order.discount.toString();
+    const [updated] = await db.update(orders).set(updateData).where(eq(orders.id, id)).returning();
+    if (!updated) throw new Error('Order not found');
+    return updated;
+  }
+
+  async deleteOrder(id: string): Promise<void> {
+    await db.delete(orders).where(eq(orders.id, id));
+  }
+
+  async getOrderLineItems(orderId: string): Promise<OrderLineItem[]> {
+    return await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId)).orderBy(desc(orderLineItems.createdAt));
+  }
+
+  async getOrderLineItemById(id: string): Promise<OrderLineItem | undefined> {
+    const [li] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, id));
+    return li;
+  }
+
+  async createOrderLineItem(lineItem: InsertOrderLineItem): Promise<OrderLineItem> {
+    const prepared: typeof orderLineItems.$inferInsert = {
+      ...lineItem,
+      width: lineItem.width ? lineItem.width.toString() : null,
+      height: lineItem.height ? lineItem.height.toString() : null,
+      sqft: lineItem.sqft ? lineItem.sqft.toString() : null,
+      unitPrice: lineItem.unitPrice.toString(),
+      totalPrice: lineItem.totalPrice.toString(),
+    } as any;
+    const [created] = await db.insert(orderLineItems).values(prepared).returning();
+    return created;
+  }
+
+  async updateOrderLineItem(id: string, lineItem: Partial<InsertOrderLineItem>): Promise<OrderLineItem> {
+    const updateData: Record<string, any> = { ...lineItem, updatedAt: new Date() };
+    ['width','height','sqft','unitPrice','totalPrice'].forEach(f => {
+      const val = (lineItem as any)[f];
+      if (val !== undefined) updateData[f] = val === null ? null : val.toString();
+    });
+    const [updated] = await db.update(orderLineItems).set(updateData).where(eq(orderLineItems.id, id)).returning();
+    if (!updated) throw new Error('Order line item not found');
+    return updated;
+  }
+
+  async deleteOrderLineItem(id: string): Promise<void> {
+    await db.delete(orderLineItems).where(eq(orderLineItems.id, id));
+  }
+
+  async convertQuoteToOrder(quoteId: string, createdByUserId: string, options?: {
+    customerId?: string;
+    contactId?: string;
+    dueDate?: Date;
+    promisedDate?: Date;
+    priority?: string;
+    notesInternal?: Date; // Note: original interface had Date, likely should be string
+    }): Promise<OrderWithRelations> {
+    const quote = await this.getQuoteById(quoteId);
+    if (!quote) throw new Error('Quote not found');
+    const customerId = options?.customerId || quote.customerId;
+    if (!customerId) throw new Error('Quote missing customer');
+    const contactId = options?.contactId || quote.contactId || null;
+    const subtotal = quote.lineItems.reduce((sum, li: any) => sum + Number(li.linePrice), 0);
+    const discount = 0; const tax = 0; const total = subtotal - discount + tax;
+    const created = await db.transaction(async (tx) => {
+      const orderNumber = await this.generateNextOrderNumber(tx);
+      const orderInsert: typeof orders.$inferInsert = {
+        orderNumber,
+        quoteId: quote.id,
+        customerId,
+        contactId: contactId || null,
+        status: 'new',
+        priority: options?.priority || 'normal',
+        dueDate: options?.dueDate || null,
+        promisedDate: options?.promisedDate || null,
+        subtotal: subtotal.toString(),
+        tax: tax.toString(),
+        total: total.toString(),
+        discount: discount.toString(),
+        notesInternal: (options as any)?.notesInternal || null,
+        createdByUserId,
+      };
+      const [order] = await tx.insert(orders).values(orderInsert).returning();
+      const lineItemsData = quote.lineItems.map((li: any) => {
+        const unit = Number(li.linePrice) / (li.quantity || 1);
+        return {
+          orderId: order.id,
+          quoteLineItemId: li.id,
+          productId: li.productId,
+          productVariantId: li.variantId || null,
+          productType: li.productType || 'wide_roll',
+          description: li.product?.name || li.productName || 'Item',
+          width: li.width ? li.width.toString() : null,
+          height: li.height ? li.height.toString() : null,
+          quantity: li.quantity,
+          sqft: (li as any).sqft ? (li as any).sqft.toString() : null,
+          unitPrice: unit.toString(),
+          totalPrice: li.linePrice.toString(),
+          status: 'queued',
+          specsJson: li.specsJson || null,
+          selectedOptions: li.selectedOptions || [],
+          nestingConfigSnapshot: null,
+        } as typeof orderLineItems.$inferInsert;
+      });
+      const createdLineItems = await tx.insert(orderLineItems).values(lineItemsData).returning();
+      return { order, lineItems: createdLineItems };
+    });
+    const [customer] = await db.select().from(customers).where(eq(customers.id, customerId));
+    let contact: CustomerContact | null = null;
+    if (contactId) {
+      const contactRows = await db.select().from(customerContacts).where(eq(customerContacts.id, contactId));
+      contact = contactRows[0] || null;
+    }
+    const [createdByUser] = await db.select().from(users).where(eq(users.id, createdByUserId));
+    const enrichedLineItems = await Promise.all(
+      created.lineItems.map(async (li) => {
+        const [product] = await db.select().from(products).where(eq(products.id, li.productId));
+        let productVariant = null as any;
+        if (li.productVariantId) {
+          [productVariant] = await db.select().from(productVariants).where(eq(productVariants.id, li.productVariantId));
+        }
+        return { ...li, product, productVariant } as any;
+      })
+    );
+    return {
+      ...created.order,
+      lineItems: enrichedLineItems,
+      customer,
+      contact,
+      createdByUser,
+    } as OrderWithRelations;
+  }
+
   // Audit log operations
   async createAuditLog(log: InsertAuditLog): Promise<AuditLog> {
     const [auditLog] = await db.insert(auditLogs).values(log).returning();
@@ -1740,389 +2095,66 @@ export class DatabaseStorage implements IStorage {
     return await query;
   }
 
-  // Order operations
-  async getAllOrders(filters?: {
-    search?: string;
-    status?: string;
-    priority?: string;
-    customerId?: string;
-    startDate?: Date;
-    endDate?: Date;
-  }): Promise<any[]> {
-    const conditions = [];
-
-    if (filters?.status) {
-      conditions.push(eq(orders.status, filters.status));
-    }
-    if (filters?.priority) {
-      conditions.push(eq(orders.priority, filters.priority));
-    }
-    if (filters?.customerId) {
-      conditions.push(eq(orders.customerId, filters.customerId));
-    }
-    if (filters?.startDate) {
-      conditions.push(gte(orders.createdAt, filters.startDate));
-    }
-    if (filters?.endDate) {
-      conditions.push(lte(orders.createdAt, filters.endDate));
-    }
-    if (filters?.search) {
-      conditions.push(
-        or(
-          ilike(orders.orderNumber, `%${filters.search}%`),
-          ilike(orders.notesInternal, `%${filters.search}%`)
-        )
-      );
-    }
-
-    let query = db.select({
-      id: orders.id,
-      orderNumber: orders.orderNumber,
-      quoteId: orders.quoteId,
-      customerId: orders.customerId,
-      contactId: orders.contactId,
-      status: orders.status,
-      priority: orders.priority,
-      dueDate: orders.dueDate,
-      promisedDate: orders.promisedDate,
-      subtotal: orders.subtotal,
-      tax: orders.tax,
-      total: orders.total,
-      discount: orders.discount,
-      notesInternal: orders.notesInternal,
-      createdByUserId: orders.createdByUserId,
-      createdAt: orders.createdAt,
-      updatedAt: orders.updatedAt,
-      customer: customers,
-    })
-    .from(orders)
-    .leftJoin(customers, eq(orders.customerId, customers.id));
-
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
-    }
-
-    const ordersResult = await query.orderBy(desc(orders.createdAt));
-
-    // Fetch line items for each order
-    const ordersWithLineItems = await Promise.all(
-      ordersResult.map(async (order) => {
-        const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, order.id));
-        return { ...order, lineItems };
-      })
-    );
-
-    return ordersWithLineItems;
+  // Order audit log operations
+  async getOrderAuditLog(orderId: string): Promise<OrderAuditLog[]> {
+    return await db
+      .select()
+      .from(orderAuditLog)
+      .where(eq(orderAuditLog.orderId, orderId))
+      .orderBy(desc(orderAuditLog.createdAt));
   }
 
-  async getOrderById(id: string): Promise<OrderWithRelations | undefined> {
-    const [order] = await db.select().from(orders).where(eq(orders.id, id));
-    if (!order) return undefined;
-
-    // Fetch related data
-    const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId));
-    const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
-    const [createdByUser] = await db.select().from(users).where(eq(users.id, order.createdByUserId));
-    
-    let contact = null;
-    if (order.contactId) {
-      [contact] = await db.select().from(customerContacts).where(eq(customerContacts.id, order.contactId));
-    }
-
-    let quote = null;
-    if (order.quoteId) {
-      [quote] = await db.select().from(quotes).where(eq(quotes.id, order.quoteId));
-    }
-
-    // Fetch product data for line items
-    const lineItemsWithProducts = await Promise.all(
-      lineItems.map(async (item) => {
-        const [product] = await db.select().from(products).where(eq(products.id, item.productId));
-        let productVariant = null;
-        if (item.productVariantId) {
-          [productVariant] = await db.select().from(productVariants).where(eq(productVariants.id, item.productVariantId));
-        }
-        return {
-          ...item,
-          product,
-          productVariant,
-        };
-      })
-    );
-
-    return {
-      ...order,
-      customer,
-      contact,
-      quote,
-      createdByUser,
-      lineItems: lineItemsWithProducts,
-    };
+  async createOrderAuditLog(log: InsertOrderAuditLog): Promise<OrderAuditLog> {
+    const [auditLogEntry] = await db.insert(orderAuditLog).values(log).returning();
+    return auditLogEntry;
   }
 
-  async createOrder(data: {
-    customerId: string;
-    contactId?: string | null;
-    quoteId?: string | null;
-    status?: string;
-    priority?: string;
-    dueDate?: Date | null;
-    promisedDate?: Date | null;
-    discount?: number;
-    notesInternal?: string | null;
-    createdByUserId: string;
-    lineItems: Omit<InsertOrderLineItem, 'orderId'>[];
-  }): Promise<OrderWithRelations> {
-    // Calculate totals from line items
-    const subtotal = data.lineItems.reduce((sum, item) => sum + Number(item.totalPrice), 0);
-    const discount = Number(data.discount) || 0;
-    
-    // For now, use a simple tax calculation (could be enhanced with tax rate lookup)
-    const companySettingsResult = await this.getCompanySettings();
-    const taxRate = companySettingsResult ? parseFloat(companySettingsResult.taxRate) / 100 : 0;
-    const tax = (subtotal - discount) * taxRate;
-    const total = subtotal - discount + tax;
-
-    // Use a transaction with row-level locking to ensure atomic order number assignment
-    const newOrder = await db.transaction(async (tx) => {
-      // Lock the row to prevent concurrent access
-      const result = await tx.execute(sql`
-        SELECT * FROM ${globalVariables}
-        WHERE ${globalVariables.name} = 'orderNumber'
-        FOR UPDATE
-      `);
-
-      const orderNumberVar = result.rows[0] as any;
-
-      if (!orderNumberVar) {
-        throw new Error('Order numbering system not initialized');
-      }
-
-      const orderNumberInt = Math.floor(Number(orderNumberVar.value));
-      const orderNumber = `ORD-${String(orderNumberInt).padStart(5, '0')}`;
-
-      // Create the order
-      const orderData = {
-        orderNumber,
-        customerId: data.customerId,
-        contactId: data.contactId || null,
-        quoteId: data.quoteId || null,
-        status: data.status || 'new',
-        priority: data.priority || 'normal',
-        dueDate: data.dueDate || null,
-        promisedDate: data.promisedDate || null,
-        subtotal: subtotal.toFixed(2),
-        tax: tax.toFixed(2),
-        total: total.toFixed(2),
-        discount: discount.toFixed(2),
-        notesInternal: data.notesInternal || null,
-        createdByUserId: data.createdByUserId,
-      } as typeof orders.$inferInsert;
-
-      const [order] = await tx.insert(orders).values(orderData).returning();
-
-      // Increment the next order number
-      await tx
-        .update(globalVariables)
-        .set({
-          value: (orderNumberInt + 1).toString(),
-          updatedAt: new Date(),
-        })
-        .where(eq(globalVariables.id, orderNumberVar.id));
-
-      return order;
-    });
-
-    // Create line items
-    const lineItemsData = data.lineItems.map((item) => ({
-      orderId: newOrder.id,
-      quoteLineItemId: item.quoteLineItemId || null,
-      productId: item.productId,
-      productVariantId: item.productVariantId || null,
-      description: item.description,
-      width: item.width?.toString() || null,
-      height: item.height?.toString() || null,
-      quantity: item.quantity,
-      sqft: item.sqft?.toString() || null,
-      unitPrice: item.unitPrice.toString(),
-      totalPrice: item.totalPrice.toString(),
-      status: item.status || 'queued',
-      nestingConfigSnapshot: item.nestingConfigSnapshot || null,
-    })) as typeof orderLineItems.$inferInsert[];
-
-    await db.insert(orderLineItems).values(lineItemsData);
-
-    // Fetch and return the complete order
-    const completeOrder = await this.getOrderById(newOrder.id);
-    if (!completeOrder) {
-      throw new Error('Failed to fetch created order');
-    }
-
-    return completeOrder;
+  // Order attachments operations
+  async getOrderAttachments(orderId: string): Promise<OrderAttachment[]> {
+    return await db
+      .select()
+      .from(orderAttachments)
+      .where(eq(orderAttachments.orderId, orderId))
+      .orderBy(desc(orderAttachments.createdAt));
   }
 
-  async updateOrder(id: string, orderData: Partial<InsertOrder>): Promise<OrderWithRelations> {
+  async createOrderAttachment(attachment: InsertOrderAttachment): Promise<OrderAttachment> {
+    const [newAttachment] = await db.insert(orderAttachments).values(attachment).returning();
+    return newAttachment;
+  }
+
+  async deleteOrderAttachment(id: string): Promise<void> {
+    await db.delete(orderAttachments).where(eq(orderAttachments.id, id));
+  }
+
+  // Quote workflow operations
+  async getQuoteWorkflowState(quoteId: string): Promise<QuoteWorkflowState | undefined> {
+    const [state] = await db
+      .select()
+      .from(quoteWorkflowStates)
+      .where(eq(quoteWorkflowStates.quoteId, quoteId));
+    return state;
+  }
+
+  async createQuoteWorkflowState(state: InsertQuoteWorkflowState): Promise<QuoteWorkflowState> {
+    const [newState] = await db.insert(quoteWorkflowStates).values(state).returning();
+    return newState;
+  }
+
+  async updateQuoteWorkflowState(quoteId: string, updates: Partial<InsertQuoteWorkflowState>): Promise<QuoteWorkflowState> {
     const updateData: any = {
-      ...orderData,
+      ...updates,
       updatedAt: new Date(),
     };
-
-    const [order] = await db
-      .update(orders)
+    const [state] = await db
+      .update(quoteWorkflowStates)
       .set(updateData)
-      .where(eq(orders.id, id))
+      .where(eq(quoteWorkflowStates.quoteId, quoteId))
       .returning();
-
-    if (!order) {
-      throw new Error("Order not found");
+    if (!state) {
+      throw new Error("Quote workflow state not found");
     }
-
-    // Return full order with relations to ensure frontend gets updated customer data
-    const fullOrder = await this.getOrderById(id);
-    if (!fullOrder) {
-      throw new Error("Order not found after update");
-    }
-
-    return fullOrder;
-  }
-
-  async deleteOrder(id: string): Promise<void> {
-    // Line items will be cascade deleted due to foreign key constraint
-    await db.delete(orders).where(eq(orders.id, id));
-  }
-
-  async convertQuoteToOrder(
-    quoteId: string,
-    createdByUserId: string,
-    options?: {
-      customerId?: string;
-      contactId?: string;
-      dueDate?: Date;
-      promisedDate?: Date;
-      priority?: string;
-      notesInternal?: string;
-      createJobs?: boolean;
-    }
-  ): Promise<OrderWithRelations> {
-    // Fetch the complete quote with line items
-    const quote = await this.getQuoteById(quoteId);
-    if (!quote) {
-      throw new Error('Quote not found');
-    }
-
-    // Check if quote has already been converted
-    const existingOrders = await db.select().from(orders).where(eq(orders.quoteId, quoteId));
-    if (existingOrders.length > 0) {
-      throw new Error('Quote has already been converted to an order');
-    }
-
-    // Get customer from options or quote (now quotes have customerId)
-    const customerId = options?.customerId || (quote as any).customerId;
-    if (!customerId) {
-      throw new Error('Customer ID is required to convert quote to order');
-    }
-
-    const contactId = options?.contactId || (quote as any).contactId || null;
-
-    // Convert quote line items to order line items format
-    const orderLineItems = quote.lineItems.map((qli) => ({
-      quoteLineItemId: qli.id,
-      productId: qli.productId,
-      productVariantId: qli.variantId || null,
-      productType: (qli as any).productType || 'wide_roll', // Copy product_type
-      description: `${qli.productName}${qli.variantName ? ` - ${qli.variantName}` : ''}\n${qli.width}"W x ${qli.height}"H, Qty: ${qli.quantity}`,
-      width: parseFloat(qli.width),
-      height: parseFloat(qli.height),
-      quantity: qli.quantity,
-      sqft: (parseFloat(qli.width) * parseFloat(qli.height) * qli.quantity) / 144,
-      unitPrice: parseFloat(qli.linePrice) / qli.quantity,
-      totalPrice: parseFloat(qli.linePrice),
-      status: 'queued' as const,
-      specsJson: (qli as any).specsJson || null, // Copy specs
-      selectedOptions: (qli as any).selectedOptions || [], // Copy selected options snapshot for audit
-      nestingConfigSnapshot: qli.priceBreakdown ? {
-        formula: qli.priceBreakdown.formula,
-      } : null,
-    }));
-
-    // Create the order
-    const order = await this.createOrder({
-      customerId,
-      contactId,
-      quoteId: quote.id,
-      status: 'new',
-      priority: options?.priority || 'normal',
-      dueDate: options?.dueDate || null,
-      promisedDate: options?.promisedDate || null,
-      discount: parseFloat(quote.discountAmount),
-      notesInternal: options?.notesInternal || `Converted from quote ${quote.quoteNumber}`,
-      createdByUserId,
-      lineItems: orderLineItems,
-    });
-
-    // Optionally create jobs for each order line item
-    if (options?.createJobs && order.lineItems) {
-      for (const lineItem of order.lineItems) {
-        await db.insert(jobs).values({
-          orderLineItemId: lineItem.id,
-          productType: (lineItem as any).productType || 'wide_roll',
-          status: 'pending_prepress',
-          priority: options.priority || 'normal',
-          specsJson: (lineItem as any).specsJson || null,
-          assignedToUserId: null,
-          notesInternal: null,
-        });
-      }
-    }
-
-    return order;
-  }
-
-  // Order line item operations
-  async getOrderLineItems(orderId: string): Promise<OrderLineItem[]> {
-    return await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
-  }
-
-  async getOrderLineItemById(id: string): Promise<OrderLineItem | undefined> {
-    const [lineItem] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, id));
-    return lineItem;
-  }
-
-  async createOrderLineItem(lineItemData: InsertOrderLineItem): Promise<OrderLineItem> {
-    const data = {
-      ...lineItemData,
-      width: lineItemData.width?.toString() || null,
-      height: lineItemData.height?.toString() || null,
-      sqft: lineItemData.sqft?.toString() || null,
-      unitPrice: lineItemData.unitPrice.toString(),
-      totalPrice: lineItemData.totalPrice.toString(),
-    } as typeof orderLineItems.$inferInsert;
-    
-    const [lineItem] = await db.insert(orderLineItems).values(data).returning();
-    return lineItem;
-  }
-
-  async updateOrderLineItem(id: string, lineItemData: Partial<InsertOrderLineItem>): Promise<OrderLineItem> {
-    const updateData: any = {
-      ...lineItemData,
-      updatedAt: new Date(),
-    };
-
-    const [lineItem] = await db
-      .update(orderLineItems)
-      .set(updateData)
-      .where(eq(orderLineItems.id, id))
-      .returning();
-
-    if (!lineItem) {
-      throw new Error("Order line item not found");
-    }
-
-    return lineItem;
-  }
-
-  async deleteOrderLineItem(id: string): Promise<void> {
-    await db.delete(orderLineItems).where(eq(orderLineItems.id, id));
+    return state;
   }
 }
 

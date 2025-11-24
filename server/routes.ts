@@ -1398,6 +1398,95 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // =============================
+  // Quote Workflow / Approval API
+  // =============================
+
+  // Get current workflow state for a quote
+  app.get("/api/quotes/:id/workflow", isAuthenticated, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const quote = await storage.getQuoteById(id);
+      if (!quote) return res.status(404).json({ message: 'Quote not found' });
+      const state = await storage.getQuoteWorkflowState(id);
+      res.json({ success: true, data: state || null });
+    } catch (error) {
+      console.error('Error fetching quote workflow state:', error);
+      res.status(500).json({ message: 'Failed to fetch workflow state' });
+    }
+  });
+
+  // Staff request changes
+  app.post("/api/quotes/:id/request-changes", isAuthenticated, async (req: any, res) => {
+    try {
+      const userRole = req.user.role || 'customer';
+      if (!['owner','admin','manager'].includes(userRole)) {
+        return res.status(403).json({ message: 'Only staff can request changes.' });
+      }
+      const { id } = req.params;
+      const { notes } = req.body;
+      const quote = await storage.getQuoteById(id);
+      if (!quote) return res.status(404).json({ message: 'Quote not found' });
+      let state = await storage.getQuoteWorkflowState(id);
+      if (!state) {
+        state = await storage.createQuoteWorkflowState({ quoteId: id, status: 'change_requested', staffNotes: notes || null });
+      } else {
+        state = await storage.updateQuoteWorkflowState(id, { status: 'change_requested', staffNotes: notes || null });
+      }
+      res.json({ success: true, data: state });
+    } catch (error) {
+      console.error('Error requesting quote changes:', error);
+      res.status(500).json({ message: 'Failed to request changes' });
+    }
+  });
+
+  // Staff approve quote
+  app.post("/api/quotes/:id/approve", isAuthenticated, async (req: any, res) => {
+    try {
+      const userRole = req.user.role || 'customer';
+      if (!['owner','admin','manager'].includes(userRole)) {
+        return res.status(403).json({ message: 'Only staff can approve.' });
+      }
+      const { id } = req.params;
+      const quote = await storage.getQuoteById(id);
+      if (!quote) return res.status(404).json({ message: 'Quote not found' });
+      let state = await storage.getQuoteWorkflowState(id);
+      if (!state) {
+        state = await storage.createQuoteWorkflowState({ quoteId: id, status: 'staff_approved', approvedByStaffUserId: getUserId(req.user) });
+      } else {
+        state = await storage.updateQuoteWorkflowState(id, { status: 'staff_approved', approvedByStaffUserId: getUserId(req.user) });
+      }
+      res.json({ success: true, data: state });
+    } catch (error) {
+      console.error('Error approving quote:', error);
+      res.status(500).json({ message: 'Failed to approve quote' });
+    }
+  });
+
+  // Staff reject quote
+  app.post("/api/quotes/:id/reject", isAuthenticated, async (req: any, res) => {
+    try {
+      const userRole = req.user.role || 'customer';
+      if (!['owner','admin','manager'].includes(userRole)) {
+        return res.status(403).json({ message: 'Only staff can reject.' });
+      }
+      const { id } = req.params;
+      const { reason } = req.body;
+      const quote = await storage.getQuoteById(id);
+      if (!quote) return res.status(404).json({ message: 'Quote not found' });
+      let state = await storage.getQuoteWorkflowState(id);
+      if (!state) {
+        state = await storage.createQuoteWorkflowState({ quoteId: id, status: 'rejected', rejectionReason: reason || null, rejectedByUserId: getUserId(req.user) });
+      } else {
+        state = await storage.updateQuoteWorkflowState(id, { status: 'rejected', rejectionReason: reason || null, rejectedByUserId: getUserId(req.user) });
+      }
+      res.json({ success: true, data: state });
+    } catch (error) {
+      console.error('Error rejecting quote:', error);
+      res.status(500).json({ message: 'Failed to reject quote' });
+    }
+  });
+
   app.post("/api/quotes/:id/line-items", isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
@@ -1950,6 +2039,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Global contacts list with search and pagination
+  app.get("/api/contacts", isAuthenticated, async (req, res) => {
+    try {
+      const search = req.query.search as string | undefined;
+      const page = req.query.page ? parseInt(req.query.page as string) : 1;
+      const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string) : 50;
+
+      const result = await storage.getAllContacts({ search, page, pageSize });
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching contacts:", error);
+      res.status(500).json({ message: "Failed to fetch contacts" });
+    }
+  });
+
+  // Contact detail with relations
+  app.get("/api/contacts/:id", isAuthenticated, async (req, res) => {
+    try {
+      const result = await storage.getContactWithRelations(req.params.id);
+      if (!result) {
+        return res.status(404).json({ message: "Contact not found" });
+      }
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching contact detail:", error);
+      res.status(500).json({ message: "Failed to fetch contact detail" });
+    }
+  });
+
   app.post("/api/customers/:customerId/contacts", isAuthenticated, async (req, res) => {
     try {
       const contactData = insertCustomerContactSchema.parse({
@@ -2424,6 +2542,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("[CONVERT QUOTE TO ORDER] Error:", error);
       console.error("[CONVERT QUOTE TO ORDER] Error stack:", (error as Error).stack);
       res.status(500).json({ message: "Failed to convert quote to order", error: (error as Error).message });
+    }
+  });
+
+  // =============================
+  // Customer Portal Endpoints
+  // =============================
+
+  // Customer portal: My Quotes (customer_quick_quote only)
+  app.get('/api/portal/my-quotes', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      const quotes = await storage.getUserQuotes(userId, { userRole: req.user.role, source: 'customer_quick_quote' });
+      res.json({ success: true, data: quotes });
+    } catch (error) {
+      console.error('Error fetching portal quotes:', error);
+      res.status(500).json({ error: 'Failed to fetch quotes' });
+    }
+  });
+
+  // Customer portal: My Orders
+  app.get('/api/portal/my-orders', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      // Prefer direct linkage by userId on customers
+      const customerRows = await db.select().from(customers).where(eq(customers.userId, userId));
+      let customerId = customerRows[0]?.id;
+      // Fallback: search by email if not linked yet
+      if (!customerId && req.user.email) {
+        const emailMatches = await db.select().from(customers).where(eq(customers.email, req.user.email));
+        customerId = emailMatches[0]?.id;
+      }
+      if (!customerId) return res.status(404).json({ error: 'Customer account not found' });
+      const orders = await storage.getAllOrders({ customerId });
+      res.json({ success: true, data: orders });
+    } catch (error) {
+      console.error('Error fetching portal orders:', error);
+      res.status(500).json({ error: 'Failed to fetch orders' });
+    }
+  });
+
+  // Customer portal: Convert quote (confirmation + create order)
+  app.post('/api/portal/convert-quote/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const quoteId = req.params.id;
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      const quote = await storage.getQuoteById(quoteId, userId);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+      // Ensure workflow state moves to customer_approved before conversion
+      const existingState = await storage.getQuoteWorkflowState(quoteId);
+      if (!existingState || existingState.status !== 'customer_approved') {
+        await storage.updateQuoteWorkflowState(quoteId, { status: 'customer_approved', approvedByCustomerUserId: userId, customerNotes: req.body?.customerNotes || null });
+      }
+      const order = await storage.convertQuoteToOrder(quoteId, userId, {
+        priority: req.body?.priority,
+        dueDate: req.body?.dueDate ? new Date(req.body.dueDate) : undefined,
+        promisedDate: req.body?.promisedDate ? new Date(req.body.promisedDate) : undefined,
+        notesInternal: req.body?.internalNotes,
+        customerId: quote.customerId,
+        contactId: quote.contactId,
+      });
+      await storage.createOrderAuditLog({
+        orderId: order.id,
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: 'converted_by_customer',
+        fromStatus: 'pending_customer_approval',
+        toStatus: 'new',
+        note: req.body?.note || null,
+        metadata: null,
+      });
+      res.json({ success: true, data: order });
+    } catch (error) {
+      console.error('Error converting quote (portal):', error);
+      res.status(500).json({ error: 'Failed to convert quote' });
+    }
+  });
+
+  // =============================
+  // Order-specific Audit & Files
+  // =============================
+
+  // Get order audit trail (append-only)
+  app.get('/api/orders/:id/audit', isAuthenticated, async (req: any, res) => {
+    try {
+      const auditEntries = await storage.getOrderAuditLog(req.params.id);
+      res.json({ success: true, data: auditEntries });
+    } catch (error) {
+      console.error('Error fetching order audit:', error);
+      res.status(500).json({ error: 'Failed to fetch audit trail' });
+    }
+  });
+
+  // Append new audit entry
+  app.post('/api/orders/:id/audit', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { actionType, fromStatus, toStatus, note, metadata } = req.body;
+      const entry = await storage.createOrderAuditLog({
+        orderId: req.params.id,
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: actionType || 'note_added',
+        fromStatus: fromStatus || null,
+        toStatus: toStatus || null,
+        note: note || null,
+        metadata: metadata || null,
+      });
+      res.json({ success: true, data: entry });
+    } catch (error) {
+      console.error('Error adding audit entry:', error);
+      res.status(500).json({ error: 'Failed to add audit entry' });
+    }
+  });
+
+  // List order files
+  app.get('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
+    try {
+      const files = await storage.getOrderAttachments(req.params.id);
+      res.json({ success: true, data: files });
+    } catch (error) {
+      console.error('Error fetching order files:', error);
+      res.status(500).json({ error: 'Failed to fetch files' });
+    }
+  });
+
+  // Attach file metadata (upload handled separately via /api/objects/upload)
+  app.post('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { fileName, fileUrl, fileSize, mimeType, description, quoteId } = req.body;
+      if (!fileName || !fileUrl) {
+        return res.status(400).json({ error: 'fileName and fileUrl are required' });
+      }
+      const attachment = await storage.createOrderAttachment({
+        orderId: req.params.id,
+        quoteId: quoteId || null,
+        uploadedByUserId: userId,
+        uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        fileName,
+        fileUrl,
+        fileSize: fileSize || null,
+        mimeType: mimeType || null,
+        description: description || null,
+      });
+      await storage.createOrderAuditLog({
+        orderId: req.params.id,
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: 'file_uploaded',
+        fromStatus: null,
+        toStatus: null,
+        note: `File attached: ${fileName}`,
+        metadata: { fileId: attachment.id, fileName },
+      });
+      res.json({ success: true, data: attachment });
+    } catch (error) {
+      console.error('Error attaching file:', error);
+      res.status(500).json({ error: 'Failed to attach file' });
     }
   });
 

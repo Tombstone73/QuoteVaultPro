@@ -8,7 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown, Package } from "lucide-react";
+import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown, Package, UserCircle, ShoppingCart } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
 import QuoteHistory from "@/components/quote-history";
 import AdminDashboard from "@/components/admin-dashboard";
@@ -70,6 +70,12 @@ export default function Home() {
       } else {
         navigate("/my-quotes");
       }
+    } else if (value === "contacts") {
+      navigate("/contacts");
+    } else if (value === "portal-quotes") {
+      navigate("/portal/my-quotes");
+    } else if (value === "portal-orders") {
+      navigate("/portal/my-orders");
     } else {
       setActiveTab(value);
     }
@@ -203,22 +209,39 @@ export default function Home() {
             gridTemplateColumns: showAdminFeatures
               ? 'repeat(6, 1fr)'
               : viewMode === 'customer'
-                ? 'repeat(2, 1fr)'
-                : 'repeat(4, 1fr)'
+                ? 'repeat(3, 1fr)'
+                : 'repeat(5, 1fr)'
           }}>
             <TabsTrigger value="calculator" data-testid="tab-calculator">
               <Calculator className="w-4 h-4 mr-2" />
               Calculator
             </TabsTrigger>
-            <TabsTrigger value="quotes" data-testid="tab-quotes">
-              <FileText className="w-4 h-4 mr-2" />
-              {viewMode === 'admin' ? 'Quotes' : 'My Quotes'}
-            </TabsTrigger>
+            {viewMode === 'customer' ? (
+              <>
+                <TabsTrigger value="portal-quotes" data-testid="tab-portal-quotes">
+                  <FileText className="w-4 h-4 mr-2" />
+                  My Quotes
+                </TabsTrigger>
+                <TabsTrigger value="portal-orders" data-testid="tab-portal-orders">
+                  <ShoppingCart className="w-4 h-4 mr-2" />
+                  My Orders
+                </TabsTrigger>
+              </>
+            ) : (
+              <TabsTrigger value="quotes" data-testid="tab-quotes">
+                <FileText className="w-4 h-4 mr-2" />
+                {viewMode === 'admin' ? 'Quotes' : 'My Quotes'}
+              </TabsTrigger>
+            )}
             {viewMode === 'admin' && (
               <>
                 <TabsTrigger value="customers" data-testid="tab-customers">
                   <Users className="w-4 h-4 mr-2" />
                   Companies
+                </TabsTrigger>
+                <TabsTrigger value="contacts" data-testid="tab-contacts">
+                  <UserCircle className="w-4 h-4 mr-2" />
+                  Contacts
                 </TabsTrigger>
                 <TabsTrigger value="orders" data-testid="tab-orders">
                   <Package className="w-4 h-4 mr-2" />
