@@ -2847,13 +2847,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Production Jobs Endpoints
   // =============================
 
+  // ============================================================
+  // JOB STATUS CONFIGURATION (Admin Only)
+  // ============================================================
+  app.get("/api/settings/job-statuses", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const statuses = await storage.getJobStatuses();
+      res.json({ success: true, data: statuses });
+    } catch (error) {
+      console.error("Error fetching job statuses:", error);
+      res.status(500).json({ error: "Failed to fetch job statuses" });
+    }
+  });
+
+  app.post("/api/settings/job-statuses", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const status = await storage.createJobStatus(req.body);
+      res.json({ success: true, data: status });
+    } catch (error) {
+      console.error("Error creating job status:", error);
+      res.status(500).json({ error: "Failed to create job status" });
+    }
+  });
+
+  app.patch("/api/settings/job-statuses/:id", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const status = await storage.updateJobStatus(req.params.id, req.body);
+      res.json({ success: true, data: status });
+    } catch (error) {
+      console.error("Error updating job status:", error);
+      res.status(500).json({ error: "Failed to update job status" });
+    }
+  });
+
+  app.delete("/api/settings/job-statuses/:id", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      await storage.deleteJobStatus(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting job status:", error);
+      res.status(500).json({ error: "Failed to delete job status" });
+    }
+  });
+
+  // ============================================================
+  // JOBS & PRODUCTION WORKFLOW
+  // ============================================================
+
   // List jobs (filterable)
   app.get("/api/jobs", isAuthenticated, async (req: any, res) => {
     try {
-      const status = req.query.status as string | undefined;
+      const statusKey = req.query.statusKey as string | undefined;
       const assignedToUserId = req.query.assignedToUserId as string | undefined;
       const orderId = req.query.orderId as string | undefined;
-      const jobs = await storage.getJobs({ status, assignedToUserId, orderId });
+      const jobs = await storage.getJobs({ statusKey, assignedToUserId, orderId });
       res.json({ success: true, data: jobs });
     } catch (error) {
       console.error("Error fetching jobs:", error);
@@ -2881,7 +2928,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "Access denied" });
       }
       const updates: any = {};
-      if (typeof req.body?.status === 'string') updates.status = req.body.status;
+      if (typeof req.body?.statusKey === 'string') updates.statusKey = req.body.statusKey;
       if (typeof req.body?.assignedTo === 'string') updates.assignedTo = req.body.assignedTo;
       if (typeof req.body?.notes === 'string') updates.notes = req.body.notes;
       const userId = req.user?.claims?.sub || req.user?.id || undefined;

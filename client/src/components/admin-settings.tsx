@@ -52,6 +52,7 @@ import {
 } from "@shared/schema";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
+import { JobStatusSettings } from "@/components/job-status-settings";
 
 function SelectChoicesInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const [newChoice, setNewChoice] = useState("");
@@ -1628,12 +1629,13 @@ export default function AdminSettings() {
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="products" data-testid="tabs-admin-settings">
-            <TabsList className="grid w-full grid-cols-5">
+            <TabsList className="grid w-full grid-cols-6">
               <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
               <TabsTrigger value="media" data-testid="tab-media">Media Library</TabsTrigger>
               <TabsTrigger value="variables" data-testid="tab-variables">Pricing Variables</TabsTrigger>
               <TabsTrigger value="formulas" data-testid="tab-formulas">Formula Templates</TabsTrigger>
               <TabsTrigger value="email" data-testid="tab-email">Email Settings</TabsTrigger>
+              <TabsTrigger value="workflow" data-testid="tab-workflow">Workflow</TabsTrigger>
             </TabsList>
 
             <TabsContent value="products" className="space-y-4">
@@ -4790,6 +4792,9 @@ export default function AdminSettings() {
             {/* Email Settings Tab */}
             <TabsContent value="email" className="space-y-4">
               <EmailSettingsTab />
+            </TabsContent>
+            <TabsContent value="workflow" className="space-y-4">
+              <JobStatusSettings />
             </TabsContent>
           </Tabs>
         </CardContent>

@@ -152,6 +152,8 @@ export const products = pgTable("products", {
       pricePerSheet: number;
     }>;
   }>().default(sql`'{"enabled":false,"tiers":[]}'::jsonb`).notNull(),
+  // Production workflow flag
+  requiresProductionJob: boolean("requires_production_job").default(true).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -166,6 +168,7 @@ export const insertProductSchema = createInsertSchema(products).omit({
   sheetWidth: z.coerce.number().positive().optional().nullable(),
   sheetHeight: z.coerce.number().positive().optional().nullable(),
   minPricePerItem: z.coerce.number().positive().optional().nullable(),
+  requiresProductionJob: z.boolean().default(true),
 });
 
 export const updateProductSchema = createInsertSchema(products).omit({
@@ -177,6 +180,7 @@ export const updateProductSchema = createInsertSchema(products).omit({
   sheetWidth: z.coerce.number().positive().optional().nullable(),
   sheetHeight: z.coerce.number().positive().optional().nullable(),
   minPricePerItem: z.coerce.number().positive().optional().nullable(),
+  requiresProductionJob: z.boolean().optional(),
 }).partial();
 
 export type InsertProduct = z.infer<typeof insertProductSchema>;
@@ -862,8 +866,8 @@ export const jobs = pgTable("jobs", {
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'cascade' }), // added for direct order linkage
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   productType: varchar("product_type", { length: 50 }).notNull(),
-  status: varchar("status", { length: 50 }).notNull().default("pending_prepress"), // pending_prepress, prepress, queued_production, in_production, finishing, qc, complete, canceled
-  priority: varchar("priority", { length: 20 }).notNull().default("normal"), // rush, normal, low (pre-existing; retained)
+  statusKey: varchar("status_key", { length: 50 }).notNull().references(() => jobStatuses.key, { onDelete: 'restrict' }), // Changed from status to statusKey with FK
+  priority: varchar("priority", { length: 20 }).notNull().default("normal"), // rush, normal, low
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: 'set null' }),
   notesInternal: text("notes_internal"),
@@ -872,7 +876,7 @@ export const jobs = pgTable("jobs", {
 }, (table) => [
   index("jobs_order_line_item_id_idx").on(table.orderLineItemId),
   index("jobs_product_type_idx").on(table.productType),
-  index("jobs_status_idx").on(table.status),
+  index("jobs_status_key_idx").on(table.statusKey),
   index("jobs_assigned_to_user_id_idx").on(table.assignedToUserId),
   index("jobs_order_id_idx").on(table.orderId),
 ]);
@@ -883,7 +887,7 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
   updatedAt: true,
 }).extend({
   productType: productTypeSchema,
-  status: z.enum(["pending_prepress", "prepress", "queued_production", "in_production", "finishing", "qc", "complete", "canceled"]).default("pending_prepress"),
+  statusKey: z.string().min(3).max(50), // Will be validated against configured job statuses at API level
   priority: z.enum(["rush", "normal", "low"]).default("normal"),
   specsJson: z.record(z.any()).optional().nullable(),
 });
@@ -918,8 +922,8 @@ export type JobNote = typeof jobNotes.$inferSelect;
 export const jobStatusLog = pgTable('job_status_log', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
   jobId: varchar('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
-  oldStatus: varchar('old_status', { length: 50 }),
-  newStatus: varchar('new_status', { length: 50 }).notNull(),
+  oldStatusKey: varchar('old_status_key', { length: 50 }),
+  newStatusKey: varchar('new_status_key', { length: 50 }).notNull(),
   userId: varchar('user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => [
@@ -934,7 +938,41 @@ export const insertJobStatusLogSchema = createInsertSchema(jobStatusLog).omit({
 export type InsertJobStatusLog = z.infer<typeof insertJobStatusLogSchema>;
 export type JobStatusLog = typeof jobStatusLog.$inferSelect;
 
-export type JobWithRelations = Job & {
+// Job Status Configuration - Configurable workflow pipeline
+export const jobStatuses = pgTable('job_statuses', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  key: varchar('key', { length: 50 }).notNull().unique(), // pending_prepress, prepress, etc.
+  label: varchar('label', { length: 100 }).notNull(), // "Pending Prepress", "Prepress", etc.
+  position: integer('position').notNull(), // Column order on board
+  badgeVariant: varchar('badge_variant', { length: 50 }).default('default'), // UI variant for badge
+  isDefault: boolean('is_default').default(false).notNull(), // Initial status for new jobs
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => [
+  index('job_statuses_position_idx').on(table.position),
+  index('job_statuses_key_idx').on(table.key),
+  index('job_statuses_is_default_idx').on(table.isDefault),
+]);
+
+export const insertJobStatusSchema = createInsertSchema(jobStatuses).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  key: z.string().min(3).max(50).regex(/^[a-z_]+$/),
+  label: z.string().min(1).max(100),
+  position: z.number().int().nonnegative(),
+  badgeVariant: z.string().optional(),
+  isDefault: z.boolean().optional(),
+});
+
+export const updateJobStatusSchema = insertJobStatusSchema.partial().extend({
+  id: z.string().uuid(),
+});
+
+export type InsertJobStatus = z.infer<typeof insertJobStatusSchema>;
+export type UpdateJobStatus = z.infer<typeof updateJobStatusSchema>;
+export type JobStatus = typeof jobStatuses.$inferSelect;export type JobWithRelations = Job & {
   order?: Order | null;
   orderLineItem?: OrderLineItem | null;
   customer?: Customer | null;

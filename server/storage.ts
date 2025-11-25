@@ -93,6 +93,10 @@ import {
   quoteWorkflowStates,
   type QuoteWorkflowState,
   type InsertQuoteWorkflowState,
+  jobStatuses,
+  type JobStatus,
+  type InsertJobStatus,
+  type UpdateJobStatus,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, gte, lte, like, ilike, sql, desc } from "drizzle-orm";
@@ -1987,16 +1991,27 @@ export class DatabaseStorage implements IStorage {
       totalPrice: lineItem.totalPrice.toString(),
     } as any;
     const [created] = await db.insert(orderLineItems).values(prepared).returning();
+    
+    // Check if product requires production job
+    const [product] = await db.select().from(products).where(eq(products.id, created.productId));
+    if (product && product.requiresProductionJob === false) {
+      return created; // Skip job creation
+    }
+
     // Auto-create job for this new line item if missing
     const [existing] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, created.id));
     if (!existing) {
+      // Fetch default status
+      const [defaultStatus] = await db.select().from(jobStatuses).where(eq(jobStatuses.isDefault, true));
+      const initialStatusKey = defaultStatus?.key || 'pending_prepress';
+
       // find orderId
       const [orderRow] = await db.select().from(orders).where(eq(orders.id, created.orderId));
       const jobInsert: typeof jobs.$inferInsert = {
         orderId: orderRow?.id || created.orderId,
         orderLineItemId: created.id,
         productType: (created as any).productType || 'wide_roll',
-        status: 'pending_prepress',
+        statusKey: initialStatusKey,
         priority: 'normal',
         specsJson: (created as any).specsJson || null,
         assignedToUserId: null,
@@ -2005,8 +2020,8 @@ export class DatabaseStorage implements IStorage {
       const [newJob] = await db.insert(jobs).values(jobInsert).returning();
       await db.insert(jobStatusLog).values({
         jobId: newJob.id,
-        oldStatus: null,
-        newStatus: 'pending_prepress',
+        oldStatusKey: null,
+        newStatusKey: initialStatusKey,
         userId: orderRow?.createdByUserId || null,
       } as InsertJobStatusLog).returning();
     }
@@ -2021,14 +2036,25 @@ export class DatabaseStorage implements IStorage {
     });
     const [updated] = await db.update(orderLineItems).set(updateData).where(eq(orderLineItems.id, id)).returning();
     if (!updated) throw new Error('Order line item not found');
+    
+    // Check if product requires production job
+    const [product] = await db.select().from(products).where(eq(products.id, updated.productId));
+    if (product && product.requiresProductionJob === false) {
+      return updated; // Skip job creation
+    }
+
     // Do not delete jobs automatically; ensure a job exists (if productType changes or newly created somehow)
     const [existingJob] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, id));
     if (!existingJob) {
+      // Fetch default status
+      const [defaultStatus] = await db.select().from(jobStatuses).where(eq(jobStatuses.isDefault, true));
+      const initialStatusKey = defaultStatus?.key || 'pending_prepress';
+
       const jobInsert: typeof jobs.$inferInsert = {
         orderId: updated.orderId,
         orderLineItemId: id,
         productType: (updated as any).productType || 'wide_roll',
-        status: 'pending_prepress',
+        statusKey: initialStatusKey,
         priority: 'normal',
         specsJson: (updated as any).specsJson || null,
         assignedToUserId: null,
@@ -2037,8 +2063,8 @@ export class DatabaseStorage implements IStorage {
       const [newJob] = await db.insert(jobs).values(jobInsert).returning();
       await db.insert(jobStatusLog).values({
         jobId: newJob.id,
-        oldStatus: null,
-        newStatus: 'pending_prepress',
+        oldStatusKey: null,
+        newStatusKey: initialStatusKey,
         userId: null,
       } as InsertJobStatusLog).returning();
     }
@@ -2108,14 +2134,24 @@ export class DatabaseStorage implements IStorage {
       return { order, lineItems: createdLineItems };
     });
     // Auto-create jobs for each created line item
+    // Fetch default status
+    const [defaultStatus] = await db.select().from(jobStatuses).where(eq(jobStatuses.isDefault, true));
+    const initialStatusKey = defaultStatus?.key || 'pending_prepress';
+
     await Promise.all(created.lineItems.map(async (li) => {
+      // Check if product requires production job
+      const [product] = await db.select().from(products).where(eq(products.id, li.productId));
+      if (product && product.requiresProductionJob === false) {
+        return; // Skip job creation
+      }
+
       const [existing] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
       if (!existing) {
         const jobInsert: typeof jobs.$inferInsert = {
           orderId: created.order.id,
           orderLineItemId: li.id,
           productType: (li as any).productType || 'wide_roll',
-          status: 'pending_prepress',
+          statusKey: initialStatusKey,
           priority: 'normal',
           specsJson: (li as any).specsJson || null,
           assignedToUserId: null,
@@ -2124,8 +2160,8 @@ export class DatabaseStorage implements IStorage {
         const [newJob] = await db.insert(jobs).values(jobInsert).returning();
         await db.insert(jobStatusLog).values({
           jobId: newJob.id,
-          oldStatus: null,
-          newStatus: 'pending_prepress',
+          oldStatusKey: null,
+          newStatusKey: initialStatusKey,
           userId: createdByUserId,
         } as InsertJobStatusLog).returning();
       }
@@ -2292,9 +2328,9 @@ export class DatabaseStorage implements IStorage {
   // =============================
   // Job operations
   // =============================
-  async getJobs(filters?: { status?: string; assignedToUserId?: string; orderId?: string }): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null })[]> {
+  async getJobs(filters?: { statusKey?: string; assignedToUserId?: string; orderId?: string }): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null })[]> {
     const conditions: any[] = [];
-    if (filters?.status) conditions.push(eq(jobs.status as any, filters.status));
+    if (filters?.statusKey) conditions.push(eq(jobs.statusKey as any, filters.statusKey));
     if (filters?.assignedToUserId) conditions.push(eq(jobs.assignedToUserId as any, filters.assignedToUserId));
     if (filters?.orderId) conditions.push(eq(jobs.orderId as any, filters.orderId));
     let query = db.select().from(jobs) as any;
@@ -2333,11 +2369,11 @@ export class DatabaseStorage implements IStorage {
     }
     const [updated] = await db.update(jobs).set(updateData).where(eq(jobs.id as any, id)).returning();
     if (!updated) throw new Error('Job not found after update');
-    if (data.status && data.status !== existing.status) {
+    if (data.statusKey && data.statusKey !== existing.statusKey) {
       await db.insert(jobStatusLog).values({
         jobId: id,
-        oldStatus: existing.status,
-        newStatus: data.status,
+        oldStatusKey: existing.statusKey,
+        newStatusKey: data.statusKey,
         userId: userId || null,
       } as InsertJobStatusLog).returning();
     }
@@ -2347,6 +2383,28 @@ export class DatabaseStorage implements IStorage {
   async addJobNote(jobId: string, noteText: string, userId: string): Promise<JobNote> {
     const [note] = await db.insert(jobNotes).values({ jobId, userId, noteText } as InsertJobNote).returning();
     return note;
+  }
+
+  // =============================
+  // Job Status Configuration
+  // =============================
+  async getJobStatuses(): Promise<JobStatus[]> {
+    return db.select().from(jobStatuses).orderBy(jobStatuses.position);
+  }
+
+  async createJobStatus(data: InsertJobStatus): Promise<JobStatus> {
+    const [status] = await db.insert(jobStatuses).values(data).returning();
+    return status;
+  }
+
+  async updateJobStatus(id: string, data: Partial<InsertJobStatus>): Promise<JobStatus> {
+    const [updated] = await db.update(jobStatuses).set({ ...data, updatedAt: new Date() }).where(eq(jobStatuses.id, id)).returning();
+    if (!updated) throw new Error('Job status not found');
+    return updated;
+  }
+
+  async deleteJobStatus(id: string): Promise<void> {
+    await db.delete(jobStatuses).where(eq(jobStatuses.id, id));
   }
 
   async getJobsForOrder(orderId: string): Promise<Job[]> {
