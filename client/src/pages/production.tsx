@@ -1,4 +1,4 @@
-import { useJobs, useJobStatuses, useUpdateJob } from "@/hooks/useJobs";
+import { useJobs, useJobStatuses, useUpdateAnyJob } from "@/hooks/useJobs";
 import { useAuth } from "@/hooks/useAuth";
 import { useState } from "react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,7 @@ export default function ProductionBoard() {
   const { data: jobs, isLoading: jobsLoading } = useJobs();
   const { data: statuses, isLoading: statusesLoading } = useJobStatuses();
   const [, navigate] = useLocation();
+  const updateJobMutation = useUpdateAnyJob();
 
   const isLoading = jobsLoading || statusesLoading;
   const internalUser = user && user.role !== 'customer';
@@ -33,9 +34,7 @@ export default function ProductionBoard() {
     const id = e.dataTransfer.getData('text/plain');
     if (!id) return;
     if (!internalUser) return;
-    // Optimistic update logic could go here, but for MVP we rely on react-query invalidation
-    const mutate = useUpdateJob(id); 
-    mutate.mutate({ statusKey: newStatusKey });
+    updateJobMutation.mutate({ id, data: { statusKey: newStatusKey } });
     setActiveDragId(null);
   };
   const allowDrop = (e: React.DragEvent) => e.preventDefault();
@@ -84,18 +83,18 @@ export default function ProductionBoard() {
                     <CardHeader className="p-3">
                       <CardTitle className="text-sm flex flex-col gap-1">
                         <div className="flex justify-between items-start">
-                          <span className="font-mono font-bold">#{job.id.slice(0,8)}</span>
+                          <span className="font-semibold truncate" title={job.customerName}>{job.customerName}</span>
                           {job.priority === 'rush' && <Badge variant="destructive" className="text-[10px] px-1 py-0">RUSH</Badge>}
                         </div>
-                        {job.order?.orderNumber && (
-                          <span className="text-xs text-muted-foreground">Order #{job.order.orderNumber}</span>
+                        {job.orderNumber && (
+                          <span className="text-xs text-muted-foreground">{job.orderNumber}</span>
                         )}
-                        {job.order?.customer?.name && (
-                          <span className="text-xs font-medium truncate" title={job.order.customer.name}>{job.order.customer.name}</span>
-                        )}
-                        <span className="text-xs text-muted-foreground">{job.productType}</span>
-                        {job.order?.dueDate && (
-                          <Badge variant={"outline"} className="w-fit text-[10px]">Due {new Date(job.order.dueDate).toLocaleDateString()}</Badge>
+                        <div className="text-xs font-medium">
+                          {job.mediaType}
+                          {job.quantity > 0 && <span className="text-muted-foreground"> × {job.quantity}</span>}
+                        </div>
+                        {job.dueDate && (
+                          <span className="text-xs text-muted-foreground">Due: {new Date(job.dueDate).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}</span>
                         )}
                         {job.assignedToUserId && (
                           <Badge variant="secondary" className="w-fit text-[10px]">Assigned</Badge>

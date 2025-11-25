@@ -37,8 +37,9 @@ export default function JobDetail(props: any) {
   const handleStatusChange = (value: string) => {
     updateJob.mutate({ statusKey: value });
   };
-  const handleAssign = (value: string) => {
-    updateJob.mutate({ assignedToUserId: value });
+  const handleAssign = async (value: string) => {
+    const userId = value === 'unassigned' ? undefined : value;
+    updateJob.mutate({ assignedToUserId: userId });
   };
   const handleAddNote = () => {
     if (!noteText.trim()) return;
@@ -82,10 +83,10 @@ export default function JobDetail(props: any) {
             </div>
             <div className="space-y-2">
               <label className="text-xs font-semibold">Assigned To</label>
-              <Select value={job.assignedToUserId || ''} onValueChange={handleAssign} disabled={!internalUser}>
+              <Select value={job.assignedToUserId || undefined} onValueChange={handleAssign} disabled={!internalUser}>
                 <SelectTrigger><SelectValue placeholder="Unassigned" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Unassigned</SelectItem>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
                   {staff?.map((u: any) => (
                     <SelectItem key={u.id} value={u.id}>{u.firstName} {u.lastName} ({u.role})</SelectItem>
                   ))}
@@ -132,7 +133,7 @@ export default function JobDetail(props: any) {
             {job.statusLog && job.statusLog.length > 0 ? job.statusLog.map(log => (
               <div key={log.id} className="p-2 border rounded">
                 <div className="font-mono">{new Date(log.createdAt).toLocaleString()}</div>
-                <div>{log.oldStatus ? log.oldStatus : '—'} → <strong>{log.newStatus}</strong></div>
+                <div>{log.oldStatusKey ? log.oldStatusKey : '—'} → <strong>{log.newStatusKey}</strong></div>
               </div>
             )) : <div className="text-muted-foreground">No transitions logged.</div>}
           </CardContent>

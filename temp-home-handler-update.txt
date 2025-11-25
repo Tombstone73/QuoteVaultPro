@@ -1,0 +1,23 @@
+// REPLACEMENT FOR client/src/pages/home.tsx handleTabChange function (around line 67-79)
+// Add production handler:
+
+  const handleTabChange = (value: string) => {
+    if (value === "quotes") {
+      // Navigate to appropriate quotes page instead of showing tab content
+      if (viewMode === "admin" && isAdmin) {
+        navigate("/quotes");
+      } else {
+        navigate("/my-quotes");
+      }
+    } else if (value === "contacts") {
+      navigate("/contacts");
+    } else if (value === "portal-quotes") {
+      navigate("/portal/my-quotes");
+    } else if (value === "portal-orders") {
+      navigate("/portal/my-orders");
+    } else if (value === "production") {
+      navigate("/production");
+    } else {
+      setActiveTab(value);
+    }
+  };

@@ -149,6 +149,24 @@ class EmailService {
   }
 
   /**
+   * Send generic email with custom content
+   */
+  async sendEmail(options: { to: string; subject: string; html: string; from?: string }): Promise<void> {
+    const config = await this.getEmailConfig();
+    if (!config) {
+      throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
+    }
+    const transporter = await this.createTransporter(config);
+    const mailOptions = {
+      from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+    };
+    await transporter.sendMail(mailOptions);
+  }
+
+  /**
    * Generate HTML email content for a quote
    */
   private generateQuoteEmailHTML(quote: any): string {

@@ -8,7 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown, Package, UserCircle, ShoppingCart } from "lucide-react";
+import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown, Package, UserCircle, ShoppingCart, Factory } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
 import QuoteHistory from "@/components/quote-history";
 import AdminDashboard from "@/components/admin-dashboard";
@@ -76,6 +76,8 @@ export default function Home() {
       navigate("/portal/my-quotes");
     } else if (value === "portal-orders") {
       navigate("/portal/my-orders");
+    } else if (value === "production") {
+      navigate("/production");
     } else {
       setActiveTab(value);
     }
@@ -113,6 +115,17 @@ export default function Home() {
             </div>
 
             <div className="flex items-center gap-4">
+              {showAdminFeatures && (
+                <Button
+                  onClick={() => navigate("/production")}
+                  variant="default"
+                  size="sm"
+                  data-testid="button-production"
+                >
+                  <Factory className="h-4 w-4 mr-2" />
+                  Production
+                </Button>
+              )}
               {isAdmin && (
                 <div className="flex items-center gap-2" data-testid="container-view-toggle">
                   <Eye className="w-4 h-4 text-muted-foreground" />

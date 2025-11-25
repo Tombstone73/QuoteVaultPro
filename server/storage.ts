@@ -1,6 +1,7 @@
 import {
   users,
   products,
+  productTypes,
   productOptions,
   productVariants,
   globalVariables,
@@ -25,6 +26,9 @@ import {
   type Product,
   type InsertProduct,
   type UpdateProduct,
+  type SelectProductType,
+  type InsertProductType,
+  type UpdateProductType,
   type ProductOption,
   type InsertProductOption,
   type UpdateProductOption,
@@ -81,6 +85,20 @@ import {
   type InsertJobNote,
   type JobStatusLog,
   type InsertJobStatusLog,
+  shipments,
+  type Shipment,
+  type InsertShipment,
+  type UpdateShipment,
+    materials,
+    type Material,
+    type InsertMaterial,
+    type UpdateMaterial,
+    inventoryAdjustments,
+    type InventoryAdjustment,
+    type InsertInventoryAdjustment,
+    orderMaterialUsage,
+    type OrderMaterialUsage,
+    type InsertOrderMaterialUsage,
   auditLogs,
   type AuditLog,
   type InsertAuditLog,
@@ -97,6 +115,16 @@ import {
   type JobStatus,
   type InsertJobStatus,
   type UpdateJobStatus,
+  vendors,
+  type Vendor,
+  type InsertVendor,
+  type UpdateVendor,
+  purchaseOrders,
+  purchaseOrderLineItems,
+  type PurchaseOrder,
+  type PurchaseOrderLineItem,
+  type InsertPurchaseOrder,
+  type UpdatePurchaseOrder,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, gte, lte, like, ilike, sql, desc } from "drizzle-orm";
@@ -109,6 +137,13 @@ export interface IStorage {
   upsertUser(user: UpsertUser): Promise<User>;
   updateUser(id: string, updates: Partial<User>): Promise<User>;
   deleteUser(id: string): Promise<void>;
+
+  // Product Type operations
+  getAllProductTypes(): Promise<SelectProductType[]>;
+  getProductTypeById(id: string): Promise<SelectProductType | undefined>;
+  createProductType(data: InsertProductType): Promise<SelectProductType>;
+  updateProductType(id: string, data: Partial<InsertProductType>): Promise<SelectProductType>;
+  deleteProductType(id: string): Promise<void>;
 
   // Product operations
   getAllProducts(): Promise<Product[]>;
@@ -282,6 +317,41 @@ export interface IStorage {
   updateOrderLineItem(id: string, lineItem: Partial<InsertOrderLineItem>): Promise<OrderLineItem>;
   deleteOrderLineItem(id: string): Promise<void>;
 
+  // Shipment operations
+  getShipmentsByOrder(orderId: string): Promise<Shipment[]>;
+  getShipmentById(id: string): Promise<Shipment | undefined>;
+  createShipment(shipment: InsertShipment): Promise<Shipment>;
+  updateShipment(id: string, shipment: Partial<InsertShipment>): Promise<Shipment>;
+  deleteShipment(id: string): Promise<void>;
+
+  // Inventory management operations
+  getAllMaterials(): Promise<Material[]>;
+  getMaterialById(id: string): Promise<Material | undefined>;
+  getMaterialBySku(sku: string): Promise<Material | undefined>;
+  createMaterial(material: InsertMaterial): Promise<Material>;
+  updateMaterial(id: string, material: Partial<InsertMaterial>): Promise<Material>;
+  deleteMaterial(id: string): Promise<void>;
+  getMaterialLowStockAlerts(): Promise<Material[]>;
+
+  // Inventory adjustment operations
+  adjustInventory(
+    materialId: string,
+    type: "manual_increase" | "manual_decrease" | "waste" | "shrinkage" | "job_usage" | "purchase_receipt",
+    quantityChange: number,
+    userId: string,
+    reason?: string,
+    orderId?: string
+  ): Promise<InventoryAdjustment>;
+  getInventoryAdjustments(materialId: string): Promise<InventoryAdjustment[]>;
+
+  // Material usage operations
+  recordMaterialUsage(usage: InsertOrderMaterialUsage): Promise<OrderMaterialUsage>;
+  getMaterialUsageByOrder(orderId: string): Promise<OrderMaterialUsage[]>;
+  getMaterialUsageByLineItem(lineItemId: string): Promise<OrderMaterialUsage[]>;
+
+  // Auto-deduction for production
+  autoDeductInventoryWhenOrderMovesToProduction(orderId: string, userId: string): Promise<void>;
+
   // Audit log operations
   createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
   getAuditLogs(filters?: {
@@ -317,6 +387,22 @@ export interface IStorage {
   updateJob(id: string, data: Partial<InsertJob>, userId?: string): Promise<Job>;
   addJobNote(jobId: string, noteText: string, userId: string): Promise<JobNote>;
   getJobsForOrder(orderId: string): Promise<Job[]>;
+
+  // Vendor operations
+  getVendors(filters?: { search?: string; isActive?: boolean; page?: number; pageSize?: number }): Promise<Vendor[]>;
+  getVendorById(id: string): Promise<Vendor | undefined>;
+  createVendor(data: InsertVendor): Promise<Vendor>;
+  updateVendor(id: string, data: Partial<InsertVendor>): Promise<Vendor>;
+  deleteVendor(id: string): Promise<void>;
+
+  // Purchase Order operations
+  getPurchaseOrders(filters?: { vendorId?: string; status?: string; search?: string; startDate?: string; endDate?: string }): Promise<PurchaseOrder[]>;
+  getPurchaseOrderWithLines(id: string): Promise<(PurchaseOrder & { vendor?: Vendor | null; lineItems: PurchaseOrderLineItem[] }) | undefined>;
+  createPurchaseOrder(data: InsertPurchaseOrder & { createdByUserId: string }): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }>;
+  updatePurchaseOrder(id: string, data: UpdatePurchaseOrder): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }>;
+  deletePurchaseOrder(id: string): Promise<void>;
+  sendPurchaseOrder(id: string): Promise<PurchaseOrder>;
+  receivePurchaseOrderLines(purchaseOrderId: string, items: { lineItemId: string; quantityToReceive: number; receivedDate?: Date }[], userId: string): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -428,6 +514,48 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  // Product Type operations
+  async getAllProductTypes(): Promise<SelectProductType[]> {
+    return await db.select().from(productTypes).orderBy(productTypes.sortOrder, productTypes.name);
+  }
+
+  async getProductTypeById(id: string): Promise<SelectProductType | undefined> {
+    const [type] = await db.select().from(productTypes).where(eq(productTypes.id, id));
+    return type;
+  }
+
+  async createProductType(data: InsertProductType): Promise<SelectProductType> {
+    const [newType] = await db
+      .insert(productTypes)
+      .values({
+        ...data,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+    return newType;
+  }
+
+  async updateProductType(id: string, data: Partial<InsertProductType>): Promise<SelectProductType> {
+    const [updated] = await db
+      .update(productTypes)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      })
+      .where(eq(productTypes.id, id))
+      .returning();
+    
+    if (!updated) {
+      throw new Error("Product type not found");
+    }
+    return updated;
+  }
+
+  async deleteProductType(id: string): Promise<void> {
+    await db.delete(productTypes).where(eq(productTypes.id, id));
+  }
+
   // Product operations
   async getAllProducts(): Promise<Product[]> {
     return await db.select().from(products).orderBy(products.name);
@@ -482,6 +610,8 @@ export class DatabaseStorage implements IStorage {
     const newProductData: InsertProduct = {
       name: `${originalProduct.name} (Copy)`,
       description: originalProduct.description,
+      requiresProductionJob: originalProduct.requiresProductionJob,
+      productTypeId: originalProduct.productTypeId,
       pricingFormula: originalProduct.pricingFormula,
       variantLabel: originalProduct.variantLabel,
       category: originalProduct.category,
@@ -1911,10 +2041,17 @@ export class DatabaseStorage implements IStorage {
     await Promise.all(created.lineItems.map(async (li) => {
       const [existing] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
       if (!existing) {
+        // Fetch product with productType relation
+        const productWithType = await db.query.products.findFirst({
+          where: eq(products.id, li.productId),
+          with: { productType: true },
+        });
+        const productTypeName = (productWithType?.productType as any)?.name || 'Unknown';
+
         const jobInsert: typeof jobs.$inferInsert = {
           orderId: created.order.id,
           orderLineItemId: li.id,
-          productType: (li as any).productType || 'wide_roll',
+          productType: productTypeName,
           status: 'pending_prepress',
           priority: 'normal',
           specsJson: (li as any).specsJson || null,
@@ -1924,8 +2061,8 @@ export class DatabaseStorage implements IStorage {
         const [newJob] = await db.insert(jobs).values(jobInsert).returning();
         await db.insert(jobStatusLog).values({
           jobId: newJob.id,
-          oldStatus: null,
-          newStatus: 'pending_prepress',
+          oldStatusKey: null,
+          newStatusKey: 'pending_prepress',
           userId: data.createdByUserId,
         } as InsertJobStatusLog).returning();
       }
@@ -2005,12 +2142,18 @@ export class DatabaseStorage implements IStorage {
       const [defaultStatus] = await db.select().from(jobStatuses).where(eq(jobStatuses.isDefault, true));
       const initialStatusKey = defaultStatus?.key || 'pending_prepress';
 
-      // find orderId
+      // find orderId and fetch product with productType
       const [orderRow] = await db.select().from(orders).where(eq(orders.id, created.orderId));
+      const productWithType = await db.query.products.findFirst({
+        where: eq(products.id, created.productId),
+        with: { productType: true },
+      });
+      const productTypeName = (productWithType?.productType as any)?.name || 'Unknown';
+
       const jobInsert: typeof jobs.$inferInsert = {
         orderId: orderRow?.id || created.orderId,
         orderLineItemId: created.id,
-        productType: (created as any).productType || 'wide_roll',
+        productType: productTypeName,
         statusKey: initialStatusKey,
         priority: 'normal',
         specsJson: (created as any).specsJson || null,
@@ -2046,14 +2189,20 @@ export class DatabaseStorage implements IStorage {
     // Do not delete jobs automatically; ensure a job exists (if productType changes or newly created somehow)
     const [existingJob] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, id));
     if (!existingJob) {
-      // Fetch default status
+      // Fetch default status and product with productType
       const [defaultStatus] = await db.select().from(jobStatuses).where(eq(jobStatuses.isDefault, true));
       const initialStatusKey = defaultStatus?.key || 'pending_prepress';
+
+      const productWithType = await db.query.products.findFirst({
+        where: eq(products.id, updated.productId),
+        with: { productType: true },
+      });
+      const productTypeName = (productWithType?.productType as any)?.name || 'Unknown';
 
       const jobInsert: typeof jobs.$inferInsert = {
         orderId: updated.orderId,
         orderLineItemId: id,
-        productType: (updated as any).productType || 'wide_roll',
+        productType: productTypeName,
         statusKey: initialStatusKey,
         priority: 'normal',
         specsJson: (updated as any).specsJson || null,
@@ -2073,6 +2222,50 @@ export class DatabaseStorage implements IStorage {
 
   async deleteOrderLineItem(id: string): Promise<void> {
     await db.delete(orderLineItems).where(eq(orderLineItems.id, id));
+  }
+
+  // Shipment operations
+  async getShipmentsByOrder(orderId: string): Promise<Shipment[]> {
+    return await db.select().from(shipments).where(eq(shipments.orderId, orderId)).orderBy(desc(shipments.shippedAt));
+  }
+
+  async getShipmentById(id: string): Promise<Shipment | undefined> {
+    const [shipment] = await db.select().from(shipments).where(eq(shipments.id, id));
+    return shipment;
+  }
+
+  async createShipment(shipment: InsertShipment): Promise<Shipment> {
+    const [created] = await db.insert(shipments).values(shipment as any).returning();
+    
+    // Auto-update order fulfillment status to "shipped" if this is first shipment
+    const existingShipments = await this.getShipmentsByOrder(created.orderId);
+    if (existingShipments.length === 1) {
+      await db.update(orders).set({ 
+        fulfillmentStatus: 'shipped', 
+        updatedAt: new Date() 
+      }).where(eq(orders.id, created.orderId));
+    }
+    
+    return created;
+  }
+
+  async updateShipment(id: string, shipment: Partial<InsertShipment>): Promise<Shipment> {
+    const [updated] = await db.update(shipments).set({ ...shipment, updatedAt: new Date() } as any).where(eq(shipments.id, id)).returning();
+    if (!updated) throw new Error('Shipment not found');
+    
+    // If delivered date is set, update order fulfillment status
+    if (shipment.deliveredAt) {
+      await db.update(orders).set({ 
+        fulfillmentStatus: 'delivered', 
+        updatedAt: new Date() 
+      }).where(eq(orders.id, updated.orderId));
+    }
+    
+    return updated;
+  }
+
+  async deleteShipment(id: string): Promise<void> {
+    await db.delete(shipments).where(eq(shipments.id, id));
   }
 
   async convertQuoteToOrder(quoteId: string, createdByUserId: string, options?: {
@@ -2139,18 +2332,24 @@ export class DatabaseStorage implements IStorage {
     const initialStatusKey = defaultStatus?.key || 'pending_prepress';
 
     await Promise.all(created.lineItems.map(async (li) => {
-      // Check if product requires production job
-      const [product] = await db.select().from(products).where(eq(products.id, li.productId));
-      if (product && product.requiresProductionJob === false) {
+      // Check if product requires production job and fetch with productType
+      const productWithType = await db.query.products.findFirst({
+        where: eq(products.id, li.productId),
+        with: { productType: true },
+      });
+
+      if (productWithType && productWithType.requiresProductionJob === false) {
         return; // Skip job creation
       }
 
       const [existing] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
       if (!existing) {
+        const productTypeName = (productWithType?.productType as any)?.name || 'Unknown';
+
         const jobInsert: typeof jobs.$inferInsert = {
           orderId: created.order.id,
           orderLineItemId: li.id,
-          productType: (li as any).productType || 'wide_roll',
+          productType: productTypeName,
           statusKey: initialStatusKey,
           priority: 'normal',
           specsJson: (li as any).specsJson || null,
@@ -2328,7 +2527,7 @@ export class DatabaseStorage implements IStorage {
   // =============================
   // Job operations
   // =============================
-  async getJobs(filters?: { statusKey?: string; assignedToUserId?: string; orderId?: string }): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null })[]> {
+  async getJobs(filters?: { statusKey?: string; assignedToUserId?: string; orderId?: string }): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null; customerName?: string; orderNumber?: string | null; dueDate?: Date | null; quantity?: number; mediaType?: string })[]> {
     const conditions: any[] = [];
     if (filters?.statusKey) conditions.push(eq(jobs.statusKey as any, filters.statusKey));
     if (filters?.assignedToUserId) conditions.push(eq(jobs.assignedToUserId as any, filters.assignedToUserId));
@@ -2338,9 +2537,27 @@ export class DatabaseStorage implements IStorage {
     query = query.orderBy(desc(jobs.createdAt as any));
     const records: Job[] = await query;
     const enriched = await Promise.all(records.map(async (j) => {
-      const [order] = j.orderId ? await db.select().from(orders).where(eq(orders.id, j.orderId)) : [undefined];
-      const [li] = j.orderLineItemId ? await db.select().from(orderLineItems).where(eq(orderLineItems.id, j.orderLineItemId)) : [undefined];
-      return { ...j, order: order || null, orderLineItem: li || null } as any;
+      const orderRecord = j.orderId ? await db.query.orders.findFirst({
+        where: eq(orders.id, j.orderId),
+        with: { customer: true },
+      }) : undefined;
+      const lineItemRecord = j.orderLineItemId ? await db.query.orderLineItems.findFirst({
+        where: eq(orderLineItems.id, j.orderLineItemId),
+        with: {
+          product: true,
+          productVariant: true,
+        },
+      }) : undefined;
+      return {
+        ...j,
+        order: orderRecord || null,
+        orderLineItem: lineItemRecord || null,
+        customerName: orderRecord?.customer?.companyName || 'Unknown',
+        orderNumber: orderRecord?.orderNumber || null,
+        dueDate: orderRecord?.dueDate || null,
+        quantity: lineItemRecord?.quantity || 0,
+        mediaType: lineItemRecord?.productVariant?.name || lineItemRecord?.product?.name || 'Unknown',
+      } as any;
     }));
     return enriched as any;
   }
@@ -2409,6 +2626,359 @@ export class DatabaseStorage implements IStorage {
 
   async getJobsForOrder(orderId: string): Promise<Job[]> {
     return await db.select().from(jobs).where(eq(jobs.orderId as any, orderId)).orderBy(desc(jobs.createdAt as any));
+  }
+
+  // =============================
+  // Inventory Management
+  // =============================
+  async getAllMaterials(): Promise<Material[]> {
+    return db.select().from(materials).orderBy(materials.name);
+  }
+
+  async getMaterialById(id: string): Promise<Material | undefined> {
+    const [material] = await db.select().from(materials).where(eq(materials.id, id));
+    return material;
+  }
+
+  async getMaterialBySku(sku: string): Promise<Material | undefined> {
+    const [material] = await db.select().from(materials).where(eq(materials.sku, sku));
+    return material;
+  }
+
+  async createMaterial(material: InsertMaterial): Promise<Material> {
+    const [created] = await db.insert(materials).values(material as any).returning();
+    return created;
+  }
+
+  async updateMaterial(id: string, materialData: Partial<InsertMaterial>): Promise<Material> {
+    const [updated] = await db.update(materials)
+      .set({ ...materialData, updatedAt: new Date() } as any)
+      .where(eq(materials.id, id))
+      .returning();
+    if (!updated) throw new Error('Material not found');
+    return updated;
+  }
+
+  async deleteMaterial(id: string): Promise<void> {
+    await db.delete(materials).where(eq(materials.id, id));
+  }
+
+  async getMaterialLowStockAlerts(): Promise<Material[]> {
+    return db.select()
+      .from(materials)
+      .where(sql`${materials.stockQuantity} < ${materials.minStockAlert}`)
+      .orderBy(materials.name);
+  }
+
+  async adjustInventory(
+    materialId: string,
+    type: "manual_increase" | "manual_decrease" | "waste" | "shrinkage" | "job_usage" | "purchase_receipt",
+    quantityChange: number,
+    userId: string,
+    reason?: string,
+    orderId?: string
+  ): Promise<InventoryAdjustment> {
+    return await db.transaction(async (tx) => {
+      const [adjustment] = await tx.insert(inventoryAdjustments).values({
+        materialId,
+        type,
+        quantityChange: `${quantityChange}`,
+        reason: reason || null,
+        orderId: orderId || null,
+        userId,
+      } as any).returning();
+
+      await tx.update(materials)
+        .set({
+          stockQuantity: sql`${materials.stockQuantity} + ${quantityChange}`,
+          updatedAt: new Date(),
+        } as any)
+        .where(eq(materials.id, materialId));
+
+      return adjustment;
+    });
+  }
+
+  async getInventoryAdjustments(materialId: string): Promise<InventoryAdjustment[]> {
+    return db.select()
+      .from(inventoryAdjustments)
+      .where(eq(inventoryAdjustments.materialId, materialId))
+      .orderBy(desc(inventoryAdjustments.createdAt));
+  }
+
+  async recordMaterialUsage(usage: InsertOrderMaterialUsage): Promise<OrderMaterialUsage> {
+    const [created] = await db.insert(orderMaterialUsage).values(usage as any).returning();
+    return created;
+  }
+
+  async getMaterialUsageByOrder(orderId: string): Promise<OrderMaterialUsage[]> {
+    return db.select()
+      .from(orderMaterialUsage)
+      .where(eq(orderMaterialUsage.orderId, orderId))
+      .orderBy(orderMaterialUsage.createdAt);
+  }
+
+  async getMaterialUsageByLineItem(lineItemId: string): Promise<OrderMaterialUsage[]> {
+    return db.select()
+      .from(orderMaterialUsage)
+      .where(eq(orderMaterialUsage.orderLineItemId, lineItemId))
+      .orderBy(orderMaterialUsage.createdAt);
+  }
+
+  async getMaterialUsageByMaterial(materialId: string): Promise<OrderMaterialUsage[]> {
+    return db.select()
+      .from(orderMaterialUsage)
+      .where(eq(orderMaterialUsage.materialId, materialId))
+      .orderBy(orderMaterialUsage.createdAt);
+  }
+
+  async autoDeductInventoryWhenOrderMovesToProduction(orderId: string, userId: string): Promise<void> {
+    const lineItems = await db.select()
+      .from(orderLineItems)
+      .where(eq(orderLineItems.orderId, orderId));
+
+    for (const lineItem of lineItems) {
+      if (!lineItem.requiresInventory || !lineItem.materialId) continue;
+
+      const existingUsage = await db.select()
+        .from(orderMaterialUsage)
+        .where(and(
+          eq(orderMaterialUsage.orderId, orderId),
+          eq(orderMaterialUsage.orderLineItemId, lineItem.id)
+        ));
+      if (existingUsage.length > 0) continue;
+
+      const [material] = await db.select()
+        .from(materials)
+        .where(eq(materials.id, lineItem.materialId));
+      if (!material) continue;
+
+      let quantityNeeded = 0;
+      if (material.type === 'sheet') {
+        quantityNeeded = lineItem.nestingConfigSnapshot?.totalSheets || lineItem.quantity;
+      } else if (material.type === 'roll' && material.unitOfMeasure === 'sqft') {
+        quantityNeeded = parseFloat(lineItem.sqft?.toString() || '0');
+      } else {
+        quantityNeeded = lineItem.quantity;
+      }
+      if (quantityNeeded <= 0) continue;
+
+      await db.insert(orderMaterialUsage).values({
+        orderId,
+        orderLineItemId: lineItem.id,
+        materialId: lineItem.materialId,
+        quantityUsed: `${quantityNeeded}`,
+        unitOfMeasure: material.unitOfMeasure,
+        calculatedBy: 'auto',
+      } as any);
+
+      await this.adjustInventory(
+        lineItem.materialId,
+        'job_usage',
+        -quantityNeeded,
+        userId,
+        `Auto-deducted for order ${orderId}, line item: ${lineItem.description}`,
+        orderId
+      );
+    }
+  }
+
+
+  // =============================
+  // Vendor Operations
+  // =============================
+  async getVendors(filters?: { search?: string; isActive?: boolean; page?: number; pageSize?: number }): Promise<Vendor[]> {
+    const conditions: any[] = [];
+    if (filters?.search) {
+      const s = `%${filters.search}%`;
+      conditions.push(or(ilike(vendors.name, s), ilike(vendors.email, s), ilike(vendors.phone, s)));
+    }
+    if (typeof filters?.isActive === 'boolean') {
+      conditions.push(eq(vendors.isActive, filters.isActive));
+    }
+    const page = filters?.page && filters.page > 0 ? filters.page : 1;
+    const pageSize = filters?.pageSize && filters.pageSize > 0 ? filters.pageSize : 50;
+    const offset = (page - 1) * pageSize;
+    if (conditions.length) {
+      return await db.select().from(vendors).where(and(...conditions)).orderBy(vendors.name).limit(pageSize).offset(offset);
+    }
+    return await db.select().from(vendors).orderBy(vendors.name).limit(pageSize).offset(offset);
+  }
+
+  async getVendorById(id: string): Promise<Vendor | undefined> {
+    const [v] = await db.select().from(vendors).where(eq(vendors.id, id));
+    return v;
+  }
+
+  async createVendor(data: InsertVendor): Promise<Vendor> {
+    const [created] = await db.insert(vendors).values(data as any).returning();
+    return created;
+  }
+
+  async updateVendor(id: string, data: Partial<InsertVendor>): Promise<Vendor> {
+    const [updated] = await db.update(vendors).set({ ...data, updatedAt: new Date() } as any).where(eq(vendors.id, id)).returning();
+    if (!updated) throw new Error('Vendor not found');
+    return updated;
+  }
+
+  async deleteVendor(id: string): Promise<void> {
+    // Soft delete if vendor has purchase orders; hard delete otherwise
+    const existingPO = await db.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.vendorId, id)).limit(1);
+    if (existingPO.length) {
+      await db.update(vendors).set({ isActive: false, updatedAt: new Date() } as any).where(eq(vendors.id, id));
+    } else {
+      await db.delete(vendors).where(eq(vendors.id, id));
+    }
+  }
+
+  // =============================
+  // Purchase Order Operations
+  // =============================
+  private async generateNextPoNumber(tx?: any): Promise<string> {
+    const executor = tx || db;
+    try {
+      const result = await executor.execute(sql`SELECT * FROM ${globalVariables} WHERE ${globalVariables.name} = 'next_po_number' FOR UPDATE`);
+      const row = (result as any).rows?.[0];
+      if (row) {
+        const current = Math.floor(Number(row.value));
+        await executor.update(globalVariables).set({ value: (current + 1).toString(), updatedAt: new Date() }).where(eq(globalVariables.id, row.id));
+        return `PO-${current}`;
+      }
+    } catch {}
+    const maxRes = await db.execute(sql`SELECT MAX(CAST(SUBSTRING(po_number FROM 4) AS INTEGER)) AS max_num FROM purchase_orders WHERE po_number ~ '^PO-[0-9]+$'`);
+    const maxNum = (maxRes as any).rows?.[0]?.max_num ? Number((maxRes as any).rows[0].max_num) : 1000;
+    return `PO-${maxNum + 1}`;
+  }
+
+  async getPurchaseOrders(filters?: { vendorId?: string; status?: string; search?: string; startDate?: string; endDate?: string }): Promise<PurchaseOrder[]> {
+    const conditions: any[] = [];
+    if (filters?.vendorId) conditions.push(eq(purchaseOrders.vendorId, filters.vendorId));
+    if (filters?.status) conditions.push(eq(purchaseOrders.status, filters.status));
+    if (filters?.search) {
+      const s = `%${filters.search}%`;
+      conditions.push(or(ilike(purchaseOrders.poNumber, s), ilike(purchaseOrders.notes, s)));
+    }
+    if (filters?.startDate) conditions.push(gte(purchaseOrders.issueDate, new Date(filters.startDate)));
+    if (filters?.endDate) conditions.push(lte(purchaseOrders.issueDate, new Date(filters.endDate)));
+    if (conditions.length) {
+      return await db.select().from(purchaseOrders).where(and(...conditions)).orderBy(desc(purchaseOrders.createdAt));
+    }
+    return await db.select().from(purchaseOrders).orderBy(desc(purchaseOrders.createdAt));
+  }
+
+  async getPurchaseOrderWithLines(id: string): Promise<(PurchaseOrder & { vendor?: Vendor | null; lineItems: PurchaseOrderLineItem[] }) | undefined> {
+    const [po] = await db.select().from(purchaseOrders).where(eq(purchaseOrders.id, id));
+    if (!po) return undefined;
+    const vendorRecord = await this.getVendorById(po.vendorId);
+    const lines = await db.select().from(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.purchaseOrderId, id)).orderBy(purchaseOrderLineItems.createdAt as any);
+    return { ...po, vendor: vendorRecord || null, lineItems: lines } as any;
+  }
+
+  async createPurchaseOrder(data: InsertPurchaseOrder & { createdByUserId: string }): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }> {
+    return await db.transaction(async (tx) => {
+      const poNumber = await this.generateNextPoNumber(tx);
+      const lineValues = data.lineItems.map(li => {
+        const lineTotal = Number(li.quantityOrdered) * Number(li.unitCost);
+        return { ...li, lineTotal: lineTotal.toFixed(4) } as any;
+      });
+      const subtotal = lineValues.reduce((sum, li) => sum + Number(li.lineTotal), 0);
+      const taxTotal = 0;
+      const shippingTotal = 0;
+      const grandTotal = subtotal + taxTotal + shippingTotal;
+      const insertPO: any = {
+        poNumber,
+        vendorId: data.vendorId,
+        status: 'draft',
+        issueDate: data.issueDate,
+        expectedDate: data.expectedDate || null,
+        notes: (data as any).notes || null,
+        subtotal: subtotal.toFixed(2),
+        taxTotal: taxTotal.toFixed(2),
+        shippingTotal: shippingTotal.toFixed(2),
+        grandTotal: grandTotal.toFixed(2),
+        createdByUserId: data.createdByUserId,
+      };
+      const [created] = await tx.insert(purchaseOrders).values(insertPO).returning();
+      for (const lv of lineValues) {
+        await tx.insert(purchaseOrderLineItems).values({ ...lv, purchaseOrderId: created.id } as any);
+      }
+      const lines = await tx.select().from(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.purchaseOrderId, created.id));
+      return { ...created, lineItems: lines } as any;
+    });
+  }
+
+  async updatePurchaseOrder(id: string, data: UpdatePurchaseOrder): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }> {
+    return await db.transaction(async (tx) => {
+      const existing = await this.getPurchaseOrderWithLines(id);
+      if (!existing) throw new Error('Purchase order not found');
+      if (['received','cancelled'].includes(existing.status)) throw new Error('Cannot modify a finalized purchase order');
+      const headerUpdates: any = {};
+      if (data.expectedDate !== undefined) headerUpdates.expectedDate = data.expectedDate || null;
+      if (data.notes !== undefined) headerUpdates.notes = (data as any).notes || null;
+      if (data.status) headerUpdates.status = data.status;
+      if (Object.keys(headerUpdates).length) headerUpdates.updatedAt = new Date();
+      if (Object.keys(headerUpdates).length) await tx.update(purchaseOrders).set(headerUpdates).where(eq(purchaseOrders.id, id));
+      if (Array.isArray((data as any).lineItems)) {
+        await tx.delete(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.purchaseOrderId, id));
+        const newLines: any[] = (data as any).lineItems.map((li: any) => {
+          const lineTotal = Number(li.quantityOrdered) * Number(li.unitCost);
+          return { ...li, purchaseOrderId: id, lineTotal: lineTotal.toFixed(4) };
+        });
+        for (const nl of newLines) await tx.insert(purchaseOrderLineItems).values(nl);
+        const subtotal = newLines.reduce((sum, li) => sum + Number(li.lineTotal), 0);
+        const grandTotal = subtotal;
+        await tx.update(purchaseOrders).set({ subtotal: subtotal.toFixed(2), grandTotal: grandTotal.toFixed(2), updatedAt: new Date() }).where(eq(purchaseOrders.id, id));
+      }
+      const updated = await this.getPurchaseOrderWithLines(id);
+      return updated as any;
+    });
+  }
+
+  async deletePurchaseOrder(id: string): Promise<void> {
+    const existing = await this.getPurchaseOrderWithLines(id);
+    if (!existing) return;
+    if (existing.status !== 'draft') throw new Error('Only draft purchase orders can be deleted');
+    if (existing.lineItems.some((li: any) => Number(li.quantityReceived) > 0)) throw new Error('Cannot delete PO with received items');
+    await db.delete(purchaseOrders).where(eq(purchaseOrders.id, id));
+  }
+
+  async sendPurchaseOrder(id: string): Promise<PurchaseOrder> {
+    const [updated] = await db.update(purchaseOrders).set({ status: 'sent', updatedAt: new Date() } as any).where(eq(purchaseOrders.id, id)).returning();
+    if (!updated) throw new Error('Purchase order not found');
+    return updated;
+  }
+
+  async receivePurchaseOrderLines(purchaseOrderId: string, items: { lineItemId: string; quantityToReceive: number; receivedDate?: Date }[], userId: string): Promise<PurchaseOrder & { lineItems: PurchaseOrderLineItem[] }> {
+    return await db.transaction(async (tx) => {
+      const existing = await this.getPurchaseOrderWithLines(purchaseOrderId);
+      if (!existing) throw new Error('Purchase order not found');
+      if (['cancelled','received'].includes(existing.status)) throw new Error('Cannot receive a finalized purchase order');
+      const receivedDate = items.some(i => i.receivedDate) ? items[0].receivedDate : new Date();
+      for (const item of items) {
+        if (item.quantityToReceive <= 0) continue;
+        const line = existing.lineItems.find(li => li.id === item.lineItemId);
+        if (!line) throw new Error('Line item not found');
+        const remaining = Number(line.quantityOrdered) - Number(line.quantityReceived);
+        if (item.quantityToReceive > remaining) throw new Error('Cannot receive more than ordered');
+        const newReceived = Number(line.quantityReceived) + item.quantityToReceive;
+        await tx.update(purchaseOrderLineItems).set({ quantityReceived: newReceived.toFixed(2), updatedAt: new Date() } as any).where(eq(purchaseOrderLineItems.id, (line as any).id));
+        if ((line as any).materialId) {
+          await this.adjustInventory((line as any).materialId, 'purchase_receipt', item.quantityToReceive, userId, `PO receipt ${existing.poNumber}`);
+          await tx.update(materials).set({ vendorCostPerUnit: (line as any).unitCost, updatedAt: new Date() } as any).where(eq(materials.id, (line as any).materialId));
+        }
+      }
+      const updated = await this.getPurchaseOrderWithLines(purchaseOrderId);
+      if (!updated) throw new Error('PO disappeared');
+      const allReceived = updated.lineItems.every(li => Number(li.quantityReceived) >= Number(li.quantityOrdered));
+      const anyReceived = updated.lineItems.some(li => Number(li.quantityReceived) > 0);
+      let newStatus = updated.status;
+      if (allReceived) newStatus = 'received'; else if (anyReceived && updated.status !== 'sent') newStatus = 'partially_received';
+      const headerUpdate: any = { status: newStatus, updatedAt: new Date() };
+      if (newStatus === 'received') headerUpdate.receivedDate = receivedDate;
+      await tx.update(purchaseOrders).set(headerUpdate).where(eq(purchaseOrders.id, purchaseOrderId));
+      const finalPO = await this.getPurchaseOrderWithLines(purchaseOrderId);
+      return finalPO as any;
+    });
   }
 }
 

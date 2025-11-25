@@ -1,0 +1,28 @@
+// REPLACEMENT FOR server/storage.ts line 2421-2425
+// Replace these lines:
+      const [order] = j.orderId ? await db.select().from(orders).where(eq(orders.id, j.orderId)) : [undefined];
+      const [li] = j.orderLineItemId ? await db.select().from(orderLineItems).where(eq(orderLineItems.id, j.orderLineItemId)) : [undefined];
+      return { ...j, order: order || null, orderLineItem: li || null } as any;
+
+// WITH:
+      const orderRecord = j.orderId ? await db.query.orders.findFirst({
+        where: eq(orders.id, j.orderId),
+        with: { customer: true },
+      }) : undefined;
+      const lineItemRecord = j.orderLineItemId ? await db.query.orderLineItems.findFirst({
+        where: eq(orderLineItems.id, j.orderLineItemId),
+        with: {
+          product: true,
+          productVariant: true,
+        },
+      }) : undefined;
+      return {
+        ...j,
+        order: orderRecord || null,
+        orderLineItem: lineItemRecord || null,
+        customerName: orderRecord?.customer?.companyName || 'Unknown',
+        orderNumber: orderRecord?.orderNumber || null,
+        dueDate: orderRecord?.dueDate || null,
+        quantity: lineItemRecord?.quantity || 0,
+        mediaType: lineItemRecord?.productVariant?.name || lineItemRecord?.product?.name || 'Unknown',
+      } as any;

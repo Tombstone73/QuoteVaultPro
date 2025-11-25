@@ -25,15 +25,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog } from "lucide-react";
+import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem } from "@/hooks/useOrders";
+import { useQuery } from "@tanstack/react-query";
 import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
 import type { OrderLineItem } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge, LineItemStatusBadge } from "@/components/order-status-badge";
+import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
+import { ShipmentForm } from "@/components/ShipmentForm";
+import { PackingSlipModal } from "@/components/PackingSlipModal";
+import { useShipments, useDeleteShipment, useUpdateShipment, useGeneratePackingSlip, useSendShipmentEmail, useUpdateFulfillmentStatus } from "@/hooks/useShipments";
+import type { Shipment } from "@shared/schema";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function OrderDetail() {
   const { user } = useAuth();
@@ -61,6 +67,12 @@ export default function OrderDetail() {
   const [editingStatusItemId, setEditingStatusItemId] = useState<string | null>(null);
   const [tempStatus, setTempStatus] = useState("");
 
+  // Fulfillment state
+  const [showShipmentForm, setShowShipmentForm] = useState(false);
+  const [editingShipment, setEditingShipment] = useState<Shipment | null>(null);
+  const [showPackingSlipModal, setShowPackingSlipModal] = useState(false);
+  const [shipmentToDelete, setShipmentToDelete] = useState<string | null>(null);
+
   const orderId = params.id;
   const { data: order, isLoading } = useOrder(orderId);
   const deleteOrder = useDeleteOrder();
@@ -69,8 +81,16 @@ export default function OrderDetail() {
   const createLineItem = useCreateOrderLineItem(orderId!);
   const deleteLineItem = useDeleteOrderLineItem(orderId!);
 
+  // Fulfillment hooks
+  const { data: shipments = [] } = useShipments(orderId!);
+  const deleteShipmentMutation = useDeleteShipment(orderId!);
+  const updateShipmentMutation = useUpdateShipment(orderId!);
+  const generatePackingSlip = useGeneratePackingSlip(orderId!);
+  const updateFulfillmentStatus = useUpdateFulfillmentStatus(orderId!);
+
   // Check if user is admin or owner
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
+  const isManagerOrHigher = isAdminOrOwner || user?.role === 'manager';
 
   // Fetch customers for the customer change dialog
   const { data: customers = [] } = useQuery({
@@ -363,6 +383,85 @@ export default function OrderDetail() {
       title: "Feature coming soon",
       description: "Line item status updates will be available soon",
     });
+  };
+
+  // Fulfillment handlers
+  const handleAddShipment = () => {
+    setEditingShipment(null);
+    setShowShipmentForm(true);
+  };
+
+  const handleEditShipment = (shipment: Shipment) => {
+    setEditingShipment(shipment);
+    setShowShipmentForm(true);
+  };
+
+  const handleDeleteShipment = async (shipmentId: string) => {
+    try {
+      await deleteShipmentMutation.mutateAsync(shipmentId);
+      toast({ title: "Success", description: "Shipment deleted successfully" });
+      setShipmentToDelete(null);
+    } catch (error: any) {
+      toast({ 
+        title: "Error", 
+        description: error.message || "Failed to delete shipment", 
+        variant: "destructive" 
+      });
+    }
+  };
+
+  const handleMarkDelivered = async (shipment: Shipment) => {
+    try {
+      await updateShipmentMutation.mutateAsync({
+        id: shipment.id,
+        updates: {
+          deliveredAt: new Date(),
+        } as any,
+      });
+      toast({ title: "Success", description: "Shipment marked as delivered" });
+    } catch (error: any) {
+      toast({ 
+        title: "Error", 
+        description: error.message || "Failed to update shipment", 
+        variant: "destructive" 
+      });
+    }
+  };
+
+  const handleGeneratePackingSlip = async () => {
+    try {
+      await generatePackingSlip.mutateAsync();
+      setShowPackingSlipModal(true);
+    } catch (error: any) {
+      toast({ 
+        title: "Error", 
+        description: error.message || "Failed to generate packing slip", 
+        variant: "destructive" 
+      });
+    }
+  };
+
+  const handleFulfillmentStatusChange = async (newStatus: "pending" | "packed" | "shipped" | "delivered") => {
+    try {
+      await updateFulfillmentStatus.mutateAsync(newStatus);
+      toast({ title: "Success", description: `Fulfillment status updated to ${newStatus}` });
+    } catch (error: any) {
+      toast({ 
+        title: "Error", 
+        description: error.message || "Failed to update fulfillment status", 
+        variant: "destructive" 
+      });
+    }
+  };
+
+  const getTrackingUrl = (carrier: string, trackingNumber: string): string => {
+    const urls: Record<string, string> = {
+      UPS: `https://www.ups.com/track?tracknum=${trackingNumber}`,
+      FedEx: `https://www.fedex.com/fedextrack/?trknbr=${trackingNumber}`,
+      USPS: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${trackingNumber}`,
+      DHL: `https://www.dhl.com/en/express/tracking.html?AWB=${trackingNumber}`,
+    };
+    return urls[carrier] || '#';
   };
 
   if (isLoading) {
@@ -770,11 +869,180 @@ export default function OrderDetail() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Material Usage */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Material Usage</CardTitle>
+                <CardDescription>Automatic deductions recorded for this order</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <MaterialUsageTable orderId={order.id} />
+              </CardContent>
+            </Card>
+
+            {/* Fulfillment & Shipping */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle>Fulfillment & Shipping</CardTitle>
+                  <div className="flex items-center gap-2">
+                    {order.fulfillmentStatus && (
+                      <FulfillmentStatusBadge status={order.fulfillmentStatus as any} />
+                    )}
+                  </div>
+                </div>
+                <CardDescription>
+                  Track shipments and manage order fulfillment
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Manual Status Override (Manager+) */}
+                {isManagerOrHigher && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Manual Status Override</label>
+                    <Select
+                      value={order.fulfillmentStatus || "pending"}
+                      onValueChange={(value) => handleFulfillmentStatusChange(value as any)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pending">Pending</SelectItem>
+                        <SelectItem value="packed">Packed</SelectItem>
+                        <SelectItem value="shipped">Shipped</SelectItem>
+                        <SelectItem value="delivered">Delivered</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                {/* Packing Slip */}
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Packing Slip</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleGeneratePackingSlip}
+                    disabled={generatePackingSlip.isPending}
+                  >
+                    <FileText className="h-4 w-4 mr-2" />
+                    {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
+                  </Button>
+                </div>
+
+                <Separator />
+
+                {/* Shipments */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Shipments ({shipments.length})</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleAddShipment}
+                    >
+                      <Truck className="h-4 w-4 mr-2" />
+                      Add Shipment
+                    </Button>
+                  </div>
+
+                  {shipments.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Truck className="h-12 w-12 mx-auto mb-3 opacity-20" />
+                      <p className="text-sm">No shipments yet</p>
+                      <p className="text-xs mt-1">Add a shipment to track delivery</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {shipments.map((shipment) => (
+                        <div
+                          key={shipment.id}
+                          className="border rounded-lg p-3 space-y-2"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <Badge variant="outline" className="text-xs">
+                                  {shipment.carrier}
+                                </Badge>
+                                {shipment.deliveredAt && (
+                                  <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs">
+                                    Delivered
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-mono">
+                                  {shipment.trackingNumber}
+                                </span>
+                                {shipment.carrier !== "Other" && shipment.trackingNumber && (
+                                  <a
+                                    href={getTrackingUrl(shipment.carrier, shipment.trackingNumber)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline"
+                                  >
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
+                              </div>
+                              {shipment.deliveredAt && (
+                                <div className="text-xs text-muted-foreground">
+                                  Delivered: {format(new Date(shipment.deliveredAt), "MMM d, yyyy h:mm a")}
+                                </div>
+                              )}
+                              {shipment.notes && (
+                                <div className="text-xs text-muted-foreground italic mt-1">
+                                  {shipment.notes}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {!shipment.deliveredAt && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleMarkDelivered(shipment)}
+                                  title="Mark as delivered"
+                                >
+                                  <Check className="h-4 w-4" />
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleEditShipment(shipment)}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              {isAdminOrOwner && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setShipmentToDelete(shipment.id)}
+                                  className="text-destructive hover:text-destructive"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Sidebar */}
-          <div className="space-y-6">
-            {/* Customer Info */}
+          <div className="space-y-6">{/* Customer Info */}
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -955,6 +1223,85 @@ export default function OrderDetail() {
         onSave={handleSaveLineItem}
         mode={editingLineItem ? "edit" : "add"}
       />
+
+      {/* Shipment Form Dialog */}
+      <ShipmentForm
+        open={showShipmentForm}
+        onOpenChange={setShowShipmentForm}
+        orderId={orderId!}
+        shipment={editingShipment || undefined}
+        mode={editingShipment ? "edit" : "create"}
+      />
+
+      {/* Packing Slip Modal */}
+      {order.packingSlipHtml && (
+        <PackingSlipModal
+          open={showPackingSlipModal}
+          onOpenChange={setShowPackingSlipModal}
+          packingSlipHtml={order.packingSlipHtml}
+        />
+      )}
+
+      {/* Delete Shipment Confirmation Dialog */}
+      <AlertDialog open={!!shipmentToDelete} onOpenChange={() => setShipmentToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Shipment</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this shipment? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => shipmentToDelete && handleDeleteShipment(shipmentToDelete)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function MaterialUsageTable({ orderId }: { orderId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["/api/orders", orderId, "material-usage"],
+    queryFn: async () => {
+      const res = await fetch(`/api/orders/${orderId}/material-usage`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch material usage");
+      const json = await res.json();
+      return json.success ? json.data : json;
+    },
+  });
+  if (isLoading) return <div className="text-sm">Loading usage...</div>;
+  if (!data || data.length === 0) return <div className="text-sm text-muted-foreground">No material usage recorded.</div>;
+  return (
+    <div className="overflow-auto max-h-64">
+      <table className="min-w-full text-xs">
+        <thead>
+          <tr className="text-left">
+            <th className="p-2">Material</th>
+            <th className="p-2">Qty Used</th>
+            <th className="p-2">Unit</th>
+            <th className="p-2">Line Item</th>
+            <th className="p-2">Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((u: any) => (
+            <tr key={u.id} className="border-t">
+              <td className="p-2"><a href={`/materials/${u.materialId}`} className="underline text-primary">{u.materialId.substring(0,8)}</a></td>
+              <td className="p-2">{u.quantityUsed}</td>
+              <td className="p-2">{u.unitOfMeasure}</td>
+              <td className="p-2">{u.orderLineItemId.substring(0,8)}</td>
+              <td className="p-2">{new Date(u.createdAt).toLocaleDateString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

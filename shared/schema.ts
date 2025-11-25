@@ -18,35 +18,7 @@ import { z } from "zod";
 // PRODUCT TYPE SYSTEM - Central definition for all modules
 // ============================================================
 
-/**
- * ProductType enum - defines all product categories supported by TitanOS
- * Each type has its own pricing engine and configuration schema
- */
-export type ProductType =
-  | 'wide_roll'      // Wide-format roll-to-roll (banners, vinyl, etc.)
-  | 'wide_flatbed'   // Wide-format flatbed (rigid substrates, direct print)
-  | 'small_format'   // Small-format (business cards, flyers, brochures, etc.)
-  | 'apparel'        // Apparel/garment decoration (DTG, screen print, embroidery)
-  | 'fabrication';   // Fabrication/finishing (signage assembly, routing, etc.)
-
-export const PRODUCT_TYPES: ProductType[] = ['wide_roll', 'wide_flatbed', 'small_format', 'apparel', 'fabrication'];
-
-export const PRODUCT_TYPE_LABELS: Record<ProductType, string> = {
-  wide_roll: 'Wide Format - Roll',
-  wide_flatbed: 'Wide Format - Flatbed',
-  small_format: 'Small Format',
-  apparel: 'Apparel',
-  fabrication: 'Fabrication',
-};
-
-export const DEFAULT_PRODUCT_TYPE: ProductType = 'wide_roll';
-
-export function isValidProductType(value: string): value is ProductType {
-  return PRODUCT_TYPES.includes(value as ProductType);
-}
-
-// Zod schema for ProductType validation
-export const productTypeSchema = z.enum(['wide_roll', 'wide_flatbed', 'small_format', 'apparel', 'fabrication']);
+// Legacy ProductType enum removed - now using database table (productTypes)
 
 // Session storage table (required for Replit Auth)
 export const sessions = pgTable(
@@ -117,11 +89,40 @@ export const insertMediaAssetSchema = createInsertSchema(mediaAssets).omit({
 export type InsertMediaAsset = z.infer<typeof insertMediaAssetSchema>;
 export type MediaAsset = typeof mediaAssets.$inferSelect;
 
+// Product Types table
+export const productTypes = pgTable("product_types", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  description: text("description"),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("product_types_sort_order_idx").on(table.sortOrder),
+]);
+
+export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  sortOrder: z.coerce.number().int().default(0),
+});
+
+export const updateProductTypeSchema = insertProductTypeSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertProductType = z.infer<typeof insertProductTypeSchema>;
+export type UpdateProductType = z.infer<typeof updateProductTypeSchema>;
+export type SelectProductType = typeof productTypes.$inferSelect;
+
 // Products table
 export const products = pgTable("products", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description").notNull(),
+  productTypeId: varchar("product_type_id").references(() => productTypes.id, { onDelete: 'restrict' }),
   pricingFormula: text("pricing_formula"), // Made optional - not required when using nesting calculator
   variantLabel: varchar("variant_label", { length: 100 }).default("Variant"),
   category: varchar("category", { length: 100 }),
@@ -382,7 +383,7 @@ export const insertQuoteLineItemSchema = createInsertSchema(quoteLineItems).omit
   id: true,
   createdAt: true,
 }).extend({
-  productType: productTypeSchema.default('wide_roll'),
+  productType: z.string().default('wide_roll'),
   width: z.coerce.number().positive(),
   height: z.coerce.number().positive(),
   quantity: z.coerce.number().int().positive(),
@@ -451,10 +452,18 @@ export const usersRelations = relations(users, ({ many }) => ({
   quotes: many(quotes),
 }));
 
-export const productsRelations = relations(products, ({ many }) => ({
+export const productsRelations = relations(products, ({ one, many }) => ({
   lineItems: many(quoteLineItems),
   options: many(productOptions),
   variants: many(productVariants),
+  productType: one(productTypes, {
+    fields: [products.productTypeId],
+    references: [productTypes.id],
+  }),
+}));
+
+export const productTypesRelations = relations(productTypes, ({ many }) => ({
+  products: many(products),
 }));
 
 export const productVariantsRelations = relations(productVariants, ({ one, many }) => ({
@@ -742,6 +751,7 @@ export const orders = pgTable("orders", {
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   status: varchar("status", { length: 50 }).notNull().default("new"), // new, scheduled, in_production, ready_for_pickup, shipped, completed, on_hold, canceled
   priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low
+  fulfillmentStatus: varchar("fulfillment_status", { length: 50 }).notNull().default("pending"), // pending, packed, shipped, delivered
   dueDate: timestamp("due_date", { withTimezone: true }),
   promisedDate: timestamp("promised_date", { withTimezone: true }),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -749,6 +759,18 @@ export const orders = pgTable("orders", {
   total: decimal("total", { precision: 10, scale: 2 }).notNull().default("0"),
   discount: decimal("discount", { precision: 10, scale: 2 }).notNull().default("0"),
   notesInternal: text("notes_internal"),
+  shippingAddress: jsonb("shipping_address").$type<{
+    name?: string;
+    company?: string;
+    address1: string;
+    address2?: string;
+    city: string;
+    state: string;
+    zip: string;
+    country?: string;
+    phone?: string;
+  }>(),
+  packingSlipHtml: text("packing_slip_html"),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -756,6 +778,7 @@ export const orders = pgTable("orders", {
   index("orders_order_number_idx").on(table.orderNumber),
   index("orders_customer_id_idx").on(table.customerId),
   index("orders_status_idx").on(table.status),
+  index("orders_fulfillment_status_idx").on(table.fulfillmentStatus),
   index("orders_due_date_idx").on(table.dueDate),
   index("orders_created_at_idx").on(table.createdAt),
   index("orders_created_by_user_id_idx").on(table.createdByUserId),
@@ -769,10 +792,22 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   orderNumber: z.string().min(1),
   status: z.enum(["new", "scheduled", "in_production", "ready_for_pickup", "shipped", "completed", "on_hold", "canceled"]).default("new"),
   priority: z.enum(["rush", "normal", "low"]).default("normal"),
+  fulfillmentStatus: z.enum(["pending", "packed", "shipped", "delivered"]).default("pending"),
   subtotal: z.coerce.number().min(0),
   tax: z.coerce.number().min(0),
   total: z.coerce.number().min(0),
   discount: z.coerce.number().min(0).default(0),
+  shippingAddress: z.object({
+    name: z.string().optional(),
+    company: z.string().optional(),
+    address1: z.string(),
+    address2: z.string().optional(),
+    city: z.string(),
+    state: z.string(),
+    zip: z.string(),
+    country: z.string().optional(),
+    phone: z.string().optional(),
+  }).optional().nullable(),
   dueDate: z.preprocess((val) => {
     if (!val) return null;
     if (val instanceof Date) return val;
@@ -827,6 +862,14 @@ export const orderLineItems = pgTable("order_line_items", {
     pricePerSheet?: number;
     formula?: string;
   }>(),
+  materialId: varchar("material_id").references(() => materials.id, { onDelete: 'set null' }), // link to primary material
+  materialUsageJson: jsonb("material_usage_json").$type<Array<{
+    materialId: string;
+    materialName: string;
+    quantityUsed: number;
+    unitOfMeasure: string;
+  }>>(), // snapshot of materials used
+  requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -841,7 +884,7 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   createdAt: true,
   updatedAt: true,
 }).extend({
-  productType: productTypeSchema.default('wide_roll'),
+  productType: z.string().default('wide_roll'),
   quantity: z.coerce.number().int().positive(),
   unitPrice: z.coerce.number().min(0),
   totalPrice: z.coerce.number().min(0),
@@ -886,7 +929,7 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
   createdAt: true,
   updatedAt: true,
 }).extend({
-  productType: productTypeSchema,
+  productType: z.string(),
   statusKey: z.string().min(3).max(50), // Will be validated against configured job statuses at API level
   priority: z.enum(["rush", "normal", "low"]).default("normal"),
   specsJson: z.record(z.any()).optional().nullable(),
@@ -899,6 +942,228 @@ export const updateJobSchema = insertJobSchema.partial().extend({
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type UpdateJob = z.infer<typeof updateJobSchema>;
 export type Job = typeof jobs.$inferSelect;
+
+// -------------------- Invoicing & Payments (Future QuickBooks Sync Ready) --------------------
+
+// Invoices table
+export const invoices = pgTable("invoices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceNumber: integer("invoice_number").unique().notNull(), // Sequential numeric
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
+  status: varchar("status", { length: 50 }).notNull().default('draft'), // draft, sent, partially_paid, paid, overdue
+  terms: varchar("terms", { length: 50 }).notNull().default('due_on_receipt'), // due_on_receipt, net_15, net_30, net_45, custom
+  customTerms: varchar("custom_terms", { length: 255 }),
+  issueDate: timestamp("issue_date", { withTimezone: true }).defaultNow().notNull(),
+  dueDate: timestamp("due_date", { withTimezone: true }),
+  subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default('0'),
+  tax: decimal("tax", { precision: 10, scale: 2 }).notNull().default('0'),
+  total: decimal("total", { precision: 10, scale: 2 }).notNull().default('0'),
+  amountPaid: decimal("amount_paid", { precision: 10, scale: 2 }).notNull().default('0'),
+  balanceDue: decimal("balance_due", { precision: 10, scale: 2 }).notNull().default('0'),
+  notesPublic: text("notes_public"),
+  notesInternal: text("notes_internal"),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  // QuickBooks / external accounting sync planning fields
+  externalAccountingId: varchar("external_accounting_id"),
+  syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
+  syncError: text("sync_error"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("invoices_invoice_number_idx").on(table.invoiceNumber),
+  index("invoices_customer_id_idx").on(table.customerId),
+  index("invoices_order_id_idx").on(table.orderId),
+  index("invoices_status_idx").on(table.status),
+  index("invoices_due_date_idx").on(table.dueDate),
+  index("invoices_sync_status_idx").on(table.syncStatus),
+]);
+
+export const insertInvoiceSchema = createInsertSchema(invoices).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  amountPaid: true,
+  balanceDue: true,
+}).extend({
+  invoiceNumber: z.number().int().positive(),
+  status: z.enum(['draft','sent','partially_paid','paid','overdue']).default('draft'),
+  terms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
+  customTerms: z.string().max(255).optional().nullable(),
+  issueDate: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
+  dueDate: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
+  subtotal: z.coerce.number().min(0),
+  tax: z.coerce.number().min(0),
+  total: z.coerce.number().min(0),
+  notesPublic: z.string().optional().nullable(),
+  notesInternal: z.string().optional().nullable(),
+  syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
+  syncError: z.string().optional().nullable(),
+});
+
+export const updateInvoiceSchema = insertInvoiceSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
+export type UpdateInvoice = z.infer<typeof updateInvoiceSchema>;
+export type Invoice = typeof invoices.$inferSelect;
+
+// Invoice Line Items snapshot table
+export const invoiceLineItems = pgTable("invoice_line_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'set null' }),
+  productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'restrict' }),
+  productVariantId: varchar("product_variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
+  productType: varchar("product_type", { length: 50 }).notNull().default('wide_roll'),
+  description: text("description").notNull(),
+  width: decimal("width", { precision: 10, scale: 2 }),
+  height: decimal("height", { precision: 10, scale: 2 }),
+  quantity: integer("quantity").notNull(),
+  sqft: decimal("sqft", { precision: 10, scale: 2 }),
+  unitPrice: decimal("unit_price", { precision: 10, scale: 2 }).notNull(),
+  totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull(),
+  specsJson: jsonb("specs_json").$type<Record<string, any>>(),
+  selectedOptions: jsonb("selected_options").$type<Array<{
+    optionId: string;
+    optionName: string;
+    value: string | number | boolean;
+    setupCost: number;
+    calculatedCost: number;
+  }>>().default(sql`'[]'::jsonb`).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("invoice_line_items_invoice_id_idx").on(table.invoiceId),
+  index("invoice_line_items_product_id_idx").on(table.productId),
+]);
+
+export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  quantity: z.coerce.number().int().positive(),
+  unitPrice: z.coerce.number().min(0),
+  totalPrice: z.coerce.number().min(0),
+  width: z.coerce.number().positive().optional().nullable(),
+  height: z.coerce.number().positive().optional().nullable(),
+  sqft: z.coerce.number().positive().optional().nullable(),
+});
+
+export const updateInvoiceLineItemSchema = insertInvoiceLineItemSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertInvoiceLineItem = z.infer<typeof insertInvoiceLineItemSchema>;
+export type UpdateInvoiceLineItem = z.infer<typeof updateInvoiceLineItemSchema>;
+export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
+
+// Payments table (applied to invoices)
+export const payments = pgTable("payments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  method: varchar("method", { length: 50 }).notNull().default('other'), // cash, check, credit_card, ach, other
+  notes: text("notes"),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow().notNull(),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  externalAccountingId: varchar("external_accounting_id"),
+  syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
+  syncError: text("sync_error"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("payments_invoice_id_idx").on(table.invoiceId),
+  index("payments_method_idx").on(table.method),
+  index("payments_created_by_user_id_idx").on(table.createdByUserId),
+  index("payments_sync_status_idx").on(table.syncStatus),
+]);
+
+export const insertPaymentSchema = createInsertSchema(payments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  syncedAt: true,
+}).extend({
+  amount: z.coerce.number().positive(),
+  method: z.enum(['cash','check','credit_card','ach','other']).default('other'),
+  notes: z.string().optional().nullable(),
+  syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
+});
+
+export const updatePaymentSchema = insertPaymentSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertPayment = z.infer<typeof insertPaymentSchema>;
+export type UpdatePayment = z.infer<typeof updatePaymentSchema>;
+export type Payment = typeof payments.$inferSelect;
+
+// -------------------- Shipping & Fulfillment --------------------
+
+// Shipments table (tracks packages sent to customers)
+export const shipments = pgTable("shipments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  carrier: varchar("carrier", { length: 100 }).notNull(), // ups, fedex, usps, dhl, other
+  trackingNumber: varchar("tracking_number", { length: 255 }),
+  shippedAt: timestamp("shipped_at", { withTimezone: true }).defaultNow().notNull(),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  notes: text("notes"),
+  externalShippingId: varchar("external_shipping_id"), // ShipStation / carrier API ID
+  syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
+  syncError: text("sync_error"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("shipments_order_id_idx").on(table.orderId),
+  index("shipments_carrier_idx").on(table.carrier),
+  index("shipments_tracking_number_idx").on(table.trackingNumber),
+  index("shipments_sync_status_idx").on(table.syncStatus),
+]);
+
+export const insertShipmentSchema = createInsertSchema(shipments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  syncedAt: true,
+}).extend({
+  carrier: z.string().min(1),
+  trackingNumber: z.string().optional().nullable(),
+  shippedAt: z.preprocess((val) => {
+    if (!val) return new Date();
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date()),
+  deliveredAt: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
+  notes: z.string().optional().nullable(),
+  syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
+});
+
+export const updateShipmentSchema = insertShipmentSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertShipment = z.infer<typeof insertShipmentSchema>;
+export type UpdateShipment = z.infer<typeof updateShipmentSchema>;
+export type Shipment = typeof shipments.$inferSelect;
 
 // Append-only job notes & status log tables (no duplicate jobs table)
 export const jobNotes = pgTable('job_notes', {
@@ -1127,3 +1392,302 @@ export const updateQuoteWorkflowStateSchema = insertQuoteWorkflowStateSchema.par
 export type InsertQuoteWorkflowState = z.infer<typeof insertQuoteWorkflowStateSchema>;
 export type UpdateQuoteWorkflowState = z.infer<typeof updateQuoteWorkflowStateSchema>;
 export type QuoteWorkflowState = typeof quoteWorkflowStates.$inferSelect;
+
+// ============================================================
+// INVENTORY MANAGEMENT SYSTEM
+// ============================================================
+
+// Materials table - tracks all inventory items (sheets, rolls, inks, consumables)
+export const materials = pgTable("materials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 255 }).notNull(),
+  sku: varchar("sku", { length: 100 }).notNull().unique(),
+  type: varchar("type", { length: 50 }).notNull(), // sheet, roll, ink, consumable
+  unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(), // sheet, sqft, linear_ft, ml, ea
+  width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension
+  height: decimal("height", { precision: 10, scale: 2 }), // nullable for height dimension
+  thickness: decimal("thickness", { precision: 10, scale: 4 }), // nullable for thickness
+  color: varchar("color", { length: 100 }), // nullable color specification
+  costPerUnit: decimal("cost_per_unit", { precision: 10, scale: 4 }).notNull(),
+  stockQuantity: decimal("stock_quantity", { precision: 10, scale: 2 }).notNull().default("0"),
+  minStockAlert: decimal("min_stock_alert", { precision: 10, scale: 2 }).notNull().default("0"),
+  vendorId: varchar("vendor_id"), // legacy placeholder
+  preferredVendorId: varchar("preferred_vendor_id").references(() => vendors.id, { onDelete: 'set null' }),
+  vendorSku: varchar("vendor_sku", { length: 150 }),
+  vendorCostPerUnit: decimal("vendor_cost_per_unit", { precision: 10, scale: 4 }),
+  specsJson: jsonb("specs_json").$type<Record<string, any>>(), // router/ink/material metadata
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("materials_type_idx").on(table.type),
+  index("materials_sku_idx").on(table.sku),
+  index("materials_stock_quantity_idx").on(table.stockQuantity),
+  index("materials_preferred_vendor_id_idx").on(table.preferredVendorId),
+]);
+
+export const insertMaterialSchema = createInsertSchema(materials).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  type: z.enum(["sheet", "roll", "ink", "consumable"]),
+  unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
+  costPerUnit: z.coerce.number().nonnegative(),
+  stockQuantity: z.coerce.number().nonnegative().default(0),
+  minStockAlert: z.coerce.number().nonnegative().default(0),
+});
+
+export const updateMaterialSchema = insertMaterialSchema.partial();
+
+export type InsertMaterial = z.infer<typeof insertMaterialSchema>;
+export type UpdateMaterial = z.infer<typeof updateMaterialSchema>;
+export type Material = typeof materials.$inferSelect;
+
+// Inventory Adjustments table - logs all inventory changes
+export const inventoryAdjustments = pgTable("inventory_adjustments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'cascade' }),
+  type: varchar("type", { length: 50 }).notNull(), // manual_increase, manual_decrease, waste, shrinkage, job_usage
+  quantityChange: decimal("quantity_change", { precision: 10, scale: 2 }).notNull(), // positive or negative
+  reason: text("reason"),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }), // nullable, for job usage tracking
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("inventory_adjustments_material_id_idx").on(table.materialId),
+  index("inventory_adjustments_type_idx").on(table.type),
+  index("inventory_adjustments_order_id_idx").on(table.orderId),
+  index("inventory_adjustments_created_at_idx").on(table.createdAt),
+]);
+
+export const insertInventoryAdjustmentSchema = createInsertSchema(inventoryAdjustments).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  type: z.enum(["manual_increase", "manual_decrease", "waste", "shrinkage", "job_usage", "purchase_receipt"]),
+  quantityChange: z.coerce.number(),
+});
+
+export type InsertInventoryAdjustment = z.infer<typeof insertInventoryAdjustmentSchema>;
+export type InventoryAdjustment = typeof inventoryAdjustments.$inferSelect;
+
+// =============================================
+// Vendors & Purchase Orders (MVP)
+// =============================================
+export const vendors = pgTable('vendors', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar('name', { length: 255 }).notNull(),
+  email: varchar('email', { length: 255 }),
+  phone: varchar('phone', { length: 50 }),
+  website: varchar('website', { length: 255 }),
+  notes: text('notes'),
+  paymentTerms: varchar('payment_terms', { length: 50 }).notNull().default('due_on_receipt'),
+  defaultLeadTimeDays: integer('default_lead_time_days'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('vendors_name_idx').on(table.name),
+  index('vendors_is_active_idx').on(table.isActive)
+]);
+
+export const insertVendorSchema = createInsertSchema(vendors).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
+  defaultLeadTimeDays: z.number().int().positive().optional(),
+  isActive: z.boolean().optional().default(true),
+});
+export const updateVendorSchema = insertVendorSchema.partial();
+export type InsertVendor = z.infer<typeof insertVendorSchema>;
+export type UpdateVendor = z.infer<typeof updateVendorSchema>;
+export type Vendor = typeof vendors.$inferSelect;
+
+export const purchaseOrders = pgTable('purchase_orders', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  poNumber: varchar('po_number', { length: 50 }).notNull().unique(),
+  vendorId: varchar('vendor_id').notNull().references(() => vendors.id, { onDelete: 'restrict' }),
+  status: varchar('status', { length: 30 }).notNull().default('draft'),
+  issueDate: timestamp('issue_date').notNull(),
+  expectedDate: timestamp('expected_date'),
+  receivedDate: timestamp('received_date'),
+  notes: text('notes'),
+  subtotal: decimal('subtotal', { precision: 10, scale: 2 }).notNull().default('0'),
+  taxTotal: decimal('tax_total', { precision: 10, scale: 2 }).notNull().default('0'),
+  shippingTotal: decimal('shipping_total', { precision: 10, scale: 2 }).notNull().default('0'),
+  grandTotal: decimal('grand_total', { precision: 10, scale: 2 }).notNull().default('0'),
+  createdByUserId: varchar('created_by_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('purchase_orders_vendor_id_idx').on(table.vendorId),
+  index('purchase_orders_status_idx').on(table.status),
+  index('purchase_orders_issue_date_idx').on(table.issueDate),
+]);
+
+export const purchaseOrderLineItems = pgTable('purchase_order_line_items', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  purchaseOrderId: varchar('purchase_order_id').notNull().references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+  materialId: varchar('material_id').references(() => materials.id, { onDelete: 'set null' }),
+  description: varchar('description', { length: 255 }).notNull(),
+  vendorSku: varchar('vendor_sku', { length: 150 }),
+  quantityOrdered: decimal('quantity_ordered', { precision: 10, scale: 2 }).notNull(),
+  quantityReceived: decimal('quantity_received', { precision: 10, scale: 2 }).notNull().default('0'),
+  unitCost: decimal('unit_cost', { precision: 10, scale: 4 }).notNull(),
+  lineTotal: decimal('line_total', { precision: 10, scale: 4 }).notNull(),
+  notes: text('notes'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('purchase_order_line_items_po_id_idx').on(table.purchaseOrderId),
+  index('purchase_order_line_items_material_id_idx').on(table.materialId),
+]);
+
+export const insertPurchaseOrderLineItemSchema = createInsertSchema(purchaseOrderLineItems).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  quantityReceived: true,
+}).extend({
+  quantityOrdered: z.coerce.number().positive(),
+  unitCost: z.coerce.number().nonnegative(),
+});
+
+export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  poNumber: true,
+  status: true,
+  subtotal: true,
+  taxTotal: true,
+  shippingTotal: true,
+  grandTotal: true,
+}).extend({
+  issueDate: z.coerce.date(),
+  expectedDate: z.coerce.date().optional(),
+  lineItems: z.array(insertPurchaseOrderLineItemSchema).min(1),
+});
+export const updatePurchaseOrderSchema = insertPurchaseOrderSchema.partial().extend({
+  status: z.enum(['draft','sent','partially_received','received','cancelled']).optional(),
+});
+export type InsertPurchaseOrder = z.infer<typeof insertPurchaseOrderSchema>;
+export type UpdatePurchaseOrder = z.infer<typeof updatePurchaseOrderSchema>;
+export type PurchaseOrder = typeof purchaseOrders.$inferSelect;
+export type PurchaseOrderLineItem = typeof purchaseOrderLineItems.$inferSelect;
+
+// Order Material Usage table - tracks which materials were used for each order line item
+export const orderMaterialUsage = pgTable("order_material_usage", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'restrict' }),
+  quantityUsed: decimal("quantity_used", { precision: 10, scale: 2 }).notNull(),
+  unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(),
+  calculatedBy: varchar("calculated_by", { length: 50 }).notNull().default("auto"), // auto or manual
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_material_usage_order_id_idx").on(table.orderId),
+  index("order_material_usage_order_line_item_id_idx").on(table.orderLineItemId),
+  index("order_material_usage_material_id_idx").on(table.materialId),
+]);
+
+export const insertOrderMaterialUsageSchema = createInsertSchema(orderMaterialUsage).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  quantityUsed: z.coerce.number().positive(),
+  calculatedBy: z.enum(["auto", "manual"]).default("auto"),
+});
+
+export type InsertOrderMaterialUsage = z.infer<typeof insertOrderMaterialUsageSchema>;
+export type OrderMaterialUsage = typeof orderMaterialUsage.$inferSelect;
+
+// Relations for invoicing & payments
+export const invoicesRelations = relations(invoices, ({ one, many }) => ({
+  customer: one(customers, {
+    fields: [invoices.customerId],
+    references: [customers.id],
+  }),
+  order: one(orders, {
+    fields: [invoices.orderId],
+    references: [orders.id],
+  }),
+  createdByUser: one(users, {
+    fields: [invoices.createdByUserId],
+    references: [users.id],
+  }),
+  lineItems: many(invoiceLineItems),
+  payments: many(payments),
+}));
+
+export const invoiceLineItemsRelations = relations(invoiceLineItems, ({ one }) => ({
+  invoice: one(invoices, {
+    fields: [invoiceLineItems.invoiceId],
+    references: [invoices.id],
+  }),
+  orderLineItem: one(orderLineItems, {
+    fields: [invoiceLineItems.orderLineItemId],
+    references: [orderLineItems.id],
+  }),
+}));
+
+export const paymentsRelations = relations(payments, ({ one }) => ({
+  invoice: one(invoices, {
+    fields: [payments.invoiceId],
+    references: [invoices.id],
+  }),
+  createdByUser: one(users, {
+    fields: [payments.createdByUserId],
+    references: [users.id],
+  }),
+}));
+
+export const shipmentsRelations = relations(shipments, ({ one }) => ({
+  order: one(orders, {
+    fields: [shipments.orderId],
+    references: [orders.id],
+  }),
+  createdByUser: one(users, {
+    fields: [shipments.createdByUserId],
+    references: [users.id],
+  }),
+}));
+
+// Inventory management relations
+export const materialsRelations = relations(materials, ({ many }) => ({
+  adjustments: many(inventoryAdjustments),
+  orderUsages: many(orderMaterialUsage),
+}));
+
+export const inventoryAdjustmentsRelations = relations(inventoryAdjustments, ({ one }) => ({
+  material: one(materials, {
+    fields: [inventoryAdjustments.materialId],
+    references: [materials.id],
+  }),
+  order: one(orders, {
+    fields: [inventoryAdjustments.orderId],
+    references: [orders.id],
+  }),
+  user: one(users, {
+    fields: [inventoryAdjustments.userId],
+    references: [users.id],
+  }),
+}));
+
+export const orderMaterialUsageRelations = relations(orderMaterialUsage, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderMaterialUsage.orderId],
+    references: [orders.id],
+  }),
+  orderLineItem: one(orderLineItems, {
+    fields: [orderMaterialUsage.orderLineItemId],
+    references: [orderLineItems.id],
+  }),
+  material: one(materials, {
+    fields: [orderMaterialUsage.materialId],
+    references: [materials.id],
+  }),
+}));
