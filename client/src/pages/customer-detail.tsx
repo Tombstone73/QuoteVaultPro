@@ -334,7 +334,7 @@ export default function CustomerDetail() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">${parseFloat(customer.creditLimit || '0').toFixed(2)}</div>
-              <p className="text-xs text-muted-foreground mt-1">{customer.creditTerms || 'Net 30'}</p>
+              <p className="text-xs text-muted-foreground mt-1">{(customer as any).creditTerms || 'Net 30'}</p>
             </CardContent>
           </Card>
 

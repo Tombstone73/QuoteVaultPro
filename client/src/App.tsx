@@ -27,6 +27,8 @@ import NotFound from "@/pages/not-found";
 import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
 import QuoteCheckout from "@/pages/portal/quote-checkout";
+import ProductionBoard from "@/pages/production";
+import JobDetail from "@/pages/job-detail";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -66,6 +68,10 @@ function Router() {
           <Route path="/orders/new" component={CreateOrder} />
           <Route path="/orders/:id" component={OrderDetail} />
           <Route path="/orders" component={Orders} />
+
+          {/* Production workflow routes */}
+          <Route path="/production" component={ProductionBoard} />
+          <Route path="/jobs/:id" component={JobDetail} />
           
           {/* Settings routes */}
           <Route path="/settings" component={CompanySettings} />

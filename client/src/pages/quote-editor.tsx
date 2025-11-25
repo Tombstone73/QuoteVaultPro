@@ -227,7 +227,7 @@ export default function QuoteEditor() {
       const quoteData = {
         customerId: selectedCustomerId,
         contactId: selectedContactId || undefined,
-        customerName: customerName || undefined,
+        customerName: selectedCustomer?.companyName || undefined,
         source: 'internal',
         lineItems: lineItems.map((item) => ({
           productId: item.productId,
@@ -252,7 +252,7 @@ export default function QuoteEditor() {
       } else {
         // For existing quotes, update header and handle line items separately
         const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, {
-          customerName,
+          customerName: selectedCustomer?.companyName,
         });
         return await response.json();
       }
@@ -380,7 +380,6 @@ export default function QuoteEditor() {
                 autoFocus={isNewQuote}
                 label="Customer *"
                 placeholder="Search customers by name, email, or contact..."
-                initialCustomer={quote?.customer as CustomerWithContacts}
               />
 
               {selectedCustomerId && contacts && contacts.length > 0 && (

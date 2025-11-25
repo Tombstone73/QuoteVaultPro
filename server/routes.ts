@@ -4,7 +4,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers } from "@shared/schema";
+import { customers, users, quotes } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -2602,8 +2602,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         dueDate: req.body?.dueDate ? new Date(req.body.dueDate) : undefined,
         promisedDate: req.body?.promisedDate ? new Date(req.body.promisedDate) : undefined,
         notesInternal: req.body?.internalNotes,
-        customerId: quote.customerId,
-        contactId: quote.contactId,
+        customerId: quote.customerId || undefined,
+        contactId: quote.contactId || undefined,
       });
       await storage.createOrderAuditLog({
         orderId: order.id,
@@ -2697,7 +2697,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         fromStatus: null,
         toStatus: null,
         note: `File attached: ${fileName}`,
-        metadata: { fileId: attachment.id, fileName },
+        metadata: { fileId: attachment.id, fileName: fileName } as any,
       });
       res.json({ success: true, data: attachment });
     } catch (error) {
@@ -2840,6 +2840,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error checking linkage:", error);
       res.status(500).json({ message: "Failed to check linkage" });
+    }
+  });
+
+  // =============================
+  // Production Jobs Endpoints
+  // =============================
+
+  // List jobs (filterable)
+  app.get("/api/jobs", isAuthenticated, async (req: any, res) => {
+    try {
+      const status = req.query.status as string | undefined;
+      const assignedToUserId = req.query.assignedToUserId as string | undefined;
+      const orderId = req.query.orderId as string | undefined;
+      const jobs = await storage.getJobs({ status, assignedToUserId, orderId });
+      res.json({ success: true, data: jobs });
+    } catch (error) {
+      console.error("Error fetching jobs:", error);
+      res.status(500).json({ error: "Failed to fetch jobs" });
+    }
+  });
+
+  // Get single job detail
+  app.get("/api/jobs/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const job = await storage.getJob(req.params.id);
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      res.json({ success: true, data: job });
+    } catch (error) {
+      console.error("Error fetching job:", error);
+      res.status(500).json({ error: "Failed to fetch job" });
+    }
+  });
+
+  // Update job (status, assignedTo, notes)
+  app.patch("/api/jobs/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const role = req.user?.role || "";
+      if (role === 'customer') {
+        return res.status(403).json({ message: "Access denied" });
+      }
+      const updates: any = {};
+      if (typeof req.body?.status === 'string') updates.status = req.body.status;
+      if (typeof req.body?.assignedTo === 'string') updates.assignedTo = req.body.assignedTo;
+      if (typeof req.body?.notes === 'string') updates.notes = req.body.notes;
+      const userId = req.user?.claims?.sub || req.user?.id || undefined;
+      const updated = await storage.updateJob(req.params.id, updates, userId);
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error("Error updating job:", error);
+      res.status(500).json({ error: "Failed to update job" });
+    }
+  });
+
+  // Append a job note
+  app.post("/api/jobs/:id/notes", isAuthenticated, async (req: any, res) => {
+    try {
+      const role = req.user?.role || "";
+      if (role === 'customer') {
+        return res.status(403).json({ message: "Access denied" });
+      }
+      const noteText = (req.body?.noteText || '').toString();
+      if (!noteText) return res.status(400).json({ message: "noteText required" });
+      const userId = req.user?.claims?.sub || req.user?.id;
+      const note = await storage.addJobNote(req.params.id, noteText, userId);
+      res.json({ success: true, data: note });
+    } catch (error) {
+      console.error("Error adding job note:", error);
+      res.status(500).json({ error: "Failed to add job note" });
     }
   });
 

@@ -859,10 +859,11 @@ export type OrderLineItem = typeof orderLineItems.$inferSelect;
 // Jobs table for production tracking
 export const jobs = pgTable("jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: 'cascade' }), // added for direct order linkage
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   productType: varchar("product_type", { length: 50 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("pending_prepress"), // pending_prepress, prepress, queued_production, in_production, finishing, qc, complete, canceled
-  priority: varchar("priority", { length: 20 }).notNull().default("normal"), // rush, normal, low
+  priority: varchar("priority", { length: 20 }).notNull().default("normal"), // rush, normal, low (pre-existing; retained)
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: 'set null' }),
   notesInternal: text("notes_internal"),
@@ -873,6 +874,7 @@ export const jobs = pgTable("jobs", {
   index("jobs_product_type_idx").on(table.productType),
   index("jobs_status_idx").on(table.status),
   index("jobs_assigned_to_user_id_idx").on(table.assignedToUserId),
+  index("jobs_order_id_idx").on(table.orderId),
 ]);
 
 export const insertJobSchema = createInsertSchema(jobs).omit({
@@ -893,6 +895,54 @@ export const updateJobSchema = insertJobSchema.partial().extend({
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type UpdateJob = z.infer<typeof updateJobSchema>;
 export type Job = typeof jobs.$inferSelect;
+
+// Append-only job notes & status log tables (no duplicate jobs table)
+export const jobNotes = pgTable('job_notes', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'set null' }),
+  noteText: text('note_text').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [
+  index('job_notes_job_id_idx').on(table.jobId),
+  index('job_notes_created_at_idx').on(table.createdAt),
+]);
+
+export const insertJobNoteSchema = createInsertSchema(jobNotes).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertJobNote = z.infer<typeof insertJobNoteSchema>;
+export type JobNote = typeof jobNotes.$inferSelect;
+
+export const jobStatusLog = pgTable('job_status_log', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
+  oldStatus: varchar('old_status', { length: 50 }),
+  newStatus: varchar('new_status', { length: 50 }).notNull(),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [
+  index('job_status_log_job_id_idx').on(table.jobId),
+  index('job_status_log_created_at_idx').on(table.createdAt),
+]);
+
+export const insertJobStatusLogSchema = createInsertSchema(jobStatusLog).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertJobStatusLog = z.infer<typeof insertJobStatusLogSchema>;
+export type JobStatusLog = typeof jobStatusLog.$inferSelect;
+
+export type JobWithRelations = Job & {
+  order?: Order | null;
+  orderLineItem?: OrderLineItem | null;
+  customer?: Customer | null;
+  contact?: CustomerContact | null;
+  assignedUser?: User | null;
+  notesLog?: JobNote[];
+  statusLog?: JobStatusLog[];
+};
 
 // Order relations
 export const ordersRelations = relations(orders, ({ one, many }) => ({

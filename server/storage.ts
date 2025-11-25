@@ -18,6 +18,8 @@ import {
   orders,
   orderLineItems,
   jobs,
+  jobNotes,
+  jobStatusLog,
   type User,
   type UpsertUser,
   type Product,
@@ -75,6 +77,10 @@ import {
   type Job,
   type InsertJob,
   type UpdateJob,
+  type JobNote,
+  type InsertJobNote,
+  type JobStatusLog,
+  type InsertJobStatusLog,
   auditLogs,
   type AuditLog,
   type InsertAuditLog,
@@ -296,6 +302,17 @@ export interface IStorage {
   getQuoteWorkflowState(quoteId: string): Promise<QuoteWorkflowState | undefined>;
   createQuoteWorkflowState(state: InsertQuoteWorkflowState): Promise<QuoteWorkflowState>;
   updateQuoteWorkflowState(quoteId: string, updates: Partial<InsertQuoteWorkflowState>): Promise<QuoteWorkflowState>;
+
+  // Contacts (required by routes)
+  getAllContacts(params: { search?: string; page?: number; pageSize?: number }): Promise<CustomerContact[]>;
+  getContactWithRelations(id: string): Promise<(CustomerContact & { customer?: Customer }) | undefined>;
+
+  // Job operations (production workflow)
+  getJobs(filters?: { status?: string; assignedToUserId?: string; orderId?: string }): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null })[]>;
+  getJob(id: string): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null; notesLog?: JobNote[]; statusLog?: JobStatusLog[] }) | undefined>;
+  updateJob(id: string, data: Partial<InsertJob>, userId?: string): Promise<Job>;
+  addJobNote(jobId: string, noteText: string, userId: string): Promise<JobNote>;
+  getJobsForOrder(orderId: string): Promise<Job[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1886,6 +1903,30 @@ export class DatabaseStorage implements IStorage {
       return { order, lineItems: createdLineItems };
     });
 
+    // Auto-create jobs for each line item (if missing)
+    await Promise.all(created.lineItems.map(async (li) => {
+      const [existing] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
+      if (!existing) {
+        const jobInsert: typeof jobs.$inferInsert = {
+          orderId: created.order.id,
+          orderLineItemId: li.id,
+          productType: (li as any).productType || 'wide_roll',
+          status: 'pending_prepress',
+          priority: 'normal',
+          specsJson: (li as any).specsJson || null,
+          assignedToUserId: null,
+          notesInternal: null,
+        } as any;
+        const [newJob] = await db.insert(jobs).values(jobInsert).returning();
+        await db.insert(jobStatusLog).values({
+          jobId: newJob.id,
+          oldStatus: null,
+          newStatus: 'pending_prepress',
+          userId: data.createdByUserId,
+        } as InsertJobStatusLog).returning();
+      }
+    }));
+
     const [customer] = await db.select().from(customers).where(eq(customers.id, data.customerId));
     let contact: CustomerContact | null = null;
     if (data.contactId) {
@@ -1946,6 +1987,29 @@ export class DatabaseStorage implements IStorage {
       totalPrice: lineItem.totalPrice.toString(),
     } as any;
     const [created] = await db.insert(orderLineItems).values(prepared).returning();
+    // Auto-create job for this new line item if missing
+    const [existing] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, created.id));
+    if (!existing) {
+      // find orderId
+      const [orderRow] = await db.select().from(orders).where(eq(orders.id, created.orderId));
+      const jobInsert: typeof jobs.$inferInsert = {
+        orderId: orderRow?.id || created.orderId,
+        orderLineItemId: created.id,
+        productType: (created as any).productType || 'wide_roll',
+        status: 'pending_prepress',
+        priority: 'normal',
+        specsJson: (created as any).specsJson || null,
+        assignedToUserId: null,
+        notesInternal: null,
+      } as any;
+      const [newJob] = await db.insert(jobs).values(jobInsert).returning();
+      await db.insert(jobStatusLog).values({
+        jobId: newJob.id,
+        oldStatus: null,
+        newStatus: 'pending_prepress',
+        userId: orderRow?.createdByUserId || null,
+      } as InsertJobStatusLog).returning();
+    }
     return created;
   }
 
@@ -1957,6 +2021,27 @@ export class DatabaseStorage implements IStorage {
     });
     const [updated] = await db.update(orderLineItems).set(updateData).where(eq(orderLineItems.id, id)).returning();
     if (!updated) throw new Error('Order line item not found');
+    // Do not delete jobs automatically; ensure a job exists (if productType changes or newly created somehow)
+    const [existingJob] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, id));
+    if (!existingJob) {
+      const jobInsert: typeof jobs.$inferInsert = {
+        orderId: updated.orderId,
+        orderLineItemId: id,
+        productType: (updated as any).productType || 'wide_roll',
+        status: 'pending_prepress',
+        priority: 'normal',
+        specsJson: (updated as any).specsJson || null,
+        assignedToUserId: null,
+        notesInternal: null,
+      } as any;
+      const [newJob] = await db.insert(jobs).values(jobInsert).returning();
+      await db.insert(jobStatusLog).values({
+        jobId: newJob.id,
+        oldStatus: null,
+        newStatus: 'pending_prepress',
+        userId: null,
+      } as InsertJobStatusLog).returning();
+    }
     return updated;
   }
 
@@ -2022,6 +2107,30 @@ export class DatabaseStorage implements IStorage {
       const createdLineItems = await tx.insert(orderLineItems).values(lineItemsData).returning();
       return { order, lineItems: createdLineItems };
     });
+    // Auto-create jobs for each created line item
+    await Promise.all(created.lineItems.map(async (li) => {
+      const [existing] = await db.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
+      if (!existing) {
+        const jobInsert: typeof jobs.$inferInsert = {
+          orderId: created.order.id,
+          orderLineItemId: li.id,
+          productType: (li as any).productType || 'wide_roll',
+          status: 'pending_prepress',
+          priority: 'normal',
+          specsJson: (li as any).specsJson || null,
+          assignedToUserId: null,
+          notesInternal: null,
+        } as any;
+        const [newJob] = await db.insert(jobs).values(jobInsert).returning();
+        await db.insert(jobStatusLog).values({
+          jobId: newJob.id,
+          oldStatus: null,
+          newStatus: 'pending_prepress',
+          userId: createdByUserId,
+        } as InsertJobStatusLog).returning();
+      }
+    }));
+
     const [customer] = await db.select().from(customers).where(eq(customers.id, customerId));
     let contact: CustomerContact | null = null;
     if (contactId) {
@@ -2155,6 +2264,93 @@ export class DatabaseStorage implements IStorage {
       throw new Error("Quote workflow state not found");
     }
     return state;
+  }
+
+  // Contacts operations
+  async getAllContacts(params: { search?: string; page?: number; pageSize?: number }): Promise<CustomerContact[]> {
+    const { search, page = 1, pageSize = 50 } = params;
+    let query = db.select().from(customerContacts) as any;
+    if (search) {
+      const pattern = `%${search}%`;
+      query = query.where(or(
+        ilike(customerContacts.firstName, pattern),
+        ilike(customerContacts.lastName, pattern),
+        ilike(customerContacts.email, pattern)
+      ));
+    }
+    query = query.orderBy(desc(customerContacts.createdAt)).limit(pageSize).offset((page - 1) * pageSize);
+    return await query;
+  }
+
+  async getContactWithRelations(id: string): Promise<(CustomerContact & { customer?: Customer }) | undefined> {
+    const [contact] = await db.select().from(customerContacts).where(eq(customerContacts.id, id));
+    if (!contact) return undefined;
+    const [customer] = contact.customerId ? await db.select().from(customers).where(eq(customers.id, contact.customerId)) : [undefined];
+    return { ...contact, customer };
+  }
+
+  // =============================
+  // Job operations
+  // =============================
+  async getJobs(filters?: { status?: string; assignedToUserId?: string; orderId?: string }): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null })[]> {
+    const conditions: any[] = [];
+    if (filters?.status) conditions.push(eq(jobs.status as any, filters.status));
+    if (filters?.assignedToUserId) conditions.push(eq(jobs.assignedToUserId as any, filters.assignedToUserId));
+    if (filters?.orderId) conditions.push(eq(jobs.orderId as any, filters.orderId));
+    let query = db.select().from(jobs) as any;
+    if (conditions.length) query = query.where(and(...conditions));
+    query = query.orderBy(desc(jobs.createdAt as any));
+    const records: Job[] = await query;
+    const enriched = await Promise.all(records.map(async (j) => {
+      const [order] = j.orderId ? await db.select().from(orders).where(eq(orders.id, j.orderId)) : [undefined];
+      const [li] = j.orderLineItemId ? await db.select().from(orderLineItems).where(eq(orderLineItems.id, j.orderLineItemId)) : [undefined];
+      return { ...j, order: order || null, orderLineItem: li || null } as any;
+    }));
+    return enriched as any;
+  }
+
+  async getJob(id: string): Promise<(Job & { order?: Order | null; orderLineItem?: OrderLineItem | null; notesLog?: JobNote[]; statusLog?: JobStatusLog[] }) | undefined> {
+    const [job] = await db.select().from(jobs).where(eq(jobs.id as any, id));
+    if (!job) return undefined;
+    const [order] = job.orderId ? await db.select().from(orders).where(eq(orders.id, job.orderId)) : [undefined];
+    const [li] = job.orderLineItemId ? await db.select().from(orderLineItems).where(eq(orderLineItems.id, job.orderLineItemId)) : [undefined];
+    const notes = await db.select().from(jobNotes).where(eq(jobNotes.jobId as any, job.id)).orderBy(desc(jobNotes.createdAt as any));
+    const status = await db.select().from(jobStatusLog).where(eq(jobStatusLog.jobId as any, job.id)).orderBy(desc(jobStatusLog.createdAt as any));
+    return { ...job, order: order || null, orderLineItem: li || null, notesLog: notes as any, statusLog: status as any } as any;
+  }
+
+  async updateJob(id: string, data: Partial<InsertJob>, userId?: string): Promise<Job> {
+    const [existing] = await db.select().from(jobs).where(eq(jobs.id as any, id));
+    if (!existing) throw new Error('Job not found');
+    const updateData: any = { ...data, updatedAt: new Date() };
+    if ((data as any).assignedTo !== undefined) {
+      updateData.assignedToUserId = (data as any).assignedTo;
+      delete (updateData as any).assignedTo;
+    }
+    if ((data as any).notes !== undefined) {
+      updateData.notesInternal = (data as any).notes;
+      delete (updateData as any).notes;
+    }
+    const [updated] = await db.update(jobs).set(updateData).where(eq(jobs.id as any, id)).returning();
+    if (!updated) throw new Error('Job not found after update');
+    if (data.status && data.status !== existing.status) {
+      await db.insert(jobStatusLog).values({
+        jobId: id,
+        oldStatus: existing.status,
+        newStatus: data.status,
+        userId: userId || null,
+      } as InsertJobStatusLog).returning();
+    }
+    return updated;
+  }
+
+  async addJobNote(jobId: string, noteText: string, userId: string): Promise<JobNote> {
+    const [note] = await db.insert(jobNotes).values({ jobId, userId, noteText } as InsertJobNote).returning();
+    return note;
+  }
+
+  async getJobsForOrder(orderId: string): Promise<Job[]> {
+    return await db.select().from(jobs).where(eq(jobs.orderId as any, orderId)).orderBy(desc(jobs.createdAt as any));
   }
 }
 
