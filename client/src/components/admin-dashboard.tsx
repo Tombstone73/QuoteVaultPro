@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart3, Download, FileText, Search, TrendingUp, Users, Edit } from "lucide-react";
 import { format } from "date-fns";
 import { apiRequest } from "@/lib/queryClient";
+import { useLowStockAlerts } from "@/hooks/useMaterials";
 import { useToast } from "@/hooks/use-toast";
 import type { Product, User, QuoteWithRelations } from "@shared/schema";
 
@@ -101,6 +102,7 @@ export default function AdminDashboard() {
   const totalQuotes = allQuotes?.length ?? 0;
   const uniqueUsers = new Set(allQuotes?.map(q => q.userId)).size;
   const totalRevenue = allQuotes?.reduce((sum, q) => sum + parseFloat(q.totalPrice || "0"), 0) ?? 0;
+  const { data: lowStock = [] } = useLowStockAlerts();
   
   // Aggregate products from all line items across all quotes
   const topProduct = allQuotes?.reduce((acc, quote) => {
@@ -180,6 +182,53 @@ export default function AdminDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Procurement Quick Links */}
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Vendors</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <p className="text-xs text-muted-foreground">Manage supplier records.</p>
+            <Button asChild size="sm" variant="outline"><Link href="/vendors">Go to Vendors</Link></Button>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Purchase Orders</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <p className="text-xs text-muted-foreground">Track inbound inventory.</p>
+            <Button asChild size="sm" variant="outline"><Link href="/purchase-orders">Go to POs</Link></Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Low Stock Alerts */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">Low Stock Materials</CardTitle>
+          <CardDescription>Below minimum threshold</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {lowStock.length === 0 && <div className="text-xs text-muted-foreground">No low stock materials.</div>}
+          {lowStock.length > 0 && (
+            <div className="space-y-1 max-h-40 overflow-auto text-xs">
+              {lowStock.map(m => {
+                const stock = parseFloat(m.stockQuantity||"0");
+                const min = parseFloat(m.minStockAlert||"0");
+                return (
+                  <div key={m.id} className="flex justify-between border-b py-1">
+                    <a href={`/materials/${m.id}`} className="underline text-primary font-medium">{m.name}</a>
+                    <span>{stock.toFixed(2)} / {min.toFixed(2)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card data-testid="card-admin-filters">
         <CardHeader>

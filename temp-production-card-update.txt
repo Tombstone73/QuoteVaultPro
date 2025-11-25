@@ -1,0 +1,22 @@
+// REPLACEMENT FOR client/src/pages/production.tsx CardTitle section (lines 85-105)
+// Replace the entire CardTitle section with:
+
+                      <CardTitle className="text-sm flex flex-col gap-1">
+                        <div className="flex justify-between items-start">
+                          <span className="font-semibold truncate" title={job.customerName}>{job.customerName}</span>
+                          {job.priority === 'rush' && <Badge variant="destructive" className="text-[10px] px-1 py-0">RUSH</Badge>}
+                        </div>
+                        {job.orderNumber && (
+                          <span className="text-xs text-muted-foreground">{job.orderNumber}</span>
+                        )}
+                        <div className="text-xs font-medium">
+                          {job.mediaType}
+                          {job.quantity > 0 && <span className="text-muted-foreground"> × {job.quantity}</span>}
+                        </div>
+                        {job.dueDate && (
+                          <span className="text-xs text-muted-foreground">Due: {new Date(job.dueDate).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}</span>
+                        )}
+                        {job.assignedToUserId && (
+                          <Badge variant="secondary" className="w-fit text-[10px]">Assigned</Badge>
+                        )}
+                      </CardTitle>

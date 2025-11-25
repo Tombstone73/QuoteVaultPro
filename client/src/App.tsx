@@ -29,6 +29,15 @@ import MyOrders from "@/pages/portal/my-orders";
 import QuoteCheckout from "@/pages/portal/quote-checkout";
 import ProductionBoard from "@/pages/production";
 import JobDetail from "@/pages/job-detail";
+import ProductTypesSettings from "@/pages/settings/product-types";
+import InvoicesListPage from "@/pages/invoices";
+import InvoiceDetailPage from "@/pages/invoice-detail";
+import MaterialsListPage from "@/pages/materials";
+import MaterialDetailPage from "@/pages/material-detail";
+import VendorsPage from "@/pages/vendors";
+import VendorDetailPage from "@/pages/vendor-detail";
+import PurchaseOrdersPage from "@/pages/purchase-orders";
+import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -69,11 +78,26 @@ function Router() {
           <Route path="/orders/:id" component={OrderDetail} />
           <Route path="/orders" component={Orders} />
 
+          {/* Inventory / Materials routes */}
+          <Route path="/materials/:id" component={MaterialDetailPage} />
+          <Route path="/materials" component={MaterialsListPage} />
+
+          {/* Procurement routes */}
+          <Route path="/vendors/:id" component={VendorDetailPage} />
+          <Route path="/vendors" component={VendorsPage} />
+          <Route path="/purchase-orders/:id" component={PurchaseOrderDetailPage} />
+          <Route path="/purchase-orders" component={PurchaseOrdersPage} />
+
+          {/* Invoice routes */}
+          <Route path="/invoices/:id" component={InvoiceDetailPage} />
+          <Route path="/invoices" component={InvoicesListPage} />
+
           {/* Production workflow routes */}
           <Route path="/production" component={ProductionBoard} />
           <Route path="/jobs/:id" component={JobDetail} />
           
           {/* Settings routes */}
+          <Route path="/settings/product-types" component={ProductTypesSettings} />
           <Route path="/settings" component={CompanySettings} />
           <Route path="/debug-user" component={DebugUser} />
           

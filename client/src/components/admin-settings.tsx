@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -53,6 +54,7 @@ import {
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Checkbox } from "@/components/ui/checkbox";
 import { JobStatusSettings } from "@/components/job-status-settings";
+import { useProductTypes } from "@/hooks/useProductTypes";
 
 function SelectChoicesInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const [newChoice, setNewChoice] = useState("");
@@ -832,6 +834,8 @@ export default function AdminSettings() {
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
   });
+
+  const { data: productTypes } = useProductTypes();
 
   const addProductForm = useForm<InsertProduct>({
     resolver: zodResolver(insertProductSchema),
@@ -1641,6 +1645,23 @@ export default function AdminSettings() {
             <TabsContent value="products" className="space-y-4">
               <Card>
                 <CardHeader>
+                  <CardTitle>Product Types</CardTitle>
+                  <CardDescription>
+                    Manage product categories (Roll, Sheet, Digital Print, etc.)
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Link href="/settings/product-types">
+                    <Button variant="outline" className="w-full">
+                      <SettingsIcon className="w-4 h-4 mr-2" />
+                      Manage Product Types
+                    </Button>
+                  </Link>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
                   <CardTitle>Import Products from CSV</CardTitle>
                   <CardDescription>
                     Bulk import products with variants and options using a CSV file
@@ -1782,6 +1803,36 @@ export default function AdminSettings() {
                               </FormControl>
                               <FormDescription>
                                 Product category for filtering (e.g., flatbed, adhesive backed, paper, misc)
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={addProductForm.control}
+                          name="productTypeId"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Product Type</FormLabel>
+                              <Select
+                                value={field.value || undefined}
+                                onValueChange={field.onChange}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select product type" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  {productTypes?.map((type: any) => (
+                                    <SelectItem key={type.id} value={type.id}>
+                                      {type.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <FormDescription>
+                                Categorize this product (e.g., Roll, Sheet, Digital Print)
                               </FormDescription>
                               <FormMessage />
                             </FormItem>
@@ -2355,6 +2406,36 @@ export default function AdminSettings() {
                                             </FormControl>
                                             <FormDescription>
                                               Product category for filtering
+                                            </FormDescription>
+                                            <FormMessage />
+                                          </FormItem>
+                                        )}
+                                      />
+                                      <FormField
+                                        control={editProductForm.control}
+                                        name="productTypeId"
+                                        render={({ field }) => (
+                                          <FormItem>
+                                            <FormLabel>Product Type</FormLabel>
+                                            <Select
+                                              value={field.value || undefined}
+                                              onValueChange={field.onChange}
+                                            >
+                                              <FormControl>
+                                                <SelectTrigger>
+                                                  <SelectValue placeholder="Select product type" />
+                                                </SelectTrigger>
+                                              </FormControl>
+                                              <SelectContent>
+                                                {productTypes?.map((type: any) => (
+                                                  <SelectItem key={type.id} value={type.id}>
+                                                    {type.name}
+                                                  </SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+                                            <FormDescription>
+                                              Categorize this product (e.g., Roll, Sheet, Digital Print)
                                             </FormDescription>
                                             <FormMessage />
                                           </FormItem>

@@ -1,0 +1,18 @@
+// REPLACEMENT FOR client/src/pages/home.tsx header section (around line 115-120)
+// Add Production button BEFORE the view toggle section:
+
+            <div className="flex items-center gap-4">
+              {showAdminFeatures && (
+                <Button 
+                  onClick={() => navigate("/production")}
+                  variant="default"
+                  size="sm"
+                  data-testid="button-production"
+                >
+                  <Factory className="h-4 w-4 mr-2" />
+                  Production
+                </Button>
+              )}
+              {isAdmin && (
+                <div className="flex items-center gap-2" data-testid="container-view-toggle">
+                  ... rest of code ...

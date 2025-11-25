@@ -4,7 +4,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes } from "@shared/schema";
+import { customers, users, quotes, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -60,6 +60,18 @@ import {
   updateOrderSchema,
   insertOrderLineItemSchema,
   updateOrderLineItemSchema,
+  insertInvoiceSchema,
+  updateInvoiceSchema,
+  insertInvoiceLineItemSchema,
+  updateInvoiceLineItemSchema,
+  insertPaymentSchema,
+  updatePaymentSchema,
+  insertShipmentSchema,
+  updateShipmentSchema,
+  insertVendorSchema,
+  updateVendorSchema,
+  insertPurchaseOrderSchema,
+  updatePurchaseOrderSchema,
   type InsertProduct,
   type UpdateProduct
 } from "@shared/schema";
@@ -70,6 +82,8 @@ import {
   ObjectNotFoundError,
 } from "./objectStorage";
 import { ObjectPermission } from "./objectAcl";
+import { createInvoiceFromOrder, getInvoiceWithRelations, markInvoiceSent, applyPayment, refreshInvoiceStatus } from './invoicesService';
+import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -251,6 +265,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Product Types routes
+  app.get("/api/product-types", isAuthenticated, async (req, res) => {
+    try {
+      const types = await storage.getAllProductTypes();
+      res.json(types);
+    } catch (error) {
+      console.error("Error fetching product types:", error);
+      res.status(500).json({ message: "Failed to fetch product types" });
+    }
+  });
+
+  app.post("/api/product-types", isAuthenticated, isAdminOrOwner, async (req, res) => {
+    try {
+      const newType = await storage.createProductType(req.body);
+      res.json(newType);
+    } catch (error) {
+      console.error("Error creating product type:", error);
+      res.status(400).json({ message: error instanceof Error ? error.message : "Failed to create product type" });
+    }
+  });
+
+  app.patch("/api/product-types/:id", isAuthenticated, isAdminOrOwner, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updated = await storage.updateProductType(id, req.body);
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating product type:", error);
+      res.status(400).json({ message: error instanceof Error ? error.message : "Failed to update product type" });
+    }
+  });
+
+  app.delete("/api/product-types/:id", isAuthenticated, isAdminOrOwner, async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteProductType(id);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error deleting product type:", error);
+      if (error.code === '23503') {
+        return res.status(400).json({ message: "Cannot delete product type that is in use by products" });
+      }
+      res.status(500).json({ message: "Failed to delete product type" });
+    }
+  });
+
   app.get("/api/products", isAuthenticated, async (req, res) => {
     try {
       const products = await storage.getAllProducts();
@@ -334,6 +394,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const newProduct = await storage.createProduct({
             name: productName,
             description: row['Product Description']?.trim() || '',
+            requiresProductionJob: true,
             pricingFormula: row['Pricing Formula']?.trim() || 'basePrice * quantity',
             variantLabel: row['Variant Label']?.trim(),
             category: row['Category']?.trim(),
@@ -2361,6 +2422,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Update order - now returns full OrderWithRelations
       const order = await storage.updateOrder(req.params.id, updateData);
 
+      // Auto inventory deduction when moving to production
+      if (userId && oldOrder && oldOrder.status !== 'in_production' && order.status === 'in_production') {
+        try {
+          await storage.autoDeductInventoryWhenOrderMovesToProduction(order.id, userId);
+        } catch (invErr) {
+          console.error('Inventory auto-deduction error:', invErr);
+          // Do not fail the order update; surface warning
+        }
+      }
+
       // Create audit log
       if (userId) {
         await storage.createAuditLog({
@@ -2384,6 +2455,153 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error updating order:", error);
       res.status(500).json({ message: "Failed to update order" });
+    }
+  });
+
+  // =============================
+  // Inventory Management Routes
+  // =============================
+
+  // List materials
+  app.get('/api/materials', isAuthenticated, async (req: any, res) => {
+    try {
+      const list = await storage.getAllMaterials();
+      res.json({ success: true, data: list });
+    } catch (err) {
+      console.error('Error listing materials', err);
+      res.status(500).json({ error: 'Failed to list materials' });
+    }
+  });
+
+  // Low stock alerts
+  app.get('/api/materials/low-stock', isAuthenticated, async (req: any, res) => {
+    try {
+      const alerts = await storage.getMaterialLowStockAlerts();
+      res.json({ success: true, data: alerts });
+    } catch (err) {
+      console.error('Error getting low stock alerts', err);
+      res.status(500).json({ error: 'Failed to get low stock alerts' });
+    }
+  });
+
+  // Get single material
+  app.get('/api/materials/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const material = await storage.getMaterialById(req.params.id);
+      if (!material) return res.status(404).json({ error: 'Material not found' });
+      res.json({ success: true, data: material });
+    } catch (err) {
+      console.error('Error fetching material', err);
+      res.status(500).json({ error: 'Failed to fetch material' });
+    }
+  });
+
+  // Create material
+  app.post('/api/materials', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const parsed = insertMaterialSchema.parse(req.body);
+      const created = await storage.createMaterial(parsed);
+      res.json({ success: true, data: created });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+      console.error('Error creating material', err);
+      res.status(500).json({ error: 'Failed to create material' });
+    }
+  });
+
+  // Update material
+  app.patch('/api/materials/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const parsed = updateMaterialSchema.parse(req.body);
+      const updated = await storage.updateMaterial(req.params.id, parsed);
+      res.json({ success: true, data: updated });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+      console.error('Error updating material', err);
+      res.status(500).json({ error: 'Failed to update material' });
+    }
+  });
+
+  // Delete material
+  app.delete('/api/materials/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      await storage.deleteMaterial(req.params.id);
+      res.json({ success: true });
+    } catch (err) {
+      console.error('Error deleting material', err);
+      res.status(500).json({ error: 'Failed to delete material' });
+    }
+  });
+
+  // Adjust inventory (manual)
+  app.post('/api/materials/:id/adjust', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const material = await storage.getMaterialById(req.params.id);
+      if (!material) return res.status(404).json({ error: 'Material not found' });
+      const parsed = insertInventoryAdjustmentSchema.parse({ ...req.body, materialId: req.params.id });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+      const adjustment = await storage.adjustInventory(parsed.materialId, parsed.type as any, parsed.quantityChange, userId, parsed.reason || undefined, parsed.orderId || undefined);
+      res.json({ success: true, data: adjustment });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+      console.error('Error adjusting inventory', err);
+      res.status(500).json({ error: 'Failed to adjust inventory' });
+    }
+  });
+
+  // List adjustments for a material
+  app.get('/api/materials/:id/adjustments', isAuthenticated, async (req: any, res) => {
+    try {
+      const material = await storage.getMaterialById(req.params.id);
+      if (!material) return res.status(404).json({ error: 'Material not found' });
+      const adjustments = await storage.getInventoryAdjustments(req.params.id);
+      res.json({ success: true, data: adjustments });
+    } catch (err) {
+      console.error('Error fetching adjustments', err);
+      res.status(500).json({ error: 'Failed to fetch adjustments' });
+    }
+  });
+
+  // Usage history for a material across orders
+  app.get('/api/materials/:id/usage', isAuthenticated, async (req: any, res) => {
+    try {
+      const material = await storage.getMaterialById(req.params.id);
+      if (!material) return res.status(404).json({ error: 'Material not found' });
+      const usage = await storage.getMaterialUsageByMaterial(req.params.id);
+      res.json({ success: true, data: usage });
+    } catch (err) {
+      console.error('Error fetching material usage', err);
+      res.status(500).json({ error: 'Failed to fetch material usage' });
+    }
+  });
+
+  // Order material usage listing
+  app.get('/api/orders/:id/material-usage', isAuthenticated, async (req: any, res) => {
+    try {
+      const order = await storage.getOrderById(req.params.id);
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+      const usage = await storage.getMaterialUsageByOrder(req.params.id);
+      res.json({ success: true, data: usage });
+    } catch (err) {
+      console.error('Error fetching material usage', err);
+      res.status(500).json({ error: 'Failed to fetch material usage' });
+    }
+  });
+
+  // Manual trigger for inventory deduction (if needed)
+  app.post('/api/orders/:id/deduct-inventory', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const order = await storage.getOrderById(req.params.id);
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+      await storage.autoDeductInventoryWhenOrderMovesToProduction(order.id, userId);
+      const usage = await storage.getMaterialUsageByOrder(order.id);
+      res.json({ success: true, data: usage });
+    } catch (err) {
+      console.error('Error deducting inventory manually', err);
+      res.status(500).json({ error: 'Failed to deduct inventory' });
     }
   });
 
@@ -2955,6 +3173,619 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error adding job note:", error);
       res.status(500).json({ error: "Failed to add job note" });
+    }
+  });
+
+  // ============================================================
+  // INVOICES & PAYMENTS
+  // ============================================================
+
+  // List invoices with basic filters
+  app.get('/api/invoices', isAuthenticated, async (req: any, res) => {
+    try {
+      const status = req.query.status as string | undefined;
+      const customerId = req.query.customerId as string | undefined;
+      const orderId = req.query.orderId as string | undefined;
+      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 200);
+      const offset = parseInt(req.query.offset as string || '0', 10);
+      // Simple query; refine later for search/sort/pagination
+      let rows = await db.select().from(invoices).limit(limit).offset(offset).orderBy(invoices.issueDate);
+      if (status) rows = rows.filter(r => r.status === status);
+      if (customerId) rows = rows.filter(r => r.customerId === customerId);
+      if (orderId) rows = rows.filter(r => r.orderId === orderId);
+      // Refresh overdue status on fetch (lazy evaluation)
+      const now = new Date();
+      const updatedStatusRows = await Promise.all(rows.map(async inv => {
+        if (inv.status !== 'paid' && inv.dueDate && new Date(inv.dueDate) < now && inv.status !== 'overdue') {
+          await refreshInvoiceStatus(inv.id);
+          const rel = await getInvoiceWithRelations(inv.id);
+          return rel?.invoice || inv;
+        }
+        return inv;
+      }));
+      res.json({ success: true, data: updatedStatusRows });
+    } catch (error) {
+      console.error('Error listing invoices:', error);
+      res.status(500).json({ error: 'Failed to list invoices' });
+    }
+  });
+
+  // Create invoice from order
+  app.post('/api/invoices', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { orderId, terms, customDueDate } = req.body || {};
+      if (!orderId) return res.status(400).json({ error: 'orderId required for now (manual invoices unsupported)' });
+      const invoice = await createInvoiceFromOrder(orderId, userId!, { terms: terms || 'due_on_receipt', customDueDate: customDueDate ? new Date(customDueDate) : null });
+      res.json({ success: true, data: invoice });
+    } catch (error: any) {
+      console.error('Error creating invoice:', error);
+      res.status(500).json({ error: error.message || 'Failed to create invoice' });
+    }
+  });
+
+  // Get invoice detail
+  app.get('/api/invoices/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
+      // Ensure status freshness
+      await refreshInvoiceStatus(req.params.id);
+      const refreshed = await getInvoiceWithRelations(req.params.id);
+      res.json({ success: true, data: refreshed });
+    } catch (error) {
+      console.error('Error fetching invoice:', error);
+      res.status(500).json({ error: 'Failed to fetch invoice' });
+    }
+  });
+
+  // Update invoice (limited fields)
+  app.patch('/api/invoices/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const existingRel = await getInvoiceWithRelations(id);
+      if (!existingRel) return res.status(404).json({ error: 'Invoice not found' });
+      const existing = existingRel.invoice;
+      const updates: any = {};
+      if (typeof req.body.notesPublic === 'string') updates.notesPublic = req.body.notesPublic;
+      if (typeof req.body.notesInternal === 'string') updates.notesInternal = req.body.notesInternal;
+      if (typeof req.body.terms === 'string') updates.terms = req.body.terms;
+      if (req.body.customDueDate) updates.dueDate = new Date(req.body.customDueDate);
+      if (updates.terms && updates.terms !== existing.terms) {
+        // Recompute dueDate if changing terms and not custom
+        if (updates.terms !== 'custom') {
+          const issueDate = new Date(existing.issueDate);
+          const offsetMap: Record<string, number> = { due_on_receipt: 0, net_15: 15, net_30: 30, net_45: 45 };
+          const offset = offsetMap[updates.terms] ?? 0;
+          const d = new Date(issueDate.getTime());
+          d.setDate(d.getDate() + offset);
+          updates.dueDate = d;
+        }
+      }
+      const [updated] = await db.update(invoices).set({ ...updates, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error('Error updating invoice:', error);
+      res.status(500).json({ error: 'Failed to update invoice' });
+    }
+  });
+
+  // Delete invoice (only if draft & no payments)
+  app.delete('/api/invoices/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
+      if (rel.invoice.status !== 'draft') return res.status(400).json({ error: 'Only draft invoices can be deleted' });
+      if (rel.payments.length > 0) return res.status(400).json({ error: 'Cannot delete invoice with payments' });
+      await db.delete(invoices).where(eq(invoices.id, req.params.id));
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting invoice:', error);
+      res.status(500).json({ error: 'Failed to delete invoice' });
+    }
+  });
+
+  // Mark sent
+  app.post('/api/invoices/:id/mark-sent', isAuthenticated, async (req: any, res) => {
+    try {
+      const updated = await markInvoiceSent(req.params.id);
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error('Error marking sent:', error);
+      res.status(500).json({ error: 'Failed to mark invoice sent' });
+    }
+  });
+
+  // Send invoice via email (basic HTML - PDF stub)
+  app.post('/api/invoices/:id/send', isAuthenticated, async (req: any, res) => {
+    try {
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
+      const { invoice, lineItems, payments: paymentRows } = rel;
+      const customer = await storage.getCustomerById(invoice.customerId);
+      const toEmail = customer?.email || req.body.toEmail;
+      if (!toEmail) return res.status(400).json({ error: 'No recipient email' });
+      const html = `<!DOCTYPE html><html><body><h2>Invoice #${invoice.invoiceNumber}</h2><p>Status: ${invoice.status}</p><p>Issue Date: ${new Date(invoice.issueDate).toLocaleDateString()}</p><p>Due Date: ${invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : 'N/A'}</p><h3>Line Items</h3><table cellpadding="4" border="1" style="border-collapse:collapse"><thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>${lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${li.unitPrice}</td><td>${li.totalPrice}</td></tr>`).join('')}</tbody></table><p>Subtotal: ${invoice.subtotal}</p><p>Tax: ${invoice.tax}</p><p>Total: ${invoice.total}</p><p>Paid: ${invoice.amountPaid}</p><p>Balance Due: ${invoice.balanceDue}</p><h4>Payments</h4>${paymentRows.length ? paymentRows.map(p => `<div>${p.method}: ${p.amount} on ${new Date(p.appliedAt).toLocaleDateString()}</div>`).join('') : '<p>No payments recorded.</p>'}</body></html>`;
+      await emailService.sendEmail({ to: toEmail, subject: `Invoice #${invoice.invoiceNumber}`, html });
+      await markInvoiceSent(invoice.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error sending invoice:', error);
+      res.status(500).json({ error: 'Failed to send invoice' });
+    }
+  });
+
+  // Apply payment
+  app.post('/api/payments', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { invoiceId, amount, method, notes } = req.body || {};
+      if (!invoiceId || !amount || !method) return res.status(400).json({ error: 'invoiceId, amount, method required' });
+      const payment = await applyPayment(invoiceId, userId!, { amount: Number(amount), method, notes });
+      res.json({ success: true, data: payment });
+    } catch (error: any) {
+      console.error('Error applying payment:', error);
+      res.status(500).json({ error: error.message || 'Failed to apply payment' });
+    }
+  });
+
+  // Payment deletion (only if invoice not fully paid yet)
+  app.delete('/api/payments/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const paymentId = req.params.id;
+      const paymentRows = await db.select().from(payments).where(eq(payments.id, paymentId));
+      const payment = paymentRows[0];
+      if (!payment) return res.status(404).json({ error: 'Payment not found' });
+      const rel = await getInvoiceWithRelations(payment.invoiceId);
+      if (!rel) return res.status(404).json({ error: 'Parent invoice not found' });
+      if (rel.invoice.status === 'paid') return res.status(400).json({ error: 'Cannot delete payment from fully paid invoice' });
+      await db.delete(payments).where(eq(payments.id, paymentId));
+      await refreshInvoiceStatus(payment.invoiceId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting payment:', error);
+      res.status(500).json({ error: 'Failed to delete payment' });
+    }
+  });
+
+  // Refresh invoice status manually
+  app.post('/api/invoices/:id/refresh-status', isAuthenticated, async (req: any, res) => {
+    try {
+      const updated = await refreshInvoiceStatus(req.params.id);
+      if (!updated) return res.status(404).json({ error: 'Invoice not found' });
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error('Error refreshing status:', error);
+      res.status(500).json({ error: 'Failed to refresh status' });
+    }
+  });
+
+  // ===== SHIPMENT & FULFILLMENT ROUTES =====
+
+  // Get all shipments for an order
+  app.get('/api/orders/:id/shipments', isAuthenticated, async (req: any, res) => {
+    try {
+      const shipmentList = await storage.getShipmentsByOrder(req.params.id);
+      res.json({ success: true, data: shipmentList });
+    } catch (error) {
+      console.error('Error fetching shipments:', error);
+      res.status(500).json({ error: 'Failed to fetch shipments' });
+    }
+  });
+
+  // Create a new shipment (auto-updates order status to "shipped")
+  app.post('/api/orders/:id/shipments', isAuthenticated, async (req: any, res) => {
+    try {
+      const shipmentData = insertShipmentSchema.parse({
+        ...req.body,
+        orderId: req.params.id,
+        createdByUserId: req.user.id,
+      });
+
+      const newShipment = await storage.createShipment(shipmentData);
+
+      // Optionally send shipment notification email
+      if (req.body.sendEmail) {
+        await sendShipmentEmail(req.params.id, newShipment.id.toString(), req.body.emailSubject, req.body.emailMessage);
+      }
+
+      res.json({ success: true, data: newShipment });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid shipment data', details: error.errors });
+      }
+      console.error('Error creating shipment:', error);
+      res.status(500).json({ error: 'Failed to create shipment' });
+    }
+  });
+
+  // Update a shipment (auto-updates order status to "delivered" if deliveredAt is set)
+  app.patch('/api/shipments/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const shipmentId = req.params.id;
+      const updates = updateShipmentSchema.parse(req.body);
+      
+      const updated = await storage.updateShipment(shipmentId, updates);
+      if (!updated) return res.status(404).json({ error: 'Shipment not found' });
+
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid shipment data', details: error.errors });
+      }
+      console.error('Error updating shipment:', error);
+      res.status(500).json({ error: 'Failed to update shipment' });
+    }
+  });
+
+  // Delete a shipment (admin/owner only)
+  app.delete('/api/shipments/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const shipmentId = req.params.id;
+      await storage.deleteShipment(shipmentId);
+
+      res.json({ success: true, message: 'Shipment deleted successfully' });
+    } catch (error) {
+      console.error('Error deleting shipment:', error);
+      res.status(500).json({ error: 'Failed to delete shipment' });
+    }
+  });
+
+  // Generate packing slip HTML for an order
+  app.post('/api/orders/:id/packing-slip', isAuthenticated, async (req: any, res) => {
+    try {
+      const orderId = req.params.id;
+      const html = await generatePackingSlipHTML(orderId);
+      res.json({ success: true, data: { html } });
+    } catch (error) {
+      console.error('Error generating packing slip:', error);
+      res.status(500).json({ error: 'Failed to generate packing slip' });
+    }
+  });
+
+  // Send shipment notification email
+  app.post('/api/orders/:id/send-shipping-email', isAuthenticated, async (req: any, res) => {
+    try {
+      const orderId = req.params.id;
+      const { shipmentId, subject, customMessage } = req.body;
+
+      if (!shipmentId) {
+        return res.status(400).json({ error: 'shipmentId is required' });
+      }
+
+      await sendShipmentEmail(orderId, shipmentId.toString(), subject, customMessage);
+      res.json({ success: true, message: 'Shipment email sent successfully' });
+    } catch (error) {
+      console.error('Error sending shipment email:', error);
+      res.status(500).json({ error: 'Failed to send shipment email' });
+    }
+  });
+
+  // Manually update order fulfillment status (override auto-status - manager+ only)
+  app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, async (req: any, res) => {
+    try {
+      // Check role
+      if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
+        return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
+      }
+
+      const orderId = req.params.id;
+      const { status } = req.body;
+
+      if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid fulfillment status' });
+      }
+
+      await updateOrderFulfillmentStatus(orderId, status);
+
+      res.json({ success: true, message: 'Fulfillment status updated successfully' });
+    } catch (error) {
+      console.error('Error updating fulfillment status:', error);
+      res.status(500).json({ error: 'Failed to update fulfillment status' });
+    }
+  });
+
+  // =============================
+  // Vendor Routes
+  // =============================
+  app.get('/api/vendors', isAuthenticated, async (req: any, res) => {
+    try {
+      const { search, isActive, page, pageSize } = req.query;
+      const vendors = await storage.getVendors({
+        search: typeof search === 'string' ? search : undefined,
+        isActive: typeof isActive === 'string' ? isActive === 'true' : undefined,
+        page: page ? Number(page) : undefined,
+        pageSize: pageSize ? Number(pageSize) : undefined,
+      });
+      res.json({ success: true, data: vendors });
+    } catch (error) {
+      console.error('[VENDORS LIST] Error:', error);
+      res.status(500).json({ error: 'Failed to fetch vendors' });
+    }
+  });
+
+  app.get('/api/vendors/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const vendor = await storage.getVendorById(req.params.id);
+      if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
+      res.json({ success: true, data: vendor });
+    } catch (error) {
+      console.error('[VENDOR GET] Error:', error);
+      res.status(500).json({ error: 'Failed to fetch vendor' });
+    }
+  });
+
+  app.post('/api/vendors', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const parsed = insertVendorSchema.parse(req.body);
+      const created = await storage.createVendor(parsed);
+      const userId = getUserId(req.user);
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'CREATE',
+        entityType: 'vendor',
+        entityId: created.id,
+        entityName: created.name,
+        description: `Created vendor ${created.name}`,
+        newValues: created,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true, data: created });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid vendor data', details: error.errors });
+      }
+      console.error('[VENDOR CREATE] Error:', error);
+      res.status(500).json({ error: 'Failed to create vendor' });
+    }
+  });
+
+  app.patch('/api/vendors/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const updates = updateVendorSchema.partial ? updateVendorSchema.partial().parse(req.body) : updateVendorSchema.parse(req.body);
+      const existing = await storage.getVendorById(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Vendor not found' });
+      const updated = await storage.updateVendor(req.params.id, updates);
+      const userId = getUserId(req.user);
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'UPDATE',
+        entityType: 'vendor',
+        entityId: updated.id,
+        entityName: updated.name,
+        description: `Updated vendor ${updated.name}`,
+        oldValues: existing,
+        newValues: updated,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid vendor update data', details: error.errors });
+      }
+      console.error('[VENDOR UPDATE] Error:', error);
+      res.status(500).json({ error: 'Failed to update vendor' });
+    }
+  });
+
+  app.delete('/api/vendors/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const existing = await storage.getVendorById(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Vendor not found' });
+      await storage.deleteVendor(req.params.id);
+      const userId = getUserId(req.user);
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'DELETE',
+        entityType: 'vendor',
+        entityId: existing.id,
+        entityName: existing.name,
+        description: `Deleted (or deactivated) vendor ${existing.name}`,
+        oldValues: existing,
+        newValues: null,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true });
+    } catch (error) {
+      console.error('[VENDOR DELETE] Error:', error);
+      res.status(500).json({ error: 'Failed to delete vendor' });
+    }
+  });
+
+  // =============================
+  // Purchase Order Routes
+  // =============================
+  app.get('/api/purchase-orders', isAuthenticated, async (req: any, res) => {
+    try {
+      const { vendorId, status, search, startDate, endDate } = req.query;
+      const pos = await storage.getPurchaseOrders({
+        vendorId: typeof vendorId === 'string' ? vendorId : undefined,
+        status: typeof status === 'string' ? status : undefined,
+        search: typeof search === 'string' ? search : undefined,
+        startDate: typeof startDate === 'string' ? startDate : undefined,
+        endDate: typeof endDate === 'string' ? endDate : undefined,
+      });
+      res.json({ success: true, data: pos });
+    } catch (error) {
+      console.error('[PO LIST] Error:', error);
+      res.status(500).json({ error: 'Failed to fetch purchase orders' });
+    }
+  });
+
+  app.get('/api/purchase-orders/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const po = await storage.getPurchaseOrderWithLines(req.params.id);
+      if (!po) return res.status(404).json({ error: 'Purchase order not found' });
+      res.json({ success: true, data: po });
+    } catch (error) {
+      console.error('[PO GET] Error:', error);
+      res.status(500).json({ error: 'Failed to fetch purchase order' });
+    }
+  });
+
+  app.post('/api/purchase-orders', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const parsed = insertPurchaseOrderSchema.parse(req.body);
+      const userId = getUserId(req.user);
+      const created = await storage.createPurchaseOrder({ ...parsed, createdByUserId: userId! });
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'CREATE',
+        entityType: 'purchase_order',
+        entityId: created.id,
+        entityName: created.poNumber,
+        description: `Created PO ${created.poNumber}`,
+        newValues: created,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true, data: created });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid purchase order data', details: error.errors });
+      }
+      console.error('[PO CREATE] Error:', error);
+      res.status(500).json({ error: 'Failed to create purchase order' });
+    }
+  });
+
+  app.patch('/api/purchase-orders/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const updates = updatePurchaseOrderSchema.parse(req.body);
+      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
+      const updated = await storage.updatePurchaseOrder(req.params.id, updates as any);
+      const userId = getUserId(req.user);
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'UPDATE',
+        entityType: 'purchase_order',
+        entityId: updated.id,
+        entityName: updated.poNumber,
+        description: `Updated PO ${updated.poNumber}`,
+        oldValues: existing,
+        newValues: updated,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid purchase order update data', details: error.errors });
+      }
+      console.error('[PO UPDATE] Error:', error);
+      res.status(500).json({ error: 'Failed to update purchase order' });
+    }
+  });
+
+  app.delete('/api/purchase-orders/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
+      await storage.deletePurchaseOrder(req.params.id);
+      const userId = getUserId(req.user);
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'DELETE',
+        entityType: 'purchase_order',
+        entityId: existing.id,
+        entityName: existing.poNumber,
+        description: `Deleted draft PO ${existing.poNumber}`,
+        oldValues: existing,
+        newValues: null,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true });
+    } catch (error) {
+      console.error('[PO DELETE] Error:', error);
+      res.status(500).json({ error: 'Failed to delete purchase order' });
+    }
+  });
+
+  app.post('/api/purchase-orders/:id/send', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
+      if (existing.status !== 'draft') return res.status(400).json({ error: 'Only draft POs can be sent' });
+      const updated = await storage.sendPurchaseOrder(req.params.id);
+      const userId = getUserId(req.user);
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'SEND',
+        entityType: 'purchase_order',
+        entityId: updated.id,
+        entityName: updated.poNumber,
+        description: `Sent PO ${updated.poNumber}`,
+        oldValues: existing,
+        newValues: updated,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error('[PO SEND] Error:', error);
+      res.status(500).json({ error: 'Failed to send purchase order' });
+    }
+  });
+
+  app.post('/api/purchase-orders/:id/receive', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const itemsSchema = z.object({
+        items: z.array(z.object({
+          lineItemId: z.string(),
+          quantityToReceive: z.number().positive(),
+          receivedDate: z.string().optional(),
+        }))
+      });
+      const parsed = itemsSchema.parse(req.body);
+      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
+      const userId = getUserId(req.user);
+      const receiveItems = parsed.items.map(i => ({
+        lineItemId: i.lineItemId,
+        quantityToReceive: i.quantityToReceive,
+        receivedDate: i.receivedDate ? new Date(i.receivedDate) : undefined,
+      }));
+      const updated = await storage.receivePurchaseOrderLines(req.params.id, receiveItems, userId!);
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createAuditLog({
+        userId,
+        userName,
+        actionType: 'RECEIVE',
+        entityType: 'purchase_order',
+        entityId: updated.id,
+        entityName: updated.poNumber,
+        description: `Received items for PO ${updated.poNumber}`,
+        oldValues: existing,
+        newValues: updated,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid receive data', details: error.errors });
+      }
+      console.error('[PO RECEIVE] Error:', error);
+      res.status(500).json({ error: 'Failed to receive purchase order items' });
     }
   });
 

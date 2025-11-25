@@ -16,6 +16,9 @@ export type Order = {
   total: string;
   discount: string;
   notesInternal: string | null;
+  fulfillmentStatus: "pending" | "packed" | "shipped" | "delivered" | null;
+  shippingAddress: any;
+  packingSlipHtml: string | null;
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;

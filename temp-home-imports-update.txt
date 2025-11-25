@@ -1,0 +1,4 @@
+// REPLACEMENT FOR client/src/pages/home.tsx line 11
+// Add Factory to the imports:
+
+import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown, Package, UserCircle, ShoppingCart, Factory } from "lucide-react";

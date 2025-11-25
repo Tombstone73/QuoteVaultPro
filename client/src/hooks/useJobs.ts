@@ -176,6 +176,34 @@ export function useUpdateJob(id: string) {
   });
 }
 
+// Generic mutation for updating any job (for drag-and-drop scenarios)
+export function useUpdateAnyJob() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: { statusKey?: string; assignedToUserId?: string; notes?: string } }) => {
+      const res = await fetch(`/api/jobs/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || 'Failed to update job');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: 'Job Updated' });
+    },
+    onError: (e: Error) => {
+      toast({ title: 'Job Update Failed', description: e.message, variant: 'destructive' });
+    }
+  });
+}
+
 export function useAddJobNote(id: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
