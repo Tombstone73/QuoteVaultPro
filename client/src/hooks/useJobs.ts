@@ -1,12 +1,21 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
+export type JobStatus = {
+  id: string;
+  key: string;
+  label: string;
+  position: number;
+  badgeVariant: string;
+  isDefault: boolean;
+};
+
 export type Job = {
   id: string;
   orderId: string | null;
   orderLineItemId: string;
   productType: string;
-  status: string;
+  statusKey: string; // Renamed from status
   priority?: string; // present on schema
   specsJson?: any;
   assignedToUserId: string | null;
@@ -26,8 +35,8 @@ export type JobNote = {
 export type JobStatusLog = {
   id: string;
   jobId: string;
-  oldStatus: string | null;
-  newStatus: string;
+  oldStatusKey: string | null;
+  newStatusKey: string;
   userId: string | null;
   createdAt: string;
 };
@@ -39,15 +48,74 @@ export type JobWithRelations = Job & {
   statusLog?: JobStatusLog[];
 };
 
-const STATUS_VALUES = [
-  'pending_prepress',
-  'prepress',
-  'queued_production',
-  'in_production',
-  'finishing',
-  'qc',
-  'complete'
-];
+export function useJobStatuses() {
+  return useQuery<JobStatus[]>({
+    queryKey: ["/api/settings/job-statuses"],
+    queryFn: async () => {
+      const res = await fetch("/api/settings/job-statuses", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch job statuses");
+      const json = await res.json();
+      return json.data || [];
+    },
+  });
+}
+
+export function useCreateJobStatus() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (data: Partial<JobStatus>) => {
+      const res = await fetch("/api/settings/job-statuses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to create status");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/job-statuses"] });
+      toast({ title: "Status created" });
+    },
+  });
+}
+
+export function useUpdateJobStatus(id: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (data: Partial<JobStatus>) => {
+      const res = await fetch(`/api/settings/job-statuses/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to update status");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/job-statuses"] });
+      toast({ title: "Status updated" });
+    },
+  });
+}
+
+export function useDeleteJobStatus(id: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/settings/job-statuses/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Failed to delete status");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/job-statuses"] });
+      toast({ title: "Status deleted" });
+    },
+  });
+}
 
 export function useJobs(filters?: { status?: string; assignedToUserId?: string; orderId?: string }) {
   return useQuery<JobWithRelations[]>({
@@ -84,7 +152,7 @@ export function useUpdateJob(id: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: { status?: string; assignedTo?: string; notes?: string }) => {
+    mutationFn: async (data: { statusKey?: string; assignedToUserId?: string; assignedTo?: string; notes?: string }) => {
       const res = await fetch(`/api/jobs/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -143,4 +211,4 @@ export function useAssignJob(id: string) {
   };
 }
 
-export { STATUS_VALUES };
+

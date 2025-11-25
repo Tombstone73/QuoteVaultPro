@@ -1,4 +1,4 @@
-import { useJob, useUpdateJob, useAddJobNote, STATUS_VALUES } from "@/hooks/useJobs";
+import { useJob, useUpdateJob, useAddJobNote, useJobStatuses } from "@/hooks/useJobs";
 import { useAuth } from "@/hooks/useAuth";
 import { useState } from "react";
 import { useLocation } from "wouter";
@@ -16,7 +16,8 @@ export default function JobDetail(props: any) {
   const [, navigate] = useLocation();
   const { user } = useAuth();
   const id = props.params?.id;
-  const { data: job, isLoading } = useJob(id);
+  const { data: job, isLoading: jobLoading } = useJob(id);
+  const { data: statuses, isLoading: statusesLoading } = useJobStatuses();
   const updateJob = useUpdateJob(id || "");
   const addNote = useAddJobNote(id || "");
   const [noteText, setNoteText] = useState("");
@@ -34,17 +35,17 @@ export default function JobDetail(props: any) {
   });
 
   const handleStatusChange = (value: string) => {
-    updateJob.mutate({ status: value });
+    updateJob.mutate({ statusKey: value });
   };
   const handleAssign = (value: string) => {
-    updateJob.mutate({ assignedTo: value });
+    updateJob.mutate({ assignedToUserId: value });
   };
   const handleAddNote = () => {
     if (!noteText.trim()) return;
     addNote.mutate(noteText.trim(), { onSuccess: () => setNoteText("") });
   };
 
-  if (isLoading || !job) {
+  if (jobLoading || statusesLoading || !job) {
     return (
       <div className="container mx-auto p-6 space-y-4">
         <Skeleton className="h-24 w-full" />
@@ -72,10 +73,10 @@ export default function JobDetail(props: any) {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <label className="text-xs font-semibold">Status</label>
-              <Select value={job.status} onValueChange={handleStatusChange} disabled={!internalUser}>
+              <Select value={job.statusKey} onValueChange={handleStatusChange} disabled={!internalUser}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {STATUS_VALUES.map(s => <SelectItem key={s} value={s}>{s.replace(/_/g,' ')}</SelectItem>)}
+                  {statuses?.map(s => <SelectItem key={s.key} value={s.key}>{s.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
