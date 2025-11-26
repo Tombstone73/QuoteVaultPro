@@ -1248,7 +1248,98 @@ export const updateJobStatusSchema = insertJobStatusSchema.partial().extend({
 
 export type InsertJobStatus = z.infer<typeof insertJobStatusSchema>;
 export type UpdateJobStatus = z.infer<typeof updateJobStatusSchema>;
-export type JobStatus = typeof jobStatuses.$inferSelect;export type JobWithRelations = Job & {
+export type JobStatus = typeof jobStatuses.$inferSelect;
+
+// ============================================================
+// ARTWORK & FILE HANDLING SYSTEM
+// ============================================================
+
+// File role enum - defines purpose of a file attachment
+export const fileRoleEnum = pgEnum('file_role', [
+  'artwork',       // Production artwork
+  'proof',         // Proof/mockup
+  'reference',     // Reference file
+  'customer_po',   // Customer purchase order
+  'setup',         // Setup/template file
+  'output',        // Production output/result
+  'other'          // Miscellaneous
+]);
+
+// File side enum - for sided products (front/back)
+export const fileSideEnum = pgEnum('file_side', ['front', 'back', 'na']);
+
+// Order Attachments table - files uploaded by customers or staff
+// EXTENDED with artwork metadata (role, side, isPrimary, thumbnailUrl, orderLineItemId)
+export const orderAttachments = pgTable("order_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'cascade' }), // NEW: Per-line-item attachment
+  quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }), // Track if uploaded during quote checkout
+  uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  uploadedByName: varchar("uploaded_by_name", { length: 255 }), // Snapshot
+  fileName: varchar("file_name", { length: 500 }).notNull(),
+  fileUrl: text("file_url").notNull(), // GCS path
+  fileSize: integer("file_size"), // bytes
+  mimeType: varchar("mime_type", { length: 100 }),
+  description: text("description"),
+  // NEW artwork metadata fields
+  role: fileRoleEnum("role").default('other'), // artwork, proof, reference, etc.
+  side: fileSideEnum("side").default('na'), // front, back, or n/a
+  isPrimary: boolean("is_primary").default(false).notNull(), // Primary artwork for this side/role
+  thumbnailUrl: text("thumbnail_url"), // Optional thumbnail for quick preview
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_attachments_order_id_idx").on(table.orderId),
+  index("order_attachments_order_line_item_id_idx").on(table.orderLineItemId),
+  index("order_attachments_quote_id_idx").on(table.quoteId),
+  index("order_attachments_role_idx").on(table.role),
+]);
+
+export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  role: z.enum(['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other']).default('other'),
+  side: z.enum(['front', 'back', 'na']).default('na'),
+  isPrimary: z.boolean().default(false),
+});
+
+export const updateOrderAttachmentSchema = insertOrderAttachmentSchema.pick({
+  role: true,
+  side: true,
+  isPrimary: true,
+  description: true,
+}).partial();
+
+export type InsertOrderAttachment = z.infer<typeof insertOrderAttachmentSchema>;
+export type UpdateOrderAttachment = z.infer<typeof updateOrderAttachmentSchema>;
+export type OrderAttachment = typeof orderAttachments.$inferSelect;
+
+// Job Files table - links files to production jobs
+export const jobFiles = pgTable("job_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: 'cascade' }),
+  fileId: varchar("file_id").notNull().references(() => orderAttachments.id, { onDelete: 'cascade' }), // Link to order attachment
+  role: fileRoleEnum("role").default('artwork'), // production_art, setup_reference, output
+  attachedByUserId: varchar("attached_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("job_files_job_id_idx").on(table.jobId),
+  index("job_files_file_id_idx").on(table.fileId),
+  index("job_files_role_idx").on(table.role),
+]);
+
+export const insertJobFileSchema = createInsertSchema(jobFiles).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  role: z.enum(['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other']).default('artwork'),
+});
+
+export type InsertJobFile = z.infer<typeof insertJobFileSchema>;
+export type JobFile = typeof jobFiles.$inferSelect;
+
+export type JobWithRelations = Job & {
   order?: Order | null;
   orderLineItem?: OrderLineItem | null;
   customer?: Customer | null;
@@ -1256,6 +1347,18 @@ export type JobStatus = typeof jobStatuses.$inferSelect;export type JobWithRelat
   assignedUser?: User | null;
   notesLog?: JobNote[];
   statusLog?: JobStatusLog[];
+};
+
+// Order with relations type
+export type OrderWithRelations = Order & {
+  customer: Customer;
+  contact?: CustomerContact | null;
+  quote?: Quote | null;
+  createdByUser: User;
+  lineItems: (OrderLineItem & {
+    product: Product;
+    productVariant?: ProductVariant | null;
+  })[];
 };
 
 // Order relations
@@ -1300,7 +1403,7 @@ export const orderLineItemsRelations = relations(orderLineItems, ({ one, many })
 }));
 
 // Jobs relations
-export const jobsRelations = relations(jobs, ({ one }) => ({
+export const jobsRelations = relations(jobs, ({ one, many }) => ({
   orderLineItem: one(orderLineItems, {
     fields: [jobs.orderLineItemId],
     references: [orderLineItems.id],
@@ -1309,19 +1412,45 @@ export const jobsRelations = relations(jobs, ({ one }) => ({
     fields: [jobs.assignedToUserId],
     references: [users.id],
   }),
+  files: many(jobFiles), // NEW: Job files relation
 }));
 
-// Order with relations type
-export type OrderWithRelations = Order & {
-  customer: Customer;
-  contact?: CustomerContact | null;
-  quote?: Quote | null;
-  createdByUser: User;
-  lineItems: (OrderLineItem & {
-    product: Product;
-    productVariant?: ProductVariant | null;
-  })[];
-};
+// Job Files relations
+export const jobFilesRelations = relations(jobFiles, ({ one }) => ({
+  job: one(jobs, {
+    fields: [jobFiles.jobId],
+    references: [jobs.id],
+  }),
+  file: one(orderAttachments, {
+    fields: [jobFiles.fileId],
+    references: [orderAttachments.id],
+  }),
+  attachedByUser: one(users, {
+    fields: [jobFiles.attachedByUserId],
+    references: [users.id],
+  }),
+}));
+
+// Order Attachments relations
+export const orderAttachmentsRelations = relations(orderAttachments, ({ one, many }) => ({
+  order: one(orders, {
+    fields: [orderAttachments.orderId],
+    references: [orders.id],
+  }),
+  orderLineItem: one(orderLineItems, {
+    fields: [orderAttachments.orderLineItemId],
+    references: [orderLineItems.id],
+  }),
+  quote: one(quotes, {
+    fields: [orderAttachments.quoteId],
+    references: [quotes.id],
+  }),
+  uploadedByUser: one(users, {
+    fields: [orderAttachments.uploadedByUserId],
+    references: [users.id],
+  }),
+  jobFiles: many(jobFiles), // Files can be attached to multiple jobs
+}));
 
 // Order Audit Log table - tracks all state changes, approvals, rejections, etc.
 export const orderAuditLog = pgTable("order_audit_log", {
@@ -1347,32 +1476,6 @@ export const insertOrderAuditLogSchema = createInsertSchema(orderAuditLog).omit(
 
 export type InsertOrderAuditLog = z.infer<typeof insertOrderAuditLogSchema>;
 export type OrderAuditLog = typeof orderAuditLog.$inferSelect;
-
-// Order Attachments table - files uploaded by customers or staff
-export const orderAttachments = pgTable("order_attachments", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
-  quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }), // Track if uploaded during quote checkout
-  uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
-  uploadedByName: varchar("uploaded_by_name", { length: 255 }), // Snapshot
-  fileName: varchar("file_name", { length: 500 }).notNull(),
-  fileUrl: text("file_url").notNull(), // GCS path
-  fileSize: integer("file_size"), // bytes
-  mimeType: varchar("mime_type", { length: 100 }),
-  description: text("description"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => [
-  index("order_attachments_order_id_idx").on(table.orderId),
-  index("order_attachments_quote_id_idx").on(table.quoteId),
-]);
-
-export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertOrderAttachment = z.infer<typeof insertOrderAttachmentSchema>;
-export type OrderAttachment = typeof orderAttachments.$inferSelect;
 
 // Quote workflow states - extend quotes table conceptually
 export const quoteWorkflowStates = pgTable("quote_workflow_states", {

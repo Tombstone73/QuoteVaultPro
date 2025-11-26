@@ -35,6 +35,7 @@ import { OrderStatusBadge, OrderPriorityBadge, LineItemStatusBadge } from "@/com
 import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
 import { ShipmentForm } from "@/components/ShipmentForm";
 import { PackingSlipModal } from "@/components/PackingSlipModal";
+import { OrderArtworkPanel } from "@/components/OrderArtworkPanel";
 import { useShipments, useDeleteShipment, useUpdateShipment, useGeneratePackingSlip, useSendShipmentEmail, useUpdateFulfillmentStatus } from "@/hooks/useShipments";
 import type { Shipment } from "@shared/schema";
 import { format } from "date-fns";
@@ -1039,6 +1040,9 @@ export default function OrderDetail() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Artwork & Files */}
+            <OrderArtworkPanel orderId={order.id} isAdminOrOwner={isAdminOrOwner} />
           </div>
 
           {/* Sidebar */}

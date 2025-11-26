@@ -2903,10 +2903,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // List order files
+  // ============================================================
+  // ARTWORK & FILE HANDLING ROUTES
+  // ============================================================
+
+  // List order files with enriched metadata
   app.get('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
     try {
-      const files = await storage.getOrderAttachments(req.params.id);
+      const files = await storage.listOrderFiles(req.params.id);
       res.json({ success: true, data: files });
     } catch (error) {
       console.error('Error fetching order files:', error);
@@ -2914,16 +2918,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Attach file metadata (upload handled separately via /api/objects/upload)
+  // Attach file to order with artwork metadata
   app.post('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
-      const { fileName, fileUrl, fileSize, mimeType, description, quoteId } = req.body;
+      const { 
+        fileName, 
+        fileUrl, 
+        fileSize, 
+        mimeType, 
+        description, 
+        quoteId,
+        orderLineItemId,
+        role,
+        side,
+        isPrimary,
+        thumbnailUrl
+      } = req.body;
+      
       if (!fileName || !fileUrl) {
         return res.status(400).json({ error: 'fileName and fileUrl are required' });
       }
-      const attachment = await storage.createOrderAttachment({
+
+      // Validate role and side if provided
+      const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
+      const validSides = ['front', 'back', 'na'];
+      
+      if (role && !validRoles.includes(role)) {
+        return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
+      }
+      
+      if (side && !validSides.includes(side)) {
+        return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
+      }
+
+      const attachment = await storage.attachFileToOrder({
         orderId: req.params.id,
+        orderLineItemId: orderLineItemId || null,
         quoteId: quoteId || null,
         uploadedByUserId: userId,
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
@@ -2932,7 +2963,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         fileSize: fileSize || null,
         mimeType: mimeType || null,
         description: description || null,
+        role: role || 'other',
+        side: side || 'na',
+        isPrimary: isPrimary || false,
+        thumbnailUrl: thumbnailUrl || null,
       });
+
       await storage.createOrderAuditLog({
         orderId: req.params.id,
         userId,
@@ -2940,13 +2976,150 @@ export async function registerRoutes(app: Express): Promise<Server> {
         actionType: 'file_uploaded',
         fromStatus: null,
         toStatus: null,
-        note: `File attached: ${fileName}`,
-        metadata: { fileId: attachment.id, fileName: fileName } as any,
+        note: `File attached: ${fileName} (${role || 'other'})`,
+        metadata: { fileId: attachment.id, fileName, role, side } as any,
       });
+
       res.json({ success: true, data: attachment });
     } catch (error) {
       console.error('Error attaching file:', error);
       res.status(500).json({ error: 'Failed to attach file' });
+    }
+  });
+
+  // Update file metadata (role, side, isPrimary, description)
+  app.patch('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { role, side, isPrimary, description } = req.body;
+
+      // Validate role and side if provided
+      const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
+      const validSides = ['front', 'back', 'na'];
+      
+      if (role && !validRoles.includes(role)) {
+        return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
+      }
+      
+      if (side && !validSides.includes(side)) {
+        return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
+      }
+
+      const updates: any = {};
+      if (role !== undefined) updates.role = role;
+      if (side !== undefined) updates.side = side;
+      if (isPrimary !== undefined) updates.isPrimary = isPrimary;
+      if (description !== undefined) updates.description = description;
+
+      const updated = await storage.updateOrderFileMeta(req.params.fileId, updates);
+
+      await storage.createOrderAuditLog({
+        orderId: req.params.orderId,
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: 'file_updated',
+        fromStatus: null,
+        toStatus: null,
+        note: `File metadata updated: ${updated.fileName}`,
+        metadata: { fileId: updated.id, updates } as any,
+      });
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      console.error('Error updating file metadata:', error);
+      res.status(500).json({ error: 'Failed to update file metadata' });
+    }
+  });
+
+  // Delete/detach file from order
+  app.delete('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      
+      // Get file info for audit log before deleting
+      const files = await storage.getOrderAttachments(req.params.orderId);
+      const file = files.find(f => f.id === req.params.fileId);
+      
+      await storage.detachOrderFile(req.params.fileId);
+
+      if (file) {
+        await storage.createOrderAuditLog({
+          orderId: req.params.orderId,
+          userId,
+          userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+          actionType: 'file_deleted',
+          fromStatus: null,
+          toStatus: null,
+          note: `File removed: ${file.fileName}`,
+          metadata: { fileId: file.id, fileName: file.fileName } as any,
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting file:', error);
+      res.status(500).json({ error: 'Failed to delete file' });
+    }
+  });
+
+  // Get artwork summary for order (primary front/back artwork)
+  app.get('/api/orders/:id/artwork-summary', isAuthenticated, async (req: any, res) => {
+    try {
+      const summary = await storage.getOrderArtworkSummary(req.params.id);
+      res.json({ success: true, data: summary });
+    } catch (error) {
+      console.error('Error fetching artwork summary:', error);
+      res.status(500).json({ error: 'Failed to fetch artwork summary' });
+    }
+  });
+
+  // Job file routes
+  app.get('/api/jobs/:id/files', isAuthenticated, async (req: any, res) => {
+    try {
+      const files = await storage.listJobFiles(req.params.id);
+      res.json({ success: true, data: files });
+    } catch (error) {
+      console.error('Error fetching job files:', error);
+      res.status(500).json({ error: 'Failed to fetch job files' });
+    }
+  });
+
+  app.post('/api/jobs/:id/files', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { fileId, role } = req.body;
+
+      if (!fileId) {
+        return res.status(400).json({ error: 'fileId is required' });
+      }
+
+      // Validate role if provided
+      const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
+      if (role && !validRoles.includes(role)) {
+        return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
+      }
+
+      const jobFile = await storage.attachFileToJob({
+        jobId: req.params.id,
+        fileId,
+        role: role || 'artwork',
+        attachedByUserId: userId,
+      });
+
+      res.json({ success: true, data: jobFile });
+    } catch (error) {
+      console.error('Error attaching file to job:', error);
+      res.status(500).json({ error: 'Failed to attach file to job' });
+    }
+  });
+
+  app.delete('/api/jobs/:jobId/files/:fileId', isAuthenticated, async (req: any, res) => {
+    try {
+      await storage.detachJobFile(req.params.fileId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error detaching file from job:', error);
+      res.status(500).json({ error: 'Failed to detach file from job' });
     }
   });
 
