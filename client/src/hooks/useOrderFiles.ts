@@ -1,0 +1,232 @@
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { OrderAttachment, InsertOrderAttachment, UpdateOrderAttachment, JobFile, InsertJobFile } from "@shared/schema";
+
+// Enriched order attachment with user info
+export type OrderFileWithUser = OrderAttachment & {
+  uploadedByUser?: {
+    id: string;
+    email: string | null;
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
+};
+
+// Artwork summary response shape
+export type OrderArtworkSummary = {
+  front?: OrderAttachment | null;
+  back?: OrderAttachment | null;
+  other: OrderAttachment[];
+};
+
+// Job file with file details
+export type JobFileWithDetails = JobFile & {
+  file?: OrderAttachment | null;
+};
+
+// ============================================================
+// ORDER FILES HOOKS
+// ============================================================
+
+/**
+ * Fetch all files for an order with enriched user metadata
+ */
+export function useOrderFiles(orderId: string | undefined) {
+  return useQuery<OrderFileWithUser[]>({
+    queryKey: ['/api/orders', orderId, 'files'],
+    queryFn: async () => {
+      if (!orderId) return [];
+      const res = await fetch(`/api/orders/${orderId}/files`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to fetch order files');
+      const json = await res.json();
+      return json.data || [];
+    },
+    enabled: !!orderId,
+  });
+}
+
+/**
+ * Fetch artwork summary (primary front/back artwork) for an order
+ */
+export function useOrderArtworkSummary(orderId: string | undefined) {
+  return useQuery<OrderArtworkSummary>({
+    queryKey: ['/api/orders', orderId, 'artwork-summary'],
+    queryFn: async () => {
+      if (!orderId) return { front: null, back: null, other: [] };
+      const res = await fetch(`/api/orders/${orderId}/artwork-summary`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to fetch artwork summary');
+      const json = await res.json();
+      return json.data || { front: null, back: null, other: [] };
+    },
+    enabled: !!orderId,
+  });
+}
+
+/**
+ * Attach a file to an order (assumes file already uploaded to GCS)
+ */
+export function useAttachFileToOrder(orderId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: Partial<InsertOrderAttachment> & { fileName: string; fileUrl: string }) => {
+      const res = await fetch(`/api/orders/${orderId}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(data),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to attach file');
+      }
+
+      const json = await res.json();
+      return json.data;
+    },
+    onSuccess: () => {
+      // Invalidate order files query to refetch
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'artwork-summary'] });
+    },
+  });
+}
+
+/**
+ * Update file metadata (role, side, isPrimary, description)
+ */
+export function useUpdateOrderFile(orderId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ fileId, updates }: { fileId: string; updates: UpdateOrderAttachment }) => {
+      const res = await fetch(`/api/orders/${orderId}/files/${fileId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(updates),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to update file');
+      }
+
+      const json = await res.json();
+      return json.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'artwork-summary'] });
+    },
+  });
+}
+
+/**
+ * Delete/detach a file from an order
+ */
+export function useDetachOrderFile(orderId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (fileId: string) => {
+      const res = await fetch(`/api/orders/${orderId}/files/${fileId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to delete file');
+      }
+
+      return true;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'artwork-summary'] });
+    },
+  });
+}
+
+// ============================================================
+// JOB FILES HOOKS
+// ============================================================
+
+/**
+ * Fetch all files attached to a job
+ */
+export function useJobFiles(jobId: string | undefined) {
+  return useQuery<JobFileWithDetails[]>({
+    queryKey: ['/api/jobs', jobId, 'files'],
+    queryFn: async () => {
+      if (!jobId) return [];
+      const res = await fetch(`/api/jobs/${jobId}/files`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to fetch job files');
+      const json = await res.json();
+      return json.data || [];
+    },
+    enabled: !!jobId,
+  });
+}
+
+/**
+ * Attach an existing file to a job
+ */
+export function useAttachFileToJob(jobId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: Omit<InsertJobFile, 'jobId' | 'attachedByUserId'>) => {
+      const res = await fetch(`/api/jobs/${jobId}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(data),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to attach file to job');
+      }
+
+      const json = await res.json();
+      return json.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/jobs', jobId, 'files'] });
+    },
+  });
+}
+
+/**
+ * Detach a file from a job
+ */
+export function useDetachJobFile(jobId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (fileId: string) => {
+      const res = await fetch(`/api/jobs/${jobId}/files/${fileId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to detach file from job');
+      }
+
+      return true;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/jobs', jobId, 'files'] });
+    },
+  });
+}

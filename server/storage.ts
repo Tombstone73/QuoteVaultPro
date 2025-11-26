@@ -108,6 +108,10 @@ import {
   orderAttachments,
   type OrderAttachment,
   type InsertOrderAttachment,
+  type UpdateOrderAttachment,
+  jobFiles,
+  type JobFile,
+  type InsertJobFile,
   quoteWorkflowStates,
   type QuoteWorkflowState,
   type InsertQuoteWorkflowState,
@@ -370,7 +374,24 @@ export interface IStorage {
   // Order attachments operations
   getOrderAttachments(orderId: string): Promise<OrderAttachment[]>;
   createOrderAttachment(attachment: InsertOrderAttachment): Promise<OrderAttachment>;
+  updateOrderAttachment(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment>;
   deleteOrderAttachment(id: string): Promise<void>;
+
+  // Artwork & file handling operations
+  listOrderFiles(orderId: string): Promise<(OrderAttachment & { uploadedByUser?: User | null })[]>;
+  attachFileToOrder(data: InsertOrderAttachment): Promise<OrderAttachment>;
+  updateOrderFileMeta(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment>;
+  detachOrderFile(id: string): Promise<void>;
+  getOrderArtworkSummary(orderId: string): Promise<{
+    front?: OrderAttachment | null;
+    back?: OrderAttachment | null;
+    other: OrderAttachment[];
+  }>;
+  
+  // Job file operations
+  listJobFiles(jobId: string): Promise<(JobFile & { file?: OrderAttachment | null })[]>;
+  attachFileToJob(data: InsertJobFile): Promise<JobFile>;
+  detachJobFile(id: string): Promise<void>;
 
   // Quote workflow operations
   getQuoteWorkflowState(quoteId: string): Promise<QuoteWorkflowState | undefined>;
@@ -2467,7 +2488,162 @@ export class DatabaseStorage implements IStorage {
     return newAttachment;
   }
 
+  async updateOrderAttachment(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment> {
+    const [updated] = await db
+      .update(orderAttachments)
+      .set(updates)
+      .where(eq(orderAttachments.id, id))
+      .returning();
+    
+    if (!updated) {
+      throw new Error(`Order attachment ${id} not found`);
+    }
+    
+    return updated;
+  }
+
   async deleteOrderAttachment(id: string): Promise<void> {
+    await db.delete(orderAttachments).where(eq(orderAttachments.id, id));
+  }
+
+  // ============================================================
+  // ARTWORK & FILE HANDLING OPERATIONS
+  // ============================================================
+
+  async listOrderFiles(orderId: string): Promise<(OrderAttachment & { uploadedByUser?: User | null })[]> {
+    const files = await db
+      .select({
+        file: orderAttachments,
+        user: users,
+      })
+      .from(orderAttachments)
+      .leftJoin(users, eq(orderAttachments.uploadedByUserId, users.id))
+      .where(eq(orderAttachments.orderId, orderId))
+      .orderBy(desc(orderAttachments.createdAt));
+
+    return files.map(f => ({
+      ...f.file,
+      uploadedByUser: f.user || null,
+    }));
+  }
+
+  async attachFileToOrder(data: InsertOrderAttachment): Promise<OrderAttachment> {
+    // Validate isPrimary constraint: only one primary per role+side combination
+    if (data.isPrimary && data.role && data.side) {
+      // Unset any existing primary for this role+side
+      await db
+        .update(orderAttachments)
+        .set({ isPrimary: false })
+        .where(
+          and(
+            eq(orderAttachments.orderId, data.orderId),
+            eq(orderAttachments.role, data.role as any),
+            eq(orderAttachments.side, data.side as any)
+          )
+        );
+    }
+
+    const [newAttachment] = await db.insert(orderAttachments).values(data).returning();
+    return newAttachment;
+  }
+
+  async updateOrderFileMeta(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment> {
+    // If setting isPrimary=true, need to unset others for same role+side
+    if (updates.isPrimary) {
+      // Get the current file to know its orderId, role, side
+      const [currentFile] = await db
+        .select()
+        .from(orderAttachments)
+        .where(eq(orderAttachments.id, id));
+
+      if (currentFile) {
+        const role = updates.role || currentFile.role;
+        const side = updates.side || currentFile.side;
+
+        // Unset other primaries for this role+side
+        await db
+          .update(orderAttachments)
+          .set({ isPrimary: false })
+          .where(
+            and(
+              eq(orderAttachments.orderId, currentFile.orderId),
+              eq(orderAttachments.role, role as any),
+              eq(orderAttachments.side, side as any),
+              sql`${orderAttachments.id} != ${id}` // Exclude current file
+            )
+          );
+      }
+    }
+
+    const [updated] = await db
+      .update(orderAttachments)
+      .set(updates)
+      .where(eq(orderAttachments.id, id))
+      .returning();
+    
+    if (!updated) {
+      throw new Error(`Order file ${id} not found`);
+    }
+    
+    return updated;
+  }
+
+  async detachOrderFile(id: string): Promise<void> {
+    await db.delete(orderAttachments).where(eq(orderAttachments.id, id));
+  }
+
+  async getOrderArtworkSummary(orderId: string): Promise<{
+    front?: OrderAttachment | null;
+    back?: OrderAttachment | null;
+    other: OrderAttachment[];
+  }> {
+    const files = await db
+      .select()
+      .from(orderAttachments)
+      .where(
+        and(
+          eq(orderAttachments.orderId, orderId),
+          eq(orderAttachments.role, 'artwork')
+        )
+      )
+      .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt));
+
+    const front = files.find(f => f.side === 'front' && f.isPrimary) || files.find(f => f.side === 'front') || null;
+    const back = files.find(f => f.side === 'back' && f.isPrimary) || files.find(f => f.side === 'back') || null;
+    const other = files.filter(f => f.side === 'na' || (!f.isPrimary && (f.side === 'front' || f.side === 'back')));
+
+    return { front, back, other };
+  }
+
+  // Job file operations
+  async listJobFiles(jobId: string): Promise<(JobFile & { file?: OrderAttachment | null })[]> {
+    const jobFileRecords = await db
+      .select({
+        jobFile: jobFiles,
+        file: orderAttachments,
+      })
+      .from(jobFiles)
+      .leftJoin(orderAttachments, eq(jobFiles.fileId, orderAttachments.id))
+      .where(eq(jobFiles.jobId, jobId))
+      .orderBy(desc(jobFiles.createdAt));
+
+    return jobFileRecords.map(record => ({
+      ...record.jobFile,
+      file: record.file || null,
+    }));
+  }
+
+  async attachFileToJob(data: InsertJobFile): Promise<JobFile> {
+    const [newJobFile] = await db.insert(jobFiles).values(data).returning();
+    return newJobFile;
+  }
+
+  async detachJobFile(id: string): Promise<void> {
+    await db.delete(jobFiles).where(eq(jobFiles.id, id));
+  }
+
+  async deleteOrderAttachment_DEPRECATED(id: string): Promise<void> {
+    // DEPRECATED: Use detachOrderFile instead
     await db.delete(orderAttachments).where(eq(orderAttachments.id, id));
   }
 

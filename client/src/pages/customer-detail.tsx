@@ -52,37 +52,53 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
   }
 
   return (
-    <Card>
+    <Card className="bg-white/5 border-white/10 backdrop-blur-sm">
       <CardHeader>
-        <CardTitle>Orders</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-white">Orders</CardTitle>
+          <Button size="sm" variant="secondary" className="bg-white/10 hover:bg-white/20 text-white">
+            Configure Columns
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {!orders || orders.length === 0 ? (
           <p className="text-center text-muted-foreground py-8">No orders yet</p>
         ) : (
-          <div className="space-y-2">
-            {orders.map((order: any) => (
-              <Link key={order.id} href={`/orders/${order.id}`}>
-                <div className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent cursor-pointer">
-                  <div className="flex-1">
-                    <div className="font-medium font-mono">{order.orderNumber}</div>
-                    <div className="text-sm text-muted-foreground">
-                      {formatDate(order.createdAt)}
+          <div className="overflow-x-auto">
+            <div className="min-w-[1000px]">
+              <div className="grid grid-cols-9 gap-3 px-4 py-2 text-xs text-muted-foreground">
+                <div>Order #</div>
+                <div>Date</div>
+                <div>Product</div>
+                <div>PO</div>
+                <div>Qty</div>
+                <div className="text-right">Amount</div>
+                <div>Due Date</div>
+                <div>Status</div>
+                <div className="text-right">Actions</div>
+              </div>
+              <div className="space-y-2">
+                {orders.map((order: any) => (
+                  <div key={order.id} className="grid grid-cols-9 gap-3 items-center px-4 py-3 border border-white/10 rounded-lg bg-white/5">
+                    <div className="font-mono text-white">{order.orderNumber}</div>
+                    <div className="text-sm text-white/80">{formatDate(order.createdAt)}</div>
+                    <div className="text-sm text-white/80 truncate">{Array.isArray(order.lineItems) && order.lineItems[0]?.productName || '—'}</div>
+                    <div className="text-sm text-white/60">{order.purchaseOrderNumber || '—'}</div>
+                    <div className="text-sm text-white/80">{Array.isArray(order.lineItems) ? order.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 0), 0) : 0}</div>
+                    <div className="text-sm text-right text-white">{formatCurrency(order.total)}</div>
+                    <div className="text-sm text-white/60">{formatDate(order.dueDate)}</div>
+                    <div><OrderStatusBadge status={order.status} /></div>
+                    <div className="flex items-center justify-end gap-2">
+                      <Link href={`/orders/${order.id}`}><Button variant="ghost" size="icon" className="hover:bg-white/10"><Eye className="w-4 h-4" /></Button></Link>
+                      <Link href={`/orders/${order.id}`}><Button variant="ghost" size="icon" className="hover:bg-white/10"><Edit2 className="w-4 h-4" /></Button></Link>
+                      <Button variant="ghost" size="icon" className="hover:bg-white/10"><Download className="w-4 h-4" /></Button>
+                      <Button variant="ghost" size="icon" className="hover:bg-white/10"><MailIcon className="w-4 h-4" /></Button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <OrderStatusBadge status={order.status} />
-                    <OrderPriorityBadge priority={order.priority} />
-                    <div className="text-right">
-                      <div className="font-medium">{formatCurrency(order.total)}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {Array.isArray(order.lineItems) ? order.lineItems.length : 0} items
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </Link>
-            ))}
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </CardContent>
