@@ -30,6 +30,7 @@ import QuoteCheckout from "@/pages/portal/quote-checkout";
 import ProductionBoard from "@/pages/production";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
+import SettingsIntegrations from "@/pages/settings/integrations";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
 import MaterialsListPage from "@/pages/materials";
@@ -97,6 +98,7 @@ function Router() {
           <Route path="/jobs/:id" component={JobDetail} />
           
           {/* Settings routes */}
+          <Route path="/settings/integrations" component={SettingsIntegrations} />
           <Route path="/settings/product-types" component={ProductTypesSettings} />
           <Route path="/settings" component={CompanySettings} />
           <Route path="/debug-user" component={DebugUser} />

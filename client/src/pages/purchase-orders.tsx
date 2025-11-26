@@ -10,8 +10,8 @@ import { Link, useLocation } from "wouter";
 
 export default function PurchaseOrdersPage() {
   const [search, setSearch] = useState("");
-  const [vendorId, setVendorId] = useState("");
-  const [status, setStatus] = useState("all");
+  const [vendorId, setVendorId] = useState<string | undefined>(undefined);
+  const [status, setStatus] = useState<string>("all");
   const [showCreate, setShowCreate] = useState(false);
   const { data: vendors = [] } = useVendors({ isActive: true });
   const { data: pos = [], isLoading } = usePurchaseOrders({
@@ -31,10 +31,10 @@ export default function PurchaseOrdersPage() {
         <Input placeholder="Search" value={search} onChange={e=> setSearch(e.target.value)} className="max-w-xs" />
         <div className="flex flex-col">
           <label className="text-xs font-medium mb-1">Vendor</label>
-          <Select value={vendorId} onValueChange={v=> setVendorId(v)}>
+          <Select value={vendorId} onValueChange={v=> setVendorId(v === "all" ? undefined : v)}>
             <SelectTrigger className="w-[180px]"><SelectValue placeholder="All Vendors"/></SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Vendors</SelectItem>
+              <SelectItem value="all">All Vendors</SelectItem>
               {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}
             </SelectContent>
           </Select>

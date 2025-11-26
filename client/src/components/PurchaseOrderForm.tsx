@@ -55,7 +55,7 @@ export function PurchaseOrderForm({ open, onOpenChange, purchaseOrder }: Props) 
         notes: li.notes || "",
       }))
     } : {
-      vendorId: "",
+      vendorId: vendors[0]?.id || "",
       issueDate: new Date().toISOString().substring(0,10),
       expectedDate: "",
       notes: "",
@@ -69,7 +69,7 @@ export function PurchaseOrderForm({ open, onOpenChange, purchaseOrder }: Props) 
     const payload = {
       vendorId: values.vendorId,
       issueDate: values.issueDate,
-      expectedDate: values.expectedDate || undefined,
+      expectedDate: values.expectedDate && values.expectedDate.trim() ? values.expectedDate : undefined,
       notes: values.notes || undefined,
       lineItems: values.lineItems.map(li => ({
         materialId: li.materialId || undefined,
@@ -105,7 +105,7 @@ export function PurchaseOrderForm({ open, onOpenChange, purchaseOrder }: Props) 
           <div className="grid grid-cols-3 gap-4">
             <div className="col-span-1">
               <label className="text-sm font-medium">Vendor</label>
-              <Select value={form.watch("vendorId")} onValueChange={v=> form.setValue("vendorId", v)}>
+              <Select value={form.watch("vendorId") || undefined} onValueChange={v=> form.setValue("vendorId", v)}>
                 <SelectTrigger><SelectValue placeholder="Select vendor"/></SelectTrigger>
                 <SelectContent>
                   {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}
@@ -138,10 +138,10 @@ export function PurchaseOrderForm({ open, onOpenChange, purchaseOrder }: Props) 
                   <div key={field.id} className="border rounded p-3 grid grid-cols-6 gap-2 text-xs">
                     <div className="col-span-2">
                       <label className="font-medium">Material</label>
-                      <Select value={li.materialId || ""} onValueChange={v => form.setValue(`lineItems.${idx}.materialId`, v)}>
+                      <Select value={li.materialId || "none"} onValueChange={v => form.setValue(`lineItems.${idx}.materialId`, v === "none" ? "" : v)}>
                         <SelectTrigger><SelectValue placeholder="Optional"/></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">(None)</SelectItem>
+                          <SelectItem value="none">(None)</SelectItem>
                           {materials?.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
                         </SelectContent>
                       </Select>
