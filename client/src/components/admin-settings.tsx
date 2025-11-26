@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send, Link as LinkIcon } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -1620,6 +1620,27 @@ export default function AdminSettings() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Integrations Card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <LinkIcon className="w-5 h-5" />
+            Integrations
+          </CardTitle>
+          <CardDescription>
+            Connect external services like QuickBooks Online
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Link href="/settings/integrations">
+            <Button variant="outline" className="w-full">
+              <LinkIcon className="w-4 h-4 mr-2" />
+              Manage Integrations
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
 
       <Card data-testid="card-admin-settings">
         <CardHeader>

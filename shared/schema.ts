@@ -6,6 +6,7 @@ import {
   index,
   integer,
   jsonb,
+  pgEnum,
   pgTable,
   text,
   timestamp,
@@ -641,6 +642,11 @@ export const customers = pgTable("customers", {
   userId: varchar("user_id").references(() => users.id, { onDelete: 'set null' }), // Link to user account for customer login
   assignedTo: varchar("assigned_to").references(() => users.id),
   notes: text("notes"),
+  // QuickBooks sync fields
+  externalAccountingId: varchar("external_accounting_id", { length: 64 }),
+  syncStatus: varchar("sync_status", { length: 20 }),
+  syncError: text("sync_error"),
+  syncedAt: timestamp("synced_at", { withTimezone: false }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -771,6 +777,11 @@ export const orders = pgTable("orders", {
     phone?: string;
   }>(),
   packingSlipHtml: text("packing_slip_html"),
+  // QuickBooks sync fields
+  externalAccountingId: varchar("external_accounting_id", { length: 64 }),
+  syncStatus: varchar("sync_status", { length: 20 }),
+  syncError: text("sync_error"),
+  syncedAt: timestamp("synced_at", { withTimezone: false }),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -1547,6 +1558,8 @@ export const purchaseOrderLineItems = pgTable('purchase_order_line_items', {
 
 export const insertPurchaseOrderLineItemSchema = createInsertSchema(purchaseOrderLineItems).omit({
   id: true,
+  purchaseOrderId: true,
+  lineTotal: true,
   createdAt: true,
   updatedAt: true,
   quantityReceived: true,
@@ -1565,9 +1578,10 @@ export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit
   taxTotal: true,
   shippingTotal: true,
   grandTotal: true,
+  createdByUserId: true,
 }).extend({
-  issueDate: z.coerce.date(),
-  expectedDate: z.coerce.date().optional(),
+  issueDate: z.string().or(z.coerce.date()),
+  expectedDate: z.string().optional().or(z.coerce.date().optional()),
   lineItems: z.array(insertPurchaseOrderLineItemSchema).min(1),
 });
 export const updatePurchaseOrderSchema = insertPurchaseOrderSchema.partial().extend({
@@ -1691,3 +1705,44 @@ export const orderMaterialUsageRelations = relations(orderMaterialUsage, ({ one 
     references: [materials.id],
   }),
 }));
+
+// ==================== QuickBooks Integration ====================
+
+export const accountingProviderEnum = pgEnum('accounting_provider', ['quickbooks']);
+export const syncDirectionEnum = pgEnum('sync_direction', ['push', 'pull']);
+export const syncStatusEnum = pgEnum('sync_status_enum', ['pending', 'processing', 'synced', 'error', 'skipped']);
+export const syncResourceEnum = pgEnum('sync_resource', ['customers', 'invoices', 'orders']);
+
+export const oauthConnections = pgTable('oauth_connections', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  provider: accountingProviderEnum('provider').notNull(),
+  companyId: varchar('company_id', { length: 64 }).notNull(),
+  accessToken: text('access_token').notNull(),
+  refreshToken: text('refresh_token').notNull(),
+  expiresAt: timestamp('token_expires_at'),
+  metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('oauth_connections_provider_idx').on(table.provider),
+]);
+
+export const accountingSyncJobs = pgTable('accounting_sync_jobs', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  provider: accountingProviderEnum('provider').notNull(),
+  resourceType: syncResourceEnum('resource_type').notNull(),
+  direction: syncDirectionEnum('direction').notNull(),
+  status: syncStatusEnum('status').notNull().default('pending'),
+  error: text('error'),
+  payloadJson: jsonb('payload_json'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('sync_jobs_status_idx').on(table.status),
+  index('sync_jobs_resource_direction_idx').on(table.resourceType, table.direction),
+]);
+
+export type OAuthConnection = typeof oauthConnections.$inferSelect;
+export type InsertOAuthConnection = typeof oauthConnections.$inferInsert;
+export type AccountingSyncJob = typeof accountingSyncJobs.$inferSelect;
+export type InsertAccountingSyncJob = typeof accountingSyncJobs.$inferInsert;

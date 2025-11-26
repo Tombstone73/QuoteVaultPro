@@ -68,6 +68,7 @@
     "google-auth-library": "^10.5.0",
     "googleapis": "^166.0.0",
     "input-otp": "^1.4.2",
+    "intuit-oauth": "^4.2.2",
     "lucide-react": "^0.453.0",
     "mathjs": "^15.1.0",
     "memoizee": "^0.4.17",

@@ -4,14 +4,16 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs } from "@shared/schema";
+import { eq, desc } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
 import NestingCalculator from "./NestingCalculator.js";
 import { emailService } from "./emailService";
 import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
+import * as quickbooksService from "./quickbooksService";
+import * as syncWorker from "./workers/syncProcessor";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -2107,8 +2109,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const page = req.query.page ? parseInt(req.query.page as string) : 1;
       const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string) : 50;
 
-      const result = await storage.getAllContacts({ search, page, pageSize });
-      res.json(result);
+      const contacts = await storage.getAllContacts({ search, page, pageSize });
+      res.json({ contacts, total: contacts.length, page, pageSize });
     } catch (error) {
       console.error("Error fetching contacts:", error);
       res.status(500).json({ message: "Failed to fetch contacts" });
@@ -2118,11 +2120,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Contact detail with relations
   app.get("/api/contacts/:id", isAuthenticated, async (req, res) => {
     try {
-      const result = await storage.getContactWithRelations(req.params.id);
-      if (!result) {
+      const contactWithCustomer = await storage.getContactWithRelations(req.params.id);
+      if (!contactWithCustomer) {
         return res.status(404).json({ message: "Contact not found" });
       }
-      res.json(result);
+
+      const { customer, ...contact } = contactWithCustomer;
+
+      // Fetch recent orders for this contact
+      const recentOrdersQuery = await db
+        .select()
+        .from(orders)
+        .where(eq(orders.contactId, contact.id))
+        .orderBy(desc(orders.createdAt))
+        .limit(10);
+
+      // Fetch recent quotes for this contact
+      const recentQuotesQuery = await db
+        .select()
+        .from(quotes)
+        .where(eq(quotes.contactId, contact.id))
+        .orderBy(desc(quotes.createdAt))
+        .limit(10);
+
+      res.json({
+        contact,
+        customer: customer || null,
+        recentOrders: recentOrdersQuery || [],
+        recentQuotes: recentQuotesQuery || [],
+      });
     } catch (error) {
       console.error("Error fetching contact detail:", error);
       res.status(500).json({ message: "Failed to fetch contact detail" });
@@ -3653,6 +3679,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, data: created });
     } catch (error: any) {
       if (error.name === 'ZodError') {
+        console.error('[PO CREATE] Zod validation error:', JSON.stringify(error.errors, null, 2));
+        console.error('[PO CREATE] Request body:', JSON.stringify(req.body, null, 2));
         return res.status(400).json({ error: 'Invalid purchase order data', details: error.errors });
       }
       console.error('[PO CREATE] Error:', error);
@@ -3786,6 +3814,249 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error('[PO RECEIVE] Error:', error);
       res.status(500).json({ error: 'Failed to receive purchase order items' });
+    }
+  });
+
+  // ==================== QuickBooks Integration Routes ====================
+
+  /**
+   * GET /api/integrations/quickbooks/status
+   * Check QuickBooks connection status
+   */
+  app.get('/api/integrations/quickbooks/status', isAuthenticated, async (req: any, res) => {
+    try {
+      const connection = await quickbooksService.getActiveConnection();
+      
+      if (!connection) {
+        return res.json({ 
+          connected: false,
+          message: 'QuickBooks not connected'
+        });
+      }
+
+      // Check if token is still valid
+      const validToken = await quickbooksService.getValidAccessToken();
+      
+      res.json({
+        connected: !!validToken,
+        companyId: connection.companyId,
+        connectedAt: connection.createdAt,
+        expiresAt: connection.expiresAt,
+      });
+    } catch (error: any) {
+      console.error('[QB Status] Error:', error);
+      res.status(500).json({ error: 'Failed to check QuickBooks status' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/auth-url
+   * Get OAuth authorization URL to redirect user to QuickBooks
+   */
+  app.get('/api/integrations/quickbooks/auth-url', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const authUrl = await quickbooksService.getAuthorizationUrl();
+      res.json({ authUrl });
+    } catch (error: any) {
+      console.error('[QB Auth URL] Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to generate auth URL' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/callback
+   * OAuth callback endpoint - QuickBooks redirects here after user authorizes
+   */
+  app.get('/api/integrations/quickbooks/callback', async (req: any, res) => {
+    try {
+      const { code, realmId, state, error: authError } = req.query;
+
+      if (authError) {
+        console.error('[QB Callback] OAuth error:', authError);
+        return res.redirect('/settings?qb_error=' + encodeURIComponent(authError));
+      }
+
+      if (!code || !realmId) {
+        return res.status(400).json({ error: 'Missing authorization code or realmId' });
+      }
+
+      // Exchange code for tokens
+      await quickbooksService.exchangeCodeForTokens(code as string, realmId as string);
+
+      // Redirect to settings page with success
+      res.redirect('/settings?qb_connected=true');
+    } catch (error: any) {
+      console.error('[QB Callback] Error:', error);
+      res.redirect('/settings?qb_error=' + encodeURIComponent(error.message));
+    }
+  });
+
+  /**
+   * POST /api/integrations/quickbooks/disconnect
+   * Disconnect QuickBooks integration
+   */
+  app.post('/api/integrations/quickbooks/disconnect', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      await quickbooksService.disconnectConnection();
+      res.json({ success: true, message: 'QuickBooks disconnected' });
+    } catch (error: any) {
+      console.error('[QB Disconnect] Error:', error);
+      res.status(500).json({ error: 'Failed to disconnect QuickBooks' });
+    }
+  });
+
+  /**
+   * POST /api/integrations/quickbooks/sync/pull
+   * Queue pull sync jobs to fetch data FROM QuickBooks
+   * Body: { resources: ['customers', 'invoices', 'orders'] }
+   */
+  app.post('/api/integrations/quickbooks/sync/pull', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const { resources } = req.body;
+
+      if (!Array.isArray(resources) || resources.length === 0) {
+        return res.status(400).json({ error: 'Resources array required' });
+      }
+
+      const validResources = ['customers', 'invoices', 'orders'];
+      const invalidResources = resources.filter((r: string) => !validResources.includes(r));
+      
+      if (invalidResources.length > 0) {
+        return res.status(400).json({ 
+          error: `Invalid resources: ${invalidResources.join(', ')}`,
+          validResources 
+        });
+      }
+
+      await quickbooksService.queueSyncJobs('pull', resources);
+
+      res.json({ 
+        success: true, 
+        message: `Queued ${resources.length} pull sync job(s)`,
+        resources 
+      });
+    } catch (error: any) {
+      console.error('[QB Pull Sync] Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to queue pull sync' });
+    }
+  });
+
+  /**
+   * POST /api/integrations/quickbooks/sync/push
+   * Queue push sync jobs to send data TO QuickBooks
+   * Body: { resources: ['customers', 'invoices', 'orders'] }
+   */
+  app.post('/api/integrations/quickbooks/sync/push', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const { resources } = req.body;
+
+      if (!Array.isArray(resources) || resources.length === 0) {
+        return res.status(400).json({ error: 'Resources array required' });
+      }
+
+      const validResources = ['customers', 'invoices', 'orders'];
+      const invalidResources = resources.filter((r: string) => !validResources.includes(r));
+      
+      if (invalidResources.length > 0) {
+        return res.status(400).json({ 
+          error: `Invalid resources: ${invalidResources.join(', ')}`,
+          validResources 
+        });
+      }
+
+      await quickbooksService.queueSyncJobs('push', resources);
+
+      res.json({ 
+        success: true, 
+        message: `Queued ${resources.length} push sync job(s)`,
+        resources 
+      });
+    } catch (error: any) {
+      console.error('[QB Push Sync] Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to queue push sync' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/jobs
+   * Get list of sync jobs with status
+   */
+  app.get('/api/integrations/quickbooks/jobs', isAuthenticated, async (req: any, res) => {
+    try {
+      const { status, limit = 50 } = req.query;
+
+      let query = db.select().from(accountingSyncJobs);
+
+      if (status) {
+        query = query.where(eq(accountingSyncJobs.status, status)) as any;
+      }
+
+      const jobs = await query
+        .orderBy(desc(accountingSyncJobs.createdAt))
+        .limit(parseInt(limit as string, 10));
+
+      res.json({ jobs });
+    } catch (error: any) {
+      console.error('[QB Jobs] Error:', error);
+      res.status(500).json({ error: 'Failed to fetch sync jobs' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/jobs/:id
+   * Get specific sync job details
+   */
+  app.get('/api/integrations/quickbooks/jobs/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const [job] = await db
+        .select()
+        .from(accountingSyncJobs)
+        .where(eq(accountingSyncJobs.id, req.params.id))
+        .limit(1);
+
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      res.json({ job });
+    } catch (error: any) {
+      console.error('[QB Job Detail] Error:', error);
+      res.status(500).json({ error: 'Failed to fetch job' });
+    }
+  });
+
+  /**
+   * POST /api/integrations/quickbooks/jobs/trigger
+   * Manually trigger sync worker to process pending jobs
+   */
+  app.post('/api/integrations/quickbooks/jobs/trigger', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      // Trigger worker processing (non-blocking)
+      syncWorker.triggerJobProcessing().catch((error) => {
+        console.error('[QB Manual Trigger] Error:', error);
+      });
+
+      res.json({ 
+        success: true, 
+        message: 'Sync job processing triggered' 
+      });
+    } catch (error: any) {
+      console.error('[QB Manual Trigger] Error:', error);
+      res.status(500).json({ error: 'Failed to trigger sync' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/worker/status
+   * Get sync worker status
+   */
+  app.get('/api/integrations/quickbooks/worker/status', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const status = syncWorker.getWorkerStatus();
+      res.json(status);
+    } catch (error: any) {
+      console.error('[QB Worker Status] Error:', error);
+      res.status(500).json({ error: 'Failed to get worker status' });
     }
   });
 

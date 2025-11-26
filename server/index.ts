@@ -3,6 +3,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { syncUsersToCustomers } from "./db/syncUsersToCustomers";
+import { startSyncWorker } from "./workers/syncProcessor";
 
 const app = express();
 
@@ -106,6 +107,14 @@ process.on('uncaughtException', (error) => {
     server.listen(listenOptions, () => {
       log(`serving on port ${port}`);
       console.log('[Server] Ready to accept connections');
+      
+      // Start QuickBooks sync worker
+      if (process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET) {
+        console.log('[Server] Starting QuickBooks sync worker...');
+        startSyncWorker();
+      } else {
+        console.log('[Server] QuickBooks not configured, sync worker disabled');
+      }
     });
 
     server.on('error', (error: any) => {
