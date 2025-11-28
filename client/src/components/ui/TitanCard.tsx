@@ -1,6 +1,6 @@
 import * as React from "react";
 
-export function TitanCard({ className, children }: React.PropsWithChildren<{ className?: string }>) {
+export function TitanCard({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={`rounded-xl border backdrop-blur-sm ${className || ""}`}
@@ -9,8 +9,11 @@ export function TitanCard({ className, children }: React.PropsWithChildren<{ cla
         borderColor: "var(--app-card-border-color)",
         boxShadow: "var(--app-card-shadow)"
       }}
+      {...props}
     >
       {children}
     </div>
   );
 }
+
+export default TitanCard;
