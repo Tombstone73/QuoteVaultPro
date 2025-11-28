@@ -1,9 +1,12 @@
 import { Switch, Route } from "wouter";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SettingsLayout } from "@/pages/settings/SettingsLayout";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/useAuth";
+import { ThemeProvider } from "@/hooks/useTheme";
 import Landing from "@/pages/landing";
 import Home from "@/pages/home";
 import EditQuote from "@/pages/edit-quote";
@@ -48,7 +51,7 @@ function Router() {
       {isLoading || !isAuthenticated ? (
         <Route path="/" component={Landing} />
       ) : (
-        <>
+        <AppLayout>
           {/* Portal routes (customer-facing) */}
           <Route path="/portal/my-quotes" component={MyQuotes} />
           <Route path="/portal/my-orders" component={MyOrders} />
@@ -100,12 +103,13 @@ function Router() {
           {/* Settings routes */}
           <Route path="/settings/integrations" component={SettingsIntegrations} />
           <Route path="/settings/product-types" component={ProductTypesSettings} />
-          <Route path="/settings" component={CompanySettings} />
+          <Route path="/settings/:rest*" component={SettingsLayout} />
+          <Route path="/settings" component={SettingsLayout} />
           <Route path="/debug-user" component={DebugUser} />
           
           {/* Home */}
           <Route path="/" component={Home} />
-        </>
+        </AppLayout>
       )}
       <Route component={NotFound} />
     </Switch>
@@ -115,10 +119,12 @@ function Router() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Router />
-      </TooltipProvider>
+      <ThemeProvider>
+        <TooltipProvider>
+          <Toaster />
+          <Router />
+        </TooltipProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

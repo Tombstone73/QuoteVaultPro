@@ -248,10 +248,6 @@ export default function Home() {
             )}
             {viewMode === 'admin' && (
               <>
-                <TabsTrigger value="customers" data-testid="tab-customers">
-                  <Users className="w-4 h-4 mr-2" />
-                  Companies
-                </TabsTrigger>
                 <TabsTrigger value="contacts" data-testid="tab-contacts">
                   <UserCircle className="w-4 h-4 mr-2" />
                   Contacts
