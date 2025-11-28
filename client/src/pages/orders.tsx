@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X } from "lucide-react";
@@ -11,6 +10,8 @@ import { useOrders, useUpdateOrder } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
+import { PageShell } from "@/components/ui/PageShell";
+import { TitanCard } from "@/components/ui/TitanCard";
 
 export default function Orders() {
   const { user } = useAuth();
@@ -103,9 +104,9 @@ export default function Orders() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b sticky top-0 bg-background z-50">
-        <div className="container mx-auto px-4 py-4">
+    <PageShell>
+      <div className="space-y-6">
+        <TitanCard className="p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Link href="/">
@@ -114,8 +115,8 @@ export default function Orders() {
                 </Button>
               </Link>
               <div>
-                <h1 className="text-2xl font-bold">Orders</h1>
-                <p className="text-sm text-muted-foreground">Manage production orders and job tracking</p>
+                <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Orders</h1>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Manage production orders and job tracking</p>
               </div>
             </div>
             <Link href="/orders/new">
@@ -125,16 +126,13 @@ export default function Orders() {
               </Button>
             </Link>
           </div>
-        </div>
-      </header>
+        </TitanCard>
 
-      <main className="container mx-auto px-4 py-6">
         {/* Filters */}
-        <Card className="mb-6">
-          <CardContent className="pt-6">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <TitanCard className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
                 <Input
                   placeholder="Search orders..."
                   value={search}
@@ -170,20 +168,19 @@ export default function Orders() {
                 </SelectContent>
               </Select>
               {orders && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
                   <Package className="w-4 h-4" />
                   <span>{orders.length} order{orders.length !== 1 ? 's' : ''}</span>
                 </div>
               )}
             </div>
-          </CardContent>
-        </Card>
+        </TitanCard>
 
         {/* Orders Table */}
-        <Card>
+        <TitanCard className="p-0">
           <Table>
-            <TableHeader>
-              <TableRow>
+            <TableHeader style={{ backgroundColor: 'var(--table-header-bg)' }}>
+              <TableRow className="text-left" style={{ color: 'var(--table-header-text)' }}>
                 <TableHead>Order #</TableHead>
                 <TableHead>Customer</TableHead>
                 <TableHead>Status</TableHead>
@@ -198,19 +195,19 @@ export default function Orders() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8">
+                  <TableCell colSpan={9} className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
                     <div className="flex items-center justify-center gap-2">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                      <span className="text-muted-foreground">Loading orders...</span>
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2" style={{ borderColor: 'var(--accent-primary)' }}></div>
+                      <span>Loading orders...</span>
                     </div>
                   </TableCell>
                 </TableRow>
               ) : !orders || orders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8">
+                  <TableCell colSpan={9} className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
                     <div className="flex flex-col items-center gap-2">
-                      <Package className="w-12 h-12 text-muted-foreground/50" />
-                      <p className="text-muted-foreground">No orders found</p>
+                      <Package className="w-12 h-12" style={{ color: 'var(--text-muted)' }} />
+                      <p>No orders found</p>
                       <Link href="/orders/new">
                         <Button variant="outline" size="sm">
                           <Plus className="w-4 h-4 mr-2" />
@@ -222,10 +219,14 @@ export default function Orders() {
                 </TableRow>
               ) : (
                 orders.map((order: any) => (
-                  <TableRow key={order.id} className="cursor-pointer hover:bg-muted/50">
+                  <TableRow key={order.id} className="cursor-pointer"
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--table-row-hover-bg'))}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    style={{ borderTop: '1px solid var(--table-border-color)' }}
+                  >
                     <TableCell className="font-mono font-medium">
                       <Link href={`/orders/${order.id}`}>
-                        <span className="text-primary hover:underline">{order.orderNumber}</span>
+                        <span className="hover:underline" style={{ color: 'var(--accent-primary)' }}>{order.orderNumber}</span>
                       </Link>
                     </TableCell>
                     <TableCell>
@@ -233,15 +234,15 @@ export default function Orders() {
                         <div>
                           {order.customer ? (
                             <Link href={`/customers/${order.customer.id}`}>
-                              <div className="font-medium text-primary hover:underline cursor-pointer">
+                              <div className="font-medium hover:underline cursor-pointer" style={{ color: 'var(--accent-primary)' }}>
                                 {order.customer.companyName}
                               </div>
                             </Link>
                           ) : (
-                            <div className="font-medium text-muted-foreground">Unknown</div>
+                            <div className="font-medium" style={{ color: 'var(--text-muted)' }}>Unknown</div>
                           )}
                           {order.contact && (
-                            <div className="text-xs text-muted-foreground">
+                            <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                               {order.contact.firstName} {order.contact.lastName}
                             </div>
                           )}
@@ -275,7 +276,8 @@ export default function Orders() {
                         </div>
                       ) : (
                         <div 
-                          className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded inline-block" : ""}
+                          className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded inline-block" : ""}
+                          style={isAdminOrOwner ? { backgroundColor: 'transparent' } : undefined}
                           onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'status', order.status)}
                         >
                           <OrderStatusBadge status={order.status} />
@@ -304,7 +306,7 @@ export default function Orders() {
                         </div>
                       ) : (
                         <div 
-                          className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded inline-block" : ""}
+                          className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded inline-block" : ""}
                           onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'priority', order.priority)}
                         >
                           <OrderPriorityBadge priority={order.priority} />
@@ -330,22 +332,22 @@ export default function Orders() {
                         </div>
                       ) : (
                         <div 
-                          className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
+                          className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded" : ""}
                           onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'dueDate', order.dueDate ? format(new Date(order.dueDate), 'yyyy-MM-dd') : '')}
                         >
                           {order.dueDate ? (
                             <div className="flex items-center gap-1">
-                              <Calendar className="w-4 h-4 text-muted-foreground" />
+                              <Calendar className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
                               <span>{formatDate(order.dueDate)}</span>
                             </div>
                           ) : (
-                            <span className="text-muted-foreground">-</span>
+                            <span style={{ color: 'var(--text-muted)' }}>-</span>
                           )}
                         </div>
                       )}
                     </TableCell>
                     <TableCell>
-                      <span className="text-muted-foreground">
+                      <span style={{ color: 'var(--text-muted)' }}>
                         {(Array.isArray(order.lineItems) ? order.lineItems.length : 0)} {(Array.isArray(order.lineItems) ? order.lineItems.length : 0) !== 1 ? 'items' : 'item'}
                       </span>
                     </TableCell>
@@ -353,14 +355,14 @@ export default function Orders() {
                       <div className="flex flex-col items-end">
                         <span className="font-medium">{formatCurrency(order.total)}</span>
                         {parseFloat(order.discount) > 0 && (
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                             -{formatCurrency(order.discount)} discount
                           </span>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>
-                      <span className="text-sm text-muted-foreground">{formatDate(order.createdAt)}</span>
+                      <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{formatDate(order.createdAt)}</span>
                     </TableCell>
                     <TableCell>
                       <Link href={`/orders/${order.id}`}>
@@ -374,8 +376,8 @@ export default function Orders() {
               )}
             </TableBody>
           </Table>
-        </Card>
-      </main>
-    </div>
+        </TitanCard>
+      </div>
+    </PageShell>
   );
 }

@@ -14,3 +14,9 @@ export function useAuth() {
     isAdmin: user?.isAdmin ?? false,
   };
 }
+
+// Optional wrapper for future-proofing: allows useUser() usage to keep working
+export function useUser() {
+  const { user } = useAuth();
+  return user;
+}
