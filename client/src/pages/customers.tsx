@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
 import CustomerList from "@/components/CustomerList";
 import { SplitCustomerDetail } from "@/components/customers/SplitCustomerDetail";
-import { EnhancedCustomerView } from "@/components/customers/EnhancedCustomerView";
+import EnhancedCustomerView from "@/components/customers/EnhancedCustomerView";
 import CustomerForm from "@/components/customer-form";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -21,7 +21,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
   const enhancedRef = (typeof window !== 'undefined') ? (document.getElementById('enhanced-view-anchor') as HTMLElement | null) : null;
   const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
   const [search, setSearch] = useState("");
-  
+
   const getStorageKey = () => {
     return user?.id ? `customer_view_mode_${user.id}` : "customer_view_mode_default";
   };
@@ -40,7 +40,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
     try {
       const key = getStorageKey();
       localStorage.setItem(key, viewMode);
-    } catch {}
+    } catch { }
   }, [viewMode, user?.id]);
 
   const handleSelectCustomer = (customerId: string) => {
@@ -51,7 +51,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
       if (viewMode === 'enhanced' && el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
-    } catch {}
+    } catch { }
   };
 
   const handleNewCustomer = () => {
@@ -71,10 +71,11 @@ export default function Customers({ embedded = false }: CustomersProps) {
       <div className="h-[calc(100vh-180px)]">
         <div className="h-full flex overflow-hidden">
           <div className="w-[400px] border-r border-white/10 flex-shrink-0">
-            <CustomerList 
+            <CustomerList
               selectedCustomerId={selectedCustomerId || undefined}
               onSelectCustomer={handleSelectCustomer}
               onNewCustomer={handleNewCustomer}
+              search={search}
             />
           </div>
           <div className="flex-1 overflow-hidden p-4">
@@ -136,7 +137,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
       {viewMode === "split" ? (
         <div className="grid grid-cols-[360px,1fr] gap-4 h-[calc(100vh-120px)]">
           <TitanCard className="p-0 overflow-hidden flex flex-col">
-            <CustomerList 
+            <CustomerList
               selectedCustomerId={selectedCustomerId || undefined}
               onSelectCustomer={handleSelectCustomer}
               onNewCustomer={handleNewCustomer}
@@ -150,8 +151,9 @@ export default function Customers({ embedded = false }: CustomersProps) {
       ) : (
         <div className="space-y-4">
           {/* Search + scrollable customers with sortable columns */}
-          <TitanCard className="p-0 overflow-hidden">
-            <CustomerList 
+          {/* Search + scrollable customers with sortable columns */}
+          <TitanCard className={`p-0 overflow-hidden ${(viewMode === "enhanced" && selectedCustomerId && search.trim().length === 0) ? "hidden" : ""}`}>
+            <CustomerList
               selectedCustomerId={selectedCustomerId || undefined}
               onSelectCustomer={handleSelectCustomer}
               onNewCustomer={handleNewCustomer}

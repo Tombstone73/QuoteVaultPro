@@ -99,8 +99,9 @@ export default function CustomerList({
   return (
     <div className="flex flex-col h-full">
       {/* Compact header: just filters, no title or extra copy */}
-      <div className="p-3 border-b" style={{ borderColor: "var(--border-subtle)" }}>
-        {!collapse && (
+      {/* Compact header: just filters, no title or extra copy */}
+      {!collapse && (
+        <div className="p-3 border-b" style={{ borderColor: "var(--border-subtle)" }}>
           <div className="grid grid-cols-2 gap-3">
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger
@@ -141,8 +142,8 @@ export default function CustomerList({
               </SelectContent>
             </Select>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Customer List */}
       {!collapse && (
@@ -225,37 +226,37 @@ export default function CustomerList({
                           style={
                             getStatusColor(customer.status) === "status-success"
                               ? {
-                                  backgroundColor:
-                                    "var(--badge-success-bg)",
-                                  color: "var(--badge-success-text)",
-                                  borderColor:
-                                    "var(--badge-success-border)",
-                                }
+                                backgroundColor:
+                                  "var(--badge-success-bg)",
+                                color: "var(--badge-success-text)",
+                                borderColor:
+                                  "var(--badge-success-border)",
+                              }
                               : getStatusColor(customer.status) ===
                                 "status-danger"
-                              ? {
+                                ? {
                                   backgroundColor:
                                     "var(--badge-danger-bg)",
                                   color: "var(--badge-danger-text)",
                                   borderColor:
                                     "var(--badge-danger-border)",
                                 }
-                              : getStatusColor(customer.status) ===
-                                "status-warning"
-                              ? {
-                                  backgroundColor:
-                                    "var(--badge-warning-bg)",
-                                  color: "var(--badge-warning-text)",
-                                  borderColor:
-                                    "var(--badge-warning-border)",
-                                }
-                              : {
-                                  backgroundColor:
-                                    "var(--badge-muted-bg)",
-                                  color: "var(--badge-muted-text)",
-                                  borderColor:
-                                    "var(--badge-muted-border)",
-                                }
+                                : getStatusColor(customer.status) ===
+                                  "status-warning"
+                                  ? {
+                                    backgroundColor:
+                                      "var(--badge-warning-bg)",
+                                    color: "var(--badge-warning-text)",
+                                    borderColor:
+                                      "var(--badge-warning-border)",
+                                  }
+                                  : {
+                                    backgroundColor:
+                                      "var(--badge-muted-bg)",
+                                    color: "var(--badge-muted-text)",
+                                    borderColor:
+                                      "var(--badge-muted-border)",
+                                  }
                           }
                         >
                           {customer.status.replace("_", " ")}
