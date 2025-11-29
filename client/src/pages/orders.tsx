@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -10,12 +10,12 @@ import { useOrders, useUpdateOrder } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { PageShell } from "@/components/ui/PageShell";
-import { TitanCard } from "@/components/ui/TitanCard";
+import { Page, PageHeader, ContentLayout, FilterPanel, DataCard } from "@/components/titan";
 
 export default function Orders() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
@@ -104,83 +104,83 @@ export default function Orders() {
   };
 
   return (
-    <PageShell>
-      <div className="space-y-6">
-        <TitanCard className="p-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <Link href="/">
-                <Button variant="ghost" size="icon">
-                  <ArrowLeft className="w-5 h-5" />
-                </Button>
-              </Link>
-              <div>
-                <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Orders</h1>
-                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Manage production orders and job tracking</p>
-              </div>
-            </div>
-            <Link href="/orders/new">
-              <Button>
-                <Plus className="w-4 h-4 mr-2" />
-                New Order
-              </Button>
-            </Link>
-          </div>
-        </TitanCard>
+    <Page>
+      <PageHeader
+        title="Orders"
+        subtitle="Manage production orders and job tracking"
+        backButton={
+          <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+        }
+        actions={
+          <Link href="/orders/new">
+            <Button>
+              <Plus className="w-4 h-4 mr-2" />
+              New Order
+            </Button>
+          </Link>
+        }
+      />
 
+      <ContentLayout>
         {/* Filters */}
-        <TitanCard className="p-4">
+        <FilterPanel title="Filter Orders" description="Search and narrow down orders">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
-                <Input
-                  placeholder="Search orders..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-10"
-                />
-              </div>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder="All Statuses" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Statuses</SelectItem>
-                  <SelectItem value="new">New</SelectItem>
-                  <SelectItem value="scheduled">Scheduled</SelectItem>
-                  <SelectItem value="in_production">In Production</SelectItem>
-                  <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
-                  <SelectItem value="shipped">Shipped</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
-                  <SelectItem value="on_hold">On Hold</SelectItem>
-                  <SelectItem value="canceled">Canceled</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder="All Priorities" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Priorities</SelectItem>
-                  <SelectItem value="rush">Rush</SelectItem>
-                  <SelectItem value="normal">Normal</SelectItem>
-                  <SelectItem value="low">Low</SelectItem>
-                </SelectContent>
-              </Select>
-              {orders && (
-                <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
-                  <Package className="w-4 h-4" />
-                  <span>{orders.length} order{orders.length !== 1 ? 's' : ''}</span>
-                </div>
-              )}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search orders..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-10"
+              />
             </div>
-        </TitanCard>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Statuses</SelectItem>
+                <SelectItem value="new">New</SelectItem>
+                <SelectItem value="scheduled">Scheduled</SelectItem>
+                <SelectItem value="in_production">In Production</SelectItem>
+                <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
+                <SelectItem value="shipped">Shipped</SelectItem>
+                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="on_hold">On Hold</SelectItem>
+                <SelectItem value="canceled">Canceled</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Priorities" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Priorities</SelectItem>
+                <SelectItem value="rush">Rush</SelectItem>
+                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+              </SelectContent>
+            </Select>
+            {orders && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Package className="w-4 h-4" />
+                <span>{orders.length} order{orders.length !== 1 ? 's' : ''}</span>
+              </div>
+            )}
+          </div>
+        </FilterPanel>
 
         {/* Orders Table */}
-        <TitanCard className="p-0">
+        <DataCard
+          title="Orders"
+          description={`${orders?.length ?? 0} order${orders?.length !== 1 ? 's' : ''} found`}
+          noPadding
+        >
           <Table>
-            <TableHeader style={{ backgroundColor: 'var(--table-header-bg)' }}>
-              <TableRow className="text-left" style={{ color: 'var(--table-header-text)' }}>
+            <TableHeader>
+              <TableRow className="text-left">
                 <TableHead>Order #</TableHead>
                 <TableHead>Customer</TableHead>
                 <TableHead>Status</TableHead>
@@ -195,18 +195,18 @@ export default function Orders() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                     <div className="flex items-center justify-center gap-2">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2" style={{ borderColor: 'var(--accent-primary)' }}></div>
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
                       <span>Loading orders...</span>
                     </div>
                   </TableCell>
                 </TableRow>
               ) : !orders || orders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                     <div className="flex flex-col items-center gap-2">
-                      <Package className="w-12 h-12" style={{ color: 'var(--text-muted)' }} />
+                      <Package className="w-12 h-12 text-muted-foreground" />
                       <p>No orders found</p>
                       <Link href="/orders/new">
                         <Button variant="outline" size="sm">
@@ -219,14 +219,10 @@ export default function Orders() {
                 </TableRow>
               ) : (
                 orders.map((order: any) => (
-                  <TableRow key={order.id} className="cursor-pointer"
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--table-row-hover-bg'))}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                    style={{ borderTop: '1px solid var(--table-border-color)' }}
-                  >
+                  <TableRow key={order.id} className="cursor-pointer hover:bg-muted/50">
                     <TableCell className="font-mono font-medium">
                       <Link href={`/orders/${order.id}`}>
-                        <span className="hover:underline" style={{ color: 'var(--accent-primary)' }}>{order.orderNumber}</span>
+                        <span className="hover:underline text-primary">{order.orderNumber}</span>
                       </Link>
                     </TableCell>
                     <TableCell>
@@ -234,15 +230,15 @@ export default function Orders() {
                         <div>
                           {order.customer ? (
                             <Link href={`/customers/${order.customer.id}`}>
-                              <div className="font-medium hover:underline cursor-pointer" style={{ color: 'var(--accent-primary)' }}>
+                              <div className="font-medium hover:underline cursor-pointer text-primary">
                                 {order.customer.companyName}
                               </div>
                             </Link>
                           ) : (
-                            <div className="font-medium" style={{ color: 'var(--text-muted)' }}>Unknown</div>
+                            <div className="font-medium text-muted-foreground">Unknown</div>
                           )}
                           {order.contact && (
-                            <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            <div className="text-xs text-muted-foreground">
                               {order.contact.firstName} {order.contact.lastName}
                             </div>
                           )}
@@ -277,7 +273,6 @@ export default function Orders() {
                       ) : (
                         <div 
                           className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded inline-block" : ""}
-                          style={isAdminOrOwner ? { backgroundColor: 'transparent' } : undefined}
                           onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'status', order.status)}
                         >
                           <OrderStatusBadge status={order.status} />
@@ -337,17 +332,17 @@ export default function Orders() {
                         >
                           {order.dueDate ? (
                             <div className="flex items-center gap-1">
-                              <Calendar className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                              <Calendar className="w-4 h-4 text-muted-foreground" />
                               <span>{formatDate(order.dueDate)}</span>
                             </div>
                           ) : (
-                            <span style={{ color: 'var(--text-muted)' }}>-</span>
+                            <span className="text-muted-foreground">-</span>
                           )}
                         </div>
                       )}
                     </TableCell>
                     <TableCell>
-                      <span style={{ color: 'var(--text-muted)' }}>
+                      <span className="text-muted-foreground">
                         {(Array.isArray(order.lineItems) ? order.lineItems.length : 0)} {(Array.isArray(order.lineItems) ? order.lineItems.length : 0) !== 1 ? 'items' : 'item'}
                       </span>
                     </TableCell>
@@ -355,14 +350,14 @@ export default function Orders() {
                       <div className="flex flex-col items-end">
                         <span className="font-medium">{formatCurrency(order.total)}</span>
                         {parseFloat(order.discount) > 0 && (
-                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                          <span className="text-xs text-muted-foreground">
                             -{formatCurrency(order.discount)} discount
                           </span>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>
-                      <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{formatDate(order.createdAt)}</span>
+                      <span className="text-sm text-muted-foreground">{formatDate(order.createdAt)}</span>
                     </TableCell>
                     <TableCell>
                       <Link href={`/orders/${order.id}`}>
@@ -376,8 +371,8 @@ export default function Orders() {
               )}
             </TableBody>
           </Table>
-        </TitanCard>
-      </div>
-    </PageShell>
+        </DataCard>
+      </ContentLayout>
+    </Page>
   );
 }

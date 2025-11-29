@@ -154,7 +154,7 @@ export default function InternalQuotes() {
     <Page>
       <PageHeader
         title="Internal Quotes"
-        subtitle="Manage customer quotes and convert to orders"
+        subtitle="Manage internal quotes and convert them to orders"
         backButton={
           <Button variant="ghost" onClick={() => navigate("/")}>
             <ArrowLeft className="w-4 h-4 mr-2" />
@@ -171,7 +171,7 @@ export default function InternalQuotes() {
 
       <ContentLayout>
         {/* Filters */}
-        <FilterPanel title="Filter Quotes" description="Search and filter internal quotes">
+        <FilterPanel title="Filter Quotes" description="Search and narrow down internal quotes">
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="space-y-2">
               <Label htmlFor="searchCustomer">Customer Name</Label>
