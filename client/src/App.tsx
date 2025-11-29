@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SettingsLayout } from "@/pages/settings/SettingsLayout";
 import { queryClient } from "./lib/queryClient";
@@ -46,73 +46,90 @@ import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
 
+  // While loading or unauthenticated, send everything to Landing
+  if (isLoading || !isAuthenticated) {
+    return (
+      <Routes>
+        <Route path="*" element={<Landing />} />
+      </Routes>
+    );
+  }
+
   return (
-    <Switch>
-      {isLoading || !isAuthenticated ? (
-        <Route path="/" component={Landing} />
-      ) : (
-        <AppLayout>
-          {/* Portal routes (customer-facing) */}
-          <Route path="/portal/my-quotes" component={MyQuotes} />
-          <Route path="/portal/my-orders" component={MyOrders} />
-          <Route path="/portal/quotes/:id/checkout" component={QuoteCheckout} />
-          
-          {/* Quote routes */}
-          <Route path="/quotes/new" component={QuoteEditor} />
-          <Route path="/quotes/:id/edit" component={EditQuote} />
-          <Route path="/quotes/:id" component={QuoteDetail} />
-          <Route path="/quotes" component={InternalQuotes} />
-          <Route path="/my-quotes" component={CustomerQuotes} />
-          
-          {/* Admin routes */}
-          <Route path="/admin/users" component={AdminUsers} />
-          <Route path="/users" component={UserManagement} />
-          <Route path="/admin" component={Admin} />
-          
-          {/* Customer routes */}
-          <Route path="/customers/:id" component={CustomerDetail} />
-          <Route path="/customers">{() => <Customers />}</Route>
-          
-          {/* Contact routes */}
-          <Route path="/contacts/:id" component={ContactDetail} />
-          <Route path="/contacts" component={Contacts} />
-          
-          {/* Order routes */}
-          <Route path="/orders/new" component={CreateOrder} />
-          <Route path="/orders/:id" component={OrderDetail} />
-          <Route path="/orders" component={Orders} />
+    <Routes>
+      {/* All authenticated routes share the AppLayout */}
+      <Route element={<AppLayout />}>
+        {/* Root redirect to dashboard */}
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
-          {/* Inventory / Materials routes */}
-          <Route path="/materials/:id" component={MaterialDetailPage} />
-          <Route path="/materials" component={MaterialsListPage} />
+        {/* Dashboard */}
+        <Route path="/dashboard" element={<Home />} />
 
-          {/* Procurement routes */}
-          <Route path="/vendors/:id" component={VendorDetailPage} />
-          <Route path="/vendors" component={VendorsPage} />
-          <Route path="/purchase-orders/:id" component={PurchaseOrderDetailPage} />
-          <Route path="/purchase-orders" component={PurchaseOrdersPage} />
+        {/* Portal routes (customer-facing) */}
+        <Route path="/portal/my-quotes" element={<MyQuotes />} />
+        <Route path="/portal/my-orders" element={<MyOrders />} />
+        <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
 
-          {/* Invoice routes */}
-          <Route path="/invoices/:id" component={InvoiceDetailPage} />
-          <Route path="/invoices" component={InvoicesListPage} />
+        {/* Quote routes */}
+        <Route path="/quotes/new" element={<QuoteEditor />} />
+        <Route path="/quotes/:id/edit" element={<EditQuote />} />
+        <Route path="/quotes/:id" element={<QuoteDetail />} />
+        <Route path="/quotes" element={<InternalQuotes />} />
+        <Route path="/my-quotes" element={<CustomerQuotes />} />
 
-          {/* Production workflow routes */}
-          <Route path="/production" component={ProductionBoard} />
-          <Route path="/jobs/:id" component={JobDetail} />
-          
-          {/* Settings routes */}
-          <Route path="/settings/integrations" component={SettingsIntegrations} />
-          <Route path="/settings/product-types" component={ProductTypesSettings} />
-          <Route path="/settings/:rest*" component={SettingsLayout} />
-          <Route path="/settings" component={SettingsLayout} />
-          <Route path="/debug-user" component={DebugUser} />
-          
-          {/* Home */}
-          <Route path="/" component={Home} />
-        </AppLayout>
-      )}
-      <Route component={NotFound} />
-    </Switch>
+        {/* Admin routes */}
+        <Route path="/admin/users" element={<AdminUsers />} />
+        <Route path="/users" element={<UserManagement />} />
+        <Route path="/admin" element={<Admin />} />
+
+        {/* Customer routes */}
+        <Route path="/customers/:id" element={<CustomerDetail />} />
+        <Route path="/customers" element={<Customers />} />
+
+        {/* Contact routes */}
+        <Route path="/contacts/:id" element={<ContactDetail />} />
+        <Route path="/contacts" element={<Contacts />} />
+
+        {/* Order routes */}
+        <Route path="/orders/new" element={<CreateOrder />} />
+        <Route path="/orders/:id" element={<OrderDetail />} />
+        <Route path="/orders" element={<Orders />} />
+
+        {/* Inventory / Materials routes */}
+        <Route path="/materials/:id" element={<MaterialDetailPage />} />
+        <Route path="/materials" element={<MaterialsListPage />} />
+
+        {/* Procurement routes */}
+        <Route path="/vendors/:id" element={<VendorDetailPage />} />
+        <Route path="/vendors" element={<VendorsPage />} />
+        <Route
+          path="/purchase-orders/:id"
+          element={<PurchaseOrderDetailPage />}
+        />
+        <Route path="/purchase-orders" element={<PurchaseOrdersPage />} />
+
+        {/* Invoice routes */}
+        <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
+        <Route path="/invoices" element={<InvoicesListPage />} />
+
+        {/* Production workflow routes */}
+        <Route path="/production" element={<ProductionBoard />} />
+        <Route path="/jobs/:id" element={<JobDetail />} />
+
+        {/* Settings routes */}
+        <Route path="/settings/integrations" element={<SettingsIntegrations />} />
+        <Route path="/settings/product-types" element={<ProductTypesSettings />} />
+        {/* If you use CompanySettings somewhere, wire it here; otherwise the import can be removed later */}
+        <Route path="/settings/*" element={<SettingsLayout />} />
+        <Route path="/settings" element={<SettingsLayout />} />
+
+        {/* Misc */}
+        <Route path="/debug-user" element={<DebugUser />} />
+      </Route>
+
+      {/* Catch-all not found */}
+      <Route path="*" element={<NotFound />} />
+    </Routes>
   );
 }
 

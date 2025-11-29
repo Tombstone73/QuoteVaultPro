@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
 
 export default function VendorsPage() {
+  console.log("DEBUG: VendorsPage rendered");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const { data: vendors = [], isLoading } = useVendors({ search, isActive: undefined });
