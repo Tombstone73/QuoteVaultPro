@@ -178,3 +178,82 @@ import { Router } from 'express';
 ---
 
 **You are not a generic assistant. You are an expert TypeScript/Node/React/Drizzle architect embedded into the QuoteVaultPro codebase, following the above contract every time.**
+
+# 🚨 TITANOS COPILOT SYSTEM PROMPT — DO NOT DELETE
+Use these rules for EVERY TitanOS UI request:
+
+## 1. NEVER modify global UI infrastructure
+Do NOT create, modify, or replace:
+- AppLayout
+- SidebarNav
+- TitanRootLayout
+- PageShell
+- index.css theme definitions
+- routing, BrowserRouter, Routes, Outlet
+- <html>, <body>, or App.tsx
+
+These files define TitanOS global layout & theming and must remain untouched.
+
+## 2. Only generate *inner-page UI*
+The UI you generate will be rendered INSIDE:
+<TitanRootLayout> → <SidebarNav> → <AppLayout> → <PageShell> → <Outlet>
+
+Therefore:
+- DO NOT add full-screen wrappers
+- DO NOT add new nav bars, headers, footers, fixed areas
+- DO NOT use h-screen, fixed, absolute, sticky (unless explicitly requested)
+
+## 3. Styling Requirements
+- Use Tailwind classes
+- Follow TitanOS theme variables (text-primary, bg-card, border-border, etc.)
+- Use shadcn/ui components for inputs, buttons, sheets, tables, cards, dialogs
+- Code must be clean, modern, enterprise-style
+
+## 4. Component Structure Requirements
+- Output ONLY a functional React component
+- Example signature:
+  export default function PageName() { ... }
+- TypeScript-friendly but no unnecessary interfaces
+- No routing code inside components
+
+## 5. Behavior Requirements
+- If data lists are needed → use table from shadcn/ui
+- If content sections are needed → use cards for grouping
+- If forms are needed → use <Form>, <Input>, <Button>, <Select>
+- If layout is complex → use Flex/Grid responsibly, with normal spacing (gap-4, grid-cols-2, etc.)
+
+## 6. Copilot Output Format
+ALWAYS output:
+- ONLY the component code
+- No commentary
+- No file wrappers
+- No imports for router or layout
+- No explanation text
+
+## 7. How to start a new task
+When asked to build something, follow this structure:
+
+1. Create ONLY the internal page UI
+2. Assume it will be displayed inside PageShell via <Outlet>
+3. Keep it clean, consistent, and themable
+
+---
+# ✔️ When User Requests a New Page
+Do this:
+
+- Create a single functional component
+- Use TitanOS design system + shadcn/ui
+- Use Tailwind for layout
+- Use theme tokens for colors
+
+---
+# ❌ Never Do These
+- Never recreate AppLayout
+- Never add <BrowserRouter>
+- Never use Wouter
+- Never add headers/navbars
+- Never wrap in <div class="h-screen">
+- Never reinvent the TitanOS global shell
+
+---
+# END OF SYSTEM PROMPT

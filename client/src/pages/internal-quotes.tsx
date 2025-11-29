@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,12 +9,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { FileText, Search, Plus, Edit, Package, Eye, User, ArrowLeft } from "lucide-react";
+import { FileText, Plus, Edit, Package, Eye, User, ArrowLeft } from "lucide-react";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
+import { Page, PageHeader, ContentLayout, FilterPanel, DataCard } from "@/components/titan";
 import type { QuoteWithRelations, Product } from "@shared/schema";
 
 export default function InternalQuotes() {
@@ -129,56 +129,49 @@ export default function InternalQuotes() {
 
   if (!isInternalUser) {
     return (
-      <div className="container mx-auto p-6">
-        <Card>
-          <CardContent className="py-16 text-center">
+      <Page>
+        <DataCard>
+          <div className="py-16 text-center">
             <p className="text-muted-foreground">Access denied. This page is for internal staff only.</p>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </DataCard>
+      </Page>
     );
   }
 
   if (isLoading) {
     return (
-      <div className="container mx-auto p-6 space-y-4">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-96 w-full" />
-      </div>
+      <Page>
+        <ContentLayout>
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-96 w-full" />
+        </ContentLayout>
+      </Page>
     );
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+    <Page>
+      <PageHeader
+        title="Internal Quotes"
+        subtitle="Manage customer quotes and convert to orders"
+        backButton={
           <Button variant="ghost" onClick={() => navigate("/")}>
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back to Dashboard
           </Button>
-          <div>
-            <h1 className="text-3xl font-bold">Internal Quotes</h1>
-            <p className="text-muted-foreground mt-1">
-              Manage customer quotes and convert to orders
-            </p>
-          </div>
-        </div>
-        <Button onClick={() => navigate("/quotes/new")}>
-          <Plus className="w-4 h-4 mr-2" />
-          New Quote
-        </Button>
-      </div>
+        }
+        actions={
+          <Button onClick={() => navigate("/quotes/new")}>
+            <Plus className="w-4 h-4 mr-2" />
+            New Quote
+          </Button>
+        }
+      />
 
-      {/* Filters Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Search className="w-5 h-5" />
-            Filter Quotes
-          </CardTitle>
-          <CardDescription>Search and filter internal quotes</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <ContentLayout>
+        {/* Filters */}
+        <FilterPanel title="Filter Quotes" description="Search and filter internal quotes">
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="space-y-2">
               <Label htmlFor="searchCustomer">Customer Name</Label>
@@ -231,18 +224,13 @@ export default function InternalQuotes() {
           <Button variant="outline" onClick={handleClearFilters}>
             Clear Filters
           </Button>
-        </CardContent>
-      </Card>
+        </FilterPanel>
 
-      {/* Quotes List Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Internal Quotes</CardTitle>
-          <CardDescription>
-            {quotes?.length ?? 0} quote{quotes?.length !== 1 ? 's' : ''} found
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+        {/* Quotes List */}
+        <DataCard
+          title="Internal Quotes"
+          description={`${quotes?.length ?? 0} quote${quotes?.length !== 1 ? 's' : ''} found`}
+        >
           {!quotes || quotes.length === 0 ? (
             <div className="py-16 text-center">
               <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
@@ -352,8 +340,8 @@ export default function InternalQuotes() {
               </Table>
             </div>
           )}
-        </CardContent>
-      </Card>
+        </DataCard>
+      </ContentLayout>
 
       {/* Convert to Order Dialog */}
       <Dialog open={convertDialogOpen} onOpenChange={setConvertDialogOpen}>
@@ -429,6 +417,6 @@ export default function InternalQuotes() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </Page>
   );
 }
