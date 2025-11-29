@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
 import { ChevronDown } from "lucide-react";
 import CustomerStatsRow from "./CustomerStatsRow";
 import CustomerActivityTabs from "./CustomerActivityTabs";
-import TitanCard from "@/components/ui/TitanCard";
+import { DataCard } from "@/components/titan";
 import { formatDistanceToNow } from "date-fns";
 
 type StatKey =
@@ -196,7 +197,7 @@ export default function EnhancedCustomerView({
   if (!customer) {
     return (
       <div className="p-6 space-y-6">
-        <div className="text-center text-[var(--app-text-muted)]">
+        <div className="text-center text-muted-foreground">
           {customerId && isLoadingCustomer ? "Loading customer data..." : "Select a customer to view details"}
         </div>
       </div>
@@ -207,28 +208,23 @@ export default function EnhancedCustomerView({
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-semibold tracking-tight text-[var(--app-text-primary)]">
+        <h2 className="text-2xl font-semibold tracking-tight text-foreground">
           {customer.name || customer.companyName || "Unknown Customer"}
         </h2>
 
-        <button
-          className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border border-[var(--app-border-color)]
-          bg-[var(--app-surface-secondary)] hover:bg-[var(--app-surface-tertiary)]
-          transition text-[var(--app-text-muted)]"
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => setShowCustomize((v) => !v)}
         >
           Customize
-          <ChevronDown className="w-4 h-4" />
-        </button>
+          <ChevronDown className="w-4 h-4 ml-2" />
+        </Button>
       </div>
 
       {/* Customize Panel */}
       {showCustomize && (
-        <TitanCard className="p-4">
-          <h3 className="text-sm font-semibold mb-3 text-[var(--app-text-primary)]">
-            Visible Stats
-          </h3>
-
+        <DataCard title="Visible Stats">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {[
               ["quotes", "Quotes"],
@@ -239,29 +235,29 @@ export default function EnhancedCustomerView({
               ["ranking", "Company Rank"],
               ["lifetimeValue", "Lifetime Value"],
             ].map(([key, label]) => (
-              <label key={key} className="flex items-center gap-2">
+              <label key={key} className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={visibleStats.includes(key as StatKey)}
                   onChange={() => toggleStat(key as StatKey)}
-                  className="w-4 h-4"
+                  className="w-4 h-4 rounded border-border"
                 />
-                <span className="text-sm text-[var(--app-text-secondary)]">
+                <span className="text-sm text-muted-foreground">
                   {label}
                 </span>
               </label>
             ))}
           </div>
-        </TitanCard>
+        </DataCard>
       )}
 
       {/* Stats Row */}
       <CustomerStatsRow stats={stats} visible={visibleStats} />
 
       {/* Tabs Section */}
-      <TitanCard className="p-4">
+      <DataCard>
         <Tabs defaultValue="orders">
-          <TabsList className="bg-[var(--app-surface-secondary)]">
+          <TabsList className="bg-muted/50">
             <TabsTrigger value="orders">Orders</TabsTrigger>
             <TabsTrigger value="quotes">Quotes</TabsTrigger>
             <TabsTrigger value="invoices">Invoices</TabsTrigger>
@@ -279,7 +275,7 @@ export default function EnhancedCustomerView({
             <CustomerActivityTabs items={activity.invoices} type="invoice" />
           </TabsContent>
         </Tabs>
-      </TitanCard>
+      </DataCard>
     </div>
   );
 }

@@ -59,29 +59,16 @@ export default function CustomerList({
     },
   });
 
-  const getStatusColor = (status: string) => {
+  const getStatusBadgeClass = (status: string) => {
     switch (status) {
       case "active":
-        return "status-success";
+        return "bg-green-500/10 text-green-600 border-green-500/20";
       case "suspended":
-        return "status-danger";
+        return "bg-red-500/10 text-red-600 border-red-500/20";
       case "on_hold":
-        return "status-warning";
+        return "bg-yellow-500/10 text-yellow-600 border-yellow-500/20";
       default:
-        return "status-muted";
-    }
-  };
-
-  const getTypeColor = (type: string) => {
-    switch (type) {
-      case "retail":
-        return "status-muted";
-      case "wholesale":
-        return "status-muted";
-      case "corporate":
-        return "status-muted";
-      default:
-        return "status-muted";
+        return "bg-gray-500/10 text-gray-500 border-gray-500/20";
     }
   };
 
@@ -98,20 +85,12 @@ export default function CustomerList({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Compact header: just filters, no title or extra copy */}
-      {/* Compact header: just filters, no title or extra copy */}
+      {/* Compact header: just filters */}
       {!collapse && (
-        <div className="p-3 border-b" style={{ borderColor: "var(--border-subtle)" }}>
+        <div className="p-3 border-b border-border/60">
           <div className="grid grid-cols-2 gap-3">
             <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger
-                className=""
-                style={{
-                  backgroundColor: "var(--bg-surface-soft)",
-                  borderColor: "var(--border-subtle)",
-                  color: "var(--text-primary)",
-                }}
-              >
+              <SelectTrigger>
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
@@ -124,14 +103,7 @@ export default function CustomerList({
             </Select>
 
             <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger
-                className=""
-                style={{
-                  backgroundColor: "var(--bg-surface-soft)",
-                  borderColor: "var(--border-subtle)",
-                  color: "var(--text-primary)",
-                }}
-              >
+              <SelectTrigger>
                 <SelectValue placeholder="Type" />
               </SelectTrigger>
               <SelectContent>
@@ -159,20 +131,11 @@ export default function CustomerList({
             </div>
           ) : customers.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 px-6 text-center">
-              <Building2
-                className="w-12 h-12 mb-3"
-                style={{ color: "var(--text-muted)" }}
-              />
-              <h3
-                className="font-medium mb-1"
-                style={{ color: "var(--text-primary)" }}
-              >
+              <Building2 className="w-12 h-12 mb-3 text-muted-foreground" />
+              <h3 className="font-medium mb-1 text-foreground">
                 No customers found
               </h3>
-              <p
-                className="text-sm mb-4"
-                style={{ color: "var(--text-muted)" }}
-              >
+              <p className="text-sm mb-4 text-muted-foreground">
                 {search || statusFilter !== "all" || typeFilter !== "all"
                   ? "Try adjusting your filters"
                   : "Get started by adding your first customer"}
@@ -194,18 +157,10 @@ export default function CustomerList({
                   onClick={() => onSelectCustomer(customer.id)}
                   className={`
                     w-full text-left p-4 rounded-lg border backdrop-blur-sm transition-all
-                    ${selectedCustomerId === customer.id ? "selected" : "base"}
+                    ${selectedCustomerId === customer.id 
+                      ? "bg-muted border-primary" 
+                      : "bg-card/50 border-border/60 hover:bg-muted/50"}
                   `}
-                  style={{
-                    backgroundColor:
-                      selectedCustomerId === customer.id
-                        ? "var(--bg-surface-hover)"
-                        : "var(--bg-surface-soft)",
-                    borderColor:
-                      selectedCustomerId === customer.id
-                        ? "var(--accent-primary)"
-                        : "var(--border-subtle)",
-                  }}
                 >
                   <div className="flex items-start gap-3">
                     <Avatar className="w-10 h-10 flex-shrink-0">
@@ -214,94 +169,32 @@ export default function CustomerList({
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1 min-w-0">
-                      <div
-                        className="font-medium truncate mb-1"
-                        style={{ color: "var(--text-primary)" }}
-                      >
+                      <div className="font-medium truncate mb-1 text-foreground">
                         {customer.companyName}
                       </div>
                       <div className="flex flex-wrap gap-2 mb-2">
-                        <Badge
-                          variant="outline"
-                          style={
-                            getStatusColor(customer.status) === "status-success"
-                              ? {
-                                backgroundColor:
-                                  "var(--badge-success-bg)",
-                                color: "var(--badge-success-text)",
-                                borderColor:
-                                  "var(--badge-success-border)",
-                              }
-                              : getStatusColor(customer.status) ===
-                                "status-danger"
-                                ? {
-                                  backgroundColor:
-                                    "var(--badge-danger-bg)",
-                                  color: "var(--badge-danger-text)",
-                                  borderColor:
-                                    "var(--badge-danger-border)",
-                                }
-                                : getStatusColor(customer.status) ===
-                                  "status-warning"
-                                  ? {
-                                    backgroundColor:
-                                      "var(--badge-warning-bg)",
-                                    color: "var(--badge-warning-text)",
-                                    borderColor:
-                                      "var(--badge-warning-border)",
-                                  }
-                                  : {
-                                    backgroundColor:
-                                      "var(--badge-muted-bg)",
-                                    color: "var(--badge-muted-text)",
-                                    borderColor:
-                                      "var(--badge-muted-border)",
-                                  }
-                          }
-                        >
+                        <Badge variant="outline" className={getStatusBadgeClass(customer.status)}>
                           {customer.status.replace("_", " ")}
                         </Badge>
-                        <Badge
-                          variant="outline"
-                          style={{
-                            backgroundColor: "var(--badge-muted-bg)",
-                            color: "var(--badge-muted-text)",
-                            borderColor: "var(--badge-muted-border)",
-                          }}
-                        >
+                        <Badge variant="outline" className="text-muted-foreground">
                           {customer.customerType}
                         </Badge>
                       </div>
                       {customer.email && (
-                        <div
-                          className="text-xs truncate mb-1"
-                          style={{ color: "var(--text-muted)" }}
-                        >
+                        <div className="text-xs truncate mb-1 text-muted-foreground">
                           {customer.email}
                         </div>
                       )}
                       {customer.phone && (
-                        <div
-                          className="text-xs"
-                          style={{ color: "var(--text-muted)" }}
-                        >
+                        <div className="text-xs text-muted-foreground">
                           {customer.phone}
                         </div>
                       )}
-                      <div
-                        className="flex items-center justify-between mt-2 pt-2 border-t"
-                        style={{ borderColor: "var(--border-subtle)" }}
-                      >
-                        <div
-                          className="text-xs"
-                          style={{ color: "var(--text-muted)" }}
-                        >
+                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/60">
+                        <div className="text-xs text-muted-foreground">
                           Balance
                         </div>
-                        <div
-                          className="text-xs font-medium"
-                          style={{ color: "var(--text-primary)" }}
-                        >
+                        <div className="text-xs font-medium text-foreground">
                           {formatCurrency(customer.currentBalance || "0")}
                         </div>
                       </div>
