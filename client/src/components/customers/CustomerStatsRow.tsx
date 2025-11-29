@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { ArrowUpRight, ArrowDownRight } from "lucide-react";
-import { TitanCard } from "@/components/ui/TitanCard";
+import { DataCard } from "@/components/titan";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 type StatKey =
   | "quotes"
@@ -129,9 +131,9 @@ export default function CustomerStatsRow({ stats, visible }: CustomerStatsRowPro
             const isPositive = card.change && card.change > 0;
 
             const trendIcon = isPositive ? (
-              <ArrowUpRight className="w-4 h-4 text-[var(--app-success-foreground)]" />
+              <ArrowUpRight className="w-4 h-4 text-green-500" />
             ) : card.change ? (
-              <ArrowDownRight className="w-4 h-4 text-[var(--app-danger-foreground)]" />
+              <ArrowDownRight className="w-4 h-4 text-red-500" />
             ) : null;
 
             return (
@@ -139,104 +141,89 @@ export default function CustomerStatsRow({ stats, visible }: CustomerStatsRowPro
                 key={card.key}
                 className={
                   card.clickable
-                    ? "cursor-pointer hover:-translate-y-[2px] transition hover:shadow-[var(--app-card-shadow-strong)] ring-1 ring-transparent hover:ring-[var(--app-accent)]"
+                    ? "cursor-pointer hover:-translate-y-[2px] transition hover:shadow-lg ring-1 ring-transparent hover:ring-primary"
                     : ""
                 }
                 onClick={card.clickable ? card.onClick : undefined}
               >
-                <TitanCard className="p-3 flex flex-col justify-between">
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-[var(--app-text-muted)]">
+                <DataCard className="p-3 flex flex-col justify-between" noPadding>
+                <div className="p-3">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
                     {card.label}
                   </div>
-                  <div className="text-2xl font-semibold mt-1 text-[var(--app-text-primary)]">
+                  <div className="text-2xl font-semibold mt-1 text-foreground">
                     {card.value}
                   </div>
-                </div>
 
-                {card.change !== null && (
-                  <div className="flex items-center justify-between mt-4">
-                    {/* Trend */}
-                    <div className="flex items-center gap-1 text-sm">
-                      {trendIcon}
-                      <span
-                        className={
-                          isPositive
-                            ? "text-[var(--app-success-foreground)]"
-                            : "text-[var(--app-danger-foreground)]"
-                        }
-                      >
-                        {card.change}%
-                      </span>
-                      <span className="text-[var(--app-text-muted)] text-xs">
-                        vs prev month
-                      </span>
-                    </div>
-
-                    {/* Sparkline */}
-                    <div className="w-16 h-8 rounded overflow-hidden bg-[var(--app-surface-tertiary)]">
-                      {/* Minimal inline SVG sparkline */}
-                      <svg width="100%" height="100%" viewBox="0 0 100 40" preserveAspectRatio="none">
-                        <polyline
-                          fill="none"
-                          stroke={
+                  {card.change !== null && (
+                    <div className="flex items-center justify-between mt-4">
+                      {/* Trend */}
+                      <div className="flex items-center gap-1 text-sm">
+                        {trendIcon}
+                        <span
+                          className={
                             isPositive
-                              ? "var(--app-chart-positive)"
-                              : "var(--app-chart-negative)"
+                              ? "text-green-500"
+                              : "text-red-500"
                           }
-                          strokeWidth="3"
-                          points={card.spark?.join(" ") || ""}
-                        />
-                      </svg>
+                        >
+                          {card.change}%
+                        </span>
+                        <span className="text-muted-foreground text-xs">
+                          vs prev month
+                        </span>
+                      </div>
+
+                      {/* Sparkline */}
+                      <div className="w-16 h-8 rounded overflow-hidden bg-muted/50">
+                        {/* Minimal inline SVG sparkline */}
+                        <svg width="100%" height="100%" viewBox="0 0 100 40" preserveAspectRatio="none">
+                          <polyline
+                            fill="none"
+                            stroke={isPositive ? "#22c55e" : "#ef4444"}
+                            strokeWidth="3"
+                            points={card.spark?.join(" ") || ""}
+                          />
+                        </svg>
+                      </div>
                     </div>
-                  </div>
-                )}
-                </TitanCard>
+                  )}
+                </div>
+                </DataCard>
               </div>
             );
           })}
       </div>
 
-      {/* Modals intentionally stubbed for now to unblock build */}
-      {showLastContact && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="rounded-lg bg-[var(--bg-surface)] p-4 shadow-xl max-w-sm w-full">
-            <div className="text-sm mb-3" style={{ color: "var(--text-primary)" }}>
-              Last contact details modal not yet implemented.
-            </div>
-            <button
-              onClick={() => setShowLastContact(false)}
-              className="mt-2 px-3 py-1 rounded text-sm"
-              style={{
-                backgroundColor: "var(--accent-primary)",
-                color: "#ffffff",
-              }}
-            >
-              Close
-            </button>
+      {/* Last Contact Modal */}
+      <Dialog open={showLastContact} onOpenChange={setShowLastContact}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Last Contact Details</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Last contact details modal not yet implemented.
+          </p>
+          <div className="flex justify-end mt-4">
+            <Button onClick={() => setShowLastContact(false)}>Close</Button>
           </div>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
 
-      {showRanking && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="rounded-lg bg-[var(--bg-surface)] p-4 shadow-xl max-w-sm w-full">
-            <div className="text-sm mb-3" style={{ color: "var(--text-primary)" }}>
-              Ranking modal not yet implemented.
-            </div>
-            <button
-              onClick={() => setShowRanking(false)}
-              className="mt-2 px-3 py-1 rounded text-sm"
-              style={{
-                backgroundColor: "var(--accent-primary)",
-                color: "#ffffff",
-              }}
-            >
-              Close
-            </button>
+      {/* Ranking Modal */}
+      <Dialog open={showRanking} onOpenChange={setShowRanking}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Company Ranking</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Ranking modal not yet implemented.
+          </p>
+          <div className="flex justify-end mt-4">
+            <Button onClick={() => setShowRanking(false)}>Close</Button>
           </div>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

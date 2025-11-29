@@ -8,13 +8,17 @@ interface DataCardProps {
   children: React.ReactNode;
   className?: string;
   noPadding?: boolean;
+  onClick?: () => void;
 }
 
-export function DataCard({ title, description, headerActions, children, className, noPadding }: DataCardProps) {
+export function DataCard({ title, description, headerActions, children, className, noPadding, onClick }: DataCardProps) {
   const hasHeader = title || description || headerActions;
 
   return (
-    <div className={cn("rounded-xl border border-border/60 bg-card/60 shadow-sm", className)}>
+    <div 
+      className={cn("rounded-xl border border-border/60 bg-card/60 shadow-sm", className)}
+      onClick={onClick}
+    >
       {hasHeader && (
         <div className="flex items-center justify-between border-b border-border/60 px-6 py-4">
           <div>

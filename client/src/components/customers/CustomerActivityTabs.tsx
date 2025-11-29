@@ -1,6 +1,6 @@
 import React from "react";
 import { useLocation } from "wouter";
-import TitanCard from "@/components/ui/TitanCard";
+import { DataCard } from "@/components/titan";
 import { Badge } from "@/components/ui/badge";
 import { ArrowRight } from "lucide-react";
 
@@ -31,9 +31,19 @@ export default function CustomerActivityTabs({ items, type }: CustomerActivityTa
     }
   };
 
+  const getStatusBadgeClass = (status: string) => {
+    if (status === "completed" || status === "paid" || status === "accepted") {
+      return "bg-green-500/10 text-green-600 border-green-500/20";
+    }
+    if (status === "pending" || status === "sent" || status === "new") {
+      return "bg-yellow-500/10 text-yellow-600 border-yellow-500/20";
+    }
+    return "bg-muted text-muted-foreground";
+  };
+
   if (!items?.length)
     return (
-      <div className="text-sm text-[var(--app-text-muted)] p-4">
+      <div className="text-sm text-muted-foreground p-4">
         No {type}s found.
       </div>
     );
@@ -41,37 +51,31 @@ export default function CustomerActivityTabs({ items, type }: CustomerActivityTa
   return (
     <div className="space-y-3 mt-4">
       {items.map((item) => (
-        <TitanCard
+        <DataCard
           key={item.id}
-          className="p-4 hover:-translate-y-[2px] transition hover:shadow-[var(--app-card-shadow-strong)] cursor-pointer"
+          className="hover:-translate-y-[2px] transition hover:shadow-lg cursor-pointer"
+          noPadding
           onClick={() => handleClick(item.id)}
         >
-          <div className="flex justify-between items-center">
+          <div className="flex justify-between items-center p-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <span className="font-semibold text-[var(--app-text-primary)]">
+                <span className="font-semibold text-foreground">
                   {item.title}
                 </span>
-                <Badge
-                  className={`${item.status === "completed" || item.status === "paid" || item.status === "accepted"
-                      ? "bg-[var(--app-success-bg)] text-[var(--app-success-foreground)]"
-                      : item.status === "pending" || item.status === "sent"
-                        ? "bg-[var(--app-warning-bg)] text-[var(--app-warning-foreground)]"
-                        : "bg-[var(--app-surface-tertiary)] text-[var(--app-text-muted)]"
-                    }`}
-                >
+                <Badge variant="outline" className={getStatusBadgeClass(item.status)}>
                   {item.status}
                 </Badge>
               </div>
 
-              <div className="text-sm text-[var(--app-text-secondary)]">
+              <div className="text-sm text-muted-foreground">
                 {item.subtitle}
               </div>
             </div>
 
-            <ArrowRight className="w-5 h-5 text-[var(--app-text-muted)]" />
+            <ArrowRight className="w-5 h-5 text-muted-foreground" />
           </div>
-        </TitanCard>
+        </DataCard>
       ))}
     </div>
   );

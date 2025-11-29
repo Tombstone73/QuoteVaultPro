@@ -41,7 +41,7 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
 
   if (isLoading) {
     return (
-      <Card className="bg-white/5 border-white/10 backdrop-blur-sm">
+      <Card className="bg-card/50 border-border/60 backdrop-blur-sm">
         <CardContent className="py-8">
           <div className="flex items-center justify-center gap-2">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
@@ -53,9 +53,9 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
   }
 
   return (
-    <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+    <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
       <CardHeader>
-        <CardTitle className="text-white">Orders</CardTitle>
+        <CardTitle className="text-foreground">Orders</CardTitle>
       </CardHeader>
       <CardContent>
         {!orders || orders.length === 0 ? (
@@ -64,9 +64,9 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
           <div className="space-y-2">
             {orders.map((order: any) => (
               <Link key={order.id} href={`/orders/${order.id}`}>
-                <div className="flex items-center justify-between p-4 border border-white/10 rounded-lg hover:bg-white/5 cursor-pointer transition-colors">
+                <div className="flex items-center justify-between p-4 border border-border/60 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors">
                   <div className="flex-1">
-                    <div className="font-medium font-mono text-white">{order.orderNumber}</div>
+                    <div className="font-medium font-mono text-foreground">{order.orderNumber}</div>
                     <div className="text-sm text-muted-foreground">
                       {formatDate(order.createdAt)}
                     </div>
@@ -75,7 +75,7 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
                     <OrderStatusBadge status={order.status} />
                     <OrderPriorityBadge priority={order.priority} />
                     <div className="text-right">
-                      <div className="font-medium text-white">{formatCurrency(order.total)}</div>
+                      <div className="font-medium text-foreground">{formatCurrency(order.total)}</div>
                       <div className="text-xs text-muted-foreground">
                         {Array.isArray(order.lineItems) ? order.lineItems.length : 0} items
                       </div>
@@ -251,9 +251,9 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
   // Empty state
   if (!customerId) {
     return (
-      <div className="flex flex-col items-center justify-center h-full bg-gradient-to-b from-[#16191D] to-[#1C1F24] p-8">
+      <div className="flex flex-col items-center justify-center h-full bg-background p-8">
         <Building2 className="w-16 h-16 text-muted-foreground mb-4" />
-        <h3 className="text-lg font-medium text-white mb-2">No Customer Selected</h3>
+        <h3 className="text-lg font-medium text-foreground mb-2">No Customer Selected</h3>
         <p className="text-sm text-muted-foreground text-center max-w-md">
           Select a customer from the list to view their details, contacts, quotes, and orders.
         </p>
@@ -264,7 +264,7 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
   // Loading state
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full bg-gradient-to-b from-[#16191D] to-[#1C1F24]">
+      <div className="flex items-center justify-center h-full bg-background">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-muted-foreground">Loading customer details...</p>
@@ -276,9 +276,9 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
   // Not found state
   if (!customer) {
     return (
-      <div className="flex flex-col items-center justify-center h-full bg-gradient-to-b from-[#16191D] to-[#1C1F24] p-8">
+      <div className="flex flex-col items-center justify-center h-full bg-background p-8">
         <Building2 className="w-16 h-16 text-muted-foreground mb-4" />
-        <h3 className="text-lg font-medium text-white mb-2">Customer Not Found</h3>
+        <h3 className="text-lg font-medium text-foreground mb-2">Customer Not Found</h3>
         <p className="text-sm text-muted-foreground">
           The selected customer could not be found.
         </p>
@@ -287,9 +287,9 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
   }
 
   return (
-    <div className={viewMode === "enhanced" ? "flex flex-col h-full bg-gradient-to-b from-[#16191D] to-[#1C1F24] px-4" : "flex flex-col h-full bg-gradient-to-b from-[#16191D] to-[#1C1F24]"}>
+    <div className={viewMode === "enhanced" ? "flex flex-col h-full bg-background px-4" : "flex flex-col h-full bg-background"}>
       {/* Header */}
-      <div className="p-6 border-b border-white/10">
+      <div className="p-6 border-b border-border/60">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-4">
             <Avatar className="w-12 h-12">
@@ -298,12 +298,12 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
               </AvatarFallback>
             </Avatar>
             <div>
-              <h2 className="text-xl font-bold text-white">{customer.companyName}</h2>
+              <h2 className="text-xl font-bold text-foreground">{customer.companyName}</h2>
               <div className="flex items-center gap-2 mt-1">
                 <Badge variant="outline" className={getStatusColor(customer.status)}>
                   {customer.status.replace("_", " ")}
                 </Badge>
-                <Badge variant="outline" className="border-white/20 text-white/70">
+                <Badge variant="outline" className="text-muted-foreground">
                   {customer.customerType}
                 </Badge>
               </div>
@@ -315,7 +315,6 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                 onClick={onToggleView}
                 size="sm"
                 variant="secondary"
-                className="bg-white/10 hover:bg-white/20 text-white border-white/10"
                 title={viewMode === "enhanced" ? "Switch to Split View" : "Switch to Enhanced View"}
               >
                 {viewMode === "enhanced" ? "Split View" : "Enhanced View"}
@@ -327,7 +326,7 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
               onEdit?.();
             }}
             size="sm"
-            className="bg-white/10 hover:bg-white/20 text-white border-white/10"
+            variant="secondary"
           >
             <Edit className="w-4 h-4 mr-2" />
             Edit
@@ -337,12 +336,12 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
 
         {/* Quick Stats */}
         <div className={viewMode === "enhanced" ? `grid ${Object.values(enabledCards).filter(Boolean).length >= 4 ? 'grid-cols-4' : 'grid-cols-3'} gap-4` : "grid grid-cols-3 gap-4"}>
-          <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+          <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
             <CardHeader className="pb-2">
               <CardTitle className="text-xs font-medium text-muted-foreground">Balance</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-lg font-bold text-white">
+              <div className="text-lg font-bold text-foreground">
                 ${parseFloat(customer.currentBalance || '0').toFixed(2)}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
@@ -352,60 +351,60 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
           </Card>
 
           {enabledCards.sales && (
-          <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+          <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
             <CardHeader className="pb-2">
               <CardTitle className="text-xs font-medium text-muted-foreground">Sales</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-lg font-bold text-white">$0.00</div>
+              <div className="text-lg font-bold text-foreground">$0.00</div>
               <p className="text-xs text-muted-foreground mt-1">+0.0% vs prev month</p>
             </CardContent>
           </Card>
           )}
 
           {enabledCards.avgOrder && (
-          <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+          <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
             <CardHeader className="pb-2">
               <CardTitle className="text-xs font-medium text-muted-foreground">Avg Order</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-lg font-bold text-white">$0.00</div>
+              <div className="text-lg font-bold text-foreground">$0.00</div>
               <p className="text-xs text-muted-foreground mt-1">-0.0% vs prev month</p>
             </CardContent>
           </Card>
           )}
 
           {viewMode === "enhanced" && enabledCards.pendingQuotes && (
-            <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+            <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-medium text-muted-foreground">Pending Quotes</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-lg font-bold text-white">0</div>
+                <div className="text-lg font-bold text-foreground">0</div>
                 <p className="text-xs text-muted-foreground mt-1">—</p>
               </CardContent>
             </Card>
           )}
 
           {viewMode === "enhanced" && enabledCards.lastContact && (
-            <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+            <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-medium text-muted-foreground">Last Contact</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-lg font-bold text-white">—</div>
+                <div className="text-lg font-bold text-foreground">—</div>
                 <p className="text-xs text-muted-foreground mt-1">No recent activity</p>
               </CardContent>
             </Card>
           )}
 
           {viewMode === "enhanced" && enabledCards.customerRank && (
-            <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+            <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-medium text-muted-foreground">Customer Rank</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-lg font-bold text-white">#—</div>
+                <div className="text-lg font-bold text-foreground">#—</div>
                 <p className="text-xs text-muted-foreground mt-1">of —</p>
               </CardContent>
             </Card>
@@ -416,28 +415,28 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
       {/* Tabs Content */}
       <div className={viewMode === "enhanced" ? "flex-1 overflow-y-auto p-6 max-w-6xl mx-auto" : "flex-1 overflow-y-auto p-6"}>
         <Tabs defaultValue="overview" className="space-y-4">
-          <TabsList className="bg-white/5 border border-white/10">
-            <TabsTrigger value="overview" className="data-[state=active]:bg-white/10">
+          <TabsList className="bg-muted border border-border/60">
+            <TabsTrigger value="overview" className="data-[state=active]:bg-background">
               <Building2 className="w-4 h-4 mr-2" />
               Overview
             </TabsTrigger>
-            <TabsTrigger value="contacts" className="data-[state=active]:bg-white/10">
+            <TabsTrigger value="contacts" className="data-[state=active]:bg-background">
               <Users className="w-4 h-4 mr-2" />
               Contacts ({customer.contacts.length})
             </TabsTrigger>
-            <TabsTrigger value="quotes" className="data-[state=active]:bg-white/10">
+            <TabsTrigger value="quotes" className="data-[state=active]:bg-background">
               <FileText className="w-4 h-4 mr-2" />
               Quotes ({customer.quotes.length})
             </TabsTrigger>
-            <TabsTrigger value="orders" className="data-[state=active]:bg-white/10">
+            <TabsTrigger value="orders" className="data-[state=active]:bg-background">
               <Package className="w-4 h-4 mr-2" />
               Orders
             </TabsTrigger>
-            <TabsTrigger value="activity" className="data-[state=active]:bg-white/10">
+            <TabsTrigger value="activity" className="data-[state=active]:bg-background">
               <MessageSquare className="w-4 h-4 mr-2" />
               Activity
             </TabsTrigger>
-            <TabsTrigger value="credits" className="data-[state=active]:bg-white/10">
+            <TabsTrigger value="credits" className="data-[state=active]:bg-background">
               <CreditCard className="w-4 h-4 mr-2" />
               Credits
             </TabsTrigger>
@@ -445,16 +444,16 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
 
           <TabsContent value="overview" className="space-y-4">
             <div className="grid grid-cols-1 gap-4">
-              <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+              <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
                 <CardHeader>
-                  <CardTitle className="text-white">Contact Information</CardTitle>
+                  <CardTitle className="text-foreground">Contact Information</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {customer.email && (
                     <div className="flex items-center gap-3">
                       <Mail className="w-4 h-4 text-muted-foreground" />
                       <div>
-                        <div className="text-sm font-medium text-white">Email</div>
+                        <div className="text-sm font-medium text-foreground">Email</div>
                         <div className="text-sm text-muted-foreground">{customer.email}</div>
                       </div>
                     </div>
@@ -463,7 +462,7 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                     <div className="flex items-center gap-3">
                       <Phone className="w-4 h-4 text-muted-foreground" />
                       <div>
-                        <div className="text-sm font-medium text-white">Phone</div>
+                        <div className="text-sm font-medium text-foreground">Phone</div>
                         <div className="text-sm text-muted-foreground">{customer.phone}</div>
                       </div>
                     </div>
@@ -472,7 +471,7 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                     <div className="flex items-center gap-3">
                       <Globe className="w-4 h-4 text-muted-foreground" />
                       <div>
-                        <div className="text-sm font-medium text-white">Website</div>
+                        <div className="text-sm font-medium text-foreground">Website</div>
                         <div className="text-sm text-muted-foreground">{customer.website}</div>
                       </div>
                     </div>
@@ -480,15 +479,15 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                 </CardContent>
               </Card>
 
-              <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+              <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
                 <CardHeader>
-                  <CardTitle className="text-white">Shipping Address</CardTitle>
+                  <CardTitle className="text-foreground">Shipping Address</CardTitle>
                 </CardHeader>
                 <CardContent>
                   {customer.shippingAddressLine1 ? (
                     <div className="flex items-start gap-3">
                       <MapPin className="w-4 h-4 text-muted-foreground mt-1" />
-                      <div className="text-sm text-white">
+                      <div className="text-sm text-foreground">
                         <div>{customer.shippingAddressLine1}</div>
                         {customer.shippingCity && (
                           <div>
@@ -506,11 +505,11 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
           </TabsContent>
 
           <TabsContent value="contacts">
-            <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+            <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-white">Contacts</CardTitle>
-                  <Button size="sm" onClick={() => setShowContactForm(true)} className="bg-white/10 hover:bg-white/20 text-white">
+                  <CardTitle className="text-foreground">Contacts</CardTitle>
+                  <Button size="sm" onClick={() => setShowContactForm(true)} variant="secondary">
                     <Users className="w-4 h-4 mr-2" />
                     Add Contact
                   </Button>
@@ -525,7 +524,7 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                       <div
                         key={contact.id}
                         id={`contact-${contact.id}`}
-                        className="flex items-center justify-between p-4 border border-white/10 rounded-lg bg-white/5 hover:bg-white/8 transition-colors"
+                        className="flex items-center justify-between p-4 border border-border/60 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors"
                       >
                         <div className="flex items-center gap-4">
                           <Avatar>
@@ -534,13 +533,13 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                             </AvatarFallback>
                           </Avatar>
                           <div>
-                            <div className="font-medium text-white">
+                            <div className="font-medium text-foreground">
                               {contact.firstName} {contact.lastName}
                               {contact.isPrimary && (
                                 <Badge variant="outline" className="ml-2 border-primary/20 text-primary bg-primary/10">Primary</Badge>
                               )}
                               {contact.isBilling && (
-                                <Badge variant="outline" className="ml-2 border-white/20 text-white/70">Billing</Badge>
+                                <Badge variant="outline" className="ml-2 text-muted-foreground">Billing</Badge>
                               )}
                             </div>
                             {contact.title && (
@@ -570,7 +569,6 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                               setEditingContact(contact);
                               setShowContactForm(true);
                             }}
-                            className="text-white hover:bg-white/10"
                           >
                             Edit
                           </Button>
@@ -578,7 +576,6 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                             variant="ghost"
                             size="sm"
                             onClick={() => setContactToDelete(contact)}
-                            className="hover:bg-white/10"
                           >
                             <Trash2 className="w-4 h-4 text-destructive" />
                           </Button>
@@ -592,15 +589,15 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
           </TabsContent>
 
           <TabsContent value="quotes">
-            <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+            <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
               <CardHeader>
                <div className="flex items-center justify-between">
-                   <CardTitle className="text-white">Quotes</CardTitle>
+                   <CardTitle className="text-foreground">Quotes</CardTitle>
                    <div className="flex gap-2">
-                     <Button size="sm" variant="secondary" className="bg-white/10 hover:bg-white/20 text-white" onClick={() => setShowCustomizeCards(true)}>
+                     <Button size="sm" variant="secondary" onClick={() => setShowCustomizeCards(true)}>
                        <Settings className="w-4 h-4 mr-2" /> Customize
                      </Button>
-                     <Button size="sm" variant="secondary" className="bg-white/10 hover:bg-white/20 text-white" onClick={() => setShowQuotesConfig(true)}>
+                     <Button size="sm" variant="secondary" onClick={() => setShowQuotesConfig(true)}>
                        <Settings className="w-4 h-4 mr-2" /> Columns
                      </Button>
                    </div>
@@ -620,25 +617,25 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                       <div className="space-y-2">
                         {customer.quotes.map((quote) => {
                           const cellData: Record<string, React.ReactNode> = {
-                            quoteNumber: <div className="font-mono text-white">{quote.quoteNumber}</div>,
-                            date: <div className="text-sm text-white/80">{new Date(quote.createdAt).toLocaleDateString()}</div>,
-                            product: <div className="text-sm text-white/80 truncate">—</div>,
-                            po: <div className="text-sm text-white/60">—</div>,
-                            qty: <div className="text-sm text-white/80">—</div>,
-                            amount: <div className="text-sm text-right text-white">${parseFloat(quote.totalPrice).toFixed(2)}</div>,
-                            dueDate: <div className="text-sm text-white/60">—</div>,
-                            status: <div><Badge variant="outline" className="border-white/20 text-white/70">{quote.status}</Badge></div>,
+                            quoteNumber: <div className="font-mono text-foreground">{quote.quoteNumber}</div>,
+                            date: <div className="text-sm text-muted-foreground">{new Date(quote.createdAt).toLocaleDateString()}</div>,
+                            product: <div className="text-sm text-muted-foreground truncate">—</div>,
+                            po: <div className="text-sm text-muted-foreground">—</div>,
+                            qty: <div className="text-sm text-muted-foreground">—</div>,
+                            amount: <div className="text-sm text-right text-foreground">${parseFloat(quote.totalPrice).toFixed(2)}</div>,
+                            dueDate: <div className="text-sm text-muted-foreground">—</div>,
+                            status: <div><Badge variant="outline" className="text-muted-foreground">{quote.status}</Badge></div>,
                             actions: (
                               <div className="flex items-center justify-end gap-2">
-                                <Link href={`/quotes/${quote.id}`}><Button variant="ghost" size="icon" className="hover:bg-white/10"><Eye className="w-4 h-4" /></Button></Link>
-                                <Link href={`/quotes/${quote.id}/edit`}><Button variant="ghost" size="icon" className="hover:bg-white/10"><Edit2 className="w-4 h-4" /></Button></Link>
-                                <Button variant="ghost" size="icon" className="hover:bg-white/10"><Download className="w-4 h-4" /></Button>
-                                <Button variant="ghost" size="icon" className="hover:bg-white/10"><MailIcon className="w-4 h-4" /></Button>
+                                <Link href={`/quotes/${quote.id}`}><Button variant="ghost" size="icon"><Eye className="w-4 h-4" /></Button></Link>
+                                <Link href={`/quotes/${quote.id}/edit`}><Button variant="ghost" size="icon"><Edit2 className="w-4 h-4" /></Button></Link>
+                                <Button variant="ghost" size="icon"><Download className="w-4 h-4" /></Button>
+                                <Button variant="ghost" size="icon"><MailIcon className="w-4 h-4" /></Button>
                               </div>
                             ),
                           };
                           return (
-                            <div key={quote.id} className="grid gap-3 items-center px-4 py-3 border border-white/10 rounded-lg bg-white/5" style={{ gridTemplateColumns: `repeat(${quoteColumns.filter((c: any) => c.enabled).length}, minmax(0, 1fr))` }}>
+                            <div key={quote.id} className="grid gap-3 items-center px-4 py-3 border border-border/60 rounded-lg bg-muted/30" style={{ gridTemplateColumns: `repeat(${quoteColumns.filter((c: any) => c.enabled).length}, minmax(0, 1fr))` }}>
                               {quoteColumns.filter((c: any) => c.enabled).map((col: any) => (
                                 <div key={col.id}>{cellData[col.id]}</div>
                               ))}
@@ -658,11 +655,11 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
           </TabsContent>
 
           <TabsContent value="activity">
-            <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+            <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-white">Activity Timeline</CardTitle>
-                  <Button size="sm" onClick={() => setShowNoteForm(true)} className="bg-white/10 hover:bg-white/20 text-white">
+                  <CardTitle className="text-foreground">Activity Timeline</CardTitle>
+                  <Button size="sm" onClick={() => setShowNoteForm(true)} variant="secondary">
                     <MessageSquare className="w-4 h-4 mr-2" />
                     Add Note
                   </Button>
@@ -675,12 +672,12 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
           </TabsContent>
 
           <TabsContent value="credits">
-            <Card className="bg-white/5 border-white/10 backdrop-blur-sm shadow-[0_2px_12px_rgba(0,0,0,0.5),0_-1px_2px_rgba(255,255,255,0.04)]">
+            <Card className="bg-card/50 border-border/60 backdrop-blur-sm shadow-lg">
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-white">Credit Transactions</CardTitle>
+                  <CardTitle className="text-foreground">Credit Transactions</CardTitle>
                   {isAdmin && (
-                    <Button size="sm" onClick={() => setShowCreditForm(true)} className="bg-white/10 hover:bg-white/20 text-white">
+                    <Button size="sm" onClick={() => setShowCreditForm(true)} variant="secondary">
                       <DollarSign className="w-4 h-4 mr-2" />
                       Apply Credit
                     </Button>
@@ -693,16 +690,16 @@ export default function CustomerDetailPanel({ customerId, onEdit, viewMode = "sp
                 ) : (
                   <div className="space-y-2">
                     {customer.creditTransactions.map((transaction) => (
-                      <div key={transaction.id} className="flex items-center justify-between p-4 border border-white/10 rounded-lg bg-white/5">
+                      <div key={transaction.id} className="flex items-center justify-between p-4 border border-border/60 rounded-lg bg-muted/30">
                         <div>
-                          <div className="font-medium capitalize text-white">{transaction.transactionType}</div>
+                          <div className="font-medium capitalize text-foreground">{transaction.transactionType}</div>
                           <div className="text-sm text-muted-foreground">{transaction.reason}</div>
                           <div className="text-xs text-muted-foreground mt-1">
                             {new Date(transaction.createdAt).toLocaleDateString()}
                           </div>
                         </div>
                         <div className="text-right">
-                          <div className={`font-medium ${transaction.transactionType === 'credit' ? 'text-green-400' : 'text-red-400'}`}>
+                          <div className={`font-medium ${transaction.transactionType === 'credit' ? 'text-green-600' : 'text-red-600'}`}>
                             {transaction.transactionType === 'credit' ? '+' : '-'}${parseFloat(transaction.amount).toFixed(2)}
                           </div>
                           <div className="text-sm text-muted-foreground">
