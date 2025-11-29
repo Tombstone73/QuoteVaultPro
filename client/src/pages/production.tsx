@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useLocation } from "wouter";
+import { ArrowLeft } from "lucide-react";
+import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
 
 // Minimal Kanban style using HTML5 drag & drop
 export default function ProductionBoard() {
@@ -40,80 +42,110 @@ export default function ProductionBoard() {
   const allowDrop = (e: React.DragEvent) => e.preventDefault();
 
   return (
-    <div className="container mx-auto p-4 space-y-4 h-screen flex flex-col">
-      <div className="flex items-center justify-between flex-shrink-0">
-        <h1 className="text-2xl font-bold">Production Board</h1>
-        <div className="flex items-center gap-2">
+    <Page maxWidth="full">
+      <PageHeader
+        title="Production Board"
+        subtitle="Track and manage job production workflow"
+        backButton={
+          <Button variant="ghost" size="icon" onClick={() => navigate("/orders")}>
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+        }
+        actions={
           <Badge variant="outline">Jobs: {jobs?.length || 0}</Badge>
-          <Link href="/orders"><Button variant="outline" size="sm">Back to Orders</Button></Link>
-        </div>
-      </div>
-      
-      {isLoading && (
-        <div className="grid grid-cols-7 gap-2">
-          {[1,2,3,4,5,6,7].map(s => <Skeleton key={s} className="h-64" />)}
-        </div>
-      )}
-      
-      {!isLoading && statuses && (
-        <div className="flex gap-2 overflow-x-auto pb-4 flex-1">
-          {statuses.map(status => (
-            <div
-              key={status.key}
-              onDragOver={allowDrop}
-              onDrop={(e) => handleDrop(e, status.key)}
-              className="border rounded-md bg-muted/30 flex flex-col min-w-[280px] w-full h-full"
-            >
-              <div className="p-2 border-b bg-background sticky top-0 z-10 rounded-t-md">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-wide">{status.label}</span>
-                  <Badge variant={status.badgeVariant as any || "secondary"}>{grouped[status.key]?.length || 0}</Badge>
+        }
+      />
+
+      <ContentLayout>
+        {isLoading && (
+          <div className="grid grid-cols-7 gap-2">
+            {[1, 2, 3, 4, 5, 6, 7].map((s) => (
+              <Skeleton key={s} className="h-64" />
+            ))}
+          </div>
+        )}
+
+        {!isLoading && statuses && (
+          <div className="flex gap-2 overflow-x-auto pb-4 h-[calc(100vh-200px)]">
+            {statuses.map((status) => (
+              <div
+                key={status.key}
+                onDragOver={allowDrop}
+                onDrop={(e) => handleDrop(e, status.key)}
+                className="border border-border/60 rounded-xl bg-card/30 flex flex-col min-w-[280px] w-full h-full"
+              >
+                <div className="p-3 border-b border-border/60 bg-card sticky top-0 z-10 rounded-t-xl">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-foreground">
+                      {status.label}
+                    </span>
+                    <Badge variant={(status.badgeVariant as any) || "secondary"}>
+                      {grouped[status.key]?.length || 0}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="p-2 space-y-2 flex-1 overflow-y-auto">
+                  {grouped[status.key]?.map((job) => (
+                    <Card
+                      key={job.id}
+                      draggable={internalUser}
+                      onDragStart={(e) => handleDragStart(e, job.id)}
+                      onDragEnd={handleDragEnd}
+                      className={`cursor-pointer transition border ${activeDragId === job.id ? 'opacity-50' : ''} hover:shadow-md`}
+                      onClick={() => navigate(`/jobs/${job.id}`)}
+                    >
+                      <CardHeader className="p-3">
+                        <CardTitle className="text-sm flex flex-col gap-1">
+                          <div className="flex justify-between items-start">
+                            <span className="font-semibold truncate" title={job.customerName}>
+                              {job.customerName}
+                            </span>
+                            {job.priority === 'rush' && (
+                              <Badge variant="destructive" className="text-[10px] px-1 py-0">
+                                RUSH
+                              </Badge>
+                            )}
+                          </div>
+                          {job.orderNumber && (
+                            <span className="text-xs text-muted-foreground">{job.orderNumber}</span>
+                          )}
+                          <div className="text-xs font-medium">
+                            {job.mediaType}
+                            {job.quantity > 0 && (
+                              <span className="text-muted-foreground"> × {job.quantity}</span>
+                            )}
+                          </div>
+                          {job.dueDate && (
+                            <span className="text-xs text-muted-foreground">
+                              Due: {new Date(job.dueDate).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}
+                            </span>
+                          )}
+                          {job.assignedToUserId && (
+                            <Badge variant="secondary" className="w-fit text-[10px]">
+                              Assigned
+                            </Badge>
+                          )}
+                        </CardTitle>
+                      </CardHeader>
+                    </Card>
+                  ))}
+                  {grouped[status.key]?.length === 0 && (
+                    <div className="text-xs text-muted-foreground italic text-center py-4">
+                      No jobs
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="p-2 space-y-2 flex-1 overflow-y-auto">
-                {grouped[status.key]?.map(job => (
-                  <Card
-                    key={job.id}
-                    draggable={internalUser}
-                    onDragStart={(e) => handleDragStart(e, job.id)}
-                    onDragEnd={handleDragEnd}
-                    className={`cursor-pointer transition border ${activeDragId === job.id ? 'opacity-50' : ''} hover:shadow-md`}
-                    onClick={() => navigate(`/jobs/${job.id}`)}
-                  >
-                    <CardHeader className="p-3">
-                      <CardTitle className="text-sm flex flex-col gap-1">
-                        <div className="flex justify-between items-start">
-                          <span className="font-semibold truncate" title={job.customerName}>{job.customerName}</span>
-                          {job.priority === 'rush' && <Badge variant="destructive" className="text-[10px] px-1 py-0">RUSH</Badge>}
-                        </div>
-                        {job.orderNumber && (
-                          <span className="text-xs text-muted-foreground">{job.orderNumber}</span>
-                        )}
-                        <div className="text-xs font-medium">
-                          {job.mediaType}
-                          {job.quantity > 0 && <span className="text-muted-foreground"> × {job.quantity}</span>}
-                        </div>
-                        {job.dueDate && (
-                          <span className="text-xs text-muted-foreground">Due: {new Date(job.dueDate).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}</span>
-                        )}
-                        {job.assignedToUserId && (
-                          <Badge variant="secondary" className="w-fit text-[10px]">Assigned</Badge>
-                        )}
-                      </CardTitle>
-                    </CardHeader>
-                  </Card>
-                ))}
-                {grouped[status.key]?.length === 0 && (
-                  <div className="text-xs text-muted-foreground italic text-center py-4">No jobs</div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {!internalUser && (
-        <div className="text-sm text-muted-foreground">Read-only view for portal users.</div>
-      )}
-    </div>
+            ))}
+          </div>
+        )}
+
+        {!internalUser && (
+          <div className="text-sm text-muted-foreground">
+            Read-only view for portal users.
+          </div>
+        )}
+      </ContentLayout>
+    </Page>
   );
 }
