@@ -6,8 +6,22 @@
  */
 
 import { db } from '../db';
-import { users, customers } from '@shared/schema';
+import { users, customers, userOrganizations } from '@shared/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
+import { DEFAULT_ORGANIZATION_ID } from '../tenantContext';
+
+/**
+ * Get the organization ID for a user, or return default
+ */
+async function getUserOrganizationId(userId: string): Promise<string> {
+  const [membership] = await db
+    .select({ organizationId: userOrganizations.organizationId })
+    .from(userOrganizations)
+    .where(eq(userOrganizations.userId, userId))
+    .limit(1);
+  
+  return membership?.organizationId || DEFAULT_ORGANIZATION_ID;
+}
 
 export async function syncUsersToCustomers(): Promise<{
   linked: number;
@@ -56,11 +70,17 @@ export async function syncUsersToCustomers(): Promise<{
           continue;
         }
 
-        // Try to find existing customer by email (case-insensitive)
+        // Get user's organization ID
+        const organizationId = await getUserOrganizationId(user.id);
+
+        // Try to find existing customer by email (case-insensitive) in same org
         const existingCustomer = await db
           .select()
           .from(customers)
-          .where(sql`LOWER(${customers.email}) = LOWER(${user.email})`)
+          .where(and(
+            sql`LOWER(${customers.email}) = LOWER(${user.email})`,
+            eq(customers.organizationId, organizationId)
+          ))
           .limit(1);
 
         if (existingCustomer.length > 0) {
@@ -86,6 +106,7 @@ export async function syncUsersToCustomers(): Promise<{
               userId: user.id,
               customerType: 'individual',
               status: 'active',
+              organizationId,
             })
             .returning();
 
@@ -134,12 +155,18 @@ export async function ensureCustomerForUser(userId: string): Promise<string> {
     throw new Error(`User ${userId} not found`);
   }
 
-  // Try to find existing customer by email
+  // Get user's organization ID
+  const organizationId = await getUserOrganizationId(userId);
+
+  // Try to find existing customer by email in same org
   if (user.email) {
     const existingCustomer = await db
       .select()
       .from(customers)
-      .where(sql`LOWER(${customers.email}) = LOWER(${user.email})`)
+      .where(and(
+        sql`LOWER(${customers.email}) = LOWER(${user.email})`,
+        eq(customers.organizationId, organizationId)
+      ))
       .limit(1);
 
     if (existingCustomer.length > 0) {
@@ -167,6 +194,7 @@ export async function ensureCustomerForUser(userId: string): Promise<string> {
       userId: user.id,
       customerType: 'individual',
       status: 'active',
+      organizationId,
     })
     .returning();
 

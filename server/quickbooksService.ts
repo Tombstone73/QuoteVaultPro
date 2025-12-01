@@ -3,6 +3,7 @@ import { db } from './db';
 import { oauthConnections, accountingSyncJobs, customers, invoices, orders } from '../shared/schema';
 import { eq, and, desc, or, isNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
+import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): OAuthClient | null => {
@@ -83,6 +84,7 @@ export async function exchangeCodeForTokens(
     refreshToken: token.refresh_token,
     expiresAt: new Date(Date.now() + (token.expires_in || 3600) * 1000),
     companyId: realmId,
+    organizationId: DEFAULT_ORGANIZATION_ID, // Default org for now - can be made dynamic later
     metadata: {
       realmId,
       tokenType: token.token_type,
@@ -207,6 +209,7 @@ export async function queueSyncJobs(
     direction: direction as 'push' | 'pull',
     resourceType: resource as 'customers' | 'invoices' | 'orders',
     status: 'pending' as const,
+    organizationId: connection.organizationId || DEFAULT_ORGANIZATION_ID,
   }));
 
   await db.insert(accountingSyncJobs).values(jobs);
@@ -402,6 +405,7 @@ export async function processPullCustomers(jobId: string): Promise<void> {
             ...localData,
             customerType: 'business',
             status: 'active',
+            organizationId: DEFAULT_ORGANIZATION_ID,
           } as any);
           console.log(`[QB Pull Customers] Created customer: ${localData.companyName}`);
         }

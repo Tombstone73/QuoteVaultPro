@@ -22,6 +22,83 @@
       "when": 1763478666358,
       "tag": "0002_luxuriant_veda",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1763480000000,
+      "tag": "0003_add_nesting_calculator",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1763481000000,
+      "tag": "0004_make_pricing_formula_optional",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1763481500000,
+      "tag": "0004b_crm_orders_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1763482000000,
+      "tag": "0005_production_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1763483000000,
+      "tag": "0006_invoicing",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1763484000000,
+      "tag": "0007_shipping_fulfillment",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1763485000000,
+      "tag": "0008_inventory_management",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1763486000000,
+      "tag": "0009_vendors_purchase_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1763487000000,
+      "tag": "0011_artwork_file_handling",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1763488000000,
+      "tag": "0020_multi_tenant_organizations",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1763489000000,
+      "tag": "0021_add_organization_id_to_tables",
+      "breakpoints": true
     }
   ]
 }
