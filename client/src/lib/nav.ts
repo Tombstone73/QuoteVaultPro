@@ -19,6 +19,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: ClipboardList,
     children: [
       { id: "customers", label: "Customers", icon: Users, path: "/customers", roles: ["staff", "admin", "owner", "manager"] },
+      { id: "contacts", label: "Contacts", icon: Users, path: "/contacts", roles: ["staff", "admin", "owner", "manager"] },
       { id: "quotes", label: "Quotes", icon: ClipboardList, path: "/quotes", roles: ["staff", "admin", "owner", "manager"] },
       { id: "orders", label: "Orders", icon: Receipt, path: "/orders", roles: ["staff", "admin", "owner", "manager"] },
     ],

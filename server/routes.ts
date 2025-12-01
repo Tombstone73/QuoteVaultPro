@@ -2229,13 +2229,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      console.log("Received customer data:", req.body);
-      const customerData = insertCustomerSchema.parse(req.body);
-      console.log("Parsed customer data:", customerData);
-      const { organizationId: _, ...customerWithoutOrgId } = customerData;
-      const customer = await storage.createCustomer(organizationId, customerWithoutOrgId);
-      console.log("Created customer:", customer);
-      res.json(customer);
+      const primaryContactInputSchema = z.object({
+        firstName: z.string().min(1),
+        lastName: z.string().min(1),
+        email: z.string().email(),
+        phone: z.string().optional(),
+        title: z.string().optional(),
+        isPrimary: z.boolean().optional(),
+      });
+
+      const createCustomerWithContactSchema = insertCustomerSchema.extend({
+        primaryContact: primaryContactInputSchema.optional(),
+      });
+
+      const parsed = createCustomerWithContactSchema.parse(req.body);
+      const { primaryContact, ...customerData } = parsed;
+
+      const result = await storage.createCustomerWithPrimaryContact(organizationId, {
+        customer: customerData,
+        primaryContact: primaryContact || null,
+      });
+
+      res.json(result.customer);
     } catch (error) {
       if (error instanceof z.ZodError) {
         console.error("Zod validation error:", error.errors);
@@ -2251,8 +2266,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const customerData = updateCustomerSchema.parse(req.body);
-      const { organizationId: _, ...updateData } = customerData;
-      const customer = await storage.updateCustomer(organizationId, req.params.id, updateData);
+      const customer = await storage.updateCustomer(organizationId, req.params.id, customerData);
       res.json(customer);
     } catch (error) {
       if (error instanceof z.ZodError) {

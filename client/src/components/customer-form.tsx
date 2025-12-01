@@ -10,8 +10,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import type { Customer } from "@shared/schema";
+
+const primaryContactSchema = z.object({
+  firstName: z.string().min(1, "First name is required"),
+  lastName: z.string().min(1, "Last name is required"),
+  email: z.string().email("Invalid email"),
+  phone: z.string().optional(),
+  title: z.string().optional(),
+  isPrimary: z.boolean().optional(),
+});
 
 const customerSchema = z.object({
   companyName: z.string().min(1, "Company name is required"),
@@ -21,10 +31,26 @@ const customerSchema = z.object({
   phone: z.string().optional(),
   website: z.string().optional(),
   taxId: z.string().optional(),
+  // Legacy address fields (kept for backward compatibility)
   billingAddress: z.string().optional(),
   shippingAddress: z.string().optional(),
+  // Structured billing address
+  billingStreet1: z.string().optional(),
+  billingStreet2: z.string().optional(),
+  billingCity: z.string().optional(),
+  billingState: z.string().optional(),
+  billingPostalCode: z.string().optional(),
+  billingCountry: z.string().optional(),
+  // Structured shipping address
+  shippingStreet1: z.string().optional(),
+  shippingStreet2: z.string().optional(),
+  shippingCity: z.string().optional(),
+  shippingState: z.string().optional(),
+  shippingPostalCode: z.string().optional(),
+  shippingCountry: z.string().optional(),
   creditLimit: z.number().min(0).optional(),
   notes: z.string().optional(),
+  primaryContact: primaryContactSchema.optional(),
 });
 
 type CustomerFormData = z.infer<typeof customerSchema>;
@@ -61,6 +87,18 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       taxId: customer.taxId || "",
       billingAddress: customer.billingAddress || "",
       shippingAddress: customer.shippingAddress || "",
+      billingStreet1: customer.billingStreet1 || "",
+      billingStreet2: customer.billingStreet2 || "",
+      billingCity: customer.billingCity || "",
+      billingState: customer.billingState || "",
+      billingPostalCode: customer.billingPostalCode || "",
+      billingCountry: customer.billingCountry || "",
+      shippingStreet1: customer.shippingStreet1 || "",
+      shippingStreet2: customer.shippingStreet2 || "",
+      shippingCity: customer.shippingCity || "",
+      shippingState: customer.shippingState || "",
+      shippingPostalCode: customer.shippingPostalCode || "",
+      shippingCountry: customer.shippingCountry || "",
       creditLimit: customer.creditLimit ? Number(customer.creditLimit) : 0,
       notes: customer.notes || "",
     } : {
@@ -73,18 +111,60 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       taxId: "",
       billingAddress: "",
       shippingAddress: "",
+      billingStreet1: "",
+      billingStreet2: "",
+      billingCity: "",
+      billingState: "",
+      billingPostalCode: "",
+      billingCountry: "",
+      shippingStreet1: "",
+      shippingStreet2: "",
+      shippingCity: "",
+      shippingState: "",
+      shippingPostalCode: "",
+      shippingCountry: "",
       creditLimit: 0,
       notes: "",
+      primaryContact: {
+        firstName: "",
+        lastName: "",
+        email: "",
+        phone: "",
+        title: "",
+        isPrimary: true,
+      },
     },
   });
 
   const createMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
-      // Convert creditLimit to string for database
-      const payload = {
-        ...data,
-        creditLimit: data.creditLimit?.toString() || "0",
+      // Convert creditLimit to string for database and normalize primaryContact
+      const { primaryContact, ...rest } = data;
+
+      const hasPrimaryContact = primaryContact && (
+        primaryContact.firstName.trim() !== "" ||
+        primaryContact.lastName.trim() !== "" ||
+        primaryContact.email.trim() !== "" ||
+        (primaryContact.phone ?? "").trim() !== "" ||
+        (primaryContact.title ?? "").trim() !== ""
+      );
+
+      const payload: any = {
+        ...rest,
+        creditLimit: rest.creditLimit?.toString() || "0",
       };
+
+      if (hasPrimaryContact) {
+        payload.primaryContact = {
+          firstName: primaryContact.firstName,
+          lastName: primaryContact.lastName,
+          email: primaryContact.email,
+          phone: primaryContact.phone || undefined,
+          title: primaryContact.title || undefined,
+          isPrimary: primaryContact.isPrimary ?? true,
+        };
+      }
+
       const response = await fetch("/api/customers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -110,10 +190,11 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
   const updateMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
-      // Convert creditLimit to string for database
+      // Convert creditLimit to string for database (ignore primaryContact on update for now)
+      const { primaryContact: _pc, ...rest } = data;
       const payload = {
-        ...data,
-        creditLimit: data.creditLimit?.toString() || "0",
+        ...rest,
+        creditLimit: rest.creditLimit?.toString() || "0",
       };
       const response = await fetch(`/api/customers/${customer?.id}`, {
         method: "PATCH",
@@ -292,29 +373,197 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
             </div>
           </div>
 
-          {/* Addresses */}
+          {/* Primary Contact */}
           <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Addresses</h3>
+            <h3 className="text-lg font-semibold">Primary Contact</h3>
+            <p className="text-sm text-muted-foreground">
+              Strongly recommended: add a primary contact for this company.
+            </p>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="billingAddress">Billing Address</Label>
-                <Textarea
-                  id="billingAddress"
-                  {...register("billingAddress")}
-                  placeholder="123 Main St, City, State 12345"
-                  rows={3}
+                <Label htmlFor="primaryFirstName">First Name</Label>
+                <Input
+                  id="primaryFirstName"
+                  {...register("primaryContact.firstName")}
+                  placeholder="Jane"
+                />
+                {errors.primaryContact?.firstName && (
+                  <p className="text-sm text-destructive mt-1">{errors.primaryContact.firstName.message}</p>
+                )}
+              </div>
+
+              <div>
+                <Label htmlFor="primaryLastName">Last Name</Label>
+                <Input
+                  id="primaryLastName"
+                  {...register("primaryContact.lastName")}
+                  placeholder="Doe"
+                />
+                {errors.primaryContact?.lastName && (
+                  <p className="text-sm text-destructive mt-1">{errors.primaryContact.lastName.message}</p>
+                )}
+              </div>
+
+              <div>
+                <Label htmlFor="primaryEmail">Email</Label>
+                <Input
+                  id="primaryEmail"
+                  type="email"
+                  {...register("primaryContact.email")}
+                  placeholder="jane.doe@example.com"
+                />
+                {errors.primaryContact?.email && (
+                  <p className="text-sm text-destructive mt-1">{errors.primaryContact.email.message}</p>
+                )}
+              </div>
+
+              <div>
+                <Label htmlFor="primaryPhone">Phone</Label>
+                <Input
+                  id="primaryPhone"
+                  {...register("primaryContact.phone")}
+                  placeholder="(555) 987-6543"
                 />
               </div>
 
               <div>
-                <Label htmlFor="shippingAddress">Shipping Address</Label>
-                <Textarea
-                  id="shippingAddress"
-                  {...register("shippingAddress")}
-                  placeholder="123 Main St, City, State 12345"
-                  rows={3}
+                <Label htmlFor="primaryTitle">Role / Title</Label>
+                <Input
+                  id="primaryTitle"
+                  {...register("primaryContact.title")}
+                  placeholder="Buyer, Designer, Accounting, etc."
                 />
+              </div>
+
+              <div className="flex items-center space-x-2 mt-6">
+                <Checkbox
+                  id="primaryIsPrimary"
+                  checked={watch("primaryContact.isPrimary") ?? true}
+                  onCheckedChange={(checked) => setValue("primaryContact.isPrimary", Boolean(checked))}
+                />
+                <Label htmlFor="primaryIsPrimary">Make this the primary contact</Label>
+              </div>
+            </div>
+          </div>
+
+          {/* Addresses */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Addresses</h3>
+
+            <div className="grid grid-cols-2 gap-6">
+              {/* Billing Address */}
+              <div className="space-y-3">
+                <h4 className="font-medium">Billing Address</h4>
+                <div>
+                  <Label htmlFor="billingStreet1">Street Address</Label>
+                  <Input
+                    id="billingStreet1"
+                    {...register("billingStreet1")}
+                    placeholder="123 Main St"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="billingStreet2">Street Address 2 (Optional)</Label>
+                  <Input
+                    id="billingStreet2"
+                    {...register("billingStreet2")}
+                    placeholder="Suite 100"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label htmlFor="billingCity">City</Label>
+                    <Input
+                      id="billingCity"
+                      {...register("billingCity")}
+                      placeholder="City"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="billingState">State</Label>
+                    <Input
+                      id="billingState"
+                      {...register("billingState")}
+                      placeholder="State"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label htmlFor="billingPostalCode">Postal Code</Label>
+                    <Input
+                      id="billingPostalCode"
+                      {...register("billingPostalCode")}
+                      placeholder="12345"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="billingCountry">Country</Label>
+                    <Input
+                      id="billingCountry"
+                      {...register("billingCountry")}
+                      placeholder="USA"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Shipping Address */}
+              <div className="space-y-3">
+                <h4 className="font-medium">Shipping Address</h4>
+                <div>
+                  <Label htmlFor="shippingStreet1">Street Address</Label>
+                  <Input
+                    id="shippingStreet1"
+                    {...register("shippingStreet1")}
+                    placeholder="123 Main St"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="shippingStreet2">Street Address 2 (Optional)</Label>
+                  <Input
+                    id="shippingStreet2"
+                    {...register("shippingStreet2")}
+                    placeholder="Suite 100"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label htmlFor="shippingCity">City</Label>
+                    <Input
+                      id="shippingCity"
+                      {...register("shippingCity")}
+                      placeholder="City"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="shippingState">State</Label>
+                    <Input
+                      id="shippingState"
+                      {...register("shippingState")}
+                      placeholder="State"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label htmlFor="shippingPostalCode">Postal Code</Label>
+                    <Input
+                      id="shippingPostalCode"
+                      {...register("shippingPostalCode")}
+                      placeholder="12345"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="shippingCountry">Country</Label>
+                    <Input
+                      id="shippingCountry"
+                      {...register("shippingCountry")}
+                      placeholder="USA"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
