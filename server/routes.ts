@@ -4,8 +4,8 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs } from "@shared/schema";
-import { eq, desc } from "drizzle-orm";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations } from "@shared/schema";
+import { eq, desc, and } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
@@ -14,6 +14,7 @@ import { emailService } from "./emailService";
 import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
 import * as quickbooksService from "./quickbooksService";
 import * as syncWorker from "./workers/syncProcessor";
+import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -155,6 +156,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ============================================================
+  // ORGANIZATION MANAGEMENT ROUTES (Multi-Tenant)
+  // ============================================================
+
+  // Get current user's organizations
+  app.get('/api/organizations', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      
+      const orgs = await getUserOrganizations(userId);
+      res.json(orgs);
+    } catch (error) {
+      console.error("Error fetching organizations:", error);
+      res.status(500).json({ message: "Failed to fetch organizations" });
+    }
+  });
+
+  // Set default organization
+  app.post('/api/organizations/:id/set-default', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      const { id } = req.params;
+      
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+      
+      await setDefaultOrganization(userId, id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error setting default organization:", error);
+      res.status(500).json({ message: "Failed to set default organization" });
+    }
+  });
+
+  // Get current organization context (for debugging/verification)
+  app.get('/api/organization/current', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!req.organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+      
+      const [org] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, req.organizationId))
+        .limit(1);
+      
+      res.json(org);
+    } catch (error) {
+      console.error("Error fetching current organization:", error);
+      res.status(500).json({ message: "Failed to fetch organization" });
+    }
+  });
+
   app.get("/objects/:objectPath(*)", async (req: any, res) => {
     const userId = getUserId(req.user);
     const objectStorageService = new ObjectStorageService();
@@ -222,9 +281,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/media", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/media", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const assets = await storage.getAllMediaAssets();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const assets = await storage.getAllMediaAssets(organizationId);
       res.json(assets);
     } catch (error) {
       console.error("Error fetching media assets:", error);
@@ -232,8 +293,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/media", isAuthenticated, isAdmin, async (req: any, res) => {
+  app.post("/api/media", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { filename, url, fileSize, mimeType } = req.body;
       
       if (!filename || !url || fileSize === undefined || !mimeType) {
@@ -241,7 +304,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = getUserId(req.user);
-      const asset = await storage.createMediaAsset({
+      const asset = await storage.createMediaAsset(organizationId, {
         filename,
         url,
         uploadedBy: userId!,
@@ -256,10 +319,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/media/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/media/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      await storage.deleteMediaAsset(id);
+      await storage.deleteMediaAsset(organizationId, id);
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting media asset:", error);
@@ -268,9 +333,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Product Types routes
-  app.get("/api/product-types", isAuthenticated, async (req, res) => {
+  app.get("/api/product-types", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const types = await storage.getAllProductTypes();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const types = await storage.getAllProductTypes(organizationId);
       res.json(types);
     } catch (error) {
       console.error("Error fetching product types:", error);
@@ -278,9 +345,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/product-types", isAuthenticated, isAdminOrOwner, async (req, res) => {
+  app.post("/api/product-types", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const newType = await storage.createProductType(req.body);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const newType = await storage.createProductType(organizationId, req.body);
       res.json(newType);
     } catch (error) {
       console.error("Error creating product type:", error);
@@ -288,10 +357,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/product-types/:id", isAuthenticated, isAdminOrOwner, async (req, res) => {
+  app.patch("/api/product-types/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      const updated = await storage.updateProductType(id, req.body);
+      const updated = await storage.updateProductType(organizationId, id, req.body);
       res.json(updated);
     } catch (error) {
       console.error("Error updating product type:", error);
@@ -299,10 +370,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/product-types/:id", isAuthenticated, isAdminOrOwner, async (req, res) => {
+  app.delete("/api/product-types/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      await storage.deleteProductType(id);
+      await storage.deleteProductType(organizationId, id);
       res.json({ success: true });
     } catch (error: any) {
       console.error("Error deleting product type:", error);
@@ -313,9 +386,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/products", isAuthenticated, async (req, res) => {
+  app.get("/api/products", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const products = await storage.getAllProducts();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const products = await storage.getAllProducts(organizationId);
       res.json(products);
     } catch (error) {
       console.error("Error fetching products:", error);
@@ -348,8 +423,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/products/import", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/products/import", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
       const { csvData } = req.body;
       if (!csvData || typeof csvData !== 'string') {
         return res.status(400).json({ message: "CSV data is required" });
@@ -393,7 +471,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ? thumbnailUrlsRaw.split('|').map(url => url.trim()).filter(url => url.length > 0)
             : [];
 
-          const newProduct = await storage.createProduct({
+          const newProduct = await storage.createProduct(organizationId, {
             name: productName,
             description: row['Product Description']?.trim() || '',
             requiresProductionJob: true,
@@ -477,9 +555,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/products/export", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/products/export", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const products = await storage.getAllProducts();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      const products = await storage.getAllProducts(organizationId);
       
       const exportData: Array<Record<string, string>> = [];
       
@@ -592,9 +673,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/products/:id", isAuthenticated, async (req, res) => {
+  app.get("/api/products/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const product = await storage.getProductById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const product = await storage.getProductById(organizationId, req.params.id);
       if (!product) {
         return res.status(404).json({ message: "Product not found" });
       }
@@ -605,15 +688,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/products", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/products", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const parsedData = insertProductSchema.parse(req.body);
       const productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
         // Convert empty strings to null, but preserve null/undefined to let storage handle defaults
         productData[k] = v === '' ? null : v;
       });
-      const product = await storage.createProduct(productData as InsertProduct);
+      const product = await storage.createProduct(organizationId, productData as InsertProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -624,15 +709,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/products/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/products/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const parsedData = updateProductSchema.parse(req.body);
       const productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
         // Convert empty strings to null, but preserve null/undefined to let storage handle defaults
         productData[k] = v === '' ? null : v;
       });
-      const product = await storage.updateProduct(req.params.id, productData as UpdateProduct);
+      const product = await storage.updateProduct(organizationId, req.params.id, productData as UpdateProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -643,8 +730,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.put("/api/products/:id/thumbnails", isAuthenticated, isAdmin, async (req: any, res) => {
+  app.put("/api/products/:id/thumbnails", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { thumbnailUrls } = req.body;
       if (!Array.isArray(thumbnailUrls)) {
         return res.status(400).json({ message: "thumbnailUrls must be an array" });
@@ -667,7 +756,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         normalizedPaths.push(normalizedPath);
       }
 
-      const product = await storage.updateProduct(req.params.id, {
+      const product = await storage.updateProduct(organizationId, req.params.id, {
         thumbnailUrls: normalizedPaths
       } as UpdateProduct);
 
@@ -678,9 +767,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/products/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/products/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      await storage.deleteProduct(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      await storage.deleteProduct(organizationId, req.params.id);
       res.json({ message: "Product deleted successfully" });
     } catch (error) {
       console.error("Error deleting product:", error);
@@ -688,9 +779,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/products/:id/clone", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/products/:id/clone", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const clonedProduct = await storage.cloneProduct(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const clonedProduct = await storage.cloneProduct(organizationId, req.params.id);
       res.json(clonedProduct);
     } catch (error) {
       console.error("Error cloning product:", error);
@@ -809,9 +902,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Global Variables routes
-  app.get("/api/global-variables", isAuthenticated, async (req, res) => {
+  app.get("/api/global-variables", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const variables = await storage.getAllGlobalVariables();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const variables = await storage.getAllGlobalVariables(organizationId);
       res.json(variables);
     } catch (error) {
       console.error("Error fetching global variables:", error);
@@ -819,10 +914,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/global-variables", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/global-variables", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const variableData = insertGlobalVariableSchema.parse(req.body);
-      const variable = await storage.createGlobalVariable(variableData);
+      const variable = await storage.createGlobalVariable(organizationId, variableData);
       res.json(variable);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -833,20 +930,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/global-variables/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/global-variables/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const variableData = updateGlobalVariableSchema.parse({
         ...req.body,
         id: req.params.id,
       });
       
       // Special validation for next_quote_number to prevent duplicate quote numbers
-      const currentVariable = await storage.getGlobalVariableById(req.params.id);
+      const currentVariable = await storage.getGlobalVariableById(organizationId, req.params.id);
       if (currentVariable?.name === 'next_quote_number' && variableData.value !== undefined) {
         const newValue = Math.floor(Number(variableData.value));
         
         // Get the maximum existing quote number
-        const maxQuoteNumber = await storage.getMaxQuoteNumber();
+        const maxQuoteNumber = await storage.getMaxQuoteNumber(organizationId);
         
         if (maxQuoteNumber !== null && newValue <= maxQuoteNumber) {
           return res.status(400).json({ 
@@ -855,7 +954,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
-      const variable = await storage.updateGlobalVariable(req.params.id, variableData);
+      const variable = await storage.updateGlobalVariable(organizationId, req.params.id, variableData);
       res.json(variable);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -866,9 +965,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/global-variables/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/global-variables/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      await storage.deleteGlobalVariable(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      await storage.deleteGlobalVariable(organizationId, req.params.id);
       res.json({ message: "Global variable deleted successfully" });
     } catch (error) {
       console.error("Error deleting global variable:", error);
@@ -876,15 +977,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/quotes/calculate", isAuthenticated, async (req, res) => {
+  app.post("/api/quotes/calculate", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { productId, variantId, width, height, quantity, selectedOptions = {} } = req.body;
 
       if (!productId || width == null || height == null || quantity == null) {
         return res.status(400).json({ message: "Missing required fields" });
       }
 
-      const product = await storage.getProductById(productId);
+      const product = await storage.getProductById(organizationId, productId);
       if (!product) {
         return res.status(404).json({ message: "Product not found" });
       }
@@ -901,7 +1004,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Fetch all global variables for formula evaluation
-      const globalVariables = await storage.getAllGlobalVariables();
+      const globalVariables = await storage.getAllGlobalVariables(organizationId);
       const globalVarsContext: Record<string, number> = {};
       globalVariables.forEach(v => {
         globalVarsContext[v.name] = parseFloat(v.value);
@@ -1270,8 +1373,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/quotes", isAuthenticated, async (req: any, res) => {
+  app.post("/api/quotes", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
@@ -1331,7 +1436,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
-      const quote = await storage.createQuote({
+      const quote = await storage.createQuote(organizationId, {
         userId,
         customerId: finalCustomerId,
         contactId: contactId || undefined,
@@ -1350,8 +1455,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/quotes", isAuthenticated, async (req: any, res) => {
+  app.get("/api/quotes", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
@@ -1368,7 +1475,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         source: req.query.source as string | undefined,
       };
 
-      const quotes = await storage.getUserQuotes(userId, filters);
+      const quotes = await storage.getUserQuotes(organizationId, userId, filters);
       res.json(quotes);
     } catch (error) {
       console.error("Error fetching quotes:", error);
@@ -1376,15 +1483,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
+  app.get("/api/quotes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
 
       // Internal users can access any quote, customers only their own
-      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
+      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
       
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
@@ -1397,8 +1506,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/quotes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
@@ -1415,14 +1526,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Internal users can update any quote, customers only their own
-      const existing = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
+      const existing = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
       if (!existing) {
         return res.status(404).json({ message: "Quote not found" });
       }
 
       console.log(`[PATCH /api/quotes/${id}] Existing customerName:`, existing.customerName);
 
-      const updatedQuote = await storage.updateQuote(id, {
+      const updatedQuote = await storage.updateQuote(organizationId, id, {
         customerName,
         subtotal,
         taxRate,
@@ -1440,20 +1551,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/quotes/:id", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/quotes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
 
       // Internal users can delete any quote, customers only their own
-      const existing = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
+      const existing = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
       if (!existing) {
         return res.status(404).json({ message: "Quote not found" });
       }
 
-      await storage.deleteQuote(id);
+      await storage.deleteQuote(organizationId, id);
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting quote:", error);
@@ -1466,10 +1579,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // =============================
 
   // Get current workflow state for a quote
-  app.get("/api/quotes/:id/workflow", isAuthenticated, async (req: any, res) => {
+  app.get("/api/quotes/:id/workflow", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      const quote = await storage.getQuoteById(id);
+      const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) return res.status(404).json({ message: 'Quote not found' });
       const state = await storage.getQuoteWorkflowState(id);
       res.json({ success: true, data: state || null });
@@ -1480,15 +1595,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Staff request changes
-  app.post("/api/quotes/:id/request-changes", isAuthenticated, async (req: any, res) => {
+  app.post("/api/quotes/:id/request-changes", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userRole = req.user.role || 'customer';
       if (!['owner','admin','manager'].includes(userRole)) {
         return res.status(403).json({ message: 'Only staff can request changes.' });
       }
       const { id } = req.params;
       const { notes } = req.body;
-      const quote = await storage.getQuoteById(id);
+      const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) return res.status(404).json({ message: 'Quote not found' });
       let state = await storage.getQuoteWorkflowState(id);
       if (!state) {
@@ -1504,14 +1621,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Staff approve quote
-  app.post("/api/quotes/:id/approve", isAuthenticated, async (req: any, res) => {
+  app.post("/api/quotes/:id/approve", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userRole = req.user.role || 'customer';
       if (!['owner','admin','manager'].includes(userRole)) {
         return res.status(403).json({ message: 'Only staff can approve.' });
       }
       const { id } = req.params;
-      const quote = await storage.getQuoteById(id);
+      const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) return res.status(404).json({ message: 'Quote not found' });
       let state = await storage.getQuoteWorkflowState(id);
       if (!state) {
@@ -1527,15 +1646,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Staff reject quote
-  app.post("/api/quotes/:id/reject", isAuthenticated, async (req: any, res) => {
+  app.post("/api/quotes/:id/reject", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userRole = req.user.role || 'customer';
       if (!['owner','admin','manager'].includes(userRole)) {
         return res.status(403).json({ message: 'Only staff can reject.' });
       }
       const { id } = req.params;
       const { reason } = req.body;
-      const quote = await storage.getQuoteById(id);
+      const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) return res.status(404).json({ message: 'Quote not found' });
       let state = await storage.getQuoteWorkflowState(id);
       if (!state) {
@@ -1550,8 +1671,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/quotes/:id/line-items", isAuthenticated, async (req: any, res) => {
+  app.post("/api/quotes/:id/line-items", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
@@ -1559,7 +1682,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const lineItem = req.body;
 
       // Internal users can add line items to any quote, customers only their own
-      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
+      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1598,8 +1721,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
@@ -1607,7 +1732,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const lineItem = req.body;
 
       // Internal users can update line items in any quote, customers only their own
-      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
+      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1633,15 +1758,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/quotes/:id/line-items/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id, lineItemId } = req.params;
 
       // Internal users can delete line items from any quote, customers only their own
-      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
+      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
@@ -1654,8 +1781,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/admin/quotes", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/admin/quotes", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const filters = {
         searchUser: req.query.searchUser as string | undefined,
         searchCustomer: req.query.searchCustomer as string | undefined,
@@ -1666,7 +1795,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         maxQuantity: req.query.maxQuantity as string | undefined,
       };
 
-      const quotes = await storage.getAllQuotes(filters);
+      const quotes = await storage.getAllQuotes(organizationId, filters);
       res.json(quotes);
     } catch (error) {
       console.error("Error fetching all quotes:", error);
@@ -1674,9 +1803,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/admin/quotes/export", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/admin/quotes/export", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const quotes = await storage.getAllQuotes();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const quotes = await storage.getAllQuotes(organizationId);
 
       const csvHeader = "Quote Date,Quote ID,User Email,Customer Name,Product,Variant,Width,Height,Quantity,Selected Options,Options Cost,Line Price,Quote Total\n";
       const csvRows: string[] = [];
@@ -1728,9 +1859,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/pricing-rules", isAuthenticated, async (req, res) => {
+  app.get("/api/pricing-rules", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const rules = await storage.getAllPricingRules();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const rules = await storage.getAllPricingRules(organizationId);
       res.json(rules);
     } catch (error) {
       console.error("Error fetching pricing rules:", error);
@@ -1739,9 +1872,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Formula templates routes (admin only)
-  app.get("/api/formula-templates", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/formula-templates", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const templates = await storage.getAllFormulaTemplates();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const templates = await storage.getAllFormulaTemplates(organizationId);
       console.log(`[DEBUG] Returning ${templates.length} formula templates:`, templates.map(t => ({ id: t.id, name: t.name })));
       res.json(templates);
     } catch (error) {
@@ -1750,10 +1885,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/formula-templates/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/formula-templates/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      const template = await storage.getFormulaTemplateById(id);
+      const template = await storage.getFormulaTemplateById(organizationId, id);
       if (!template) {
         return res.status(404).json({ message: "Formula template not found" });
       }
@@ -1764,10 +1901,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/formula-templates/:id/products", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/formula-templates/:id/products", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      const products = await storage.getProductsByFormulaTemplate(id);
+      const products = await storage.getProductsByFormulaTemplate(organizationId, id);
       res.json(products);
     } catch (error) {
       console.error("Error fetching products for formula template:", error);
@@ -1775,10 +1914,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/formula-templates", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/formula-templates", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       console.log("[DEBUG] Creating formula template with data:", req.body);
-      const template = await storage.createFormulaTemplate(req.body);
+      const template = await storage.createFormulaTemplate(organizationId, req.body);
       console.log("[DEBUG] Created formula template:", { id: template.id, name: template.name });
       res.json(template);
     } catch (error) {
@@ -1787,10 +1928,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/formula-templates/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/formula-templates/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      const template = await storage.updateFormulaTemplate(id, req.body);
+      const template = await storage.updateFormulaTemplate(organizationId, id, req.body);
       res.json(template);
     } catch (error) {
       console.error("Error updating formula template:", error);
@@ -1798,10 +1941,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/formula-templates/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/formula-templates/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
-      await storage.deleteFormulaTemplate(id);
+      await storage.deleteFormulaTemplate(organizationId, id);
       res.json({ message: "Formula template deleted successfully" });
     } catch (error) {
       console.error("Error deleting formula template:", error);
@@ -1810,9 +1955,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Email Settings routes
-  app.get("/api/email-settings", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/email-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const settings = await storage.getAllEmailSettings();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const settings = await storage.getAllEmailSettings(organizationId);
       res.json(settings);
     } catch (error) {
       console.error("Error fetching email settings:", error);
@@ -1820,9 +1967,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/email-settings/default", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/email-settings/default", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const settings = await storage.getDefaultEmailSettings();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const settings = await storage.getDefaultEmailSettings(organizationId);
       if (!settings) {
         return res.status(404).json({ message: "No default email settings found" });
       }
@@ -1833,10 +1982,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/email-settings", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/email-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settingsData = insertEmailSettingsSchema.parse(req.body);
-      const settings = await storage.createEmailSettings(settingsData);
+      const { organizationId: _, ...settingsWithoutOrgId } = settingsData;
+      const settings = await storage.createEmailSettings(organizationId, settingsWithoutOrgId);
       res.json(settings);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1847,14 +1999,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/email-settings/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/email-settings/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settingsData = updateEmailSettingsSchema.parse({
         ...req.body,
         id: req.params.id,
       });
-      const { id, ...updateData } = settingsData;
-      const settings = await storage.updateEmailSettings(req.params.id, updateData);
+      const { id, organizationId: _, ...updateData } = settingsData;
+      const settings = await storage.updateEmailSettings(organizationId, req.params.id, updateData);
       res.json(settings);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1865,9 +2019,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/email-settings/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/email-settings/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      await storage.deleteEmailSettings(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      await storage.deleteEmailSettings(organizationId, req.params.id);
       res.json({ message: "Email settings deleted successfully" });
     } catch (error) {
       console.error("Error deleting email settings:", error);
@@ -1876,13 +2032,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Email sending routes
-  app.post("/api/email/test", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/email/test", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { recipientEmail } = req.body;
       if (!recipientEmail) {
         return res.status(400).json({ message: "Recipient email is required" });
       }
 
+      // TODO: Update emailService to accept organizationId for tenant-scoped email settings
       await emailService.sendTestEmail(recipientEmail);
       res.json({ message: "Test email sent successfully" });
     } catch (error) {
@@ -1893,8 +2052,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/quotes/:id/email", isAuthenticated, async (req: any, res) => {
+  app.post("/api/quotes/:id/email", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { id } = req.params;
       const { recipientEmail } = req.body;
 
@@ -1906,12 +2067,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = getUserId(req.user);
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
-      const quote = await storage.getQuoteById(id, isInternalUser ? undefined : userId);
+      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
 
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
 
+      // TODO: Update emailService to accept organizationId for tenant-scoped email settings
       await emailService.sendQuoteEmail(id, recipientEmail);
       res.json({ message: "Quote email sent successfully" });
     } catch (error) {
@@ -1923,9 +2085,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Company Settings routes
-  app.get("/api/company-settings", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/company-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      const settings = await storage.getCompanySettings();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const settings = await storage.getCompanySettings(organizationId);
       if (!settings) {
         return res.status(404).json({ message: "Company settings not found" });
       }
@@ -1936,10 +2100,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/company-settings", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/company-settings", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settingsData = insertCompanySettingsSchema.parse(req.body);
-      const settings = await storage.createCompanySettings(settingsData);
+      const { organizationId: _, ...settingsWithoutOrgId } = settingsData;
+      const settings = await storage.createCompanySettings(organizationId, settingsWithoutOrgId);
       res.json(settings);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1950,10 +2117,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/company-settings/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/company-settings/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settingsData = updateCompanySettingsSchema.parse(req.body);
-      const settings = await storage.updateCompanySettings(req.params.id, settingsData);
+      const { organizationId: _, ...updateData } = settingsData;
+      const settings = await storage.updateCompanySettings(organizationId, req.params.id, updateData);
       res.json(settings);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1965,8 +2135,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Global search endpoint
-  app.get("/api/search", isAuthenticated, async (req, res) => {
+  app.get("/api/search", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const query = req.query.q as string;
       if (!query || query.length < 2) {
         return res.json([]);
@@ -1975,7 +2147,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const results: any[] = [];
 
       // Search customers
-      const customers = await storage.getAllCustomers({ search: query });
+      const customers = await storage.getAllCustomers(organizationId, { search: query });
       customers.slice(0, 5).forEach((customer: any) => {
         results.push({
           type: "customer",
@@ -1987,7 +2159,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Search quotes
-      const quotes = await storage.getAllQuotes();
+      const quotes = await storage.getAllQuotes(organizationId);
       const matchingQuotes = quotes
         .filter((quote: any) =>
           quote.quoteNumber?.toLowerCase().includes(query.toLowerCase()) ||
@@ -2013,15 +2185,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Customer routes
-  app.get("/api/customers", isAuthenticated, async (req, res) => {
+  app.get("/api/customers", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const filters = {
         search: req.query.search as string | undefined,
         status: req.query.status as string | undefined,
         customerType: req.query.customerType as string | undefined,
         assignedTo: req.query.assignedTo as string | undefined,
       };
-      const customers = await storage.getAllCustomers(filters);
+      const customers = await storage.getAllCustomers(organizationId, filters);
       
       // Calculate availableCredit for each customer
       const customersWithCredit = customers.map(customer => ({
@@ -2036,9 +2210,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/customers/:id", isAuthenticated, async (req, res) => {
+  app.get("/api/customers/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const customer = await storage.getCustomerById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const customer = await storage.getCustomerById(organizationId, req.params.id);
       if (!customer) {
         return res.status(404).json({ message: "Customer not found" });
       }
@@ -2049,12 +2225,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/customers", isAuthenticated, async (req: any, res) => {
+  app.post("/api/customers", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       console.log("Received customer data:", req.body);
       const customerData = insertCustomerSchema.parse(req.body);
       console.log("Parsed customer data:", customerData);
-      const customer = await storage.createCustomer(customerData);
+      const { organizationId: _, ...customerWithoutOrgId } = customerData;
+      const customer = await storage.createCustomer(organizationId, customerWithoutOrgId);
       console.log("Created customer:", customer);
       res.json(customer);
     } catch (error) {
@@ -2067,10 +2246,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/customers/:id", isAuthenticated, async (req, res) => {
+  app.patch("/api/customers/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const customerData = updateCustomerSchema.parse(req.body);
-      const customer = await storage.updateCustomer(req.params.id, customerData);
+      const { organizationId: _, ...updateData } = customerData;
+      const customer = await storage.updateCustomer(organizationId, req.params.id, updateData);
       res.json(customer);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -2081,9 +2263,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/customers/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/customers/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
-      await storage.deleteCustomer(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      await storage.deleteCustomer(organizationId, req.params.id);
       res.json({ message: "Customer deleted successfully" });
     } catch (error) {
       console.error("Error deleting customer:", error);
@@ -2103,13 +2287,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Global contacts list with search and pagination
-  app.get("/api/contacts", isAuthenticated, async (req, res) => {
+  app.get("/api/contacts", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const search = req.query.search as string | undefined;
       const page = req.query.page ? parseInt(req.query.page as string) : 1;
       const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string) : 50;
 
-      const contacts = await storage.getAllContacts({ search, page, pageSize });
+      const contacts = await storage.getAllContacts(organizationId, { search, page, pageSize });
       res.json({ contacts, total: contacts.length, page, pageSize });
     } catch (error) {
       console.error("Error fetching contacts:", error);
@@ -2186,8 +2372,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/customer-contacts/:id", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/customer-contacts/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const contactId = req.params.id;
 
       // Get contact details before deletion for audit log
@@ -2202,7 +2390,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create audit log
       const userId = getUserId(req.user);
       const userName = req.user?.name || req.user?.email || 'Unknown';
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'delete',
@@ -2325,8 +2513,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/customers/:customerId/apply-credit", isAuthenticated, isAdmin, async (req: any, res) => {
+  app.post("/api/customers/:customerId/apply-credit", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       const { amount, type, reason } = req.body;
 
@@ -2335,6 +2525,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const customer = await storage.updateCustomerBalance(
+        organizationId,
         req.params.customerId,
         parseFloat(amount),
         type,
@@ -2349,8 +2540,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Orders routes
-  app.get("/api/orders", isAuthenticated, async (req, res) => {
+  app.get("/api/orders", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const filters = {
         search: req.query.search as string | undefined,
         status: req.query.status as string | undefined,
@@ -2359,7 +2552,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         startDate: req.query.startDate ? new Date(req.query.startDate as string) : undefined,
         endDate: req.query.endDate ? new Date(req.query.endDate as string) : undefined,
       };
-      const orders = await storage.getAllOrders(filters);
+      const orders = await storage.getAllOrders(organizationId, filters);
       res.json(orders);
     } catch (error) {
       console.error("Error fetching orders:", error);
@@ -2367,9 +2560,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/orders/:id", isAuthenticated, async (req, res) => {
+  app.get("/api/orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const order = await storage.getOrderById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const order = await storage.getOrderById(organizationId, req.params.id);
       if (!order) {
         return res.status(404).json({ message: "Order not found" });
       }
@@ -2380,8 +2575,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/orders", isAuthenticated, async (req: any, res) => {
+  app.post("/api/orders", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       if (!userId) {
         return res.status(401).json({ message: "User not authenticated" });
@@ -2395,14 +2592,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Create order with line items
-      const order = await storage.createOrder({
+      const order = await storage.createOrder(organizationId, {
         ...orderFields,
         createdByUserId: userId,
         lineItems: lineItems,
       });
 
       // Create audit log
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         actionType: 'CREATE',
@@ -2424,13 +2621,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/orders/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       
       // Validate customerId if provided
       if (req.body.customerId) {
-        const customer = await storage.getCustomerById(req.body.customerId);
+        const customer = await storage.getCustomerById(organizationId, req.body.customerId);
         if (!customer) {
           return res.status(400).json({ message: "Invalid customer ID" });
         }
@@ -2443,15 +2642,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id, ...updateData } = orderData;
       
       // Get old values for audit
-      const oldOrder = await storage.getOrderById(req.params.id);
+      const oldOrder = await storage.getOrderById(organizationId, req.params.id);
       
       // Update order - now returns full OrderWithRelations
-      const order = await storage.updateOrder(req.params.id, updateData);
+      const order = await storage.updateOrder(organizationId, req.params.id, updateData);
 
       // Auto inventory deduction when moving to production
       if (userId && oldOrder && oldOrder.status !== 'in_production' && order.status === 'in_production') {
         try {
-          await storage.autoDeductInventoryWhenOrderMovesToProduction(order.id, userId);
+          await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, order.id, userId);
         } catch (invErr) {
           console.error('Inventory auto-deduction error:', invErr);
           // Do not fail the order update; surface warning
@@ -2460,7 +2659,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Create audit log
       if (userId) {
-        await storage.createAuditLog({
+        await storage.createAuditLog(organizationId, {
           userId,
           userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
           actionType: 'UPDATE',
@@ -2489,9 +2688,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // =============================
 
   // List materials
-  app.get('/api/materials', isAuthenticated, async (req: any, res) => {
+  app.get('/api/materials', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const list = await storage.getAllMaterials();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const list = await storage.getAllMaterials(organizationId);
       res.json({ success: true, data: list });
     } catch (err) {
       console.error('Error listing materials', err);
@@ -2500,9 +2701,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Low stock alerts
-  app.get('/api/materials/low-stock', isAuthenticated, async (req: any, res) => {
+  app.get('/api/materials/low-stock', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const alerts = await storage.getMaterialLowStockAlerts();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const alerts = await storage.getMaterialLowStockAlerts(organizationId);
       res.json({ success: true, data: alerts });
     } catch (err) {
       console.error('Error getting low stock alerts', err);
@@ -2511,9 +2714,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get single material
-  app.get('/api/materials/:id', isAuthenticated, async (req: any, res) => {
+  app.get('/api/materials/:id', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const material = await storage.getMaterialById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const material = await storage.getMaterialById(organizationId, req.params.id);
       if (!material) return res.status(404).json({ error: 'Material not found' });
       res.json({ success: true, data: material });
     } catch (err) {
@@ -2523,10 +2728,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Create material
-  app.post('/api/materials', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/materials', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const parsed = insertMaterialSchema.parse(req.body);
-      const created = await storage.createMaterial(parsed);
+      const { organizationId: _, ...materialData } = parsed;
+      const created = await storage.createMaterial(organizationId, materialData);
       res.json({ success: true, data: created });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
@@ -2536,10 +2744,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update material
-  app.patch('/api/materials/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.patch('/api/materials/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const parsed = updateMaterialSchema.parse(req.body);
-      const updated = await storage.updateMaterial(req.params.id, parsed);
+      const { organizationId: _, ...materialData } = parsed;
+      const updated = await storage.updateMaterial(organizationId, req.params.id, materialData);
       res.json({ success: true, data: updated });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
@@ -2549,9 +2760,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete material
-  app.delete('/api/materials/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.delete('/api/materials/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      await storage.deleteMaterial(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      await storage.deleteMaterial(organizationId, req.params.id);
       res.json({ success: true });
     } catch (err) {
       console.error('Error deleting material', err);
@@ -2560,14 +2773,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Adjust inventory (manual)
-  app.post('/api/materials/:id/adjust', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/materials/:id/adjust', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const material = await storage.getMaterialById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const material = await storage.getMaterialById(organizationId, req.params.id);
       if (!material) return res.status(404).json({ error: 'Material not found' });
       const parsed = insertInventoryAdjustmentSchema.parse({ ...req.body, materialId: req.params.id });
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: 'Not authenticated' });
-      const adjustment = await storage.adjustInventory(parsed.materialId, parsed.type as any, parsed.quantityChange, userId, parsed.reason || undefined, parsed.orderId || undefined);
+      const adjustment = await storage.adjustInventory(organizationId, parsed.materialId, parsed.type as any, parsed.quantityChange, userId, parsed.reason || undefined, parsed.orderId || undefined);
       res.json({ success: true, data: adjustment });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
@@ -2577,9 +2792,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // List adjustments for a material
-  app.get('/api/materials/:id/adjustments', isAuthenticated, async (req: any, res) => {
+  app.get('/api/materials/:id/adjustments', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const material = await storage.getMaterialById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const material = await storage.getMaterialById(organizationId, req.params.id);
       if (!material) return res.status(404).json({ error: 'Material not found' });
       const adjustments = await storage.getInventoryAdjustments(req.params.id);
       res.json({ success: true, data: adjustments });
@@ -2590,9 +2807,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Usage history for a material across orders
-  app.get('/api/materials/:id/usage', isAuthenticated, async (req: any, res) => {
+  app.get('/api/materials/:id/usage', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const material = await storage.getMaterialById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const material = await storage.getMaterialById(organizationId, req.params.id);
       if (!material) return res.status(404).json({ error: 'Material not found' });
       const usage = await storage.getMaterialUsageByMaterial(req.params.id);
       res.json({ success: true, data: usage });
@@ -2603,9 +2822,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Order material usage listing
-  app.get('/api/orders/:id/material-usage', isAuthenticated, async (req: any, res) => {
+  app.get('/api/orders/:id/material-usage', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const order = await storage.getOrderById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const order = await storage.getOrderById(organizationId, req.params.id);
       if (!order) return res.status(404).json({ error: 'Order not found' });
       const usage = await storage.getMaterialUsageByOrder(req.params.id);
       res.json({ success: true, data: usage });
@@ -2616,13 +2837,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Manual trigger for inventory deduction (if needed)
-  app.post('/api/orders/:id/deduct-inventory', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/orders/:id/deduct-inventory', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const order = await storage.getOrderById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const order = await storage.getOrderById(organizationId, req.params.id);
       if (!order) return res.status(404).json({ error: 'Order not found' });
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: 'Not authenticated' });
-      await storage.autoDeductInventoryWhenOrderMovesToProduction(order.id, userId);
+      await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, order.id, userId);
       const usage = await storage.getMaterialUsageByOrder(order.id);
       res.json({ success: true, data: usage });
     } catch (err) {
@@ -2631,16 +2854,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/orders/:id", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.delete("/api/orders/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const order = await storage.getOrderById(req.params.id);
+      const order = await storage.getOrderById(organizationId, req.params.id);
       
-      await storage.deleteOrder(req.params.id);
+      await storage.deleteOrder(organizationId, req.params.id);
 
       // Create audit log
       if (userId && order) {
-        await storage.createAuditLog({
+        await storage.createAuditLog(organizationId, {
           userId,
           userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
           actionType: 'DELETE',
@@ -2660,8 +2885,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Convert quote to order
-  app.post("/api/orders/from-quote/:quoteId", isAuthenticated, async (req: any, res) => {
+  app.post("/api/orders/from-quote/:quoteId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       if (!userId) {
         return res.status(401).json({ message: "User not authenticated" });
@@ -2683,7 +2910,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Get the quote to check its source and customerId
-      const quote = await storage.getQuoteById(quoteId);
+      const quote = await storage.getQuoteById(organizationId, quoteId);
       if (!quote) {
         console.error('[CONVERT QUOTE TO ORDER] Quote not found:', quoteId);
         return res.status(404).json({ message: "Quote not found" });
@@ -2753,7 +2980,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         contactId: finalContactId,
       });
 
-      const order = await storage.convertQuoteToOrder(quoteId, userId, {
+      const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
         customerId: finalCustomerId,
         contactId: finalContactId || undefined,
         dueDate: dueDate ? new Date(dueDate) : undefined,
@@ -2770,7 +2997,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Create audit log
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         actionType: 'CREATE',
@@ -2794,11 +3021,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // =============================
 
   // Customer portal: My Quotes (customer_quick_quote only)
-  app.get('/api/portal/my-quotes', isAuthenticated, async (req: any, res) => {
+  // Uses portalContext to derive organizationId from customer record
+  app.get('/api/portal/my-quotes', isAuthenticated, portalContext, async (req: any, res) => {
     try {
-      const userId = getUserId(req.user);
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const quotes = await storage.getUserQuotes(userId, { userRole: req.user.role, source: 'customer_quick_quote' });
+      const portalCustomer = getPortalCustomer(req);
+      if (!portalCustomer) {
+        return res.status(403).json({ error: 'No customer account linked to this user' });
+      }
+      const { organizationId, id: customerId } = portalCustomer;
+      
+      // Get quotes for this customer (customer_quick_quote source only)
+      const quotes = await storage.getQuotesForCustomer(organizationId, customerId, { source: 'customer_quick_quote' });
       res.json({ success: true, data: quotes });
     } catch (error) {
       console.error('Error fetching portal quotes:', error);
@@ -2807,20 +3040,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Customer portal: My Orders
-  app.get('/api/portal/my-orders', isAuthenticated, async (req: any, res) => {
+  // Uses portalContext to derive organizationId from customer record
+  app.get('/api/portal/my-orders', isAuthenticated, portalContext, async (req: any, res) => {
     try {
-      const userId = getUserId(req.user);
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      // Prefer direct linkage by userId on customers
-      const customerRows = await db.select().from(customers).where(eq(customers.userId, userId));
-      let customerId = customerRows[0]?.id;
-      // Fallback: search by email if not linked yet
-      if (!customerId && req.user.email) {
-        const emailMatches = await db.select().from(customers).where(eq(customers.email, req.user.email));
-        customerId = emailMatches[0]?.id;
+      const portalCustomer = getPortalCustomer(req);
+      if (!portalCustomer) {
+        return res.status(403).json({ error: 'No customer account linked to this user' });
       }
-      if (!customerId) return res.status(404).json({ error: 'Customer account not found' });
-      const orders = await storage.getAllOrders({ customerId });
+      const { organizationId, id: customerId } = portalCustomer;
+      
+      // Get orders for this customer, scoped to their organization
+      const orders = await storage.getAllOrders(organizationId, { customerId });
       res.json({ success: true, data: orders });
     } catch (error) {
       console.error('Error fetching portal orders:', error);
@@ -2829,24 +3059,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Customer portal: Convert quote (confirmation + create order)
-  app.post('/api/portal/convert-quote/:id', isAuthenticated, async (req: any, res) => {
+  // Uses portalContext to derive organizationId from customer record
+  app.post('/api/portal/convert-quote/:id', isAuthenticated, portalContext, async (req: any, res) => {
     try {
+      const portalCustomer = getPortalCustomer(req);
+      if (!portalCustomer) {
+        return res.status(403).json({ error: 'No customer account linked to this user' });
+      }
+      const { organizationId, id: customerId } = portalCustomer;
       const quoteId = req.params.id;
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-      const quote = await storage.getQuoteById(quoteId, userId);
+      
+      // Fetch quote and verify it belongs to this customer
+      const quote = await storage.getQuoteById(organizationId, quoteId, userId);
       if (!quote) return res.status(404).json({ error: 'Quote not found' });
+      if (quote.customerId !== customerId) {
+        return res.status(403).json({ error: 'Quote does not belong to this customer' });
+      }
+      
       // Ensure workflow state moves to customer_approved before conversion
       const existingState = await storage.getQuoteWorkflowState(quoteId);
       if (!existingState || existingState.status !== 'customer_approved') {
         await storage.updateQuoteWorkflowState(quoteId, { status: 'customer_approved', approvedByCustomerUserId: userId, customerNotes: req.body?.customerNotes || null });
       }
-      const order = await storage.convertQuoteToOrder(quoteId, userId, {
+      const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
         priority: req.body?.priority,
         dueDate: req.body?.dueDate ? new Date(req.body.dueDate) : undefined,
         promisedDate: req.body?.promisedDate ? new Date(req.body.promisedDate) : undefined,
         notesInternal: req.body?.internalNotes,
-        customerId: quote.customerId || undefined,
+        customerId: customerId,
         contactId: quote.contactId || undefined,
       });
       await storage.createOrderAuditLog({
@@ -3087,6 +3329,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/jobs/:id/files', isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ error: 'User not authenticated' });
+      }
       const { fileId, role } = req.body;
 
       if (!fileId) {
@@ -3267,9 +3512,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================================
   // JOB STATUS CONFIGURATION (Admin Only)
   // ============================================================
-  app.get("/api/settings/job-statuses", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.get("/api/settings/job-statuses", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const statuses = await storage.getJobStatuses();
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const statuses = await storage.getJobStatuses(organizationId);
       res.json({ success: true, data: statuses });
     } catch (error) {
       console.error("Error fetching job statuses:", error);
@@ -3277,9 +3524,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/settings/job-statuses", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post("/api/settings/job-statuses", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const status = await storage.createJobStatus(req.body);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const status = await storage.createJobStatus(organizationId, req.body);
       res.json({ success: true, data: status });
     } catch (error) {
       console.error("Error creating job status:", error);
@@ -3287,9 +3536,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/settings/job-statuses/:id", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.patch("/api/settings/job-statuses/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const status = await storage.updateJobStatus(req.params.id, req.body);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const status = await storage.updateJobStatus(organizationId, req.params.id, req.body);
       res.json({ success: true, data: status });
     } catch (error) {
       console.error("Error updating job status:", error);
@@ -3297,9 +3548,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/settings/job-statuses/:id", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.delete("/api/settings/job-statuses/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      await storage.deleteJobStatus(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      await storage.deleteJobStatus(organizationId, req.params.id);
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting job status:", error);
@@ -3312,12 +3565,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================================
 
   // List jobs (filterable)
-  app.get("/api/jobs", isAuthenticated, async (req: any, res) => {
+  app.get("/api/jobs", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
       const statusKey = req.query.statusKey as string | undefined;
       const assignedToUserId = req.query.assignedToUserId as string | undefined;
       const orderId = req.query.orderId as string | undefined;
-      const jobs = await storage.getJobs({ statusKey, assignedToUserId, orderId });
+      const jobs = await storage.getJobs(organizationId, { statusKey, assignedToUserId, orderId });
       res.json({ success: true, data: jobs });
     } catch (error) {
       console.error("Error fetching jobs:", error);
@@ -3326,9 +3581,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get single job detail
-  app.get("/api/jobs/:id", isAuthenticated, async (req: any, res) => {
+  app.get("/api/jobs/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const job = await storage.getJob(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const job = await storage.getJob(organizationId, req.params.id);
       if (!job) return res.status(404).json({ error: "Job not found" });
       res.json({ success: true, data: job });
     } catch (error) {
@@ -3338,8 +3595,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update job (status, assignedTo, notes)
-  app.patch("/api/jobs/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/jobs/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
       const role = req.user?.role || "";
       if (role === 'customer') {
         return res.status(403).json({ message: "Access denied" });
@@ -3349,7 +3608,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof req.body?.assignedTo === 'string') updates.assignedTo = req.body.assignedTo;
       if (typeof req.body?.notes === 'string') updates.notes = req.body.notes;
       const userId = req.user?.claims?.sub || req.user?.id || undefined;
-      const updated = await storage.updateJob(req.params.id, updates, userId);
+      const updated = await storage.updateJob(organizationId, req.params.id, updates, userId);
       res.json({ success: true, data: updated });
     } catch (error) {
       console.error("Error updating job:", error);
@@ -3496,12 +3755,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Send invoice via email (basic HTML - PDF stub)
-  app.post('/api/invoices/:id/send', isAuthenticated, async (req: any, res) => {
+  app.post('/api/invoices/:id/send', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const rel = await getInvoiceWithRelations(req.params.id);
       if (!rel) return res.status(404).json({ error: 'Invoice not found' });
       const { invoice, lineItems, payments: paymentRows } = rel;
-      const customer = await storage.getCustomerById(invoice.customerId);
+      const customer = await storage.getCustomerById(organizationId, invoice.customerId);
       const toEmail = customer?.email || req.body.toEmail;
       if (!toEmail) return res.status(400).json({ error: 'No recipient email' });
       const html = `<!DOCTYPE html><html><body><h2>Invoice #${invoice.invoiceNumber}</h2><p>Status: ${invoice.status}</p><p>Issue Date: ${new Date(invoice.issueDate).toLocaleDateString()}</p><p>Due Date: ${invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : 'N/A'}</p><h3>Line Items</h3><table cellpadding="4" border="1" style="border-collapse:collapse"><thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>${lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${li.unitPrice}</td><td>${li.totalPrice}</td></tr>`).join('')}</tbody></table><p>Subtotal: ${invoice.subtotal}</p><p>Tax: ${invoice.tax}</p><p>Total: ${invoice.total}</p><p>Paid: ${invoice.amountPaid}</p><p>Balance Due: ${invoice.balanceDue}</p><h4>Payments</h4>${paymentRows.length ? paymentRows.map(p => `<div>${p.method}: ${p.amount} on ${new Date(p.appliedAt).toLocaleDateString()}</div>`).join('') : '<p>No payments recorded.</p>'}</body></html>`;
@@ -3687,10 +3948,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // =============================
   // Vendor Routes
   // =============================
-  app.get('/api/vendors', isAuthenticated, async (req: any, res) => {
+  app.get('/api/vendors', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const { search, isActive, page, pageSize } = req.query;
-      const vendors = await storage.getVendors({
+      const vendors = await storage.getVendors(organizationId, {
         search: typeof search === 'string' ? search : undefined,
         isActive: typeof isActive === 'string' ? isActive === 'true' : undefined,
         page: page ? Number(page) : undefined,
@@ -3703,9 +3966,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/vendors/:id', isAuthenticated, async (req: any, res) => {
+  app.get('/api/vendors/:id', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const vendor = await storage.getVendorById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const vendor = await storage.getVendorById(organizationId, req.params.id);
       if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
       res.json({ success: true, data: vendor });
     } catch (error) {
@@ -3714,13 +3979,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/vendors', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/vendors', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const parsed = insertVendorSchema.parse(req.body);
-      const created = await storage.createVendor(parsed);
+      const { organizationId: _, ...vendorData } = parsed;
+      const created = await storage.createVendor(organizationId, vendorData);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'CREATE',
@@ -3742,15 +4010,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch('/api/vendors/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.patch('/api/vendors/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const updates = updateVendorSchema.partial ? updateVendorSchema.partial().parse(req.body) : updateVendorSchema.parse(req.body);
-      const existing = await storage.getVendorById(req.params.id);
+      const existing = await storage.getVendorById(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Vendor not found' });
-      const updated = await storage.updateVendor(req.params.id, updates);
+      const updated = await storage.updateVendor(organizationId, req.params.id, updates);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'UPDATE',
@@ -3773,14 +4043,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete('/api/vendors/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.delete('/api/vendors/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const existing = await storage.getVendorById(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const existing = await storage.getVendorById(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Vendor not found' });
-      await storage.deleteVendor(req.params.id);
+      await storage.deleteVendor(organizationId, req.params.id);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'DELETE',
@@ -3803,10 +4075,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // =============================
   // Purchase Order Routes
   // =============================
-  app.get('/api/purchase-orders', isAuthenticated, async (req: any, res) => {
+  app.get('/api/purchase-orders', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const { vendorId, status, search, startDate, endDate } = req.query;
-      const pos = await storage.getPurchaseOrders({
+      const pos = await storage.getPurchaseOrders(organizationId, {
         vendorId: typeof vendorId === 'string' ? vendorId : undefined,
         status: typeof status === 'string' ? status : undefined,
         search: typeof search === 'string' ? search : undefined,
@@ -3820,9 +4094,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/purchase-orders/:id', isAuthenticated, async (req: any, res) => {
+  app.get('/api/purchase-orders/:id', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const po = await storage.getPurchaseOrderWithLines(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const po = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
       if (!po) return res.status(404).json({ error: 'Purchase order not found' });
       res.json({ success: true, data: po });
     } catch (error) {
@@ -3831,13 +4107,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/purchase-orders', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/purchase-orders', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const parsed = insertPurchaseOrderSchema.parse(req.body);
+      const { organizationId: _, ...poData } = parsed;
       const userId = getUserId(req.user);
-      const created = await storage.createPurchaseOrder({ ...parsed, createdByUserId: userId! });
+      const created = await storage.createPurchaseOrder(organizationId, { ...poData, createdByUserId: userId! });
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'CREATE',
@@ -3861,15 +4140,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch('/api/purchase-orders/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.patch('/api/purchase-orders/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const updates = updatePurchaseOrderSchema.parse(req.body);
-      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
-      const updated = await storage.updatePurchaseOrder(req.params.id, updates as any);
+      const updated = await storage.updatePurchaseOrder(organizationId, req.params.id, updates as any);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'UPDATE',
@@ -3892,14 +4173,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete('/api/purchase-orders/:id', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.delete('/api/purchase-orders/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
-      await storage.deletePurchaseOrder(req.params.id);
+      await storage.deletePurchaseOrder(organizationId, req.params.id);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'DELETE',
@@ -3919,15 +4202,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/purchase-orders/:id/send', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/purchase-orders/:id/send', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
       if (existing.status !== 'draft') return res.status(400).json({ error: 'Only draft POs can be sent' });
-      const updated = await storage.sendPurchaseOrder(req.params.id);
+      const updated = await storage.sendPurchaseOrder(organizationId, req.params.id);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'SEND',
@@ -3947,8 +4232,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/purchase-orders/:id/receive', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/purchase-orders/:id/receive', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const itemsSchema = z.object({
         items: z.array(z.object({
           lineItemId: z.string(),
@@ -3957,17 +4244,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }))
       });
       const parsed = itemsSchema.parse(req.body);
-      const existing = await storage.getPurchaseOrderWithLines(req.params.id);
+      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
       if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
       const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: 'User not authenticated' });
       const receiveItems = parsed.items.map(i => ({
         lineItemId: i.lineItemId,
         quantityToReceive: i.quantityToReceive,
         receivedDate: i.receivedDate ? new Date(i.receivedDate) : undefined,
       }));
-      const updated = await storage.receivePurchaseOrderLines(req.params.id, receiveItems, userId!);
+      const updated = await storage.receivePurchaseOrderLines(organizationId, req.params.id, receiveItems, userId);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog({
+      await storage.createAuditLog(organizationId, {
         userId,
         userName,
         actionType: 'RECEIVE',
@@ -3991,19 +4279,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ==================== QuickBooks Integration Routes ====================
+  // Note: QuickBooks connection is currently per-organization (stored with organizationId).
+  // These routes use tenantContext to ensure the user has access to view/manage the connection.
 
   /**
    * GET /api/integrations/quickbooks/status
-   * Check QuickBooks connection status
+   * Check QuickBooks connection status for current organization
    */
-  app.get('/api/integrations/quickbooks/status', isAuthenticated, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/status', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      // TODO: Pass organizationId to getActiveConnection once multi-tenant QB is fully implemented
       const connection = await quickbooksService.getActiveConnection();
       
       if (!connection) {
         return res.json({ 
           connected: false,
           message: 'QuickBooks not connected'
+        });
+      }
+
+      // Verify connection belongs to this organization
+      if (connection.organizationId !== organizationId) {
+        return res.json({
+          connected: false,
+          message: 'QuickBooks not connected for this organization'
         });
       }
 
@@ -4026,8 +4326,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * GET /api/integrations/quickbooks/auth-url
    * Get OAuth authorization URL to redirect user to QuickBooks
    */
-  app.get('/api/integrations/quickbooks/auth-url', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/auth-url', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      // TODO: Include organizationId in OAuth state for callback handling
       const authUrl = await quickbooksService.getAuthorizationUrl();
       res.json({ authUrl });
     } catch (error: any) {
@@ -4039,6 +4341,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   /**
    * GET /api/integrations/quickbooks/callback
    * OAuth callback endpoint - QuickBooks redirects here after user authorizes
+   * Note: This is an unauthenticated redirect from QuickBooks. 
+   * The organizationId should be passed via the OAuth state parameter in production.
    */
   app.get('/api/integrations/quickbooks/callback', async (req: any, res) => {
     try {
@@ -4053,7 +4357,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: 'Missing authorization code or realmId' });
       }
 
-      // Exchange code for tokens
+      // TODO: Extract organizationId from OAuth state param and pass to exchangeCodeForTokens
+      // For now, uses DEFAULT_ORGANIZATION_ID inside the service
       await quickbooksService.exchangeCodeForTokens(code as string, realmId as string);
 
       // Redirect to settings page with success
@@ -4066,10 +4371,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   /**
    * POST /api/integrations/quickbooks/disconnect
-   * Disconnect QuickBooks integration
+   * Disconnect QuickBooks integration for current organization
    */
-  app.post('/api/integrations/quickbooks/disconnect', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/integrations/quickbooks/disconnect', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      // TODO: Pass organizationId to disconnectConnection once multi-tenant QB is fully implemented
       await quickbooksService.disconnectConnection();
       res.json({ success: true, message: 'QuickBooks disconnected' });
     } catch (error: any) {
@@ -4083,8 +4390,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * Queue pull sync jobs to fetch data FROM QuickBooks
    * Body: { resources: ['customers', 'invoices', 'orders'] }
    */
-  app.post('/api/integrations/quickbooks/sync/pull', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/integrations/quickbooks/sync/pull', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
       const { resources } = req.body;
 
       if (!Array.isArray(resources) || resources.length === 0) {
@@ -4101,6 +4409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // TODO: Pass organizationId to queueSyncJobs once multi-tenant QB is fully implemented
       await quickbooksService.queueSyncJobs('pull', resources);
 
       res.json({ 
@@ -4119,8 +4428,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * Queue push sync jobs to send data TO QuickBooks
    * Body: { resources: ['customers', 'invoices', 'orders'] }
    */
-  app.post('/api/integrations/quickbooks/sync/push', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/integrations/quickbooks/sync/push', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
       const { resources } = req.body;
 
       if (!Array.isArray(resources) || resources.length === 0) {
@@ -4137,6 +4447,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // TODO: Pass organizationId to queueSyncJobs once multi-tenant QB is fully implemented
       await quickbooksService.queueSyncJobs('push', resources);
 
       res.json({ 
@@ -4152,19 +4463,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   /**
    * GET /api/integrations/quickbooks/jobs
-   * Get list of sync jobs with status
+   * Get list of sync jobs with status for current organization
    */
-  app.get('/api/integrations/quickbooks/jobs', isAuthenticated, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/jobs', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
       const { status, limit = 50 } = req.query;
 
-      let query = db.select().from(accountingSyncJobs);
-
+      // Filter jobs by organizationId
+      const conditions = [eq(accountingSyncJobs.organizationId, organizationId)];
       if (status) {
-        query = query.where(eq(accountingSyncJobs.status, status)) as any;
+        conditions.push(eq(accountingSyncJobs.status, status));
       }
 
-      const jobs = await query
+      const jobs = await db
+        .select()
+        .from(accountingSyncJobs)
+        .where(and(...conditions))
         .orderBy(desc(accountingSyncJobs.createdAt))
         .limit(parseInt(limit as string, 10));
 
@@ -4177,14 +4492,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   /**
    * GET /api/integrations/quickbooks/jobs/:id
-   * Get specific sync job details
+   * Get specific sync job details (verifies organization ownership)
    */
-  app.get('/api/integrations/quickbooks/jobs/:id', isAuthenticated, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/jobs/:id', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
       const [job] = await db
         .select()
         .from(accountingSyncJobs)
-        .where(eq(accountingSyncJobs.id, req.params.id))
+        .where(and(
+          eq(accountingSyncJobs.id, req.params.id),
+          eq(accountingSyncJobs.organizationId, organizationId)
+        ))
         .limit(1);
 
       if (!job) {
@@ -4202,7 +4521,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * POST /api/integrations/quickbooks/jobs/trigger
    * Manually trigger sync worker to process pending jobs
    */
-  app.post('/api/integrations/quickbooks/jobs/trigger', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.post('/api/integrations/quickbooks/jobs/trigger', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       // Trigger worker processing (non-blocking)
       syncWorker.triggerJobProcessing().catch((error) => {
@@ -4223,7 +4542,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * GET /api/integrations/quickbooks/worker/status
    * Get sync worker status
    */
-  app.get('/api/integrations/quickbooks/worker/status', isAuthenticated, isAdminOrOwner, async (req: any, res) => {
+  app.get('/api/integrations/quickbooks/worker/status', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const status = syncWorker.getWorkerStatus();
       res.json(status);

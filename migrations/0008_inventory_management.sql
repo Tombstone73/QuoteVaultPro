@@ -15,11 +15,13 @@ CREATE TABLE IF NOT EXISTS materials (
   height DECIMAL(10, 2), -- nullable height dimension
   thickness DECIMAL(10, 4), -- nullable thickness
   color VARCHAR(100), -- nullable color
+  category VARCHAR(100), -- nullable category
   cost_per_unit DECIMAL(10, 4) NOT NULL,
   stock_quantity DECIMAL(10, 2) NOT NULL DEFAULT 0,
   min_stock_alert DECIMAL(10, 2) NOT NULL DEFAULT 0,
   vendor_id VARCHAR, -- nullable FK for future vendor management
   specs_json JSONB, -- router/ink/material metadata
+  is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );

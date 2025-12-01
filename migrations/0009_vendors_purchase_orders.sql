@@ -1,8 +1,6 @@
 -- 0009_vendors_purchase_orders.sql
 -- MVP Vendors & Purchase Orders
 
-BEGIN;
-
 -- Vendors table
 CREATE TABLE IF NOT EXISTS vendors (
   id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -81,5 +79,3 @@ END $$;
 
 -- Add index for preferred vendor if not exists
 CREATE INDEX IF NOT EXISTS materials_preferred_vendor_id_idx ON materials(preferred_vendor_id);
-
-COMMIT;

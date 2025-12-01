@@ -8,12 +8,103 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   varchar,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+
+// ============================================================
+// MULTI-TENANT ORGANIZATION SYSTEM
+// ============================================================
+
+// Organization type enum
+export const organizationTypeEnum = pgEnum('organization_type', ['internal', 'external_saas']);
+
+// Organization status enum
+export const organizationStatusEnum = pgEnum('organization_status', ['active', 'suspended', 'trial', 'canceled']);
+
+// Organizations table - top-level tenant container
+export const organizations = pgTable("organizations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 255 }).notNull(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(), // URL-friendly identifier
+  type: organizationTypeEnum("type").notNull().default('internal'), // internal = single-tenant mode, external_saas = multi-tenant SaaS
+  status: organizationStatusEnum("status").notNull().default('active'),
+  settings: jsonb("settings").$type<{
+    timezone?: string;
+    dateFormat?: string;
+    currency?: string;
+    features?: Record<string, boolean>;
+    branding?: {
+      logoUrl?: string;
+      primaryColor?: string;
+      companyName?: string;
+    };
+  }>().default(sql`'{}'::jsonb`).notNull(),
+  trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("organizations_slug_idx").on(table.slug),
+  index("organizations_status_idx").on(table.status),
+  index("organizations_type_idx").on(table.type),
+]);
+
+export const insertOrganizationSchema = createInsertSchema(organizations).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  type: z.enum(['internal', 'external_saas']).default('internal'),
+  status: z.enum(['active', 'suspended', 'trial', 'canceled']).default('active'),
+  slug: z.string().min(3).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens"),
+});
+
+export const updateOrganizationSchema = insertOrganizationSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
+export type UpdateOrganization = z.infer<typeof updateOrganizationSchema>;
+export type Organization = typeof organizations.$inferSelect;
+
+// User-Organization membership role enum
+export const orgMemberRoleEnum = pgEnum('org_member_role', ['owner', 'admin', 'manager', 'member']);
+
+// User Organizations join table - links users to organizations with roles
+export const userOrganizations = pgTable("user_organizations", {
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  role: orgMemberRoleEnum("role").notNull().default('member'), // Role within this organization
+  isDefault: boolean("is_default").notNull().default(false), // User's default/active organization
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.organizationId] }),
+  index("user_organizations_user_id_idx").on(table.userId),
+  index("user_organizations_organization_id_idx").on(table.organizationId),
+  index("user_organizations_is_default_idx").on(table.isDefault),
+]);
+
+export const insertUserOrganizationSchema = createInsertSchema(userOrganizations).omit({
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  role: z.enum(['owner', 'admin', 'manager', 'member']).default('member'),
+  isDefault: z.boolean().default(false),
+});
+
+export const updateUserOrganizationSchema = insertUserOrganizationSchema.partial().extend({
+  userId: z.string(),
+  organizationId: z.string(),
+});
+
+export type InsertUserOrganization = z.infer<typeof insertUserOrganizationSchema>;
+export type UpdateUserOrganization = z.infer<typeof updateUserOrganizationSchema>;
+export type UserOrganization = typeof userOrganizations.$inferSelect;
 
 // ============================================================
 // PRODUCT TYPE SYSTEM - Central definition for all modules
@@ -71,6 +162,7 @@ export type User = typeof users.$inferSelect;
 // Media Assets table
 export const mediaAssets = pgTable("media_assets", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   filename: varchar("filename", { length: 255 }).notNull(),
   url: text("url").notNull(),
   uploadedBy: varchar("uploaded_by").notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -78,6 +170,7 @@ export const mediaAssets = pgTable("media_assets", {
   mimeType: varchar("mime_type", { length: 100 }).notNull(),
   uploadedAt: timestamp("uploaded_at").defaultNow().notNull(),
 }, (table) => [
+  index("media_assets_organization_id_idx").on(table.organizationId),
   index("media_assets_uploaded_by_idx").on(table.uploadedBy),
   index("media_assets_uploaded_at_idx").on(table.uploadedAt),
 ]);
@@ -93,12 +186,14 @@ export type MediaAsset = typeof mediaAssets.$inferSelect;
 // Product Types table
 export const productTypes = pgTable("product_types", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: varchar("name", { length: 100 }).notNull().unique(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  name: varchar("name", { length: 100 }).notNull(),
   description: text("description"),
   sortOrder: integer("sort_order").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("product_types_organization_id_idx").on(table.organizationId),
   index("product_types_sort_order_idx").on(table.sortOrder),
 ]);
 
@@ -121,6 +216,7 @@ export type SelectProductType = typeof productTypes.$inferSelect;
 // Products table
 export const products = pgTable("products", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description").notNull(),
   productTypeId: varchar("product_type_id").references(() => productTypes.id, { onDelete: 'restrict' }),
@@ -159,7 +255,9 @@ export const products = pgTable("products", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("products_organization_id_idx").on(table.organizationId),
+]);
 
 export const insertProductSchema = createInsertSchema(products).omit({
   id: true,
@@ -233,7 +331,8 @@ export type ProductVariant = typeof productVariants.$inferSelect;
 // Global Variables table
 export const globalVariables = pgTable("global_variables", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: varchar("name", { length: 100 }).notNull().unique(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  name: varchar("name", { length: 100 }).notNull(),
   value: text("value").notNull(), // Changed from decimal to text to support both numbers and strings
   description: text("description"),
   category: varchar("category", { length: 100 }),
@@ -241,6 +340,7 @@ export const globalVariables = pgTable("global_variables", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("global_variables_organization_id_idx").on(table.organizationId),
   index("global_variables_name_idx").on(table.name),
   index("global_variables_category_idx").on(table.category),
 ]);
@@ -304,7 +404,8 @@ export type ProductOption = typeof productOptions.$inferSelect;
 // Quotes table (parent quote)
 export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  quoteNumber: integer("quote_number").unique(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  quoteNumber: integer("quote_number"),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'set null' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
@@ -317,6 +418,7 @@ export const quotes = pgTable("quotes", {
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull().default("0"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
+  index("quotes_organization_id_idx").on(table.organizationId),
   index("quotes_user_id_idx").on(table.userId),
   index("quotes_customer_id_idx").on(table.customerId),
   index("quotes_contact_id_idx").on(table.contactId),
@@ -402,11 +504,14 @@ export type QuoteLineItem = typeof quoteLineItems.$inferSelect;
 // Pricing rules table
 export const pricingRules = pgTable("pricing_rules", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: varchar("name", { length: 255 }).notNull().unique(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   ruleValue: jsonb("rule_value").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("pricing_rules_organization_id_idx").on(table.organizationId),
+]);
 
 export const insertPricingRuleSchema = createInsertSchema(pricingRules).omit({
   id: true,
@@ -422,7 +527,8 @@ export type PricingRule = typeof pricingRules.$inferSelect;
 // Formula Templates table
 export const formulaTemplates = pgTable("formula_templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: varchar("name", { length: 255 }).notNull().unique(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   formula: text("formula").notNull(),
   category: varchar("category", { length: 100 }),
@@ -430,6 +536,7 @@ export const formulaTemplates = pgTable("formula_templates", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("formula_templates_organization_id_idx").on(table.organizationId),
   index("formula_templates_name_idx").on(table.name),
   index("formula_templates_category_idx").on(table.category),
 ]);
@@ -453,7 +560,31 @@ export const usersRelations = relations(users, ({ many }) => ({
   quotes: many(quotes),
 }));
 
+// Organization relations
+export const organizationsRelations = relations(organizations, ({ many }) => ({
+  userOrganizations: many(userOrganizations),
+  customers: many(customers),
+  products: many(products),
+  quotes: many(quotes),
+  orders: many(orders),
+}));
+
+export const userOrganizationsRelations = relations(userOrganizations, ({ one }) => ({
+  user: one(users, {
+    fields: [userOrganizations.userId],
+    references: [users.id],
+  }),
+  organization: one(organizations, {
+    fields: [userOrganizations.organizationId],
+    references: [organizations.id],
+  }),
+}));
+
 export const productsRelations = relations(products, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [products.organizationId],
+    references: [organizations.id],
+  }),
   lineItems: many(quoteLineItems),
   options: many(productOptions),
   variants: many(productVariants),
@@ -522,6 +653,7 @@ export type QuoteWithRelations = Quote & {
 // Email Settings table
 export const emailSettings = pgTable("email_settings", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   provider: varchar("provider", { length: 50 }).notNull().default("gmail"), // gmail, sendgrid, smtp, etc.
   fromAddress: varchar("from_address", { length: 255 }).notNull(),
   fromName: varchar("from_name", { length: 255 }).notNull(),
@@ -541,7 +673,9 @@ export const emailSettings = pgTable("email_settings", {
   isDefault: boolean("is_default").default(true).notNull(), // For multiple accounts
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("email_settings_organization_id_idx").on(table.organizationId),
+]);
 
 export const insertEmailSettingsSchema = createInsertSchema(emailSettings).omit({
   id: true,
@@ -571,6 +705,7 @@ export type EmailSettings = typeof emailSettings.$inferSelect;
 // Audit Logs table
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   userId: varchar("user_id").references(() => users.id),
   userName: varchar("user_name"),
   actionType: varchar("action_type").notNull(), // CREATE, UPDATE, DELETE, LOGIN, LOGOUT, etc.
@@ -584,6 +719,7 @@ export const auditLogs = pgTable("audit_logs", {
   userAgent: text("user_agent"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
+  index("idx_audit_logs_organization_id").on(table.organizationId),
   index("idx_audit_logs_user_id").on(table.userId),
   index("idx_audit_logs_action_type").on(table.actionType),
   index("idx_audit_logs_entity_type").on(table.entityType),
@@ -601,6 +737,7 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 // Company Settings table
 export const companySettings = pgTable("company_settings", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   companyName: varchar("company_name", { length: 255 }).notNull(),
   address: text("address"),
   phone: varchar("phone", { length: 50 }),
@@ -611,7 +748,9 @@ export const companySettings = pgTable("company_settings", {
   defaultMargin: decimal("default_margin", { precision: 5, scale: 2 }).default("0").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("company_settings_organization_id_idx").on(table.organizationId),
+]);
 
 export const insertCompanySettingsSchema = createInsertSchema(companySettings).omit({
   id: true,
@@ -628,6 +767,7 @@ export type CompanySettings = typeof companySettings.$inferSelect;
 // Customers table
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   companyName: varchar("company_name", { length: 255 }).notNull(),
   customerType: varchar("customer_type", { length: 50 }).default("business"), // business, individual
   email: varchar("email", { length: 255 }),
@@ -650,6 +790,7 @@ export const customers = pgTable("customers", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("customers_organization_id_idx").on(table.organizationId),
   index("customers_user_id_idx").on(table.userId),
   index("customers_email_idx").on(table.email),
 ]);
@@ -751,7 +892,8 @@ export type CustomerWithRelations = Customer & {
 // Orders table (Job Management - derived from quotes or standalone)
 export const orders = pgTable("orders", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  orderNumber: varchar("order_number", { length: 50 }).notNull().unique(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderNumber: varchar("order_number", { length: 50 }).notNull(),
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
@@ -786,6 +928,7 @@ export const orders = pgTable("orders", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("orders_organization_id_idx").on(table.organizationId),
   index("orders_order_number_idx").on(table.orderNumber),
   index("orders_customer_id_idx").on(table.customerId),
   index("orders_status_idx").on(table.status),
@@ -959,7 +1102,8 @@ export type Job = typeof jobs.$inferSelect;
 // Invoices table
 export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  invoiceNumber: integer("invoice_number").unique().notNull(), // Sequential numeric
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  invoiceNumber: integer("invoice_number").notNull(), // Sequential numeric per org
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   status: varchar("status", { length: 50 }).notNull().default('draft'), // draft, sent, partially_paid, paid, overdue
@@ -983,6 +1127,7 @@ export const invoices = pgTable("invoices", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("invoices_organization_id_idx").on(table.organizationId),
   index("invoices_invoice_number_idx").on(table.invoiceNumber),
   index("invoices_customer_id_idx").on(table.customerId),
   index("invoices_order_id_idx").on(table.orderId),
@@ -1217,7 +1362,8 @@ export type JobStatusLog = typeof jobStatusLog.$inferSelect;
 // Job Status Configuration - Configurable workflow pipeline
 export const jobStatuses = pgTable('job_statuses', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
-  key: varchar('key', { length: 50 }).notNull().unique(), // pending_prepress, prepress, etc.
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  key: varchar('key', { length: 50 }).notNull(), // pending_prepress, prepress, etc.
   label: varchar('label', { length: 100 }).notNull(), // "Pending Prepress", "Prepress", etc.
   position: integer('position').notNull(), // Column order on board
   badgeVariant: varchar('badge_variant', { length: 50 }).default('default'), // UI variant for badge
@@ -1225,6 +1371,7 @@ export const jobStatuses = pgTable('job_statuses', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => [
+  index('job_statuses_organization_id_idx').on(table.organizationId),
   index('job_statuses_position_idx').on(table.position),
   index('job_statuses_key_idx').on(table.key),
   index('job_statuses_is_default_idx').on(table.isDefault),
@@ -1514,8 +1661,9 @@ export type QuoteWorkflowState = typeof quoteWorkflowStates.$inferSelect;
 // Materials table - tracks all inventory items (sheets, rolls, inks, consumables)
 export const materials = pgTable("materials", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   name: varchar("name", { length: 255 }).notNull(),
-  sku: varchar("sku", { length: 100 }).notNull().unique(),
+  sku: varchar("sku", { length: 100 }).notNull(),
   type: varchar("type", { length: 50 }).notNull(), // sheet, roll, ink, consumable
   unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(), // sheet, sqft, linear_ft, ml, ea
   width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension
@@ -1533,6 +1681,7 @@ export const materials = pgTable("materials", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("materials_organization_id_idx").on(table.organizationId),
   index("materials_type_idx").on(table.type),
   index("materials_sku_idx").on(table.sku),
   index("materials_stock_quantity_idx").on(table.stockQuantity),
@@ -1590,6 +1739,7 @@ export type InventoryAdjustment = typeof inventoryAdjustments.$inferSelect;
 // =============================================
 export const vendors = pgTable('vendors', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   email: varchar('email', { length: 255 }),
   phone: varchar('phone', { length: 50 }),
@@ -1601,6 +1751,7 @@ export const vendors = pgTable('vendors', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 }, (table) => [
+  index('vendors_organization_id_idx').on(table.organizationId),
   index('vendors_name_idx').on(table.name),
   index('vendors_is_active_idx').on(table.isActive)
 ]);
@@ -1621,7 +1772,8 @@ export type Vendor = typeof vendors.$inferSelect;
 
 export const purchaseOrders = pgTable('purchase_orders', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
-  poNumber: varchar('po_number', { length: 50 }).notNull().unique(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  poNumber: varchar('po_number', { length: 50 }).notNull(),
   vendorId: varchar('vendor_id').notNull().references(() => vendors.id, { onDelete: 'restrict' }),
   status: varchar('status', { length: 30 }).notNull().default('draft'),
   issueDate: timestamp('issue_date').notNull(),
@@ -1636,6 +1788,7 @@ export const purchaseOrders = pgTable('purchase_orders', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 }, (table) => [
+  index('purchase_orders_organization_id_idx').on(table.organizationId),
   index('purchase_orders_vendor_id_idx').on(table.vendorId),
   index('purchase_orders_status_idx').on(table.status),
   index('purchase_orders_issue_date_idx').on(table.issueDate),
@@ -1818,6 +1971,7 @@ export const syncResourceEnum = pgEnum('sync_resource', ['customers', 'invoices'
 
 export const oauthConnections = pgTable('oauth_connections', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   provider: accountingProviderEnum('provider').notNull(),
   companyId: varchar('company_id', { length: 64 }).notNull(),
   accessToken: text('access_token').notNull(),
@@ -1827,11 +1981,13 @@ export const oauthConnections = pgTable('oauth_connections', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 }, (table) => [
+  index('oauth_connections_organization_id_idx').on(table.organizationId),
   index('oauth_connections_provider_idx').on(table.provider),
 ]);
 
 export const accountingSyncJobs = pgTable('accounting_sync_jobs', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   provider: accountingProviderEnum('provider').notNull(),
   resourceType: syncResourceEnum('resource_type').notNull(),
   direction: syncDirectionEnum('direction').notNull(),
@@ -1841,6 +1997,7 @@ export const accountingSyncJobs = pgTable('accounting_sync_jobs', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 }, (table) => [
+  index('sync_jobs_organization_id_idx').on(table.organizationId),
   index('sync_jobs_status_idx').on(table.status),
   index('sync_jobs_resource_direction_idx').on(table.resourceType, table.direction),
 ]);
