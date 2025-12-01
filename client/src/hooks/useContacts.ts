@@ -1,26 +1,17 @@
 /*
- * CONTACTS IMPLEMENTATION AUDIT
+ * CONTACTS HOOKS
  * 
- * What already exists:
- * - Backend: customerContacts table in schema.ts with CRUD operations
- * - Backend: /api/customers/:customerId/contacts route for getting contacts by customer
- * - Backend: /api/customer-contacts/:id for PATCH/DELETE single contact
- * - Component: contact-form.tsx for creating/editing contacts (used in customer detail page)
- * - Contact search in CustomerSelect dropdown component (for quotes/orders)
- * 
- * What was missing (being added now):
- * - Backend: GET /api/contacts with search/pagination for global contact list
- * - Backend: GET /api/contacts/:id for contact detail with orders/quotes
- * - Frontend: This useContacts hook for fetching contact list and detail
- * - Frontend: contacts.tsx page for contact list view
- * - Frontend: contact-detail.tsx page for individual contact view
- * - Frontend: Navigation entry for Contacts section
+ * Provides React Query hooks for:
+ * - Fetching contact list with search/pagination
+ * - Fetching contact details
+ * - Updating contacts
+ * - Deleting contacts
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
-interface Contact {
+export interface Contact {
   id: string;
   customerId: string;
   firstName: string;
@@ -32,21 +23,28 @@ interface Contact {
   isPrimary: boolean;
   createdAt: Date;
   updatedAt: Date;
+  // Structured address fields
+  street1?: string | null;
+  street2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
 }
 
-interface ContactWithStats extends Contact {
-  customerName: string;
+export interface ContactWithStats extends Contact {
+  companyName: string;
   ordersCount: number;
   quotesCount: number;
   lastActivityAt: Date | null;
 }
 
-interface ContactsResponse {
+export interface ContactsResponse {
   contacts: ContactWithStats[];
   total: number;
 }
 
-interface ContactDetailResponse {
+export interface ContactDetailResponse {
   contact: Contact;
   customer: {
     id: string;
@@ -70,6 +68,22 @@ interface ContactDetailResponse {
     createdAt: Date;
     totalPrice: number;
   }>;
+}
+
+export interface UpdateContactInput {
+  firstName?: string;
+  lastName?: string;
+  title?: string;
+  email?: string;
+  phone?: string;
+  mobile?: string;
+  isPrimary?: boolean;
+  street1?: string;
+  street2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
 }
 
 export function useContacts(filters?: { search?: string; page?: number; pageSize?: number }) {
@@ -114,6 +128,43 @@ export function useContactDetail(contactId: string | undefined) {
   });
 }
 
+export function useUpdateContact() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: UpdateContactInput }) => {
+      const response = await fetch(`/api/customer-contacts/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to update contact");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      toast({
+        title: "Success",
+        description: "Contact updated successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
 export function useDeleteContact() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -126,7 +177,8 @@ export function useDeleteContact() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to delete contact");
+        const error = await response.json();
+        throw new Error(error.message || "Failed to delete contact");
       }
 
       return response.json();

@@ -264,6 +264,17 @@ export interface IStorage {
   createCustomer(organizationId: string, customer: Omit<InsertCustomer, 'organizationId'>): Promise<Customer>;
   updateCustomer(organizationId: string, id: string, customer: Partial<Omit<InsertCustomer, 'organizationId'>>): Promise<Customer>;
   deleteCustomer(organizationId: string, id: string): Promise<void>;
+  createCustomerWithPrimaryContact(organizationId: string, data: {
+    customer: Omit<InsertCustomer, 'organizationId'>;
+    primaryContact?: {
+      firstName: string;
+      lastName: string;
+      email: string;
+      phone?: string;
+      title?: string;
+      isPrimary?: boolean;
+    } | null;
+  }): Promise<{ customer: Customer; contact?: CustomerContact | null }>;
 
   // Customer contacts operations (tenant-scoped via customerId)
   getCustomerContacts(customerId: string): Promise<CustomerContact[]>;
@@ -405,7 +416,7 @@ export interface IStorage {
   updateQuoteWorkflowState(quoteId: string, updates: Partial<InsertQuoteWorkflowState>): Promise<QuoteWorkflowState>;
 
   // Contacts (required by routes) - tenant-scoped
-  getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number }): Promise<CustomerContact[]>;
+  getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number }): Promise<Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: Date | null }>>;
   getContactWithRelations(id: string): Promise<(CustomerContact & { customer?: Customer }) | undefined>;
 
   // Job operations (production workflow) - tenant-scoped
@@ -433,8 +444,8 @@ export interface IStorage {
 
   // Job Status Configuration (tenant-scoped)
   getJobStatuses(organizationId: string): Promise<JobStatus[]>;
-  createJobStatus(organizationId: string, data: InsertJobStatus): Promise<JobStatus>;
-  updateJobStatus(organizationId: string, id: string, data: Partial<InsertJobStatus>): Promise<JobStatus>;
+  createJobStatus(organizationId: string, data: Omit<InsertJobStatus, 'organizationId'>): Promise<JobStatus>;
+  updateJobStatus(organizationId: string, id: string, data: Partial<Omit<InsertJobStatus, 'organizationId'>>): Promise<JobStatus>;
   deleteJobStatus(organizationId: string, id: string): Promise<void>;
 
   // Material/Inventory operations (tenant-scoped)
@@ -1776,6 +1787,57 @@ export class DatabaseStorage implements IStorage {
     return customer;
   }
 
+  async createCustomerWithPrimaryContact(
+    organizationId: string,
+    data: {
+      customer: Omit<InsertCustomer, 'organizationId'>;
+      primaryContact?: {
+        firstName: string;
+        lastName: string;
+        email: string;
+        phone?: string;
+        title?: string;
+        isPrimary?: boolean;
+      } | null;
+    }
+  ): Promise<{ customer: Customer; contact?: CustomerContact | null }> {
+    return await db.transaction(async (tx) => {
+      const [customer] = await tx
+        .insert(customers)
+        .values({ ...data.customer, organizationId })
+        .returning();
+
+      if (!customer) {
+        throw new Error("Failed to create customer");
+      }
+
+      let contact: CustomerContact | null = null;
+
+      if (data.primaryContact) {
+        const [createdContact] = await tx
+          .insert(customerContacts)
+          .values({
+            customerId: customer.id,
+            firstName: data.primaryContact.firstName,
+            lastName: data.primaryContact.lastName,
+            email: data.primaryContact.email,
+            phone: data.primaryContact.phone,
+            title: data.primaryContact.title,
+            isPrimary: data.primaryContact.isPrimary ?? true,
+          })
+          .returning();
+
+        if (!createdContact) {
+          throw new Error("Failed to create primary contact");
+        }
+
+        contact = createdContact;
+      }
+
+      return { customer, contact };
+    });
+  }
+
   async updateCustomer(organizationId: string, id: string, customerData: Partial<Omit<InsertCustomer, 'organizationId'>>): Promise<Customer> {
     const updateData: any = {
       ...customerData,
@@ -2759,19 +2821,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Contacts operations
-  async getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number }): Promise<CustomerContact[]> {
+  async getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number }): Promise<Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: Date | null }>> {
     const { search, page = 1, pageSize = 50 } = params;
     
     // Get all customers for this organization
-    const orgCustomers = await db.select({ id: customers.id }).from(customers).where(eq(customers.organizationId, organizationId));
+    const orgCustomers = await db.select().from(customers).where(eq(customers.organizationId, organizationId));
     const customerIds = orgCustomers.map(c => c.id);
+    const customerMap = new Map(orgCustomers.map(c => [c.id, c]));
     
     if (customerIds.length === 0) return [];
     
-    let query = db.select().from(customerContacts).where(inArray(customerContacts.customerId, customerIds)) as any;
+    let contactsQuery = db.select().from(customerContacts).where(inArray(customerContacts.customerId, customerIds)) as any;
+    
     if (search) {
       const pattern = `%${search}%`;
-      query = query.where(and(
+      contactsQuery = contactsQuery.where(and(
         inArray(customerContacts.customerId, customerIds),
         or(
           ilike(customerContacts.firstName, pattern),
@@ -2780,8 +2844,61 @@ export class DatabaseStorage implements IStorage {
         )
       ));
     }
-    query = query.orderBy(desc(customerContacts.createdAt)).limit(pageSize).offset((page - 1) * pageSize);
-    return await query;
+    
+    contactsQuery = contactsQuery.orderBy(desc(customerContacts.createdAt)).limit(pageSize).offset((page - 1) * pageSize);
+    const contacts = await contactsQuery;
+    
+    // Enrich with company name and stats
+    const enriched = await Promise.all(contacts.map(async (contact: CustomerContact) => {
+      const customer = customerMap.get(contact.customerId);
+      const companyName = customer?.companyName || 'Unknown';
+      
+      // Get orders count
+      const contactOrders = await db.select({ count: sql<number>`count(*)` })
+        .from(orders)
+        .where(eq(orders.contactId, contact.id));
+      const ordersCount = Number(contactOrders[0]?.count || 0);
+      
+      // Get quotes count
+      const contactQuotes = await db.select({ count: sql<number>`count(*)` })
+        .from(quotes)
+        .where(eq(quotes.contactId, contact.id));
+      const quotesCount = Number(contactQuotes[0]?.count || 0);
+      
+      // Get last activity (most recent order or quote)
+      const recentOrders = await db.select({ createdAt: orders.createdAt })
+        .from(orders)
+        .where(eq(orders.contactId, contact.id))
+        .orderBy(desc(orders.createdAt))
+        .limit(1);
+      
+      const recentQuotes = await db.select({ createdAt: quotes.createdAt })
+        .from(quotes)
+        .where(eq(quotes.contactId, contact.id))
+        .orderBy(desc(quotes.createdAt))
+        .limit(1);
+      
+      let lastActivityAt: Date | null = null;
+      if (recentOrders[0] && recentQuotes[0]) {
+        lastActivityAt = recentOrders[0].createdAt > recentQuotes[0].createdAt 
+          ? recentOrders[0].createdAt 
+          : recentQuotes[0].createdAt;
+      } else if (recentOrders[0]) {
+        lastActivityAt = recentOrders[0].createdAt;
+      } else if (recentQuotes[0]) {
+        lastActivityAt = recentQuotes[0].createdAt;
+      }
+      
+      return {
+        ...contact,
+        companyName,
+        ordersCount,
+        quotesCount,
+        lastActivityAt,
+      };
+    }));
+    
+    return enriched;
   }
 
   async getContactWithRelations(id: string): Promise<(CustomerContact & { customer?: Customer }) | undefined> {
@@ -2893,12 +3010,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(jobStatuses).where(eq(jobStatuses.organizationId, organizationId)).orderBy(jobStatuses.position);
   }
 
-  async createJobStatus(organizationId: string, data: InsertJobStatus): Promise<JobStatus> {
+  async createJobStatus(organizationId: string, data: Omit<InsertJobStatus, 'organizationId'>): Promise<JobStatus> {
     const [status] = await db.insert(jobStatuses).values({ ...data, organizationId }).returning();
     return status;
   }
 
-  async updateJobStatus(organizationId: string, id: string, data: Partial<InsertJobStatus>): Promise<JobStatus> {
+  async updateJobStatus(organizationId: string, id: string, data: Partial<Omit<InsertJobStatus, 'organizationId'>>): Promise<JobStatus> {
     const [updated] = await db.update(jobStatuses).set({ ...data, updatedAt: new Date() }).where(and(eq(jobStatuses.id, id), eq(jobStatuses.organizationId, organizationId))).returning();
     if (!updated) throw new Error('Job status not found');
     return updated;

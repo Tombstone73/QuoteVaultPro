@@ -178,6 +178,7 @@ export const mediaAssets = pgTable("media_assets", {
 export const insertMediaAssetSchema = createInsertSchema(mediaAssets).omit({
   id: true,
   uploadedAt: true,
+  organizationId: true,
 });
 
 export type InsertMediaAsset = z.infer<typeof insertMediaAssetSchema>;
@@ -201,6 +202,7 @@ export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   sortOrder: z.coerce.number().int().default(0),
 });
@@ -263,6 +265,7 @@ export const insertProductSchema = createInsertSchema(products).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   pricingFormula: z.string().optional().nullable(),
   sheetWidth: z.coerce.number().positive().optional().nullable(),
@@ -275,6 +278,7 @@ export const updateProductSchema = createInsertSchema(products).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   pricingFormula: z.string().optional().nullable(),
   sheetWidth: z.coerce.number().positive().optional().nullable(),
@@ -349,6 +353,7 @@ export const insertGlobalVariableSchema = createInsertSchema(globalVariables).om
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   value: z.string(), // Changed from z.coerce.number() to z.string() to support both numbers and strings
 });
@@ -467,6 +472,7 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   id: true,
   quoteNumber: true,
   createdAt: true,
+  organizationId: true,
 }).extend({
   customerId: z.string().optional().nullable(),
   contactId: z.string().optional().nullable(),
@@ -516,6 +522,7 @@ export const pricingRules = pgTable("pricing_rules", {
 export const insertPricingRuleSchema = createInsertSchema(pricingRules).omit({
   id: true,
   updatedAt: true,
+  organizationId: true,
 });
 
 export const updatePricingRuleSchema = insertPricingRuleSchema.partial().required({ name: true });
@@ -545,6 +552,7 @@ export const insertFormulaTemplateSchema = createInsertSchema(formulaTemplates).
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 });
 
 export const updateFormulaTemplateSchema = insertFormulaTemplateSchema.partial().extend({
@@ -681,6 +689,7 @@ export const insertEmailSettingsSchema = createInsertSchema(emailSettings).omit(
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   provider: z.enum(["gmail", "sendgrid", "smtp"]).default("gmail"),
   fromAddress: z.string().email("Invalid email address"),
@@ -729,6 +738,7 @@ export const auditLogs = pgTable("audit_logs", {
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
   id: true,
   createdAt: true,
+  organizationId: true,
 });
 
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
@@ -756,6 +766,7 @@ export const insertCompanySettingsSchema = createInsertSchema(companySettings).o
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 });
 
 export const updateCompanySettingsSchema = insertCompanySettingsSchema.partial();
@@ -767,26 +778,59 @@ export type CompanySettings = typeof companySettings.$inferSelect;
 // Customers table
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+
   companyName: varchar("company_name", { length: 255 }).notNull(),
-  customerType: varchar("customer_type", { length: 50 }).default("business"), // business, individual
+  customerType: varchar("customer_type", { length: 50 }).default("business"),
+
   email: varchar("email", { length: 255 }),
   phone: varchar("phone", { length: 50 }),
   website: varchar("website", { length: 255 }),
+
+  // Legacy fields kept for backward compatibility
   billingAddress: text("billing_address"),
   shippingAddress: text("shipping_address"),
+
+  // NEW structured billing address
+  billingStreet1: varchar("billing_street1", { length: 255 }),
+  billingStreet2: varchar("billing_street2", { length: 255 }),
+  billingCity: varchar("billing_city", { length: 100 }),
+  billingState: varchar("billing_state", { length: 100 }),
+  billingPostalCode: varchar("billing_postal_code", { length: 20 }),
+  billingCountry: varchar("billing_country", { length: 100 }),
+
+  // NEW structured shipping address
+  shippingStreet1: varchar("shipping_street1", { length: 255 }),
+  shippingStreet2: varchar("shipping_street2", { length: 255 }),
+  shippingCity: varchar("shipping_city", { length: 100 }),
+  shippingState: varchar("shipping_state", { length: 100 }),
+  shippingPostalCode: varchar("shipping_postal_code", { length: 20 }),
+  shippingCountry: varchar("shipping_country", { length: 100 }),
+
   taxId: varchar("tax_id", { length: 100 }),
   creditLimit: decimal("credit_limit", { precision: 10, scale: 2 }).default("0"),
+
+  // 🔥 SAFETY FIX — add back is_active so Drizzle stops trying to drop it
+  isActive: boolean("is_active").default(true),
+
   currentBalance: decimal("current_balance", { precision: 10, scale: 2 }).default("0"),
-  status: varchar("status", { length: 50 }).default("active"), // active, inactive, suspended
-  userId: varchar("user_id").references(() => users.id, { onDelete: 'set null' }), // Link to user account for customer login
+
+  // Future replacement for is_active, but NOT removing the old column yet
+  status: varchar("status", { length: 50 }).default("active"),
+
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
   assignedTo: varchar("assigned_to").references(() => users.id),
   notes: text("notes"),
-  // QuickBooks sync fields
+
+  // QuickBooks sync
   externalAccountingId: varchar("external_accounting_id", { length: 64 }),
   syncStatus: varchar("sync_status", { length: 20 }),
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: false }),
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -799,6 +843,21 @@ export const insertCustomerSchema = createInsertSchema(customers).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
+}).extend({
+  // All structured address fields are optional
+  billingStreet1: z.string().max(255).optional(),
+  billingStreet2: z.string().max(255).optional(),
+  billingCity: z.string().max(100).optional(),
+  billingState: z.string().max(100).optional(),
+  billingPostalCode: z.string().max(20).optional(),
+  billingCountry: z.string().max(100).optional(),
+  shippingStreet1: z.string().max(255).optional(),
+  shippingStreet2: z.string().max(255).optional(),
+  shippingCity: z.string().max(100).optional(),
+  shippingState: z.string().max(100).optional(),
+  shippingPostalCode: z.string().max(20).optional(),
+  shippingCountry: z.string().max(100).optional(),
 });
 
 export const updateCustomerSchema = insertCustomerSchema.partial();
@@ -818,6 +877,13 @@ export const customerContacts = pgTable("customer_contacts", {
   phone: varchar("phone", { length: 50 }),
   mobile: varchar("mobile", { length: 50 }),
   isPrimary: boolean("is_primary").default(false).notNull(),
+  // Structured address fields for contact
+  street1: varchar("street1", { length: 255 }),
+  street2: varchar("street2", { length: 255 }),
+  city: varchar("city", { length: 100 }),
+  state: varchar("state", { length: 100 }),
+  postalCode: varchar("postal_code", { length: 20 }),
+  country: varchar("country", { length: 100 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -826,6 +892,14 @@ export const insertCustomerContactSchema = createInsertSchema(customerContacts).
   id: true,
   createdAt: true,
   updatedAt: true,
+}).extend({
+  // All structured address fields are optional
+  street1: z.string().max(255).optional(),
+  street2: z.string().max(255).optional(),
+  city: z.string().max(100).optional(),
+  state: z.string().max(100).optional(),
+  postalCode: z.string().max(20).optional(),
+  country: z.string().max(100).optional(),
 });
 
 export const updateCustomerContactSchema = insertCustomerContactSchema.partial();
@@ -942,6 +1016,7 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   orderNumber: z.string().min(1),
   status: z.enum(["new", "scheduled", "in_production", "ready_for_pickup", "shipped", "completed", "on_hold", "canceled"]).default("new"),
@@ -1142,6 +1217,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   updatedAt: true,
   amountPaid: true,
   balanceDue: true,
+  organizationId: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
   status: z.enum(['draft','sent','partially_paid','paid','overdue']).default('draft'),
@@ -1381,6 +1457,7 @@ export const insertJobStatusSchema = createInsertSchema(jobStatuses).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   key: z.string().min(3).max(50).regex(/^[a-z_]+$/),
   label: z.string().min(1).max(100),
@@ -1692,6 +1769,7 @@ export const insertMaterialSchema = createInsertSchema(materials).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   type: z.enum(["sheet", "roll", "ink", "consumable"]),
   unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
@@ -1760,6 +1838,7 @@ export const insertVendorSchema = createInsertSchema(vendors).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  organizationId: true,
 }).extend({
   paymentTerms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   defaultLeadTimeDays: z.number().int().positive().optional(),
@@ -1835,6 +1914,7 @@ export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit
   shippingTotal: true,
   grandTotal: true,
   createdByUserId: true,
+  organizationId: true,
 }).extend({
   issueDate: z.string().or(z.coerce.date()),
   expectedDate: z.string().optional().or(z.coerce.date().optional()),
