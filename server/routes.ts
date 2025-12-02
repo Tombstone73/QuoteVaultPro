@@ -695,20 +695,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      console.log("[POST /api/products] Raw request body:", JSON.stringify(req.body, null, 2));
+      
       const parsedData = insertProductSchema.parse(req.body);
       const productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
         // Convert empty strings to null, but preserve null/undefined to let storage handle defaults
         productData[k] = v === '' ? null : v;
       });
+      
+      console.log("[POST /api/products] Parsed & cleaned data:", JSON.stringify(productData, null, 2));
+      
       const product = await storage.createProduct(organizationId, productData as InsertProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
+        console.error("[POST /api/products] Zod validation error:", error.errors);
+        return res.status(400).json({ 
+          message: fromZodError(error).message,
+          errors: error.errors 
+        });
       }
-      console.error("Error creating product:", error);
-      res.status(500).json({ message: "Failed to create product" });
+      console.error("[POST /api/products] Error creating product:", error);
+      console.error("Stack trace:", (error as Error).stack);
+      res.status(500).json({ 
+        message: "Failed to create product",
+        error: (error as Error).message 
+      });
     }
   });
 
@@ -1168,6 +1182,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...globalVarsContext,
       };
 
+      // Initialize calculation context for cross-option communication
+      let calculationContext: Record<string, any> = {};
+
       // Calculate base price using nesting calculator or formula
       let basePrice = 0;
       let nestingDetails: any = undefined;
@@ -1180,6 +1197,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           // Build input from profile config with legacy fallbacks
           const profileConfig = effectivePricingProfileConfig as FlatGoodsConfig | null;
+          
+          // PRE-PROCESSING: Check for thickness selector to override material
+          const productOptionsJson = (product.optionsJson as Array<any>) || [];
+          let effectiveMaterial: any = null;
+          let thicknessMultiplier = 1.0;
+          let thicknessVolumePricing: any = null;
+          
+          for (const optionJson of productOptionsJson) {
+            if (optionJson.config?.kind === "thickness") {
+              const selectedThicknessKey = selectedOptions[optionJson.id];
+              if (selectedThicknessKey && optionJson.config.thicknessVariants) {
+                const selectedVariant = optionJson.config.thicknessVariants.find(
+                  (v: any) => v.key === selectedThicknessKey
+                );
+                if (selectedVariant && selectedVariant.materialId) {
+                  // Fetch material from database
+                  effectiveMaterial = await storage.getMaterialById(organizationId, selectedVariant.materialId);
+                  console.log(`[PRICING DEBUG] Thickness selector: using material ${effectiveMaterial?.name} for ${selectedThicknessKey}`);
+                  
+                  if (selectedVariant.pricingMode === "multiplier") {
+                    thicknessMultiplier = selectedVariant.priceMultiplier || 1.0;
+                  } else if (selectedVariant.pricingMode === "volume" && selectedVariant.volumeTiers) {
+                    thicknessVolumePricing = selectedVariant.volumeTiers.map((tier: any) => ({
+                      minQty: tier.minSheets,
+                      maxQty: tier.maxSheets,
+                      pricePerSheet: tier.pricePerSheet
+                    }));
+                  }
+                  break;
+                }
+              }
+            }
+          }
+          
+          // Build base flatGoodsInput (will override with material if loaded)
           const flatGoodsInput = buildFlatGoodsInput(
             profileConfig,
             product,
@@ -1187,7 +1239,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
             widthNum,
             heightNum,
             quantityNum
-          );
+          );          
+
+          // If thickness selector provided a material, override sheet dimensions and cost
+          if (effectiveMaterial) {
+            flatGoodsInput.sheetWidth = parseFloat(effectiveMaterial.width) || flatGoodsInput.sheetWidth;
+            flatGoodsInput.sheetHeight = parseFloat(effectiveMaterial.height) || flatGoodsInput.sheetHeight;
+            // Material cost per unit (assuming unit = sheet for flat goods)
+            const materialCostPerSheet = parseFloat(effectiveMaterial.costPerUnit) || 0;
+            // Calculate price per sqft from material cost
+            const sheetSqft = (flatGoodsInput.sheetWidth * flatGoodsInput.sheetHeight) / 144;
+            if (sheetSqft > 0) {
+              flatGoodsInput.basePricePerSqft = materialCostPerSheet / sheetSqft;
+            }
+            console.log(`[PRICING DEBUG] Material override: ${flatGoodsInput.sheetWidth}×${flatGoodsInput.sheetHeight}, cost/sheet: ${materialCostPerSheet}, $/sqft: ${flatGoodsInput.basePricePerSqft}`);
+          }
+
+          // Apply thickness-based pricing if multiplier mode (no material override)
+          if (!effectiveMaterial && thicknessMultiplier !== 1.0) {
+            flatGoodsInput.basePricePerSqft *= thicknessMultiplier;
+            console.log(`[PRICING DEBUG] Thickness multiplier: ${thicknessMultiplier}x applied to base price`);
+          }
+          
+          // Apply thickness volume pricing if volume mode
+          if (thicknessVolumePricing) {
+            flatGoodsInput.volumePricing = thicknessVolumePricing;
+            console.log(`[PRICING DEBUG] Thickness volume pricing: applied ${thicknessVolumePricing.length} tiers`);
+          }
+
+          // PRE-PROCESSING: Check if sides volume pricing is needed
+          // Scan selectedOptions for sides option with volume pricing mode
+          for (const optionJson of productOptionsJson) {
+            if (optionJson.config?.kind === "sides") {
+              const selectedSideValue = selectedOptions[optionJson.id];
+              if (selectedSideValue && optionJson.config.pricingMode === "volume" && optionJson.config.volumeTiers) {
+                // Store context for later option processing
+                calculationContext.selectedSide = selectedSideValue;
+                calculationContext.sidesVolumeTiers = optionJson.config.volumeTiers;
+                
+                // Override volumePricing in flatGoodsInput based on selected side
+                flatGoodsInput.volumePricing = optionJson.config.volumeTiers.map((tier: any) => ({
+                  minQty: tier.minSheets,
+                  maxQty: tier.maxSheets,
+                  pricePerSheet: selectedSideValue === "double" ? tier.doublePricePerSheet : tier.singlePricePerSheet
+                }));
+                
+                console.log(`[PRICING DEBUG] Sides volume pricing: Applied ${selectedSideValue} tiers to flatGoodsInput.volumePricing`);
+                break;
+              }
+            }
+          }
 
           console.log(`[NESTING DEBUG] Sheet: ${flatGoodsInput.sheetWidth}×${flatGoodsInput.sheetHeight}, Material: ${flatGoodsInput.materialType}, Price/SqFt: $${flatGoodsInput.basePricePerSqft}`);
 
@@ -1255,7 +1356,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Fetch product options and calculate option costs
+      // SUPPORT BOTH: old productOptions table AND new optionsJson field
       const productOptions = await storage.getProductOptions(productId);
+      const productOptionsJson = (product.optionsJson as Array<{
+        id: string;
+        label: string;
+        type: "checkbox" | "quantity" | "toggle" | "select";
+        priceMode: "flat" | "per_qty" | "per_sqft";
+        amount?: number;
+        defaultSelected?: boolean;
+        config?: {
+          kind?: "grommets" | "sides" | "generic";
+          locations?: Array<"all_corners" | "top_corners" | "top_even" | "custom">;
+          defaultLocation?: "all_corners" | "top_corners" | "top_even" | "custom";
+          defaultSpacingCount?: number;
+          customNotes?: string;
+          singleLabel?: string;
+          doubleLabel?: string;
+          doublePriceMultiplier?: number;
+        };
+      }>) || [];
+
       let optionsPrice = 0;
       const selectedOptionsArray: Array<{
         optionId: string;
@@ -1383,6 +1504,245 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // NEW: Process options from optionsJson field (inline product options)
+      for (const optionId in selectedOptions) {
+        const optionJson = productOptionsJson.find(opt => opt.id === optionId);
+        if (!optionJson) continue; // Skip if not found in optionsJson
+
+        const selectionData = selectedOptions[optionId];
+        
+        // Extract value - handle both simple values and complex objects
+        let value: string | number | boolean;
+        let grommetsLocation: string | undefined;
+        let grommetsSpacingCount: number | undefined;
+        
+        if (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData) {
+          // Complex selection with grommets data
+          value = selectionData.value;
+          grommetsLocation = selectionData.grommetsLocation;
+          grommetsSpacingCount = selectionData.grommetsSpacingCount;
+        } else {
+          // Simple value
+          value = selectionData;
+        }
+
+        // Skip inactive selections
+        if (optionJson.type === "checkbox" && !value) continue;
+        if (value === null || value === undefined) continue;
+
+        const optionAmount = optionJson.amount || 0;
+        let setupCost = 0;
+        let calculatedCost = 0;
+
+        // Calculate costs based on priceMode
+        if (optionJson.priceMode === "flat") {
+          setupCost = optionAmount;
+          calculatedCost = optionAmount;
+        } else if (optionJson.priceMode === "per_qty") {
+          calculatedCost = optionAmount * quantityNum;
+        } else if (optionJson.priceMode === "per_sqft") {
+          calculatedCost = optionAmount * sqft * quantityNum;
+        } else if (optionJson.priceMode === "flat_per_item") {
+          // Flat amount per finished piece (after nesting)
+          calculatedCost = optionAmount * quantityNum;
+        } else if (optionJson.priceMode === "percent_of_base") {
+          // Percentage of base price (applied later after base calculation)
+          // Store for post-processing
+          calculatedCost = 0; // Will be calculated after base price
+        }
+
+        // Handle grommets special pricing
+        if (optionJson.config?.kind === "grommets" && grommetsLocation) {
+          if (grommetsLocation === "top_even" && grommetsSpacingCount) {
+            // Multiply by spacing count for evenly-spaced grommets
+            calculatedCost *= grommetsSpacingCount;
+          }
+          // For other locations (all_corners, top_corners, custom), use flat pricing
+        }
+        
+        // Skip thickness selector option - already processed in pre-stage
+        if (optionJson.config?.kind === "thickness") {
+          continue;
+        }
+
+        // Handle sides pricing - multiplier vs volume pricing mode
+        if (optionJson.config?.kind === "sides" && value === "double") {
+          const pricingMode = optionJson.config.pricingMode || "multiplier";
+          
+          if (pricingMode === "multiplier") {
+            // Legacy multiplier mode - apply BEFORE profile pricing
+            const multiplier = optionJson.config.doublePriceMultiplier || 1.6;
+            basePrice *= multiplier;
+            console.log(`[PRICING DEBUG] Sides option: applied ${multiplier}x multiplier to base price`);
+          } else if (pricingMode === "volume") {
+            // Volume pricing mode - already handled in flatGoodsInput preprocessing
+            // No additional pricing logic needed here; volumePricing was injected before calculator
+            console.log(`[PRICING DEBUG] Sides option: volume pricing already applied via flatGoodsInput.volumePricing`);
+          }
+        }
+
+        optionsPrice += calculatedCost;
+        selectedOptionsArray.push({
+          optionId: optionJson.id,
+          optionName: optionJson.label,
+          value,
+          setupCost,
+          calculatedCost,
+        });
+      }
+
+      // CALCULATE mediaSubtotal - includes only media/printing costs, excludes finishing add-ons
+      // Media costs include:
+      // - Base sheet/area price from NestingCalculator (after volume tiers, thickness, sides)
+      // - Laminate (material add-ons that are part of the printed media)
+      // Media costs EXCLUDE:
+      // - Grommets, stakes, weed & tape, rush, and other non-media finishing options
+      let mediaSubtotal = basePrice; // Start with base price (includes thickness, sides multipliers already applied)
+      
+      // Add non-percent, media-related options to mediaSubtotal
+      // For now, we consider material add-ons (laminate) as part of media cost
+      // All other options (grommets, stakes, etc.) are considered finishing and excluded
+      for (const optJson of productOptionsJson) {
+        if (!selectedOptions[optJson.id]) continue;
+        if (optJson.priceMode === "percent_of_base") continue; // Skip percent options for now
+        if (optJson.config?.kind === "thickness") continue; // Already in basePrice
+        if (optJson.config?.kind === "sides") continue; // Already in basePrice
+        
+        // If option has materialAddonConfig, it's a media add-on (like laminate)
+        if (optJson.materialAddonConfig) {
+          // Find this option in selectedOptionsArray to get its calculated cost
+          const optInArray = selectedOptionsArray.find(o => o.optionId === optJson.id);
+          if (optInArray) {
+            mediaSubtotal += optInArray.calculatedCost;
+          }
+        }
+        // All other options (grommets, weed/tape, stakes, rush) are NOT added to mediaSubtotal
+      }
+      
+      console.log(`[PRICING DEBUG] Media subtotal (print + material add-ons): $${mediaSubtotal}`);
+
+      // Post-processing: Apply percent_of_base options with percentBase awareness
+      const percentOfBaseOptions = productOptionsJson.filter(
+        opt => opt.priceMode === "percent_of_base" && selectedOptions[opt.id]
+      );
+      
+      // Separate options by their percentBase setting
+      const mediaPercentOptions = percentOfBaseOptions.filter(opt => opt.percentBase === "media");
+      const linePercentOptions = percentOfBaseOptions.filter(opt => !opt.percentBase || opt.percentBase === "line");
+      
+      // Apply media-based percent options (e.g., Contour Cutting)
+      for (const percentOpt of mediaPercentOptions) {
+        const percentValue = percentOpt.amount || 0;
+        const percentCost = mediaSubtotal * (percentValue / 100);
+        optionsPrice += percentCost;
+        
+        // Find and update the option in selectedOptionsArray
+        const existingOpt = selectedOptionsArray.find(o => o.optionId === percentOpt.id);
+        if (existingOpt) {
+          existingOpt.calculatedCost = percentCost;
+        } else {
+          selectedOptionsArray.push({
+            optionId: percentOpt.id,
+            optionName: percentOpt.label,
+            value: selectedOptions[percentOpt.id],
+            setupCost: 0,
+            calculatedCost: percentCost,
+          });
+        }
+        
+        console.log(`[PRICING DEBUG] Percent of MEDIA: ${percentOpt.label} added ${percentValue}% of ${mediaSubtotal} = ${percentCost}`);
+      }
+      
+      // Apply line-based percent options (e.g., Rush Fee - percent of full line)
+      for (const percentOpt of linePercentOptions) {
+        const percentValue = percentOpt.amount || 0;
+        const percentCost = basePrice * (percentValue / 100);
+        optionsPrice += percentCost;
+        
+        // Find and update the option in selectedOptionsArray
+        const existingOpt = selectedOptionsArray.find(o => o.optionId === percentOpt.id);
+        if (existingOpt) {
+          existingOpt.calculatedCost = percentCost;
+        } else {
+          selectedOptionsArray.push({
+            optionId: percentOpt.id,
+            optionName: percentOpt.label,
+            value: selectedOptions[percentOpt.id],
+            setupCost: 0,
+            calculatedCost: percentCost,
+          });
+        }
+        
+        console.log(`[PRICING DEBUG] Percent of LINE: ${percentOpt.label} added ${percentValue}% of ${basePrice} = ${percentCost}`);
+      }
+
+      // Build materialUsages array for multi-material tracking
+      const materialUsages: Array<{
+        materialId: string;
+        unitType: "sheet" | "sqft" | "linear_ft";
+        quantity: number;
+      }> = [];
+
+      // Primary material usage
+      if (useFlatGoodsCalculator && nestingDetails) {
+        // Sheet-based product - use billableSheets from nesting calculator
+        const primaryMaterialId = effectiveMaterial?.id || product.primaryMaterialId;
+        if (primaryMaterialId && nestingDetails.billableSheets) {
+          materialUsages.push({
+            materialId: primaryMaterialId,
+            unitType: "sheet",
+            quantity: nestingDetails.billableSheets
+          });
+          console.log(`[MATERIAL USAGE] Primary material (sheet): ${primaryMaterialId}, ${nestingDetails.billableSheets} sheets`);
+        }
+      } else if (requiresDimensions && sqft > 0) {
+        // Roll-based or area-based product - use total square footage
+        const primaryMaterialId = product.primaryMaterialId;
+        if (primaryMaterialId) {
+          const totalSqFt = sqft * quantityNum;
+          materialUsages.push({
+            materialId: primaryMaterialId,
+            unitType: "sqft",
+            quantity: totalSqFt
+          });
+          console.log(`[MATERIAL USAGE] Primary material (roll): ${primaryMaterialId}, ${totalSqFt} sqft`);
+        }
+      }
+
+      // Secondary material usage from material add-on options
+      for (const optionJson of productOptionsJson) {
+        if (optionJson.materialAddonConfig && selectedOptions[optionJson.id]) {
+          const cfg = optionJson.materialAddonConfig;
+          const wasteFactor = cfg.wasteFactor || 0;
+          
+          if (cfg.usageBasis === "same_area") {
+            // Roll/area-based laminate - uses same square footage as printed area
+            const baseAreaSqFt = sqft * quantityNum;
+            const quantity = baseAreaSqFt * (1 + wasteFactor);
+            
+            materialUsages.push({
+              materialId: cfg.materialId,
+              unitType: cfg.unitType,
+              quantity
+            });
+            
+            console.log(`[MATERIAL USAGE] Add-on material (${optionJson.label}): ${cfg.materialId}, ${quantity} ${cfg.unitType} (base: ${baseAreaSqFt}, waste: ${wasteFactor * 100}%)`);
+          } else if (cfg.usageBasis === "same_sheets" && nestingDetails?.billableSheets) {
+            // Sheet-based laminate - uses same number of sheets
+            const baseSheets = nestingDetails.billableSheets;
+            const quantity = baseSheets * (1 + wasteFactor);
+            
+            materialUsages.push({
+              materialId: cfg.materialId,
+              unitType: cfg.unitType,
+              quantity
+            });
+            
+            console.log(`[MATERIAL USAGE] Add-on material (${optionJson.label}): ${cfg.materialId}, ${quantity} ${cfg.unitType} (base: ${baseSheets} sheets, waste: ${wasteFactor * 100}%)`);
+          }
+        }
+      }
+
       let subtotal = basePrice + optionsPrice;
       let priceBreakDiscount = 0;
       let priceBreakInfo: { type: string; tier: string; discount: number } | undefined;
@@ -1452,6 +1812,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         price: total,
         breakdown: {
           basePrice,
+          mediaSubtotal, // NEW: Media/printing cost only (excludes finishing add-ons)
           addOnsPrice: 0, // Deprecated - keeping for backwards compatibility
           optionsPrice,
           subtotal,
@@ -1462,6 +1823,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           selectedOptions: selectedOptionsArray,
           variantInfo: variantName || undefined,
           nestingDetails: nestingDetails || undefined,
+          materialUsages, // NEW: Multi-material tracking
         },
         variant: variant ? {
           id: variant.id,
@@ -1533,6 +1895,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             total: parseFloat(item.linePrice),
             formula: "",
           },
+          materialUsages: item.priceBreakdown?.materialUsages || [], // NEW: Multi-material tracking from calculator
           displayOrder: item.displayOrder || 0,
         };
       });

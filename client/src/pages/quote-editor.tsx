@@ -8,12 +8,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { ArrowLeft, Save, Plus, Calculator, Trash2, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
-import type { Product, ProductVariant, QuoteWithRelations } from "@shared/schema";
+import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem } from "@shared/schema";
 import { profileRequiresDimensions, getProfile } from "@shared/pricingProfiles";
 
 type QuoteLineItemDraft = {
@@ -63,6 +64,13 @@ export default function QuoteEditor() {
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Option selection state
+  const [optionSelections, setOptionSelections] = useState<Record<string, {
+    value: string | number | boolean;
+    grommetsLocation?: string;
+    grommetsSpacingCount?: number;
+  }>>({});
 
   // Load existing quote if editing
   const { data: quote, isLoading: quoteLoading } = useQuery<QuoteWithRelations>({
@@ -312,6 +320,56 @@ export default function QuoteEditor() {
     // For non-dimension products, use 1x1 as placeholder
     const widthVal = requiresDimensions ? parseFloat(width) : 1;
     const heightVal = requiresDimensions ? parseFloat(height) : 1;
+    const quantityVal = parseInt(quantity);
+
+    // Build selectedOptions array from optionSelections state
+    const selectedOptionsArray: Array<{
+      optionId: string;
+      optionName: string;
+      value: string | number | boolean;
+      setupCost: number;
+      calculatedCost: number;
+    }> = [];
+
+    const productOptions = (product?.optionsJson as ProductOptionItem[]) || [];
+    
+    productOptions.forEach(option => {
+      const selection = optionSelections[option.id];
+      if (!selection) return; // Option not selected
+
+      const optionAmount = option.amount || 0;
+      let setupCost = 0;
+      let calculatedCost = 0;
+
+      // Calculate costs based on priceMode
+      if (option.priceMode === "flat") {
+        setupCost = optionAmount;
+        calculatedCost = optionAmount;
+      } else if (option.priceMode === "per_qty") {
+        calculatedCost = optionAmount * quantityVal;
+      } else if (option.priceMode === "per_sqft") {
+        const sqft = widthVal * heightVal;
+        calculatedCost = optionAmount * sqft * quantityVal;
+      }
+
+      // Handle grommets special pricing
+      if (option.config?.kind === "grommets" && selection.grommetsLocation) {
+        if (selection.grommetsLocation === "top_even" && selection.grommetsSpacingCount) {
+          // Multiply by spacing count for top_even
+          calculatedCost *= selection.grommetsSpacingCount;
+        }
+      }
+
+      // Handle sides multiplier (applied later in pricing engine)
+      // For now just record the selection
+      selectedOptionsArray.push({
+        optionId: option.id,
+        optionName: option.label,
+        value: selection.value,
+        setupCost,
+        calculatedCost,
+      });
+    });
 
     const newItem: QuoteLineItemDraft = {
       tempId: `temp-${Date.now()}`,
@@ -322,9 +380,9 @@ export default function QuoteEditor() {
       productType: 'wide_roll',
       width: widthVal,
       height: heightVal,
-      quantity: parseInt(quantity),
+      quantity: quantityVal,
       specsJson: {},
-      selectedOptions: [],
+      selectedOptions: selectedOptionsArray,
       linePrice: calculatedPrice,
       priceBreakdown: { basePrice: calculatedPrice, optionsPrice: 0, total: calculatedPrice, formula: "" },
       displayOrder: lineItems.length,
@@ -340,8 +398,7 @@ export default function QuoteEditor() {
     setQuantity("1");
     setCalculatedPrice(null);
     setCalcError(null);
-    setQuantity("1");
-    setCalculatedPrice(null);
+    setOptionSelections({});
 
     toast({
       title: "Line Item Added",
@@ -522,6 +579,187 @@ export default function QuoteEditor() {
                 />
               </div>
 
+              {/* Product Options Selection */}
+              {selectedProduct && (selectedProduct.optionsJson as ProductOptionItem[])?.length > 0 && (
+                <div className="space-y-3 border-t pt-4">
+                  <Label className="text-base font-semibold">Product Options</Label>
+                  {((selectedProduct.optionsJson as ProductOptionItem[]) || []).map((option) => {
+                    const selection = optionSelections[option.id];
+                    const isSelected = !!selection;
+
+                    return (
+                      <div key={option.id} className="space-y-2 p-3 border rounded-md">
+                        {/* Checkbox type */}
+                        {option.type === "checkbox" && (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                checked={isSelected}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: { value: true }
+                                    }));
+                                  } else {
+                                    const { [option.id]: _, ...rest } = optionSelections;
+                                    setOptionSelections(rest);
+                                  }
+                                }}
+                              />
+                              <Label className="cursor-pointer">{option.label}</Label>
+                            </div>
+                            {option.amount && (
+                              <Badge variant="secondary">
+                                +${option.amount.toFixed(2)}
+                                {option.priceMode === "per_qty" && "/qty"}
+                                {option.priceMode === "per_sqft" && "/sqft"}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Quantity type */}
+                        {option.type === "quantity" && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Label>{option.label}</Label>
+                              {option.amount && (
+                                <Badge variant="secondary">
+                                  ${option.amount.toFixed(2)}
+                                  {option.priceMode === "per_qty" && "/qty"}
+                                  {option.priceMode === "per_sqft" && "/sqft"}
+                                </Badge>
+                              )}
+                            </div>
+                            <Input
+                              type="number"
+                              min="0"
+                              value={typeof selection?.value === "number" ? selection.value : 0}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value) || 0;
+                                if (val > 0) {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: val }
+                                  }));
+                                } else {
+                                  const { [option.id]: _, ...rest } = optionSelections;
+                                  setOptionSelections(rest);
+                                }
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        {/* Toggle type (for sides: single/double) */}
+                        {option.type === "toggle" && option.config?.kind === "sides" && (
+                          <div className="space-y-2">
+                            <Label>{option.label}</Label>
+                            <div className="flex gap-2">
+                              <Button
+                                type="button"
+                                variant={selection?.value === "single" ? "default" : "outline"}
+                                className="flex-1"
+                                onClick={() => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: "single" }
+                                  }));
+                                }}
+                              >
+                                {option.config.singleLabel || "Single"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant={selection?.value === "double" ? "default" : "outline"}
+                                className="flex-1"
+                                onClick={() => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: "double" }
+                                  }));
+                                }}
+                              >
+                                {option.config.doubleLabel || "Double"}
+                                {option.config.doublePriceMultiplier && (
+                                  <span className="ml-1 text-xs">
+                                    ({option.config.doublePriceMultiplier}x)
+                                  </span>
+                                )}
+                              </Button>
+                            </div>
+                            {option.amount && (
+                              <p className="text-xs text-muted-foreground">
+                                Base: ${option.amount.toFixed(2)}
+                                {option.priceMode === "per_qty" && "/qty"}
+                                {option.priceMode === "per_sqft" && "/sqft"}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Grommets with location selector */}
+                        {option.config?.kind === "grommets" && isSelected && (
+                          <div className="space-y-2 mt-2 pl-6 border-l-2 border-orange-500">
+                            <Label className="text-sm">Grommet Location</Label>
+                            <Select
+                              value={selection?.grommetsLocation || option.config.defaultLocation || "all_corners"}
+                              onValueChange={(val) => {
+                                setOptionSelections(prev => ({
+                                  ...prev,
+                                  [option.id]: { 
+                                    ...prev[option.id],
+                                    grommetsLocation: val
+                                  }
+                                }));
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="all_corners">All Corners</SelectItem>
+                                <SelectItem value="top_corners">Top Corners Only</SelectItem>
+                                <SelectItem value="top_even">Top Edge (Even Spacing)</SelectItem>
+                                <SelectItem value="custom">Custom Placement</SelectItem>
+                              </SelectContent>
+                            </Select>
+
+                            {selection?.grommetsLocation === "top_even" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">Spacing Count</Label>
+                                <Input
+                                  type="number"
+                                  min="1"
+                                  value={selection?.grommetsSpacingCount || option.config.defaultSpacingCount || 1}
+                                  onChange={(e) => {
+                                    const count = parseInt(e.target.value) || 1;
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: {
+                                        ...prev[option.id],
+                                        grommetsSpacingCount: count
+                                      }
+                                    }));
+                                  }}
+                                />
+                              </div>
+                            )}
+
+                            {selection?.grommetsLocation === "custom" && option.config.customNotes && (
+                              <p className="text-xs text-muted-foreground italic">
+                                {option.config.customNotes}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               {/* Live price display */}
               {isCalculating && (
                 <div className="p-4 bg-muted rounded-md text-center">
@@ -583,6 +821,29 @@ export default function QuoteEditor() {
                         <div className="text-sm text-muted-foreground mt-1">
                           {item.width}" × {item.height}" • Qty: {item.quantity}
                         </div>
+                        
+                        {/* Display selected options */}
+                        {item.selectedOptions && item.selectedOptions.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            <div className="text-xs font-semibold text-muted-foreground">Options:</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {item.selectedOptions.map((opt: any, optIdx: number) => (
+                                <Badge key={optIdx} variant="outline" className="text-xs">
+                                  {opt.optionName}
+                                  {typeof opt.value === "boolean" 
+                                    ? "" 
+                                    : `: ${opt.value}`
+                                  }
+                                  {opt.calculatedCost > 0 && (
+                                    <span className="ml-1 text-muted-foreground">
+                                      (+${opt.calculatedCost.toFixed(2)})
+                                    </span>
+                                  )}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-3 ml-4">
                         <div className="text-right">
