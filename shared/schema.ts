@@ -270,13 +270,69 @@ export type PricingFormula = typeof pricingFormulas.$inferSelect;
 // PRODUCTS
 // ============================================================
 
-// Product option type for inline options stored as JSON
+// Line item material usage tracking - supports multiple materials per line item
+export type LineItemMaterialUsage = {
+  materialId: string;
+  unitType: "sheet" | "sqft" | "linear_ft";
+  quantity: number;
+};
+
+// Product option type for inline options stored as JSON with enhanced sub-options support
 export type ProductOptionItem = {
   id: string;
   label: string;
-  type: "checkbox" | "quantity";
-  priceMode: "flat" | "perQuantity" | "perArea";
-  amount: number;
+  type: "checkbox" | "quantity" | "toggle" | "select";
+  priceMode: "flat" | "per_qty" | "per_sqft" | "percent_of_base" | "flat_per_item";
+  amount?: number;
+  percentBase?: "media" | "line"; // For percent_of_base mode: "media" = percent of media cost only, "line" = percent of full line (default)
+  defaultSelected?: boolean; // Controls whether this option is selected by default on new line items
+  sortOrder?: number; // Controls display order in calculator/quote UI
+  config?: {
+    kind?: "grommets" | "sides" | "thickness" | "generic";
+    // For grommets
+    locations?: Array<"all_corners" | "top_corners" | "top_even" | "custom">;
+    defaultLocation?: "all_corners" | "top_corners" | "top_even" | "custom";
+    defaultSpacingCount?: number; // For top_even
+    customNotes?: string; // For custom
+    // For sides toggle
+    singleLabel?: string;
+    doubleLabel?: string;
+    defaultSide?: "single" | "double"; // Default selection for sides
+    doublePriceMultiplier?: number; // e.g., 1.6x (only used when pricingMode = "multiplier")
+    pricingMode?: "multiplier" | "volume"; // Default is "multiplier" for backward compatibility
+    volumeTiers?: Array<{
+      minSheets: number;
+      maxSheets: number | null; // null means "infinity"
+      singlePricePerSheet: number;
+      doublePricePerSheet: number;
+    }>;
+    // For thickness selector
+    defaultThicknessKey?: string;
+    thicknessVariants?: Array<{
+      key: string; // internal identifier (e.g., "4mm", "10mm")
+      label: string; // display name
+      materialId: string; // reference to materials table
+      pricingMode: "multiplier" | "volume";
+      priceMultiplier?: number; // for multiplier mode
+      volumeTiers?: Array<{
+        minSheets: number;
+        maxSheets: number | null;
+        pricePerSheet: number;
+      }>;
+    }>;
+  };
+  // Sub-config for nested options (e.g., grommets sub-options)
+  subConfig?: {
+    type: "grommets" | "hemming" | "custom";
+    config: any; // Structure depends on type
+  };
+  // Material add-on configuration - for options that consume additional materials (e.g., laminate)
+  materialAddonConfig?: {
+    materialId: string; // Material to consume (e.g., laminate roll)
+    usageBasis: "same_area" | "same_sheets"; // How to calculate usage
+    unitType: "sqft" | "sheet"; // How to record usage
+    wasteFactor?: number; // Optional waste percentage (0.05 = 5% extra)
+  };
 };
 
 // Products table
@@ -341,13 +397,38 @@ export const products = pgTable("products", {
   index("products_pricing_formula_id_idx").on(table.pricingFormulaId),
 ]);
 
-// Zod schema for product options
+// Zod schema for product options with enhanced sub-options
 const productOptionItemSchema = z.object({
   id: z.string(),
   label: z.string(),
-  type: z.enum(["checkbox", "quantity"]),
-  priceMode: z.enum(["flat", "perQuantity", "perArea"]),
-  amount: z.number(),
+  type: z.enum(["checkbox", "quantity", "toggle", "select"]),
+  priceMode: z.enum(["flat", "per_qty", "per_sqft", "percent_of_base", "flat_per_item"]).default("flat"),
+  amount: z.number().optional(),
+  percentBase: z.enum(["media", "line"]).optional(),
+  defaultSelected: z.boolean().optional(),
+  sortOrder: z.number().optional(),
+  config: z
+    .object({
+      kind: z.enum(["grommets", "sides", "thickness", "generic"]).default("generic"),
+      // For grommets
+      locations: z
+        .array(
+          z.enum(["all_corners", "top_corners", "top_even", "custom"])
+        )
+        .optional(),
+      defaultLocation: z
+        .enum(["all_corners", "top_corners", "top_even", "custom"])
+        .optional(),
+      defaultSpacingCount: z.number().int().optional(),
+      customNotes: z.string().optional(),
+      // For sides toggle
+      singleLabel: z.string().optional(),
+      doubleLabel: z.string().optional(),
+      defaultSide: z.enum(["single", "double"]).optional(),
+      doublePriceMultiplier: z.number().optional(),
+      pricingMode: z.enum(["multiplier", "volume"]).optional(),
+    })
+    .optional(),
 });
 
 // Zod schema for flat goods pricing config
@@ -579,6 +660,7 @@ export const quoteLineItems = pgTable("quote_line_items", {
     formula: string;
     variantInfo?: string;
   }>().notNull(),
+  materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(),
   displayOrder: integer("display_order").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
@@ -1217,6 +1299,7 @@ export const orderLineItems = pgTable("order_line_items", {
     quantityUsed: number;
     unitOfMeasure: string;
   }>>(), // snapshot of materials used
+  materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(), // structured material usage tracking
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

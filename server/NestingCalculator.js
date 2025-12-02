@@ -2,18 +2,44 @@
  * Batman's Custom Nesting Calculator
  * For calculating optimal piece nesting on sheets (48x96, 24x48, etc.)
  * Accounts for waste, linear foot rounding, and actual material usage
+ * Enhanced with configurable sheet waste/charging policies and option pricing
  */
 
+const SheetRoundingMode = {
+  EXACT: "exact",
+  QUARTER: "quarter",
+  HALF: "half",
+  FULL: "full"
+};
+
+class OversizeDimensionRule {
+  constructor(thresholdIn, axis, behavior, targetSheetFraction = null) {
+    this.thresholdIn = thresholdIn;
+    this.axis = axis;
+    this.behavior = behavior;
+    this.targetSheetFraction = targetSheetFraction;
+  }
+}
+
+class SheetChargingPolicy {
+  constructor(roundingMode = SheetRoundingMode.EXACT, minSheetFraction = 0, oversizeRules = []) {
+    this.roundingMode = roundingMode;
+    this.minSheetFraction = minSheetFraction;
+    this.oversizeRules = oversizeRules;
+  }
+}
+
 class NestingCalculator {
-  constructor(sheetWidth, sheetHeight, sheetCost, minPricePerItem = null, volumePricing = null) {
+  constructor(sheetWidth, sheetHeight, sheetCost, minPricePerItem = null, volumePricing = null, sheetChargingPolicy = null) {
     this.sheetWidth = sheetWidth;
     this.sheetHeight = sheetHeight;
     this.sheetCost = sheetCost;
     this.sheetSqft = (sheetWidth * sheetHeight) / 144;
     this.costPerSqft = sheetCost / this.sheetSqft;
-    this.fullSheetSqft = (48 * 96) / 144; // Always 32 sqft for cost basis
+    this.fullSheetSqft = (48 * 96) / 144;
     this.minPricePerItem = minPricePerItem;
     this.volumePricing = volumePricing;
+    this.sheetChargingPolicy = sheetChargingPolicy || new SheetChargingPolicy();
   }
 
   /**
@@ -24,7 +50,6 @@ class NestingCalculator {
       return this.sheetCost;
     }
 
-    // Find the applicable tier
     for (const tier of this.volumePricing.tiers) {
       if (sheetCount >= tier.minSheets && (!tier.maxSheets || sheetCount <= tier.maxSheets)) {
         return tier.pricePerSheet;
@@ -32,6 +57,76 @@ class NestingCalculator {
     }
 
     return this.sheetCost;
+  }
+
+  /**
+   * Evaluate oversize rules and adjust max pieces per sheet and min sheet fraction
+   */
+  evaluateOversizeRules(pieceWidth, pieceHeight, maxPiecesPerSheet) {
+    let adjustedMaxPieces = maxPiecesPerSheet;
+    let adjustedMinSheetFraction = this.sheetChargingPolicy.minSheetFraction;
+
+    for (const rule of this.sheetChargingPolicy.oversizeRules) {
+      let dimension;
+      if (rule.axis === "any") {
+        dimension = Math.max(pieceWidth, pieceHeight);
+      } else if (rule.axis === "width") {
+        dimension = pieceWidth;
+      } else if (rule.axis === "height") {
+        dimension = pieceHeight;
+      }
+
+      if (dimension > rule.thresholdIn) {
+        if (rule.behavior === "use_full_sheet_axis") {
+          let effectiveWidth = pieceWidth;
+          let effectiveHeight = pieceHeight;
+
+          if (rule.axis === "width" || (rule.axis === "any" && pieceWidth >= pieceHeight)) {
+            effectiveWidth = this.sheetWidth;
+          }
+          if (rule.axis === "height" || (rule.axis === "any" && pieceHeight > pieceWidth)) {
+            effectiveHeight = this.sheetHeight;
+          }
+
+          const piecesWide = Math.floor(this.sheetWidth / effectiveWidth);
+          const piecesHigh = Math.floor(this.sheetHeight / effectiveHeight);
+          adjustedMaxPieces = Math.max(1, piecesWide * piecesHigh);
+        } else if (rule.behavior === "bump_sheet_fraction" && rule.targetSheetFraction !== null) {
+          adjustedMinSheetFraction = Math.max(adjustedMinSheetFraction, rule.targetSheetFraction);
+        }
+      }
+    }
+
+    return { adjustedMaxPieces, adjustedMinSheetFraction };
+  }
+
+  /**
+   * Apply sheet charging policy with rounding and minimum sheet fraction
+   */
+  applySheetChargingPolicy(rawSheetsUsed, adjustedMinSheetFraction) {
+    let billableSheets = rawSheetsUsed;
+
+    switch (this.sheetChargingPolicy.roundingMode) {
+      case SheetRoundingMode.QUARTER:
+        billableSheets = Math.ceil(rawSheetsUsed * 4) / 4;
+        break;
+      case SheetRoundingMode.HALF:
+        billableSheets = Math.ceil(rawSheetsUsed * 2) / 2;
+        break;
+      case SheetRoundingMode.FULL:
+        billableSheets = Math.ceil(rawSheetsUsed);
+        break;
+      case SheetRoundingMode.EXACT:
+      default:
+        billableSheets = rawSheetsUsed;
+        break;
+    }
+
+    if (billableSheets < adjustedMinSheetFraction) {
+      billableSheets = adjustedMinSheetFraction;
+    }
+
+    return billableSheets;
   }
 
   /**
@@ -260,7 +355,12 @@ class NestingCalculator {
     }
 
     const bestPattern = nestingPatterns[0];
-    const maxPiecesPerSheet = bestPattern.totalPieces;
+    let maxPiecesPerSheet = bestPattern.totalPieces;
+
+    // Apply oversize rules
+    const oversizeResult = this.evaluateOversizeRules(pieceWidth, pieceHeight, maxPiecesPerSheet);
+    maxPiecesPerSheet = oversizeResult.adjustedMaxPieces;
+    const adjustedMinSheetFraction = oversizeResult.adjustedMinSheetFraction;
 
     console.log(`[NESTING DEBUG] Piece: ${pieceWidth}×${pieceHeight}, Sheet: ${useSheetWidth}×${useSheetHeight}, Max pieces: ${maxPiecesPerSheet}, Pattern: ${bestPattern.description}, Sheet cost: $${this.sheetCost.toFixed(2)}`);
 
@@ -271,19 +371,18 @@ class NestingCalculator {
       };
     }
 
-    // Calculate how many sheets are actually used
-    const sheetsNeeded = Math.ceil(quantity / maxPiecesPerSheet);
-    const fullSheets = Math.floor(quantity / maxPiecesPerSheet);
-    const remainingPieces = quantity % maxPiecesPerSheet;
+    // Calculate raw and billable sheets
+    const rawSheetsUsed = quantity / maxPiecesPerSheet;
+    const billableSheets = this.applySheetChargingPolicy(rawSheetsUsed, adjustedMinSheetFraction);
 
-    // Apply volume pricing if enabled
-    const effectiveSheetCost = this.getPricePerSheet(sheetsNeeded);
+    // Apply volume pricing based on billable sheets
+    const effectiveSheetCountForPricing = Math.ceil(billableSheets);
+    const effectiveSheetCost = this.getPricePerSheet(effectiveSheetCountForPricing);
 
-    console.log(`[NESTING DEBUG] Sheets needed: ${sheetsNeeded}, Base sheet cost: $${this.sheetCost.toFixed(2)}, Volume-adjusted cost: $${effectiveSheetCost.toFixed(2)}`);
+    console.log(`[NESTING DEBUG] Raw sheets: ${rawSheetsUsed.toFixed(4)}, Billable sheets: ${billableSheets.toFixed(4)}, Effective count: ${effectiveSheetCountForPricing}, Base cost: $${this.sheetCost.toFixed(2)}, Volume-adjusted: $${effectiveSheetCost.toFixed(2)}`);
 
-    // Simple pricing model: Price per piece = Sheet Cost ÷ Max Pieces Per Sheet
-    // This way, customers pay for their share of the sheet based on capacity
-    let pricePerPiece = effectiveSheetCost / maxPiecesPerSheet;
+    // Calculate price per piece based on billable sheets and effective cost
+    let pricePerPiece = (effectiveSheetCost * billableSheets) / quantity;
 
     // Apply minimum price per item if set
     if (this.minPricePerItem && pricePerPiece < this.minPricePerItem) {
@@ -294,6 +393,11 @@ class NestingCalculator {
     const totalPrice = pricePerPiece * quantity;
 
     console.log(`[NESTING DEBUG] Price per piece: $${pricePerPiece.toFixed(2)}, Total for ${quantity}: $${totalPrice.toFixed(2)}`);
+
+    // Calculate how many sheets are actually used
+    const sheetsNeeded = Math.ceil(quantity / maxPiecesPerSheet);
+    const fullSheets = Math.floor(quantity / maxPiecesPerSheet);
+    const remainingPieces = quantity % maxPiecesPerSheet;
 
     let partialSheetDetails = null;
 
@@ -448,6 +552,9 @@ class NestingCalculator {
       fullSheetsCost: parseFloat((fullSheets * this.sheetCost).toFixed(2)),
       remainingPieces,
       partialSheetDetails,
+      rawSheetsUsed: parseFloat(rawSheetsUsed.toFixed(4)),
+      billableSheets: parseFloat(billableSheets.toFixed(4)),
+      effectiveSheetCost: parseFloat(effectiveSheetCost.toFixed(2)),
       totalPrice: parseFloat(totalPrice.toFixed(2)),
       averageCostPerPiece: parseFloat(pricePerPiece.toFixed(2))
     };
@@ -455,5 +562,6 @@ class NestingCalculator {
 }
 
 // Export for ES modules
+export { NestingCalculator, SheetChargingPolicy, OversizeDimensionRule, SheetRoundingMode };
 export default NestingCalculator;
 

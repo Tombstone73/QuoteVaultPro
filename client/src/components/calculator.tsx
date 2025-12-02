@@ -13,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocation } from "wouter";
-import type { Product, InsertQuote, ProductOption, ProductVariant, InsertQuoteLineItem } from "@shared/schema";
+import type { Product, InsertQuote, ProductOption, ProductVariant, InsertQuoteLineItem, ProductOptionItem } from "@shared/schema";
 
 // Line item draft type (before saving to server)
 type LineItemDraft = {
@@ -68,6 +68,9 @@ export default function CalculatorComponent() {
 
   const selectedProduct = products?.find(p => p.id === selectedProductId);
 
+  // Get inline options from product
+  const productOptionsInline = selectedProduct?.optionsJson as ProductOptionItem[] | undefined;
+
   // Reset option values and variant when product changes
   useEffect(() => {
     setOptionValues({});
@@ -84,51 +87,24 @@ export default function CalculatorComponent() {
     }
   }, [productVariants, selectedVariant]);
 
-  // Set default values when product options load
+  // Set default values when product options load (inline optionsJson)
   useEffect(() => {
-    if (productOptions && productOptions.length > 0) {
+    if (productOptionsInline && productOptionsInline.length > 0) {
       const defaults: Record<string, any> = {};
 
-      // Build parent-child map
-      const childrenByParent = new Map<string, ProductOption[]>();
-      productOptions.forEach(opt => {
-        if (opt.parentOptionId) {
-          if (!childrenByParent.has(opt.parentOptionId)) {
-            childrenByParent.set(opt.parentOptionId, []);
-          }
-          childrenByParent.get(opt.parentOptionId)!.push(opt);
-        }
-      });
+      // Sort by sortOrder before processing defaults
+      const sortedOptions = [...productOptionsInline].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
-      // Set defaults for top-level options first
-      productOptions.forEach(option => {
-        if (!option.parentOptionId) {
-          if (option.type === "toggle") {
-            defaults[option.id] = option.isDefaultEnabled ?? false;
-          } else if (option.type === "number" && option.defaultValue) {
-            defaults[option.id] = parseFloat(option.defaultValue);
-          } else if (option.type === "select" && option.defaultSelection) {
-            defaults[option.id] = option.defaultSelection;
-          } else if (option.defaultValue) {
-            defaults[option.id] = option.defaultValue;
-          }
-        }
-      });
-
-      // Only set defaults for child options if parent toggle is enabled
-      productOptions.forEach(option => {
-        if (option.parentOptionId) {
-          const parent = productOptions.find(p => p.id === option.parentOptionId);
-          // Only set child default if parent is toggle and enabled, or parent is not a toggle
-          if (parent && (parent.type !== "toggle" || defaults[parent.id] === true)) {
-            if (option.type === "toggle") {
-              defaults[option.id] = option.isDefaultEnabled ?? false;
-            } else if (option.type === "number" && option.defaultValue) {
-              defaults[option.id] = parseFloat(option.defaultValue);
-            } else if (option.type === "select" && option.defaultSelection) {
-              defaults[option.id] = option.defaultSelection;
-            } else if (option.defaultValue) {
-              defaults[option.id] = option.defaultValue;
+      sortedOptions.forEach(option => {
+        if (option.defaultSelected) {
+          if (option.type === "checkbox" || option.type === "toggle") {
+            defaults[option.id] = true;
+          } else if (option.type === "select") {
+            // For sides special config, use defaultSide if available
+            if (option.config?.kind === "sides") {
+              defaults[option.id] = option.config.defaultSide || "single";
+            } else if (option.config?.kind === "thickness") {
+              defaults[option.id] = option.config.defaultThicknessKey || "";
             }
           }
         }
@@ -136,7 +112,7 @@ export default function CalculatorComponent() {
 
       setOptionValues(defaults);
     }
-  }, [productOptions]);
+  }, [productOptionsInline]);
 
   // Auto-calculate price when inputs change
   useEffect(() => {
