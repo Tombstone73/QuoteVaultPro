@@ -21,6 +21,7 @@ const materialSchema = z.object({
   width: z.coerce.number().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
   height: z.coerce.number().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
   thickness: z.coerce.number().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
+  thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   color: z.string().optional(),
   specsJson: z.string().optional(), // JSON string editable
   preferredVendorId: z.string().optional().or(z.literal("")).transform(v=> v? v: undefined),
@@ -34,26 +35,32 @@ interface Props {
   open: boolean;
   onOpenChange: (o:boolean)=>void;
   material?: Material;
+  /** When true, we are creating a copy of the material */
+  isDuplicate?: boolean;
 }
 
-export function MaterialForm({ open, onOpenChange, material }: Props) {
+export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Props) {
   const { toast } = useToast();
   const createMutation = useCreateMaterial();
   const updateMutation = useUpdateMaterial(material?.id || "");
+  
+  // Determine if we're in create mode (new or duplicate)
+  const isCreateMode = !material || isDuplicate;
 
   const form = useForm<MaterialFormValues>({
     resolver: zodResolver(materialSchema),
     defaultValues: material ? {
-      name: material.name,
-      sku: material.sku,
+      name: isDuplicate ? `${material.name} (Copy)` : material.name,
+      sku: isDuplicate ? `${material.sku}-COPY` : material.sku,
       type: material.type,
       unitOfMeasure: material.unitOfMeasure as any,
       costPerUnit: parseFloat(material.costPerUnit),
-      stockQuantity: parseFloat(material.stockQuantity),
+      stockQuantity: isDuplicate ? 0 : parseFloat(material.stockQuantity),
       minStockAlert: parseFloat(material.minStockAlert),
       width: material.width ? parseFloat(material.width) : undefined,
       height: material.height ? parseFloat(material.height) : undefined,
       thickness: material.thickness ? parseFloat(material.thickness) : undefined,
+      thicknessUnit: material.thicknessUnit || undefined,
       color: material.color || "",
       specsJson: material.specsJson ? JSON.stringify(material.specsJson, null, 2) : "",
       preferredVendorId: material.preferredVendorId || "",
@@ -70,6 +77,7 @@ export function MaterialForm({ open, onOpenChange, material }: Props) {
       width: undefined,
       height: undefined,
       thickness: undefined,
+      thicknessUnit: undefined,
       color: "",
       specsJson: "",
       preferredVendorId: "",
@@ -91,18 +99,19 @@ export function MaterialForm({ open, onOpenChange, material }: Props) {
       width: values.width !== undefined ? values.width.toString() : undefined,
       height: values.height !== undefined ? values.height.toString() : undefined,
       thickness: values.thickness !== undefined ? values.thickness.toString() : undefined,
+      thicknessUnit: values.thicknessUnit || undefined,
       specsJson: values.specsJson ? safeParseJSON(values.specsJson) : undefined,
       preferredVendorId: values.preferredVendorId || undefined,
       vendorSku: values.vendorSku || undefined,
       vendorCostPerUnit: values.vendorCostPerUnit !== undefined ? values.vendorCostPerUnit.toString() : undefined,
     };
     try {
-      if (material) {
+      if (isCreateMode) {
+        await createMutation.mutateAsync(payload);
+        toast({ title: isDuplicate ? "Material duplicated" : "Material created" });
+      } else {
         await updateMutation.mutateAsync(payload);
         toast({ title: "Material updated" });
-      } else {
-        await createMutation.mutateAsync(payload);
-        toast({ title: "Material created" });
       }
       onOpenChange(false);
     } catch (e:any) {
@@ -118,8 +127,12 @@ export function MaterialForm({ open, onOpenChange, material }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>{material ? "Edit Material" : "Create Material"}</DialogTitle>
-          <DialogDescription>Manage material metadata and stock thresholds.</DialogDescription>
+          <DialogTitle>{isDuplicate ? "Duplicate Material" : material ? "Edit Material" : "Create Material"}</DialogTitle>
+          <DialogDescription>
+            {isDuplicate 
+              ? `Creating a copy of "${material?.name}". Modify the details below and save.`
+              : "Manage material metadata and stock thresholds."}
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -184,6 +197,19 @@ export function MaterialForm({ open, onOpenChange, material }: Props) {
               <label className="text-sm font-medium">Thickness</label>
               <Input type="number" step="0.0001" {...form.register("thickness", {valueAsNumber:true})}/>
             </div>
+            <div>
+              <label className="text-sm font-medium">Thickness Unit</label>
+              <Select onValueChange={v=> form.setValue("thicknessUnit", v === "__none__" ? undefined : v as any)} value={form.watch("thicknessUnit") || "__none__"}> 
+                <SelectTrigger><SelectValue placeholder="Select unit"/></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  <SelectItem value="in">Inches (in)</SelectItem>
+                  <SelectItem value="mm">Millimeters (mm)</SelectItem>
+                  <SelectItem value="mil">Mils (1/1000 in)</SelectItem>
+                  <SelectItem value="gauge">Gauge</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <VendorSelectSection form={form} />
           </div>
           <div>
@@ -192,7 +218,9 @@ export function MaterialForm({ open, onOpenChange, material }: Props) {
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={()=> onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>{material?"Save":"Create"}</Button>
+            <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
+              {isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
+            </Button>
           </div>
         </form>
       </DialogContent>
@@ -211,10 +239,10 @@ function VendorSelectSection({ form }: { form: UseFormReturn<MaterialFormValues>
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="text-sm font-medium">Preferred Vendor</label>
-          <Select value={form.watch("preferredVendorId") || ""} onValueChange={v => form.setValue("preferredVendorId", v)}>
+          <Select value={form.watch("preferredVendorId") || ""} onValueChange={v => form.setValue("preferredVendorId", v === "__none__" ? "" : v)}>
             <SelectTrigger><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="">None</SelectItem>
+              <SelectItem value="__none__">None</SelectItem>
               {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}
             </SelectContent>
           </Select>

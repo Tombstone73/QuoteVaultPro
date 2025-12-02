@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMaterials } from "@/hooks/useMaterials";
+import { useMaterials, Material } from "@/hooks/useMaterials";
 import { MaterialForm } from "@/components/MaterialForm";
 import { AdjustInventoryForm } from "@/components/AdjustInventoryForm";
 import { LowStockBadge } from "@/components/LowStockBadge";
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { useLocation } from "wouter";
+import { Copy } from "lucide-react";
 
 export default function MaterialsListPage() {
   const [search, setSearch] = useState("");
@@ -14,6 +15,7 @@ export default function MaterialsListPage() {
   const [lowStockOnly, setLowStockOnly] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [adjustMaterialId, setAdjustMaterialId] = useState<string | null>(null);
+  const [duplicateMaterial, setDuplicateMaterial] = useState<Material | null>(null);
   const { data: materials, isLoading } = useMaterials({ search, type: typeFilter, lowStockOnly });
   const [, navigate] = useLocation();
 
@@ -68,7 +70,12 @@ export default function MaterialsListPage() {
                   <td className="p-2">—</td>
                   <td className="p-2"><LowStockBadge stock={stock} min={min}/></td>
                   <td className="p-2" onClick={e=> e.stopPropagation()}>
-                    <Button size="sm" variant="outline" onClick={()=> setAdjustMaterialId(m.id)}>Adjust</Button>
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="outline" onClick={()=> setAdjustMaterialId(m.id)}>Adjust</Button>
+                      <Button size="sm" variant="ghost" onClick={()=> setDuplicateMaterial(m)} title="Duplicate material">
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -78,7 +85,15 @@ export default function MaterialsListPage() {
         </table>
       </div>
       <MaterialForm open={showCreate} onOpenChange={setShowCreate} />
-      {adjustMaterialId && <AdjustInventoryForm materialId={adjustMaterialId} open={!!adjustMaterialId} onOpenChange={(o)=> { if(!o) setAdjustMaterialId(null); }}/>}      
+      {adjustMaterialId && <AdjustInventoryForm materialId={adjustMaterialId} open={!!adjustMaterialId} onOpenChange={(o)=> { if(!o) setAdjustMaterialId(null); }}/>}
+      {duplicateMaterial && (
+        <MaterialForm 
+          open={!!duplicateMaterial} 
+          onOpenChange={(o) => { if (!o) setDuplicateMaterial(null); }} 
+          material={duplicateMaterial} 
+          isDuplicate={true} 
+        />
+      )}
     </div>
   );
 }

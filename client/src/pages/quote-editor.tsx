@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import type { Product, ProductVariant, QuoteWithRelations } from "@shared/schema";
+import { profileRequiresDimensions, getProfile } from "@shared/pricingProfiles";
 
 type QuoteLineItemDraft = {
   tempId?: string;
@@ -108,6 +109,20 @@ export default function QuoteEditor() {
     enabled: !!selectedProductId,
   });
 
+  // Get selected product and determine if dimensions are required
+  const selectedProduct = useMemo(() => {
+    return products?.find(p => p.id === selectedProductId);
+  }, [products, selectedProductId]);
+  
+  const requiresDimensions = useMemo(() => {
+    if (!selectedProduct) return true; // Default to requiring dimensions
+    // Check both new pricingProfileKey and legacy useNestingCalculator
+    const profile = getProfile(selectedProduct.pricingProfileKey);
+    // Legacy nesting calculator products require dimensions
+    if (selectedProduct.useNestingCalculator) return true;
+    return profile.requiresDimensions;
+  }, [selectedProduct]);
+
   // Get contacts from selected customer
   const contacts = selectedCustomer?.contacts || [];
 
@@ -133,17 +148,31 @@ export default function QuoteEditor() {
   // Auto-calculate price with debounce
   const triggerAutoCalculate = useCallback(async () => {
     // Check if all required fields are present and valid
-    if (!selectedProductId || !width || !height || !quantity) {
+    // For products that don't require dimensions, only check quantity
+    if (!selectedProductId || !quantity) {
+      setCalculatedPrice(null);
+      setCalcError(null);
+      return;
+    }
+    
+    // For dimension-requiring products, also need width/height
+    if (requiresDimensions && (!width || !height)) {
       setCalculatedPrice(null);
       setCalcError(null);
       return;
     }
 
-    const widthNum = parseFloat(width);
-    const heightNum = parseFloat(height);
+    const widthNum = requiresDimensions ? parseFloat(width) : 1;
+    const heightNum = requiresDimensions ? parseFloat(height) : 1;
     const quantityNum = parseInt(quantity);
 
-    if (isNaN(widthNum) || widthNum <= 0 || isNaN(heightNum) || heightNum <= 0 || isNaN(quantityNum) || quantityNum <= 0) {
+    if (requiresDimensions && (isNaN(widthNum) || widthNum <= 0 || isNaN(heightNum) || heightNum <= 0)) {
+      setCalculatedPrice(null);
+      setCalcError(null);
+      return;
+    }
+    
+    if (isNaN(quantityNum) || quantityNum <= 0) {
       setCalculatedPrice(null);
       setCalcError(null);
       return;
@@ -169,7 +198,7 @@ export default function QuoteEditor() {
     } finally {
       setIsCalculating(false);
     }
-  }, [selectedProductId, selectedVariantId, width, height, quantity]);
+  }, [selectedProductId, selectedVariantId, width, height, quantity, requiresDimensions]);
 
   // Debounced auto-calculation effect
   useEffect(() => {
@@ -196,8 +225,8 @@ export default function QuoteEditor() {
       const response = await apiRequest("POST", "/api/quotes/calculate", {
         productId: selectedProductId,
         variantId: selectedVariantId,
-        width: parseFloat(width),
-        height: parseFloat(height),
+        width: requiresDimensions ? parseFloat(width) : 1,
+        height: requiresDimensions ? parseFloat(height) : 1,
         quantity: parseInt(quantity),
         selectedOptions: {},
       });
@@ -279,6 +308,10 @@ export default function QuoteEditor() {
 
     const product = products?.find(p => p.id === selectedProductId);
     const variant = productVariants?.find(v => v.id === selectedVariantId);
+    
+    // For non-dimension products, use 1x1 as placeholder
+    const widthVal = requiresDimensions ? parseFloat(width) : 1;
+    const heightVal = requiresDimensions ? parseFloat(height) : 1;
 
     const newItem: QuoteLineItemDraft = {
       tempId: `temp-${Date.now()}`,
@@ -287,8 +320,8 @@ export default function QuoteEditor() {
       variantId: selectedVariantId,
       variantName: variant?.name || null,
       productType: 'wide_roll',
-      width: parseFloat(width),
-      height: parseFloat(height),
+      width: widthVal,
+      height: heightVal,
       quantity: parseInt(quantity),
       specsJson: {},
       selectedOptions: [],
@@ -445,28 +478,38 @@ export default function QuoteEditor() {
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="width">Width (in)</Label>
-                  <Input
-                    id="width"
-                    type="number"
-                    step="0.01"
-                    value={width}
-                    onChange={(e) => setWidth(e.target.value)}
-                  />
+              {/* Dimensions - only show for products that require them */}
+              {requiresDimensions && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="width">Width (in)</Label>
+                    <Input
+                      id="width"
+                      type="number"
+                      step="0.01"
+                      value={width}
+                      onChange={(e) => setWidth(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="height">Height (in)</Label>
+                    <Input
+                      id="height"
+                      type="number"
+                      step="0.01"
+                      value={height}
+                      onChange={(e) => setHeight(e.target.value)}
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="height">Height (in)</Label>
-                  <Input
-                    id="height"
-                    type="number"
-                    step="0.01"
-                    value={height}
-                    onChange={(e) => setHeight(e.target.value)}
-                  />
+              )}
+              
+              {/* Info badge for non-dimension products */}
+              {selectedProductId && !requiresDimensions && (
+                <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+                  <p>This product doesn't require dimensions. Only quantity is needed.</p>
                 </div>
-              </div>
+              )}
 
               <div className="space-y-2">
                 <Label htmlFor="quantity">Quantity</Label>

@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { SettingsLayout } from "@/pages/settings/SettingsLayout";
+import { SettingsLayout, CompanySettings, UsersSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -24,7 +24,7 @@ import OrderDetail from "@/pages/order-detail";
 import CreateOrder from "@/pages/create-order";
 import Contacts from "@/pages/contacts";
 import ContactDetail from "@/pages/contact-detail";
-import CompanySettings from "@/pages/company-settings";
+import CompanySettingsPage from "@/pages/company-settings";
 import DebugUser from "@/pages/debug-user";
 import NotFound from "@/pages/not-found";
 import MyQuotes from "@/pages/portal/my-quotes";
@@ -33,6 +33,7 @@ import QuoteCheckout from "@/pages/portal/quote-checkout";
 import ProductionBoard from "@/pages/production";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
+import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
 import SettingsIntegrations from "@/pages/settings/integrations";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
@@ -42,6 +43,7 @@ import VendorsPage from "@/pages/vendors";
 import VendorDetailPage from "@/pages/vendor-detail";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
 import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
+import ProductsPage from "@/pages/products";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -79,6 +81,8 @@ function Router() {
 
         {/* Admin routes */}
         <Route path="/admin/users" element={<AdminUsers />} />
+        <Route path="/admin/products" element={<ProductsPage />} />
+        <Route path="/admin/product-types" element={<ProductTypesSettings />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
 
@@ -116,12 +120,23 @@ function Router() {
         <Route path="/production" element={<ProductionBoard />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
 
-        {/* Settings routes */}
-        <Route path="/settings/integrations" element={<SettingsIntegrations />} />
-        <Route path="/settings/product-types" element={<ProductTypesSettings />} />
-        {/* If you use CompanySettings somewhere, wire it here; otherwise the import can be removed later */}
-        <Route path="/settings/*" element={<SettingsLayout />} />
-        <Route path="/settings" element={<SettingsLayout />} />
+        {/* Product Catalog (standalone) */}
+        <Route path="/products" element={<ProductsPage />} />
+
+        {/* Settings routes - nested under SettingsLayout */}
+        <Route path="/settings" element={<SettingsLayout />}>
+          <Route index element={<CompanySettings />} />
+          <Route path="company" element={<CompanySettings />} />
+          <Route path="users" element={<UsersSettings />} />
+          <Route path="products" element={<ProductsPage />} />
+          <Route path="product-types" element={<ProductTypesSettings />} />
+          <Route path="pricing-formulas" element={<PricingFormulasSettings />} />
+          <Route path="integrations" element={<SettingsIntegrations />} />
+          <Route path="production" element={<ProductionSettings />} />
+          <Route path="inventory" element={<InventorySettings />} />
+          <Route path="notifications" element={<NotificationsSettings />} />
+          <Route path="appearance" element={<AppearanceSettings />} />
+        </Route>
 
         {/* Misc */}
         <Route path="/debug-user" element={<DebugUser />} />

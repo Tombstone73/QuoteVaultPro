@@ -3,9 +3,10 @@ import { useToast } from "@/hooks/use-toast";
 
 export interface ProductType {
   id: string;
+  organizationId: string;
   name: string;
   description: string | null;
-  sortOrder: number | null;
+  sortOrder: number;
   createdAt: string;
   updatedAt: string;
 }

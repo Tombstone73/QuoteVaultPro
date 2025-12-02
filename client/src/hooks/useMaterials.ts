@@ -10,6 +10,7 @@ export interface Material {
   width?: string | null;
   height?: string | null;
   thickness?: string | null;
+  thicknessUnit?: "in" | "mm" | "mil" | "gauge" | null;
   color?: string | null;
   costPerUnit: string;
   stockQuantity: string;

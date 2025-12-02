@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { PRICING_PROFILE_KEYS, type FlatGoodsConfig } from "./pricingProfiles";
 
 // ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
@@ -215,6 +216,69 @@ export type InsertProductType = z.infer<typeof insertProductTypeSchema>;
 export type UpdateProductType = z.infer<typeof updateProductTypeSchema>;
 export type SelectProductType = typeof productTypes.$inferSelect;
 
+// ============================================================
+// PRICING FORMULAS LIBRARY
+// ============================================================
+
+// Pricing Formulas table - reusable pricing definitions
+export const pricingFormulas = pgTable("pricing_formulas", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+
+  name: varchar("name", { length: 255 }).notNull(),
+  code: varchar("code", { length: 100 }), // optional slug / short key
+  description: text("description"),
+
+  // Which calculator profile this formula uses, e.g. "flat_goods", "qty_only", etc.
+  pricingProfileKey: varchar("pricing_profile_key", { length: 100 }).notNull(),
+
+  // Optional raw expression for simple formulas (sqft * p * q, etc.)
+  expression: text("expression"),
+
+  // Calculator-specific config (sheet sizes, rotation flags, min sheets, etc.)
+  config: jsonb("config").$type<FlatGoodsConfig | Record<string, any>>(),
+
+  isActive: boolean("is_active").notNull().default(true),
+
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("pricing_formulas_org_id_idx").on(table.organizationId),
+  index("pricing_formulas_code_org_idx").on(table.organizationId, table.code),
+]);
+
+export const insertPricingFormulaSchema = createInsertSchema(pricingFormulas).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  organizationId: true,
+}).extend({
+  pricingProfileKey: z.enum(PRICING_PROFILE_KEYS as [string, ...string[]]),
+  expression: z.string().optional().nullable(),
+  config: z.record(z.any()).optional().nullable(),
+});
+
+export const updatePricingFormulaSchema = insertPricingFormulaSchema.partial();
+
+export type InsertPricingFormula = z.infer<typeof insertPricingFormulaSchema>;
+export type UpdatePricingFormula = z.infer<typeof updatePricingFormulaSchema>;
+export type PricingFormula = typeof pricingFormulas.$inferSelect;
+
+// ============================================================
+// PRODUCTS
+// ============================================================
+
+// Product option type for inline options stored as JSON
+export type ProductOptionItem = {
+  id: string;
+  label: string;
+  type: "checkbox" | "quantity";
+  priceMode: "flat" | "perQuantity" | "perArea";
+  amount: number;
+};
+
 // Products table
 export const products = pgTable("products", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -238,6 +302,20 @@ export const products = pgTable("products", {
       discountValue: number;
     }>;
   }>().default(sql`'{"enabled":false,"type":"quantity","tiers":[]}'::jsonb`).notNull(),
+  // NEW: Pricing mode - determines how pricing is calculated
+  pricingMode: varchar("pricing_mode", { length: 32 }).$type<"area" | "quantity" | "flat">().default("area").notNull(),
+  // NEW: Service/fee flag - marks product as a service (design fee, rush fee, etc.)
+  isService: boolean("is_service").default(false).notNull(),
+  // NEW: Primary material linkage for cost calculations
+  primaryMaterialId: varchar("primary_material_id").references(() => materials.id, { onDelete: 'set null' }),
+  // NEW: Inline options stored as JSON
+  optionsJson: jsonb("options_json").$type<ProductOptionItem[]>(),
+  // NEW: Pricing profile key - points to which calculator to use
+  pricingProfileKey: varchar("pricing_profile_key", { length: 100 }).default("default"),
+  // NEW: Pricing profile config - calculator-specific settings (e.g., FlatGoodsConfig)
+  pricingProfileConfig: jsonb("pricing_profile_config").$type<FlatGoodsConfig | Record<string, any>>(),
+  // NEW: Link to reusable pricing formula
+  pricingFormulaId: varchar("pricing_formula_id").references(() => pricingFormulas.id, { onDelete: 'set null' }),
   // Nesting Calculator fields
   useNestingCalculator: boolean("use_nesting_calculator").default(false).notNull(),
   sheetWidth: decimal("sheet_width", { precision: 10, scale: 2 }),
@@ -259,7 +337,34 @@ export const products = pgTable("products", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("products_organization_id_idx").on(table.organizationId),
+  index("products_primary_material_id_idx").on(table.primaryMaterialId),
+  index("products_pricing_formula_id_idx").on(table.pricingFormulaId),
 ]);
+
+// Zod schema for product options
+const productOptionItemSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  type: z.enum(["checkbox", "quantity"]),
+  priceMode: z.enum(["flat", "perQuantity", "perArea"]),
+  amount: z.number(),
+});
+
+// Zod schema for flat goods pricing config
+const flatGoodsConfigSchema = z.object({
+  sheetWidth: z.coerce.number().positive(),
+  sheetHeight: z.coerce.number().positive(),
+  allowRotation: z.boolean().default(true),
+  minSheets: z.coerce.number().int().positive().optional(),
+  materialType: z.enum(["sheet", "roll"]).default("sheet"),
+  minPricePerItem: z.coerce.number().positive().optional().nullable(),
+});
+
+// Union for pricing profile config (extensible for future profile types)
+const pricingProfileConfigSchema = z.union([
+  flatGoodsConfigSchema,
+  z.record(z.any()), // Allow any object for future profile types
+]).optional().nullable();
 
 export const insertProductSchema = createInsertSchema(products).omit({
   id: true,
@@ -268,6 +373,13 @@ export const insertProductSchema = createInsertSchema(products).omit({
   organizationId: true,
 }).extend({
   pricingFormula: z.string().optional().nullable(),
+  pricingMode: z.enum(["area", "quantity", "flat"]).default("area"),
+  isService: z.boolean().default(false),
+  primaryMaterialId: z.string().optional().nullable(),
+  optionsJson: z.array(productOptionItemSchema).optional().nullable(),
+  pricingProfileKey: z.enum(PRICING_PROFILE_KEYS as [string, ...string[]]).default("default"),
+  pricingProfileConfig: pricingProfileConfigSchema,
+  pricingFormulaId: z.string().optional().nullable(),
   sheetWidth: z.coerce.number().positive().optional().nullable(),
   sheetHeight: z.coerce.number().positive().optional().nullable(),
   minPricePerItem: z.coerce.number().positive().optional().nullable(),
@@ -281,6 +393,13 @@ export const updateProductSchema = createInsertSchema(products).omit({
   organizationId: true,
 }).extend({
   pricingFormula: z.string().optional().nullable(),
+  pricingMode: z.enum(["area", "quantity", "flat"]).optional(),
+  isService: z.boolean().optional(),
+  primaryMaterialId: z.string().optional().nullable(),
+  optionsJson: z.array(productOptionItemSchema).optional().nullable(),
+  pricingProfileKey: z.enum(PRICING_PROFILE_KEYS as [string, ...string[]]).optional(),
+  pricingProfileConfig: pricingProfileConfigSchema,
+  pricingFormulaId: z.string().optional().nullable(),
   sheetWidth: z.coerce.number().positive().optional().nullable(),
   sheetHeight: z.coerce.number().positive().optional().nullable(),
   minPricePerItem: z.coerce.number().positive().optional().nullable(),
@@ -1746,6 +1865,7 @@ export const materials = pgTable("materials", {
   width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension
   height: decimal("height", { precision: 10, scale: 2 }), // nullable for height dimension
   thickness: decimal("thickness", { precision: 10, scale: 4 }), // nullable for thickness
+  thicknessUnit: varchar("thickness_unit", { length: 20 }), // in, mm, mil, gauge
   color: varchar("color", { length: 100 }), // nullable color specification
   costPerUnit: decimal("cost_per_unit", { precision: 10, scale: 4 }).notNull(),
   stockQuantity: decimal("stock_quantity", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -1773,6 +1893,7 @@ export const insertMaterialSchema = createInsertSchema(materials).omit({
 }).extend({
   type: z.enum(["sheet", "roll", "ink", "consumable"]),
   unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
+  thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   costPerUnit: z.coerce.number().nonnegative(),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
