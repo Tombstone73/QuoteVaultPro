@@ -15,6 +15,7 @@ import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
 import * as quickbooksService from "./quickbooksService";
 import * as syncWorker from "./workers/syncProcessor";
 import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
+import { getProfile, profileRequiresDimensions, type FlatGoodsConfig, flatGoodsCalculator, buildFlatGoodsInput } from "@shared/pricingProfiles";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -47,6 +48,8 @@ import {
   updateProductVariantSchema,
   insertGlobalVariableSchema,
   updateGlobalVariableSchema,
+  insertPricingFormulaSchema,
+  updatePricingFormulaSchema,
   insertEmailSettingsSchema,
   updateEmailSettingsSchema,
   insertCompanySettingsSchema,
@@ -977,6 +980,99 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Pricing Formulas routes
+  app.get("/api/pricing-formulas", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const formulas = await storage.getPricingFormulas(organizationId);
+      res.json(formulas);
+    } catch (error) {
+      console.error("Error fetching pricing formulas:", error);
+      res.status(500).json({ message: "Failed to fetch pricing formulas" });
+    }
+  });
+
+  app.get("/api/pricing-formulas/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const formula = await storage.getPricingFormulaById(organizationId, req.params.id);
+      if (!formula) {
+        return res.status(404).json({ message: "Pricing formula not found" });
+      }
+      res.json(formula);
+    } catch (error) {
+      console.error("Error fetching pricing formula:", error);
+      res.status(500).json({ message: "Failed to fetch pricing formula" });
+    }
+  });
+
+  app.get("/api/pricing-formulas/:id/products", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const result = await storage.getPricingFormulaWithProducts(organizationId, req.params.id);
+      if (!result) {
+        return res.status(404).json({ message: "Pricing formula not found" });
+      }
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching pricing formula with products:", error);
+      res.status(500).json({ message: "Failed to fetch pricing formula with products" });
+    }
+  });
+
+  app.post("/api/pricing-formulas", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const formulaData = insertPricingFormulaSchema.parse(req.body);
+      const formula = await storage.createPricingFormula(organizationId, formulaData);
+      res.json(formula);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error creating pricing formula:", error);
+      res.status(500).json({ message: "Failed to create pricing formula" });
+    }
+  });
+
+  app.patch("/api/pricing-formulas/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const formulaData = updatePricingFormulaSchema.parse({
+        ...req.body,
+        id: req.params.id,
+      });
+      const formula = await storage.updatePricingFormula(organizationId, req.params.id, formulaData);
+      if (!formula) {
+        return res.status(404).json({ message: "Pricing formula not found" });
+      }
+      res.json(formula);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error("Error updating pricing formula:", error);
+      res.status(500).json({ message: "Failed to update pricing formula" });
+    }
+  });
+
+  app.delete("/api/pricing-formulas/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      await storage.deletePricingFormula(organizationId, req.params.id);
+      res.json({ message: "Pricing formula deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting pricing formula:", error);
+      res.status(500).json({ message: "Failed to delete pricing formula" });
+    }
+  });
+
   app.post("/api/quotes/calculate", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -1011,23 +1107,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Coerce inputs to numbers (handles both string and number inputs)
-      const widthNum = Number(width);
-      const heightNum = Number(height);
+      const widthNum = Number(width) || 0;
+      const heightNum = Number(height) || 0;
       const quantityNum = Number(quantity);
 
-      // Validate input parameters
-      if (!Number.isFinite(widthNum) || widthNum <= 0) {
-        return res.status(400).json({ message: "Invalid width value" });
+      // If product has a pricing formula attached, use it to override profile/config
+      let effectivePricingProfileKey = product.pricingProfileKey ?? "default";
+      let effectivePricingProfileConfig = product.pricingProfileConfig;
+      let pricingFormulaName: string | null = null;
+      
+      if (product.pricingFormulaId) {
+        const pricingFormula = await storage.getPricingFormulaById(organizationId, product.pricingFormulaId);
+        if (pricingFormula) {
+          effectivePricingProfileKey = pricingFormula.pricingProfileKey ?? "default";
+          effectivePricingProfileConfig = pricingFormula.config;
+          pricingFormulaName = pricingFormula.name;
+          console.log(`[PRICING DEBUG] Using pricing formula "${pricingFormula.name}" (${pricingFormula.code}) for product ${product.name}`);
+        }
       }
-      if (!Number.isFinite(heightNum) || heightNum <= 0) {
-        return res.status(400).json({ message: "Invalid height value" });
+
+      // Determine pricing profile (new system) with fallback to legacy detection
+      const pricingProfile = getProfile(effectivePricingProfileKey);
+      const requiresDimensions = profileRequiresDimensions(effectivePricingProfileKey);
+      
+      // Legacy detection: if useNestingCalculator is true but pricingProfileKey is default, treat as flat_goods
+      const isLegacyNesting = product.useNestingCalculator && product.sheetWidth && product.sheetHeight && effectivePricingProfileKey === "default";
+      const useFlatGoodsCalculator = pricingProfile.key === "flat_goods" || isLegacyNesting;
+
+      // Validate dimensions only if the profile requires them
+      if (requiresDimensions || useFlatGoodsCalculator) {
+        if (!Number.isFinite(widthNum) || widthNum <= 0) {
+          return res.status(400).json({ message: "Invalid width value" });
+        }
+        if (!Number.isFinite(heightNum) || heightNum <= 0) {
+          return res.status(400).json({ message: "Invalid height value" });
+        }
       }
+      
+      // Quantity is always required
       if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
         return res.status(400).json({ message: "Invalid quantity value" });
       }
 
-      // Calculate square footage
-      const sqft = (widthNum * heightNum) / 144; // Convert sq inches to sq feet
+      // Calculate square footage (may be 0 for qty_only/fee profiles)
+      const sqft = requiresDimensions ? (widthNum * heightNum) / 144 : 0;
 
       // Build formula context with dimensions, quantity, variant base price, and global variables
       const basePricePerSqft = variant ? parseFloat(variant.basePricePerSqft) : 0;
@@ -1049,107 +1172,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let basePrice = 0;
       let nestingDetails: any = undefined;
 
-      console.log(`[PRICING DEBUG] Product: ${product.name}, useNestingCalculator: ${product.useNestingCalculator}, sheetWidth: ${product.sheetWidth}, sheetHeight: ${product.sheetHeight}`);
+      console.log(`[PRICING DEBUG] Product: ${product.name}, pricingProfile: ${pricingProfile.key}, useFlatGoods: ${useFlatGoodsCalculator}${pricingFormulaName ? `, formula: ${pricingFormulaName}` : ''}`);
 
-      if (product.useNestingCalculator && product.sheetWidth && product.sheetHeight) {
-        // Use Nesting Calculator
-        console.log(`[PRICING DEBUG] Using Nesting Calculator for product ${product.name}`);
+      if (useFlatGoodsCalculator) {
+        // Use Flat Goods Calculator (flat goods profile or legacy nesting)
+        console.log(`[PRICING DEBUG] Using Flat Goods Calculator for product ${product.name}`);
         try {
-          const sheetWidth = parseFloat(product.sheetWidth);
-          const sheetHeight = parseFloat(product.sheetHeight);
+          // Build input from profile config with legacy fallbacks
+          const profileConfig = effectivePricingProfileConfig as FlatGoodsConfig | null;
+          const flatGoodsInput = buildFlatGoodsInput(
+            profileConfig,
+            product,
+            variant,
+            widthNum,
+            heightNum,
+            quantityNum
+          );
 
-          // Calculate sheet cost based on variant price per sqft
-          const sheetSqft = (sheetWidth * sheetHeight) / 144;
-          const sheetCost = basePricePerSqft * sheetSqft;
+          console.log(`[NESTING DEBUG] Sheet: ${flatGoodsInput.sheetWidth}×${flatGoodsInput.sheetHeight}, Material: ${flatGoodsInput.materialType}, Price/SqFt: $${flatGoodsInput.basePricePerSqft}`);
 
-          console.log(`[NESTING DEBUG] Sheet: ${sheetWidth}×${sheetHeight}, SqFt: ${sheetSqft}, Price/SqFt: $${basePricePerSqft}, Sheet Cost: $${sheetCost.toFixed(2)}`);
+          // Create nesting calculator factory for the helper
+          const createNestingCalculator = (
+            sheetWidth: number,
+            sheetHeight: number,
+            sheetCost: number,
+            minPricePerItem: number | null,
+            volumePricing: any
+          ) => new NestingCalculator(sheetWidth, sheetHeight, sheetCost, minPricePerItem, volumePricing);
 
-          if (product.materialType === "roll") {
-            // Simplified roll calculation (optimize for width only)
-            const rollWidth = sheetWidth;
-            const piecesAcrossWidth = Math.floor(rollWidth / widthNum);
+          // Calculate using centralized helper
+          const flatGoodsResult = flatGoodsCalculator(flatGoodsInput, createNestingCalculator);
 
-            if (piecesAcrossWidth === 0) {
-              return res.status(400).json({ message: "Piece width exceeds roll width" });
-            }
-
-            const linearInchesPerPiece = heightNum;
-            const totalLinearInches = Math.ceil(quantityNum / piecesAcrossWidth) * linearInchesPerPiece;
-            const linearFeet = totalLinearInches / 12;
-
-            // Price per linear foot from variant
-            const pricePerLinearFoot = basePricePerSqft * (rollWidth / 12);
-            basePrice = linearFeet * pricePerLinearFoot;
-
-            nestingDetails = {
-              piecesAcrossWidth,
-              linearFeet: parseFloat(linearFeet.toFixed(2)),
-              pattern: `${piecesAcrossWidth} pieces across ${rollWidth}" width`,
-              efficiency: 100, // Roll materials don't have waste in the same way
-              costPerPiece: parseFloat((basePrice / quantityNum).toFixed(2)),
-            };
-          } else {
-            // Standard sheet nesting using NestingCalculator with waste accounting
-            const minPricePerItem = product.minPricePerItem ? parseFloat(product.minPricePerItem) : null;
-
-            // Use variant-level volume pricing if available, otherwise fall back to product-level
-            const volumePricing = (variant && variant.volumePricing) ? variant.volumePricing : (product.nestingVolumePricing || null);
-
-            const calc = new NestingCalculator(sheetWidth, sheetHeight, sheetCost, minPricePerItem, volumePricing);
-            const pricingResult = calc.calculatePricingWithWaste(widthNum, heightNum, quantityNum);
-
-            // Check for errors (oversized pieces)
-            if (pricingResult.error) {
-              return res.status(400).json({ message: pricingResult.message });
-            }
-
-            basePrice = pricingResult.totalPrice;
-
-            // Build detailed nesting information
-            nestingDetails = {
-              piecesPerSheet: pricingResult.maxPiecesPerSheet,
-              nestingPattern: pricingResult.nestingPattern,
-              orientation: pricingResult.orientation,
-              sheetWidth: pricingResult.sheetWidth,
-              sheetHeight: pricingResult.sheetHeight,
-              fullSheets: pricingResult.fullSheets,
-              fullSheetsCost: pricingResult.fullSheetsCost,
-              remainingPieces: pricingResult.remainingPieces,
-              partialSheet: pricingResult.partialSheetDetails,
-              totalPrice: pricingResult.totalPrice,
-              averageCostPerPiece: pricingResult.averageCostPerPiece,
-            };
+          // Check for errors
+          if (flatGoodsResult.error) {
+            return res.status(400).json({ message: flatGoodsResult.error });
           }
+
+          basePrice = flatGoodsResult.totalPrice;
+          nestingDetails = flatGoodsResult.nestingDetails;
 
           // Validate base price is a finite number
           if (!Number.isFinite(basePrice)) {
-            console.error("Nesting calculator produced invalid result:", basePrice);
-            return res.status(400).json({ message: "Nesting calculation produced an invalid result" });
+            console.error("Flat goods calculator produced invalid result:", basePrice);
+            return res.status(400).json({ message: "Flat goods calculation produced an invalid result" });
           }
         } catch (error) {
-          console.error("Error in nesting calculator:", error);
-          return res.status(400).json({ message: "Nesting calculation failed" });
+          console.error("Error in flat goods calculator:", error);
+          return res.status(400).json({ message: "Flat goods calculation failed" });
         }
       } else {
-        // Use formula evaluation
-        console.log(`[PRICING DEBUG] Using Formula Evaluation for product ${product.name}`);
+        // Use formula evaluation (default, qty_only, fee profiles)
+        console.log(`[PRICING DEBUG] Using Formula Evaluation for product ${product.name}, profile: ${pricingProfile.key}`);
         if (!product.pricingFormula) {
-          return res.status(400).json({ message: "Product must have either a pricing formula or nesting calculator enabled" });
-        }
-
-        try {
-          const formula = product.pricingFormula;
-          console.log(`[PRICING DEBUG] Formula: ${formula}`);
-          basePrice = evaluate(formula, formulaContext);
-
-          // Validate base price is a finite number
-          if (!Number.isFinite(basePrice)) {
-            console.error("Base pricing formula produced invalid result:", basePrice);
-            return res.status(400).json({ message: "Product pricing formula produced an invalid result" });
+          // For fee/qty_only profiles, default formula can be "q * unitPrice" or just the base price
+          if (pricingProfile.key === "fee") {
+            // Fee profiles: use variant price directly
+            basePrice = basePricePerSqft * quantityNum;
+            console.log(`[PRICING DEBUG] Fee profile - using variant price: ${basePricePerSqft} × ${quantityNum} = ${basePrice}`);
+          } else if (pricingProfile.key === "qty_only") {
+            // Quantity-only profiles: use variant price × quantity
+            basePrice = basePricePerSqft * quantityNum;
+            console.log(`[PRICING DEBUG] Qty-only profile - using variant price: ${basePricePerSqft} × ${quantityNum} = ${basePrice}`);
+          } else {
+            return res.status(400).json({ message: "Product must have either a pricing formula or nesting calculator enabled" });
           }
-        } catch (error) {
-          console.error("Error evaluating formula:", error);
-          return res.status(400).json({ message: "Invalid pricing formula" });
+        } else {
+          try {
+            const formula = product.pricingFormula;
+            console.log(`[PRICING DEBUG] Formula: ${formula}`);
+            basePrice = evaluate(formula, formulaContext);
+
+            // Validate base price is a finite number
+            if (!Number.isFinite(basePrice)) {
+              console.error("Base pricing formula produced invalid result:", basePrice);
+              return res.status(400).json({ message: "Product pricing formula produced an invalid result" });
+            }
+          } catch (error) {
+            console.error("Error evaluating formula:", error);
+            return res.status(400).json({ message: "Invalid pricing formula" });
+          }
         }
       }
 

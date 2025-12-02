@@ -7,8 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, Plus, Pencil, Trash2, ArrowLeft, GripVertical } from "lucide-react";
-import { Link } from "wouter";
+import { Loader2, Plus, Pencil, Trash2, GripVertical } from "lucide-react";
+import { TitanCard } from "@/components/ui/TitanCard";
 
 export default function ProductTypesSettings() {
   const { data: productTypes, isLoading } = useProductTypes();
@@ -86,20 +86,11 @@ export default function ProductTypesSettings() {
   }
 
   return (
-    <div className="container mx-auto py-8 max-w-5xl">
-      <div className="flex items-center gap-4 mb-6">
-        <Link href="/admin">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Settings
-          </Button>
-        </Link>
-      </div>
-
-      <div className="flex items-center justify-between mb-6">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Product Types</h1>
-          <p className="text-muted-foreground">Manage categories for your products (e.g., Roll, Sheet, Digital Print)</p>
+          <h1 className="text-2xl font-bold">Product Types</h1>
+          <p className="text-muted-foreground text-sm">Manage categories for your products (e.g., Roll, Sheet, Digital Print)</p>
         </div>
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
           <DialogTrigger asChild>
@@ -149,11 +140,7 @@ export default function ProductTypesSettings() {
         </Dialog>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Product Types</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <TitanCard className="p-0 overflow-hidden">
           {productTypes && productTypes.length > 0 ? (
             <Table>
               <TableHeader>
@@ -200,8 +187,7 @@ export default function ProductTypesSettings() {
               No product types found. Create one to get started.
             </div>
           )}
-        </CardContent>
-      </Card>
+      </TitanCard>
 
       {/* Edit Dialog */}
       <Dialog open={!!editingType} onOpenChange={(open) => !open && setEditingType(null)}>

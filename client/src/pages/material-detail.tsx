@@ -7,6 +7,15 @@ import { LowStockBadge } from "@/components/LowStockBadge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/useAuth";
+import { Copy } from "lucide-react";
+
+// Thickness unit labels for display
+const THICKNESS_UNITS: Record<string, string> = {
+  in: 'in',
+  mm: 'mm',
+  mil: 'mil',
+  gauge: 'ga',
+};
 
 interface Props { params: { id: string }; }
 export default function MaterialDetailPage({ params }: Props) {
@@ -18,6 +27,7 @@ export default function MaterialDetailPage({ params }: Props) {
   const [, navigate] = useLocation();
   const [showEdit, setShowEdit] = useState(false);
   const [showAdjust, setShowAdjust] = useState(false);
+  const [showDuplicate, setShowDuplicate] = useState(false);
 
   if (isLoading) return <div className="p-6">Loading...</div>;
   if (!material) return <div className="p-6">Material not found.</div>;
@@ -42,6 +52,9 @@ export default function MaterialDetailPage({ params }: Props) {
         <h1 className="text-2xl font-semibold">{material.name} <span className="text-sm text-muted-foreground">{material.sku}</span></h1>
         <div className="flex gap-2">
           <Button variant="outline" onClick={()=> setShowEdit(true)}>Edit</Button>
+          <Button variant="outline" onClick={()=> setShowDuplicate(true)} title="Duplicate material">
+            <Copy className="h-4 w-4 mr-1" /> Duplicate
+          </Button>
           <Button onClick={()=> setShowAdjust(true)}>Adjust Inventory</Button>
           {isPrivileged && <Button variant="destructive" onClick={handleDelete}>Delete</Button>}
         </div>
@@ -56,7 +69,12 @@ export default function MaterialDetailPage({ params }: Props) {
             {material.color && <div><strong>Color:</strong> {material.color}</div>}
             {material.width && <div><strong>Width:</strong> {material.width}</div>}
             {material.height && <div><strong>Height:</strong> {material.height}</div>}
-            {material.thickness && <div><strong>Thickness:</strong> {material.thickness}</div>}
+            {material.thickness && (
+              <div>
+                <strong>Thickness:</strong> {material.thickness}
+                {material.thicknessUnit && ` ${THICKNESS_UNITS[material.thicknessUnit] || material.thicknessUnit}`}
+              </div>
+            )}
             {material.specsJson && <pre className="bg-muted p-2 rounded text-xs max-h-40 overflow-auto">{JSON.stringify(material.specsJson, null, 2)}</pre>}
           </div>
         </Card>
@@ -109,6 +127,7 @@ export default function MaterialDetailPage({ params }: Props) {
         </div>
       </Card>
       <MaterialForm open={showEdit} onOpenChange={setShowEdit} material={material} />
+      <MaterialForm open={showDuplicate} onOpenChange={setShowDuplicate} material={material} isDuplicate={true} />
       <AdjustInventoryForm materialId={material.id} open={showAdjust} onOpenChange={setShowAdjust} />
     </div>
   );

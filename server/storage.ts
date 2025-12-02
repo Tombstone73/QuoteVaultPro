@@ -5,6 +5,7 @@ import {
   productOptions,
   productVariants,
   globalVariables,
+  pricingFormulas,
   quotes,
   quoteLineItems,
   pricingRules,
@@ -38,6 +39,9 @@ import {
   type GlobalVariable,
   type InsertGlobalVariable,
   type UpdateGlobalVariable,
+  type PricingFormula,
+  type InsertPricingFormula,
+  type UpdatePricingFormula,
   type Quote,
   type InsertQuote,
   type UpdateQuote,
@@ -176,6 +180,14 @@ export interface IStorage {
   createGlobalVariable(organizationId: string, variable: Omit<InsertGlobalVariable, 'organizationId'>): Promise<GlobalVariable>;
   updateGlobalVariable(organizationId: string, id: string, variable: Partial<Omit<InsertGlobalVariable, 'organizationId'>>): Promise<GlobalVariable>;
   deleteGlobalVariable(organizationId: string, id: string): Promise<void>;
+
+  // Pricing Formulas operations (tenant-scoped)
+  getPricingFormulas(organizationId: string): Promise<PricingFormula[]>;
+  getPricingFormulaById(organizationId: string, id: string): Promise<PricingFormula | undefined>;
+  getPricingFormulaWithProducts(organizationId: string, id: string): Promise<{ formula: PricingFormula; products: Product[] } | null>;
+  createPricingFormula(organizationId: string, input: InsertPricingFormula): Promise<PricingFormula>;
+  updatePricingFormula(organizationId: string, id: string, input: UpdatePricingFormula): Promise<PricingFormula>;
+  deletePricingFormula(organizationId: string, id: string): Promise<void>;
 
   // Quote operations (tenant-scoped)
   createQuote(organizationId: string, data: {
@@ -674,6 +686,12 @@ export class DatabaseStorage implements IStorage {
       requiresProductionJob: originalProduct.requiresProductionJob,
       productTypeId: originalProduct.productTypeId,
       pricingFormula: originalProduct.pricingFormula,
+      pricingMode: originalProduct.pricingMode,
+      isService: originalProduct.isService,
+      primaryMaterialId: originalProduct.primaryMaterialId,
+      optionsJson: originalProduct.optionsJson,
+      pricingProfileKey: originalProduct.pricingProfileKey,
+      pricingProfileConfig: originalProduct.pricingProfileConfig,
       variantLabel: originalProduct.variantLabel,
       category: originalProduct.category,
       storeUrl: originalProduct.storeUrl,
@@ -880,6 +898,73 @@ export class DatabaseStorage implements IStorage {
 
   async deleteGlobalVariable(organizationId: string, id: string): Promise<void> {
     await db.delete(globalVariables).where(and(eq(globalVariables.id, id), eq(globalVariables.organizationId, organizationId)));
+  }
+
+  // Pricing Formulas operations (tenant-scoped)
+  async getPricingFormulas(organizationId: string): Promise<PricingFormula[]> {
+    return await db.select().from(pricingFormulas)
+      .where(and(
+        eq(pricingFormulas.organizationId, organizationId),
+        eq(pricingFormulas.isActive, true)
+      ))
+      .orderBy(pricingFormulas.name);
+  }
+
+  async getPricingFormulaById(organizationId: string, id: string): Promise<PricingFormula | undefined> {
+    const [formula] = await db.select().from(pricingFormulas)
+      .where(and(
+        eq(pricingFormulas.id, id),
+        eq(pricingFormulas.organizationId, organizationId)
+      ));
+    return formula;
+  }
+
+  async getPricingFormulaWithProducts(organizationId: string, id: string): Promise<{ formula: PricingFormula; products: Product[] } | null> {
+    const formula = await this.getPricingFormulaById(organizationId, id);
+    if (!formula) return null;
+
+    const linkedProducts = await db.select().from(products)
+      .where(and(
+        eq(products.organizationId, organizationId),
+        eq(products.pricingFormulaId, id)
+      ))
+      .orderBy(products.name);
+
+    return { formula, products: linkedProducts };
+  }
+
+  async createPricingFormula(organizationId: string, input: InsertPricingFormula): Promise<PricingFormula> {
+    const [formula] = await db.insert(pricingFormulas)
+      .values({
+        ...input,
+        organizationId,
+      })
+      .returning();
+    return formula;
+  }
+
+  async updatePricingFormula(organizationId: string, id: string, input: UpdatePricingFormula): Promise<PricingFormula> {
+    const [updated] = await db.update(pricingFormulas)
+      .set({
+        ...input,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(pricingFormulas.id, id),
+        eq(pricingFormulas.organizationId, organizationId)
+      ))
+      .returning();
+    return updated;
+  }
+
+  async deletePricingFormula(organizationId: string, id: string): Promise<void> {
+    // Soft delete - set isActive to false
+    await db.update(pricingFormulas)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(
+        eq(pricingFormulas.id, id),
+        eq(pricingFormulas.organizationId, organizationId)
+      ));
   }
 
   // Quote operations (tenant-scoped)
@@ -1734,8 +1819,8 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
-  async getCustomerById(id: string, organizationId: string): Promise<CustomerWithRelations | undefined> {
-    const [customer] = await db.select().from(customers).where(and(eq(customers.id, id), eq(customers.organizationId, organizationId)));
+  async getCustomerById(organizationId: string, id: string): Promise<CustomerWithRelations | undefined> {
+    const [customer] = await db.select().from(customers).where(and(eq(customers.organizationId, organizationId), eq(customers.id, id)));
 
     if (!customer) {
       return undefined;
