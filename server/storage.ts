@@ -975,9 +975,16 @@ export class DatabaseStorage implements IStorage {
     customerName?: string;
     source?: string;
     lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
+    taxRate?: number;
+    taxAmount?: number;
+    taxableSubtotal?: number;
   }): Promise<QuoteWithRelations> {
     // Calculate subtotal from line items
     const subtotal = data.lineItems.reduce((sum, item) => sum + Number(item.linePrice), 0);
+    
+    // Calculate total (subtotal + tax if provided)
+    const taxAmount = data.taxAmount ?? 0;
+    const totalPrice = subtotal + taxAmount;
     
     // Use a transaction with row-level locking to ensure atomic quote number assignment
     const newQuote = await db.transaction(async (tx) => {
@@ -989,15 +996,36 @@ export class DatabaseStorage implements IStorage {
         FOR UPDATE
       `);
       
-      const quoteNumberVar = result.rows[0] as any;
+      let quoteNumberVar = result.rows[0] as any;
       
+      // Auto-initialize quote numbering if not configured
       if (!quoteNumberVar) {
-        throw new Error('Quote numbering system not initialized');
+        console.log(`[NUMBERING] Auto-initialized quote numbering for org ${organizationId} with default sequence.`);
+        
+        // Create default quote numbering configuration
+        const defaultConfig: InsertGlobalVariable = {
+          name: 'next_quote_number',
+          value: '1000', // Start at 1000
+          description: 'Next quote number sequence (auto-initialized)',
+          category: 'numbering',
+          isActive: true,
+        };
+        
+        // Insert the new configuration
+        const [newVar] = await tx
+          .insert(globalVariables)
+          .values({
+            ...defaultConfig,
+            organizationId,
+          })
+          .returning();
+        
+        quoteNumberVar = newVar;
       }
       
       const quoteNumber = Math.floor(Number(quoteNumberVar.value));
       
-      // Create the parent quote (totalPrice initially same as subtotal, can be adjusted later)
+      // Create the parent quote with tax fields
       const quoteData = {
         userId: data.userId,
         quoteNumber,
@@ -1007,7 +1035,10 @@ export class DatabaseStorage implements IStorage {
         customerName: data.customerName,
         source: data.source || 'internal',
         subtotal: subtotal.toString(),
-        totalPrice: subtotal.toString(),
+        taxRate: data.taxRate ?? null,
+        taxAmount: data.taxAmount != null ? data.taxAmount.toString() : null,
+        taxableSubtotal: data.taxableSubtotal != null ? data.taxableSubtotal.toString() : null,
+        totalPrice: totalPrice.toString(),
       } as typeof quotes.$inferInsert;
       
       const [quote] = await tx.insert(quotes).values(quoteData).returning();
@@ -1049,6 +1080,9 @@ export class DatabaseStorage implements IStorage {
         variantInfo: item.priceBreakdown.variantInfo as string | undefined,
       },
       displayOrder: item.displayOrder || index,
+      // Tax fields
+      taxAmount: (item as any).taxAmount != null ? (item as any).taxAmount.toString() : null,
+      isTaxableSnapshot: (item as any).isTaxableSnapshot ?? null,
     }));
     
     const createdLineItems = await db.insert(quoteLineItems).values(lineItemsData).returning();
@@ -2236,13 +2270,16 @@ export class DatabaseStorage implements IStorage {
     notesInternal?: string | null;
     createdByUserId: string;
     lineItems: Omit<InsertOrderLineItem, 'orderId'>[];
+    taxRate?: number;
+    taxAmount?: number;
+    taxableSubtotal?: number;
   }): Promise<OrderWithRelations> {
     if (!data.customerId) throw new Error('customerId required');
     if (!data.lineItems || data.lineItems.length === 0) throw new Error('At least one line item required');
     const subtotal = data.lineItems.reduce((sum, li: any) => sum + Number(li.totalPrice || li.linePrice || 0), 0);
     const discount = data.discount || 0;
-    const tax = 0; // Future: compute tax
-    const total = subtotal - discount + tax;
+    const taxAmount = data.taxAmount ?? 0;
+    const total = subtotal - discount + taxAmount;
 
     const created = await db.transaction(async (tx) => {
       const orderNumber = await this.generateNextOrderNumber(organizationId, tx);
@@ -2257,7 +2294,10 @@ export class DatabaseStorage implements IStorage {
         dueDate: data.dueDate || null,
         promisedDate: data.promisedDate || null,
         subtotal: subtotal.toString(),
-        tax: tax.toString(),
+        tax: taxAmount.toString(),
+        taxRate: data.taxRate ?? null,
+        taxAmount: data.taxAmount != null ? data.taxAmount.toString() : undefined,
+        taxableSubtotal: data.taxableSubtotal != null ? data.taxableSubtotal.toString() : undefined,
         total: total.toString(),
         discount: discount.toString(),
         notesInternal: data.notesInternal || null,
@@ -2270,7 +2310,7 @@ export class DatabaseStorage implements IStorage {
           orderId: order.id,
           quoteLineItemId: (li as any).quoteLineItemId || null,
           productId: li.productId,
-            productVariantId: (li as any).productVariantId || (li as any).variantId || null,
+          productVariantId: (li as any).productVariantId || (li as any).variantId || null,
           productType: (li as any).productType || 'wide_roll',
           description: (li as any).description || (li as any).productName || 'Item',
           width: li.width ? li.width.toString() : null,
@@ -2283,6 +2323,9 @@ export class DatabaseStorage implements IStorage {
           specsJson: (li as any).specsJson || null,
           selectedOptions: (li as any).selectedOptions || [],
           nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
+          // Tax fields
+          taxAmount: (li as any).taxAmount != null ? (li as any).taxAmount.toString() : null,
+          isTaxableSnapshot: (li as any).isTaxableSnapshot ?? null,
         } as typeof orderLineItems.$inferInsert;
       });
       const createdLineItems = lineItemsData.length ? await tx.insert(orderLineItems).values(lineItemsData).returning() : [];
@@ -2533,8 +2576,13 @@ export class DatabaseStorage implements IStorage {
     const customerId = options?.customerId || quote.customerId;
     if (!customerId) throw new Error('Quote missing customer');
     const contactId = options?.contactId || quote.contactId || null;
+    
+    // Preserve tax snapshots from quote
     const subtotal = quote.lineItems.reduce((sum, li: any) => sum + Number(li.linePrice), 0);
-    const discount = 0; const tax = 0; const total = subtotal - discount + tax;
+    const discount = 0;
+    const quoteTaxAmount = Number(quote.taxAmount || 0);
+    const total = subtotal - discount + quoteTaxAmount;
+    
     const created = await db.transaction(async (tx) => {
       const orderNumber = await this.generateNextOrderNumber(organizationId, tx);
       const orderInsert: typeof orders.$inferInsert = {
@@ -2548,7 +2596,11 @@ export class DatabaseStorage implements IStorage {
         dueDate: options?.dueDate || null,
         promisedDate: options?.promisedDate || null,
         subtotal: subtotal.toString(),
-        tax: tax.toString(),
+        tax: quoteTaxAmount.toString(),
+        // Preserve tax snapshots from quote
+        taxRate: quote.taxRate ?? null,
+        taxAmount: quote.taxAmount != null ? quote.taxAmount.toString() : undefined,
+        taxableSubtotal: quote.taxableSubtotal != null ? quote.taxableSubtotal.toString() : undefined,
         total: total.toString(),
         discount: discount.toString(),
         notesInternal: (options as any)?.notesInternal || null,
@@ -2574,6 +2626,9 @@ export class DatabaseStorage implements IStorage {
           specsJson: li.specsJson || null,
           selectedOptions: li.selectedOptions || [],
           nestingConfigSnapshot: null,
+          // Preserve tax snapshots from quote line item
+          taxAmount: li.taxAmount != null ? li.taxAmount.toString() : null,
+          isTaxableSnapshot: li.isTaxableSnapshot ?? null,
         } as typeof orderLineItems.$inferInsert;
       });
       const createdLineItems = await tx.insert(orderLineItems).values(lineItemsData).returning();

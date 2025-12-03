@@ -17,6 +17,11 @@ const materialSchema = z.object({
   type: z.enum(["sheet", "roll", "ink", "consumable"]),
   unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
   costPerUnit: z.coerce.number().nonnegative(),
+  // Tiered pricing fields
+  wholesaleBaseRate: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
+  wholesaleMinCharge: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
+  retailBaseRate: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
+  retailMinCharge: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
   width: z.coerce.number().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
@@ -62,6 +67,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       type: material.type,
       unitOfMeasure: material.unitOfMeasure as any,
       costPerUnit: parseFloat(material.costPerUnit),
+      // Tiered pricing fields
+      wholesaleBaseRate: material.wholesaleBaseRate ? parseFloat(material.wholesaleBaseRate) : undefined,
+      wholesaleMinCharge: material.wholesaleMinCharge ? parseFloat(material.wholesaleMinCharge) : undefined,
+      retailBaseRate: material.retailBaseRate ? parseFloat(material.retailBaseRate) : undefined,
+      retailMinCharge: material.retailMinCharge ? parseFloat(material.retailMinCharge) : undefined,
       stockQuantity: isDuplicate ? 0 : parseFloat(material.stockQuantity),
       minStockAlert: parseFloat(material.minStockAlert),
       width: material.width ? parseFloat(material.width) : undefined,
@@ -85,6 +95,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       type: "sheet",
       unitOfMeasure: "sheet",
       costPerUnit: 0,
+      // Tiered pricing fields
+      wholesaleBaseRate: undefined,
+      wholesaleMinCharge: undefined,
+      retailBaseRate: undefined,
+      retailMinCharge: undefined,
       stockQuantity: 0,
       minStockAlert: 0,
       width: undefined,
@@ -113,6 +128,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     const payload: any = {
       ...values,
       costPerUnit: values.costPerUnit.toString(),
+      // Tiered pricing fields
+      wholesaleBaseRate: values.wholesaleBaseRate !== undefined ? values.wholesaleBaseRate.toString() : undefined,
+      wholesaleMinCharge: values.wholesaleMinCharge !== undefined ? values.wholesaleMinCharge.toString() : undefined,
+      retailBaseRate: values.retailBaseRate !== undefined ? values.retailBaseRate.toString() : undefined,
+      retailMinCharge: values.retailMinCharge !== undefined ? values.retailMinCharge.toString() : undefined,
       stockQuantity: values.stockQuantity.toString(),
       minStockAlert: values.minStockAlert.toString(),
       width: values.width !== undefined ? values.width.toString() : undefined,
@@ -212,126 +232,250 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
               </Select>
             </div>
             
-            {/* Roll-specific fields */}
-            {isRoll && (
-              <div className="col-span-2 border rounded-lg p-4 bg-muted/30">
-                <h4 className="text-sm font-semibold mb-3">Roll Specifications</h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium">Roll Width (in) <span className="text-destructive">*</span></label>
-                    <Input type="number" step="0.01" placeholder="e.g. 54" {...form.register("width", {valueAsNumber:true})}/>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Roll Length (ft) <span className="text-destructive">*</span></label>
-                    <Input type="number" step="0.01" placeholder="e.g. 150" {...form.register("rollLengthFt", {valueAsNumber:true})}/>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Cost per Roll ($) <span className="text-destructive">*</span></label>
-                    <Input type="number" step="0.01" placeholder="e.g. 250.00" {...form.register("costPerRoll", {valueAsNumber:true})}/>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Edge Waste per Side (in)</label>
-                    <Input type="number" step="0.01" placeholder="e.g. 2" {...form.register("edgeWasteInPerSide", {valueAsNumber:true})}/>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Lead Waste (ft)</label>
-                    <Input type="number" step="0.01" placeholder="0" {...form.register("leadWasteFt", {valueAsNumber:true})}/>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Tail Waste (ft)</label>
-                    <Input type="number" step="0.01" placeholder="0" {...form.register("tailWasteFt", {valueAsNumber:true})}/>
+          {/* TWO-COLUMN RESPONSIVE LAYOUT: SELL PRICING + VENDOR COST */}
+          <div className="col-span-2 grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)]">
+            {/* LEFT COLUMN: MATERIAL SELL PRICING */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Material Sell Pricing</CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  This is what Titan charges customers for this material. Used in quotes and orders.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div>
+                  <label className="text-sm font-medium">Base Sell Price (per unit) — Fallback</label>
+                  <Input 
+                    type="number" 
+                    step="0.0001" 
+                    placeholder="Default price when no tier-specific price set" 
+                    {...form.register("costPerUnit", {valueAsNumber:true})}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Used when customer tier is 'default' or when tier-specific prices are not set.
+                  </p>
+                </div>
+
+                {/* Wholesale Pricing Section */}
+                <div className="pt-3 border-t">
+                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                    <span className="text-blue-600">Wholesale Pricing</span>
+                    <span className="text-xs font-normal text-muted-foreground">(Trade/Reseller Rates)</span>
+                  </h4>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Special rates for trade customers and resellers. Leave empty to use base price.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm font-medium">Wholesale Base Sell Price</label>
+                      <Input 
+                        type="number" 
+                        step="0.0001" 
+                        placeholder="Optional"
+                        {...form.register("wholesaleBaseRate", {valueAsNumber:true})}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Price for wholesale customers.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Wholesale Min Charge</label>
+                      <Input 
+                        type="number" 
+                        step="0.01" 
+                        placeholder="Optional"
+                        {...form.register("wholesaleMinCharge", {valueAsNumber:true})}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Minimum for wholesale jobs.
+                      </p>
+                    </div>
                   </div>
                 </div>
 
-                {/* Computed values display */}
-                {rollDerived && (
-                  <Card className="mt-4">
-                    <CardHeader className="py-3">
-                      <CardTitle className="text-sm">Computed Values</CardTitle>
-                    </CardHeader>
-                    <CardContent className="py-2">
-                      <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Gross Sq Ft per Roll:</span>
-                          <span className="font-medium">{rollDerived.grossSqftPerRoll.toLocaleString()} sqft</span>
+                {/* Retail Pricing Section */}
+                <div className="pt-3 border-t">
+                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                    <span className="text-green-600">Retail Pricing</span>
+                    <span className="text-xs font-normal text-muted-foreground">(End-User Rates)</span>
+                  </h4>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Rates for retail/consumer customers. Leave empty to use base price.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm font-medium">Retail Base Sell Price</label>
+                      <Input 
+                        type="number" 
+                        step="0.0001" 
+                        placeholder="Optional"
+                        {...form.register("retailBaseRate", {valueAsNumber:true})}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Price for retail customers.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Retail Min Charge</label>
+                      <Input 
+                        type="number" 
+                        step="0.01" 
+                        placeholder="Optional"
+                        {...form.register("retailMinCharge", {valueAsNumber:true})}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Minimum for retail jobs.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sheet-specific dimensions */}
+                {!isRoll && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-sm font-medium">Width (in)</label>
+                        <Input type="number" step="0.01" {...form.register("width", {valueAsNumber:true})}/>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Height (in)</label>
+                        <Input type="number" step="0.01" {...form.register("height", {valueAsNumber:true})}/>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-sm font-medium">Thickness</label>
+                        <Input type="number" step="0.0001" {...form.register("thickness", {valueAsNumber:true})}/>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Thickness Unit</label>
+                        <Select onValueChange={v=> form.setValue("thicknessUnit", v === "__none__" ? undefined : v as any)} value={form.watch("thicknessUnit") || "__none__"}> 
+                          <SelectTrigger><SelectValue placeholder="Select unit"/></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">None</SelectItem>
+                            <SelectItem value="in">Inches (in)</SelectItem>
+                            <SelectItem value="mm">Millimeters (mm)</SelectItem>
+                            <SelectItem value="mil">Mils (1/1000 in)</SelectItem>
+                            <SelectItem value="gauge">Gauge</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <div className="pt-2 border-t">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm font-medium">{isRoll ? "Rolls on Hand" : "Stock Qty"}</label>
+                      <Input type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Min Stock Alert</label>
+                      <Input type="number" step="0.01" {...form.register("minStockAlert", {valueAsNumber:true})}/>
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <label className="text-sm font-medium">Color</label>
+                    <Input {...form.register("color")}/>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* RIGHT COLUMN: MATERIAL & VENDOR COST */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Material & Vendor Cost</CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  Internal cost numbers from your supplier. Used for margin and cost-plus pricing.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {isRoll ? (
+                  <>
+                    {/* Roll-specific vendor cost fields */}
+                    <div>
+                      <label className="text-sm font-medium">Roll Width (in) <span className="text-destructive">*</span></label>
+                      <Input type="number" step="0.01" placeholder="e.g. 54" {...form.register("width", {valueAsNumber:true})}/>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Roll Length (ft) <span className="text-destructive">*</span></label>
+                      <Input type="number" step="0.01" placeholder="e.g. 150" {...form.register("rollLengthFt", {valueAsNumber:true})}/>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Vendor Roll Cost ($) <span className="text-destructive">*</span></label>
+                      <Input type="number" step="0.01" placeholder="e.g. 250.00" {...form.register("costPerRoll", {valueAsNumber:true})}/>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        What your vendor charges for a full roll of this material.
+                      </p>
+                    </div>
+                    <div className="pt-2 border-t">
+                      <h5 className="text-xs font-semibold mb-2 text-muted-foreground">Waste Factors</h5>
+                      <div className="space-y-2">
+                        <div>
+                          <label className="text-xs font-medium">Edge Waste per Side (in)</label>
+                          <Input type="number" step="0.01" placeholder="e.g. 2" {...form.register("edgeWasteInPerSide", {valueAsNumber:true})}/>
+                          <p className="text-xs text-muted-foreground">Unusable edge on left & right.</p>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Usable Width:</span>
-                          <span className="font-medium">{rollDerived.usableWidthIn}" </span>
+                        <div>
+                          <label className="text-xs font-medium">Lead Waste (ft)</label>
+                          <Input type="number" step="0.01" placeholder="0" {...form.register("leadWasteFt", {valueAsNumber:true})}/>
+                          <p className="text-xs text-muted-foreground">Unusable material at roll start.</p>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Usable Length:</span>
-                          <span className="font-medium">{rollDerived.usableLengthFt} ft</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Usable Sq Ft per Roll:</span>
-                          <span className="font-medium">{rollDerived.usableSqftPerRoll.toLocaleString()} sqft</span>
-                        </div>
-                        <div className="flex justify-between col-span-2 pt-2 border-t">
-                          <span className="text-muted-foreground font-medium">Cost per Sq Ft:</span>
-                          <span className="font-bold text-primary">${rollDerived.costPerSqft.toFixed(4)}</span>
+                        <div>
+                          <label className="text-xs font-medium">Tail Waste (ft)</label>
+                          <Input type="number" step="0.01" placeholder="0" {...form.register("tailWasteFt", {valueAsNumber:true})}/>
+                          <p className="text-xs text-muted-foreground">Unusable material at roll end.</p>
                         </div>
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+
+                    {/* Derived cost calculations (read-only display) */}
+                    {rollDerived && (
+                      <div className="pt-3 border-t bg-muted/30 rounded-md p-3">
+                        <h5 className="text-xs font-semibold mb-2">Derived Cost Metrics (read-only)</h5>
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Sq Ft per Roll:</span>
+                            <span className="font-medium">{rollDerived.grossSqftPerRoll.toLocaleString()} sqft</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Usable Sq Ft per Roll:</span>
+                            <span className="font-medium">{rollDerived.usableSqftPerRoll.toLocaleString()} sqft</span>
+                          </div>
+                          <div className="flex justify-between pt-1 border-t">
+                            <span className="text-muted-foreground font-semibold">Vendor Cost per Sq Ft:</span>
+                            <span className="font-bold text-orange-600">${rollDerived.costPerSqft.toFixed(4)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground font-semibold">Effective Cost (w/ waste):</span>
+                            <span className="font-bold text-orange-600">${rollDerived.costPerSqft.toFixed(4)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {/* Non-roll vendor cost */}
+                    <div>
+                      <label className="text-sm font-medium">Vendor Cost per Unit</label>
+                      <Input type="number" step="0.0001" placeholder="What vendor charges you" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        What your vendor charges you for one unit (sheet, sqft, etc.).
+                      </p>
+                    </div>
+                  </>
                 )}
-              </div>
-            )}
 
-            {/* Sheet-specific fields (width/height) */}
-            {!isRoll && (
-              <>
-                <div>
-                  <label className="text-sm font-medium">Width</label>
-                  <Input type="number" step="0.01" {...form.register("width", {valueAsNumber:true})}/>
+                <div className="pt-2 border-t">
+                  <VendorSelectSection form={form} />
                 </div>
-                <div>
-                  <label className="text-sm font-medium">Height</label>
-                  <Input type="number" step="0.01" {...form.register("height", {valueAsNumber:true})}/>
-                </div>
-              </>
-            )}
-
-            <div>
-              <label className="text-sm font-medium">{isRoll ? "Cost / Unit (for non-roll pricing)" : "Cost / Unit"}</label>
-              <Input type="number" step="0.0001" {...form.register("costPerUnit", {valueAsNumber:true})}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">{isRoll ? "Rolls on Hand" : "Stock Qty"}</label>
-              <Input type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Min Stock Alert</label>
-              <Input type="number" step="0.01" {...form.register("minStockAlert", {valueAsNumber:true})}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Color</label>
-              <Input {...form.register("color")}/>
-            </div>
-
-            {/* Only show thickness for non-roll materials */}
-            {!isRoll && (
-              <>
-                <div>
-                  <label className="text-sm font-medium">Thickness</label>
-                  <Input type="number" step="0.0001" {...form.register("thickness", {valueAsNumber:true})}/>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Thickness Unit</label>
-                  <Select onValueChange={v=> form.setValue("thicknessUnit", v === "__none__" ? undefined : v as any)} value={form.watch("thicknessUnit") || "__none__"}> 
-                    <SelectTrigger><SelectValue placeholder="Select unit"/></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">None</SelectItem>
-                      <SelectItem value="in">Inches (in)</SelectItem>
-                      <SelectItem value="mm">Millimeters (mm)</SelectItem>
-                      <SelectItem value="mil">Mils (1/1000 in)</SelectItem>
-                      <SelectItem value="gauge">Gauge</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
-            )}
-            <VendorSelectSection form={form} />
+              </CardContent>
+            </Card>
+          </div>
           </div>
           <div>
             <label className="text-sm font-medium">Specs JSON</label>
@@ -356,26 +500,21 @@ import type { UseFormReturn } from "react-hook-form";
 function VendorSelectSection({ form }: { form: UseFormReturn<MaterialFormValues> }) {
   const { data: vendors = [], isLoading } = useVendors({ isActive: true });
   return (
-    <div className="col-span-2 space-y-2 border-t pt-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="text-sm font-medium">Preferred Vendor</label>
-          <Select value={form.watch("preferredVendorId") || ""} onValueChange={v => form.setValue("preferredVendorId", v === "__none__" ? "" : v)}>
-            <SelectTrigger><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__none__">None</SelectItem>
-              {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <div>
-          <label className="text-sm font-medium">Vendor SKU</label>
-          <Input {...form.register("vendorSku")}/>
-        </div>
-        <div>
-          <label className="text-sm font-medium">Vendor Cost / Unit</label>
-          <Input type="number" step="0.0001" {...form.register("vendorCostPerUnit", { valueAsNumber: true })} />
-        </div>
+    <div className="space-y-2">
+      <div>
+        <label className="text-sm font-medium">Preferred Vendor</label>
+        <Select value={form.watch("preferredVendorId") || ""} onValueChange={v => form.setValue("preferredVendorId", v === "__none__" ? "" : v)}>
+          <SelectTrigger><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">None</SelectItem>
+            {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      <div>
+        <label className="text-sm font-medium">Vendor SKU</label>
+        <Input {...form.register("vendorSku")}/>
+        <p className="text-xs text-muted-foreground mt-1">Vendor's product code for this material.</p>
       </div>
     </div>
   );

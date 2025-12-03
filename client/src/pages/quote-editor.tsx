@@ -161,15 +161,37 @@ export default function QuoteEditor() {
     queryKey: ["/api/products"],
   });
 
+  // Fetch detailed product info when a product is selected to ensure we have options
+  const { data: selectedProductDetail } = useQuery<Product>({
+    queryKey: ["/api/products", selectedProductId],
+    queryFn: async () => {
+      const response = await fetch(`/api/products/${selectedProductId}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch product details");
+      return response.json();
+    },
+    enabled: !!selectedProductId,
+  });
+
   const { data: productVariants } = useQuery<ProductVariant[]>({
     queryKey: ["/api/products", selectedProductId, "variants"],
     enabled: !!selectedProductId,
   });
 
   // Get selected product and determine if dimensions are required
+  // Prefer detailed product data (which includes options) over list data
   const selectedProduct = useMemo(() => {
+    if (selectedProductDetail) return selectedProductDetail;
     return products?.find(p => p.id === selectedProductId);
-  }, [products, selectedProductId]);
+  }, [selectedProductDetail, products, selectedProductId]);
+  
+  // Debug: Log product options when product changes
+  useEffect(() => {
+    if (selectedProduct) {
+      console.log('[QuoteEditor] Selected product:', selectedProduct.name);
+      console.log('[QuoteEditor] Product optionsJson:', selectedProduct.optionsJson);
+      console.log('[QuoteEditor] Options length:', (selectedProduct.optionsJson as ProductOptionItem[])?.length || 0);
+    }
+  }, [selectedProduct]);
   
   const requiresDimensions = useMemo(() => {
     if (!selectedProduct) return true; // Default to requiring dimensions

@@ -115,6 +115,7 @@ export default function ProductsPage() {
       nestingVolumePricing: { enabled: false, tiers: [] },
       isActive: true,
       requiresProductionJob: true,
+      isTaxable: true,
     },
   });
 
@@ -250,6 +251,7 @@ export default function ProductsPage() {
       isActive: product.isActive ?? true,
       productTypeId: product.productTypeId || undefined,
       requiresProductionJob: product.requiresProductionJob ?? true,
+      isTaxable: product.isTaxable ?? true,
     });
   };
 
@@ -282,6 +284,7 @@ export default function ProductsPage() {
       isActive: true, // New duplicates should be active by default
       productTypeId: product.productTypeId || undefined,
       requiresProductionJob: product.requiresProductionJob ?? true,
+      isTaxable: product.isTaxable ?? true,
     });
     setIsAddDialogOpen(true);
   };
@@ -1024,6 +1027,21 @@ export default function ProductsPage() {
                     </FormItem>
                   )}
                 />
+                <FormField
+                  control={addProductForm.control}
+                  name="isTaxable"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between rounded-lg border p-3">
+                      <div className="space-y-0.5">
+                        <FormLabel>Taxable Item</FormLabel>
+                        <FormDescription>Apply sales tax to this product when sold</FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
               </div>
 
               <DialogFooter>
@@ -1642,6 +1660,21 @@ export default function ProductsPage() {
                       <div className="space-y-0.5">
                         <FormLabel>Requires Production Job</FormLabel>
                         <FormDescription>Create a production job when this product is ordered</FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={editProductForm.control}
+                  name="isTaxable"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between rounded-lg border p-3">
+                      <div className="space-y-0.5">
+                        <FormLabel>Taxable Item</FormLabel>
+                        <FormDescription>Apply sales tax to this product when sold</FormDescription>
                       </div>
                       <FormControl>
                         <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />

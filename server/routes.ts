@@ -4,7 +4,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants } from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -16,6 +16,7 @@ import * as quickbooksService from "./quickbooksService";
 import * as syncWorker from "./workers/syncProcessor";
 import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
 import { getProfile, profileRequiresDimensions, type FlatGoodsConfig, type RollMaterialConfig, flatGoodsCalculator, buildFlatGoodsInput } from "@shared/pricingProfiles";
+import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "./quoteOrderPricing";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -1967,11 +1968,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Validate each line item
-      const validatedLineItems = lineItems.map((item: any) => {
+      // Load organization for tax settings
+      const [org] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        return res.status(500).json({ message: "Organization not found" });
+      }
+
+      const orgTaxSettings = getOrganizationTaxSettings(org);
+
+      // Load customer for tax calculation (if applicable)
+      let customer = null;
+      if (finalCustomerId) {
+        [customer] = await db
+          .select()
+          .from(customers)
+          .where(and(
+            eq(customers.id, finalCustomerId),
+            eq(customers.organizationId, organizationId)
+          ))
+          .limit(1);
+      }
+
+      // Load products for each line item to get isTaxable flag
+      const productIds = Array.from(new Set(lineItems.map((item: any) => item.productId)));
+      const loadedProducts = await db
+        .select()
+        .from(products)
+        .where(eq(products.id, productIds[0])); // Load all products we need
+
+      const productMap = new Map<string, typeof products.$inferSelect>();
+      for (const productId of productIds) {
+        const [product] = await db
+          .select()
+          .from(products)
+          .where(eq(products.id, productId))
+          .limit(1);
+        if (product) {
+          productMap.set(productId, product);
+        }
+      }
+
+      // Prepare line items with tax info (including tax category for SaaS tax)
+      const lineItemsForTaxCalc: LineItemInput[] = lineItems.map((item: any) => {
+        const product = productMap.get(item.productId);
+        return {
+          productId: item.productId,
+          variantId: item.variantId || null,
+          linePrice: parseFloat(item.linePrice),
+          isTaxable: product?.isTaxable ?? true,
+          taxCategoryId: (item as any).taxCategoryId || null,
+        };
+      });
+
+      // Get ship-to address from customer if available (for SaaS tax zones)
+      const shipTo = customer
+        ? {
+            country: (customer as any).country || "US",
+            state: (customer as any).state || org.settings?.timezone?.split("/")[0] || "CA",
+            city: (customer as any).city,
+            postalCode: (customer as any).postalCode,
+          }
+        : null;
+
+      // Calculate totals with tax (async for SaaS tax zone lookup)
+      const totalsResult = await calculateQuoteOrderTotals(
+        lineItemsForTaxCalc,
+        orgTaxSettings,
+        customer,
+        null, // shipFrom - use org address if needed later
+        shipTo
+      );
+
+      // Validate each line item and merge tax data
+      const validatedLineItems = lineItems.map((item: any, index: number) => {
         if (!item.productId || !item.productName || item.width == null || item.height == null || item.quantity == null || item.linePrice == null) {
           throw new Error("Missing required fields in line item");
         }
+
+        const taxData = totalsResult.lineItemsWithTax[index];
         
         return {
           productId: item.productId,
@@ -1991,8 +2070,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             total: parseFloat(item.linePrice),
             formula: "",
           },
-          materialUsages: item.priceBreakdown?.materialUsages || [], // NEW: Multi-material tracking from calculator
+          materialUsages: item.priceBreakdown?.materialUsages || [],
           displayOrder: item.displayOrder || 0,
+          // Tax fields (convert to string for storage)
+          taxAmount: taxData.taxAmount.toString(),
+          isTaxableSnapshot: taxData.isTaxableSnapshot,
         };
       });
 
@@ -2003,6 +2085,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         customerName: customerName || undefined,
         source: source || 'internal',
         lineItems: validatedLineItems,
+        // Tax totals
+        taxRate: totalsResult.taxRate,
+        taxAmount: totalsResult.taxAmount,
+        taxableSubtotal: totalsResult.taxableSubtotal,
       });
       
       res.json(quote);
@@ -3165,11 +3251,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "At least one line item is required" });
       }
 
-      // Create order with line items
+      // Load organization for tax settings
+      const [org] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        return res.status(500).json({ message: "Organization not found" });
+      }
+
+      const orgTaxSettings = getOrganizationTaxSettings(org);
+
+      // Load customer for tax calculation (if applicable)
+      let customer = null;
+      if (orderFields.customerId) {
+        [customer] = await db
+          .select()
+          .from(customers)
+          .where(and(
+            eq(customers.id, orderFields.customerId),
+            eq(customers.organizationId, organizationId)
+          ))
+          .limit(1);
+      }
+
+      // Load products for each line item to get isTaxable flag
+      const productIds = Array.from(new Set(lineItems.map((item: any) => item.productId)));
+      const productMap = new Map<string, typeof products.$inferSelect>();
+      for (const productId of productIds) {
+        const [product] = await db
+          .select()
+          .from(products)
+          .where(eq(products.id, productId))
+          .limit(1);
+        if (product) {
+          productMap.set(productId, product);
+        }
+      }
+
+      // Prepare line items with tax info (including tax category for SaaS tax)
+      const lineItemsForTaxCalc: LineItemInput[] = lineItems.map((item: any) => {
+        const product = productMap.get(item.productId);
+        return {
+          productId: item.productId,
+          variantId: item.variantId || null,
+          linePrice: parseFloat(item.linePrice),
+          isTaxable: product?.isTaxable ?? true,
+          taxCategoryId: (item as any).taxCategoryId || null,
+        };
+      });
+
+      // Get ship-to address from customer if available (for SaaS tax zones)
+      const shipTo = customer
+        ? {
+            country: (customer as any).country || "US",
+            state: (customer as any).state || org.settings?.timezone?.split("/")[0] || "CA",
+            city: (customer as any).city,
+            postalCode: (customer as any).postalCode,
+          }
+        : null;
+
+      // Calculate totals with tax (async for SaaS tax zone lookup)
+      const totalsResult = await calculateQuoteOrderTotals(
+        lineItemsForTaxCalc,
+        orgTaxSettings,
+        customer,
+        null, // shipFrom - use org address if needed later
+        shipTo
+      );
+
+      // Merge tax data into line items
+      const lineItemsWithTax = lineItems.map((item: any, index: number) => {
+        const taxData = totalsResult.lineItemsWithTax[index];
+        return {
+          ...item,
+          taxAmount: taxData.taxAmount,
+          isTaxableSnapshot: taxData.isTaxableSnapshot,
+        };
+      });
+
+      // Create order with line items and tax totals
       const order = await storage.createOrder(organizationId, {
         ...orderFields,
         createdByUserId: userId,
-        lineItems: lineItems,
+        lineItems: lineItemsWithTax,
+        // Tax totals
+        taxRate: totalsResult.taxRate,
+        taxAmount: totalsResult.taxAmount,
+        taxableSubtotal: totalsResult.taxableSubtotal,
       });
 
       // Create audit log
@@ -3684,6 +3855,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error converting quote (portal):', error);
       res.status(500).json({ error: 'Failed to convert quote' });
+    }
+  });
+
+  // Customer portal: Products (filtered by visibility settings)
+  // Uses portalContext to derive organizationId and customerId
+  app.get('/api/portal/products', isAuthenticated, portalContext, async (req: any, res) => {
+    try {
+      const portalCustomer = getPortalCustomer(req);
+      if (!portalCustomer) {
+        return res.status(403).json({ error: 'No customer account linked to this user' });
+      }
+      const { organizationId, id: customerId, productVisibilityMode } = portalCustomer;
+
+      // Get all active products for this organization
+      const allProducts = await storage.getAllProducts(organizationId);
+      
+      // Filter based on customer's visibility mode
+      let visibleProducts = allProducts;
+      
+      if (productVisibilityMode === 'linked-only') {
+        // Get customer's visible product IDs from junction table
+        const visibleProductIds = await db
+          .select({ productId: customerVisibleProducts.productId })
+          .from(customerVisibleProducts)
+          .where(eq(customerVisibleProducts.customerId, customerId));
+        
+        const visibleIdSet = new Set(visibleProductIds.map(row => row.productId));
+        visibleProducts = allProducts.filter(p => visibleIdSet.has(p.id));
+      }
+      // else: 'default' mode shows all products
+
+      res.json({ success: true, data: visibleProducts });
+    } catch (error) {
+      console.error('Error fetching portal products:', error);
+      res.status(500).json({ error: 'Failed to fetch products' });
     }
   });
 
