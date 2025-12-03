@@ -5,10 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useCreateMaterial, useUpdateMaterial, Material } from "@/hooks/useMaterials";
+import { useCreateMaterial, useUpdateMaterial, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const materialSchema = z.object({
   name: z.string().min(1, "Name required"),
@@ -27,6 +28,12 @@ const materialSchema = z.object({
   preferredVendorId: z.string().optional().or(z.literal("")).transform(v=> v? v: undefined),
   vendorSku: z.string().optional(),
   vendorCostPerUnit: z.coerce.number().nonnegative().optional(),
+  // Roll-specific fields
+  rollLengthFt: z.coerce.number().positive().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
+  costPerRoll: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
+  edgeWasteInPerSide: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
+  leadWasteFt: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
+  tailWasteFt: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
 });
 
 export type MaterialFormValues = z.infer<typeof materialSchema>;
@@ -66,6 +73,12 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       preferredVendorId: material.preferredVendorId || "",
       vendorSku: material.vendorSku || "",
       vendorCostPerUnit: material.vendorCostPerUnit ? parseFloat(material.vendorCostPerUnit) : undefined,
+      // Roll-specific fields
+      rollLengthFt: material.rollLengthFt ? parseFloat(material.rollLengthFt) : undefined,
+      costPerRoll: material.costPerRoll ? parseFloat(material.costPerRoll) : undefined,
+      edgeWasteInPerSide: material.edgeWasteInPerSide ? parseFloat(material.edgeWasteInPerSide) : undefined,
+      leadWasteFt: material.leadWasteFt ? parseFloat(material.leadWasteFt) : undefined,
+      tailWasteFt: material.tailWasteFt ? parseFloat(material.tailWasteFt) : undefined,
     } : {
       name: "",
       sku: "",
@@ -83,6 +96,12 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       preferredVendorId: "",
       vendorSku: "",
       vendorCostPerUnit: undefined,
+      // Roll-specific fields
+      rollLengthFt: undefined,
+      costPerRoll: undefined,
+      edgeWasteInPerSide: undefined,
+      leadWasteFt: undefined,
+      tailWasteFt: undefined,
     }
   });
 
@@ -104,6 +123,12 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       preferredVendorId: values.preferredVendorId || undefined,
       vendorSku: values.vendorSku || undefined,
       vendorCostPerUnit: values.vendorCostPerUnit !== undefined ? values.vendorCostPerUnit.toString() : undefined,
+      // Roll-specific fields
+      rollLengthFt: values.rollLengthFt !== undefined ? values.rollLengthFt.toString() : undefined,
+      costPerRoll: values.costPerRoll !== undefined ? values.costPerRoll.toString() : undefined,
+      edgeWasteInPerSide: values.edgeWasteInPerSide !== undefined ? values.edgeWasteInPerSide.toString() : undefined,
+      leadWasteFt: values.leadWasteFt !== undefined ? values.leadWasteFt.toString() : undefined,
+      tailWasteFt: values.tailWasteFt !== undefined ? values.tailWasteFt.toString() : undefined,
     };
     try {
       if (isCreateMode) {
@@ -123,9 +148,26 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     try { return JSON.parse(str); } catch { return null; }
   }
 
+  // Watch type to conditionally show roll fields
+  const materialType = form.watch("type");
+  const isRoll = materialType === "roll";
+
+  // Calculate roll derived values in real-time
+  const rollWidth = form.watch("width");
+  const rollLength = form.watch("rollLengthFt");
+  const rollCost = form.watch("costPerRoll");
+  const edgeWaste = form.watch("edgeWasteInPerSide") || 0;
+  const leadWaste = form.watch("leadWasteFt") || 0;
+  const tailWaste = form.watch("tailWasteFt") || 0;
+
+  const rollDerived = useMemo(() => {
+    if (!isRoll || !rollWidth || !rollLength || !rollCost) return null;
+    return calculateRollDerivedValues(rollWidth, rollLength, rollCost, edgeWaste, leadWaste, tailWaste);
+  }, [isRoll, rollWidth, rollLength, rollCost, edgeWaste, leadWaste, tailWaste]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isDuplicate ? "Duplicate Material" : material ? "Edit Material" : "Create Material"}</DialogTitle>
           <DialogDescription>
@@ -137,15 +179,15 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-sm font-medium">Name</label>
+              <label className="text-sm font-medium">Name <span className="text-destructive">*</span></label>
               <Input {...form.register("name")}/>
             </div>
             <div>
-              <label className="text-sm font-medium">SKU</label>
+              <label className="text-sm font-medium">SKU <span className="text-destructive">*</span></label>
               <Input {...form.register("sku")}/>
             </div>
             <div>
-              <label className="text-sm font-medium">Type</label>
+              <label className="text-sm font-medium">Type <span className="text-destructive">*</span></label>
               <Select onValueChange={v=> form.setValue("type", v as any)} value={form.watch("type")}> 
                 <SelectTrigger><SelectValue/></SelectTrigger>
                 <SelectContent>
@@ -157,7 +199,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
               </Select>
             </div>
             <div>
-              <label className="text-sm font-medium">Unit</label>
+              <label className="text-sm font-medium">Unit <span className="text-destructive">*</span></label>
               <Select onValueChange={v=> form.setValue("unitOfMeasure", v as any)} value={form.watch("unitOfMeasure")}> 
                 <SelectTrigger><SelectValue/></SelectTrigger>
                 <SelectContent>
@@ -169,12 +211,93 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                 </SelectContent>
               </Select>
             </div>
+            
+            {/* Roll-specific fields */}
+            {isRoll && (
+              <div className="col-span-2 border rounded-lg p-4 bg-muted/30">
+                <h4 className="text-sm font-semibold mb-3">Roll Specifications</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-medium">Roll Width (in) <span className="text-destructive">*</span></label>
+                    <Input type="number" step="0.01" placeholder="e.g. 54" {...form.register("width", {valueAsNumber:true})}/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Roll Length (ft) <span className="text-destructive">*</span></label>
+                    <Input type="number" step="0.01" placeholder="e.g. 150" {...form.register("rollLengthFt", {valueAsNumber:true})}/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Cost per Roll ($) <span className="text-destructive">*</span></label>
+                    <Input type="number" step="0.01" placeholder="e.g. 250.00" {...form.register("costPerRoll", {valueAsNumber:true})}/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Edge Waste per Side (in)</label>
+                    <Input type="number" step="0.01" placeholder="e.g. 2" {...form.register("edgeWasteInPerSide", {valueAsNumber:true})}/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Lead Waste (ft)</label>
+                    <Input type="number" step="0.01" placeholder="0" {...form.register("leadWasteFt", {valueAsNumber:true})}/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Tail Waste (ft)</label>
+                    <Input type="number" step="0.01" placeholder="0" {...form.register("tailWasteFt", {valueAsNumber:true})}/>
+                  </div>
+                </div>
+
+                {/* Computed values display */}
+                {rollDerived && (
+                  <Card className="mt-4">
+                    <CardHeader className="py-3">
+                      <CardTitle className="text-sm">Computed Values</CardTitle>
+                    </CardHeader>
+                    <CardContent className="py-2">
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Gross Sq Ft per Roll:</span>
+                          <span className="font-medium">{rollDerived.grossSqftPerRoll.toLocaleString()} sqft</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Usable Width:</span>
+                          <span className="font-medium">{rollDerived.usableWidthIn}" </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Usable Length:</span>
+                          <span className="font-medium">{rollDerived.usableLengthFt} ft</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Usable Sq Ft per Roll:</span>
+                          <span className="font-medium">{rollDerived.usableSqftPerRoll.toLocaleString()} sqft</span>
+                        </div>
+                        <div className="flex justify-between col-span-2 pt-2 border-t">
+                          <span className="text-muted-foreground font-medium">Cost per Sq Ft:</span>
+                          <span className="font-bold text-primary">${rollDerived.costPerSqft.toFixed(4)}</span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            )}
+
+            {/* Sheet-specific fields (width/height) */}
+            {!isRoll && (
+              <>
+                <div>
+                  <label className="text-sm font-medium">Width</label>
+                  <Input type="number" step="0.01" {...form.register("width", {valueAsNumber:true})}/>
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Height</label>
+                  <Input type="number" step="0.01" {...form.register("height", {valueAsNumber:true})}/>
+                </div>
+              </>
+            )}
+
             <div>
-              <label className="text-sm font-medium">Cost / Unit</label>
+              <label className="text-sm font-medium">{isRoll ? "Cost / Unit (for non-roll pricing)" : "Cost / Unit"}</label>
               <Input type="number" step="0.0001" {...form.register("costPerUnit", {valueAsNumber:true})}/>
             </div>
             <div>
-              <label className="text-sm font-medium">Stock Qty</label>
+              <label className="text-sm font-medium">{isRoll ? "Rolls on Hand" : "Stock Qty"}</label>
               <Input type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
             </div>
             <div>
@@ -185,31 +308,29 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
               <label className="text-sm font-medium">Color</label>
               <Input {...form.register("color")}/>
             </div>
-            <div>
-              <label className="text-sm font-medium">Width</label>
-              <Input type="number" step="0.01" {...form.register("width", {valueAsNumber:true})}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Height</label>
-              <Input type="number" step="0.01" {...form.register("height", {valueAsNumber:true})}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Thickness</label>
-              <Input type="number" step="0.0001" {...form.register("thickness", {valueAsNumber:true})}/>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Thickness Unit</label>
-              <Select onValueChange={v=> form.setValue("thicknessUnit", v === "__none__" ? undefined : v as any)} value={form.watch("thicknessUnit") || "__none__"}> 
-                <SelectTrigger><SelectValue placeholder="Select unit"/></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">None</SelectItem>
-                  <SelectItem value="in">Inches (in)</SelectItem>
-                  <SelectItem value="mm">Millimeters (mm)</SelectItem>
-                  <SelectItem value="mil">Mils (1/1000 in)</SelectItem>
-                  <SelectItem value="gauge">Gauge</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+
+            {/* Only show thickness for non-roll materials */}
+            {!isRoll && (
+              <>
+                <div>
+                  <label className="text-sm font-medium">Thickness</label>
+                  <Input type="number" step="0.0001" {...form.register("thickness", {valueAsNumber:true})}/>
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Thickness Unit</label>
+                  <Select onValueChange={v=> form.setValue("thicknessUnit", v === "__none__" ? undefined : v as any)} value={form.watch("thicknessUnit") || "__none__"}> 
+                    <SelectTrigger><SelectValue placeholder="Select unit"/></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">None</SelectItem>
+                      <SelectItem value="in">Inches (in)</SelectItem>
+                      <SelectItem value="mm">Millimeters (mm)</SelectItem>
+                      <SelectItem value="mil">Mils (1/1000 in)</SelectItem>
+                      <SelectItem value="gauge">Gauge</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
             <VendorSelectSection form={form} />
           </div>
           <div>

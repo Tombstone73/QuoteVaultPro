@@ -20,8 +20,46 @@ export interface Material {
   vendorSku?: string | null;
   vendorCostPerUnit?: string | null;
   specsJson?: Record<string, any> | null;
+  // Roll-specific fields
+  rollLengthFt?: string | null;
+  costPerRoll?: string | null;
+  edgeWasteInPerSide?: string | null;
+  leadWasteFt?: string | null;
+  tailWasteFt?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// Helper function to calculate roll derived values (mirrors shared/schema.ts)
+export interface RollDerivedValues {
+  grossSqftPerRoll: number;
+  usableWidthIn: number;
+  usableLengthFt: number;
+  usableSqftPerRoll: number;
+  costPerSqft: number;
+}
+
+export function calculateRollDerivedValues(
+  rollWidthIn: number,
+  rollLengthFt: number,
+  costPerRoll: number,
+  edgeWasteInPerSide: number = 0,
+  leadWasteFt: number = 0,
+  tailWasteFt: number = 0
+): RollDerivedValues {
+  const grossSqftPerRoll = (rollWidthIn / 12) * rollLengthFt;
+  const usableWidthIn = Math.max(0, rollWidthIn - 2 * edgeWasteInPerSide);
+  const usableLengthFt = Math.max(0, rollLengthFt - leadWasteFt - tailWasteFt);
+  const usableSqftPerRoll = (usableWidthIn / 12) * usableLengthFt;
+  const costPerSqft = usableSqftPerRoll > 0 ? costPerRoll / usableSqftPerRoll : 0;
+
+  return {
+    grossSqftPerRoll: parseFloat(grossSqftPerRoll.toFixed(2)),
+    usableWidthIn: parseFloat(usableWidthIn.toFixed(2)),
+    usableLengthFt: parseFloat(usableLengthFt.toFixed(2)),
+    usableSqftPerRoll: parseFloat(usableSqftPerRoll.toFixed(2)),
+    costPerSqft: parseFloat(costPerSqft.toFixed(4)),
+  };
 }
 
 export interface InventoryAdjustment {

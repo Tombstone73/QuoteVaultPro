@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,21 @@ import { usePricingFormulas, type PricingFormula } from "@/hooks/usePricingFormu
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { PRICING_PROFILES, type PricingProfileKey, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
+
+// Required field indicator component
+function RequiredIndicator() {
+  return <span className="text-destructive ml-0.5">*</span>;
+}
+
+// Helper to create a label with required indicator
+function RequiredLabel({ children, required = false }: { children: React.ReactNode; required?: boolean }) {
+  return (
+    <>
+      {children}
+      {required && <RequiredIndicator />}
+    </>
+  );
+}
 
 // Get profile badge for display
 function getProfileBadge(profileKey: string | null | undefined) {
@@ -60,6 +75,10 @@ export default function ProductsPage() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<Product | null>(null);
+  
+  // Refs for scrolling to first error
+  const addFormRef = useRef<HTMLFormElement>(null);
+  const editFormRef = useRef<HTMLFormElement>(null);
 
   const { data: products, isLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -103,6 +122,36 @@ export default function ProductsPage() {
   const editProductForm = useForm<ProductFormData>({
     resolver: zodResolver(insertProductSchema.partial()),
   });
+
+  // Scroll to first error field
+  const scrollToFirstError = (formRef: React.RefObject<HTMLFormElement>) => {
+    setTimeout(() => {
+      const firstError = formRef.current?.querySelector('[data-error="true"]');
+      if (firstError) {
+        firstError.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 100);
+  };
+
+  // Handle add form validation errors
+  const handleAddFormError = () => {
+    toast({
+      title: "Validation Error",
+      description: "Please fill out all required fields before saving.",
+      variant: "destructive",
+    });
+    scrollToFirstError(addFormRef);
+  };
+
+  // Handle edit form validation errors  
+  const handleEditFormError = () => {
+    toast({
+      title: "Validation Error", 
+      description: "Please fill out all required fields before saving.",
+      variant: "destructive",
+    });
+    scrollToFirstError(editFormRef);
+  };
 
   // Watch pricing profile and formula for conditional UI
   const addPricingProfileKey = addProductForm.watch("pricingProfileKey");
@@ -381,7 +430,14 @@ export default function ProductsPage() {
             </DialogDescription>
           </DialogHeader>
           <Form {...addProductForm}>
-            <form onSubmit={addProductForm.handleSubmit((data) => addProductMutation.mutate(data as InsertProduct))} className="space-y-6">
+            <form 
+              ref={addFormRef}
+              onSubmit={addProductForm.handleSubmit(
+                (data) => addProductMutation.mutate(data as InsertProduct),
+                handleAddFormError
+              )} 
+              className="space-y-6"
+            >
               {/* Section: Basic Info */}
               <div className="space-y-4">
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
@@ -391,11 +447,15 @@ export default function ProductsPage() {
                 <FormField
                   control={addProductForm.control}
                   name="name"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Name *</FormLabel>
+                  render={({ field, fieldState }) => (
+                    <FormItem data-error={!!fieldState.error}>
+                      <FormLabel><RequiredLabel required>Name</RequiredLabel></FormLabel>
                       <FormControl>
-                        <Input placeholder="Product name" {...field} />
+                        <Input 
+                          placeholder="Product name" 
+                          {...field} 
+                          className={fieldState.error ? "border-destructive" : ""}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -990,8 +1050,10 @@ export default function ProductsPage() {
           </DialogHeader>
           <Form {...editProductForm}>
             <form
-              onSubmit={editProductForm.handleSubmit((data) =>
-                editingProduct && updateProductMutation.mutate({ id: editingProduct.id, data: data as UpdateProduct })
+              ref={editFormRef}
+              onSubmit={editProductForm.handleSubmit(
+                (data) => editingProduct && updateProductMutation.mutate({ id: editingProduct.id, data: data as UpdateProduct }),
+                handleEditFormError
               )}
               className="space-y-6"
             >
@@ -1004,11 +1066,16 @@ export default function ProductsPage() {
                 <FormField
                   control={editProductForm.control}
                   name="name"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Name *</FormLabel>
+                  render={({ field, fieldState }) => (
+                    <FormItem data-error={!!fieldState.error}>
+                      <FormLabel><RequiredLabel required>Name</RequiredLabel></FormLabel>
                       <FormControl>
-                        <Input placeholder="Product name" {...field} value={field.value || ""} />
+                        <Input 
+                          placeholder="Product name" 
+                          {...field} 
+                          value={field.value || ""} 
+                          className={fieldState.error ? "border-destructive" : ""}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

@@ -16,6 +16,33 @@ import { useAuth } from "@/hooks/useAuth";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem } from "@shared/schema";
 import { profileRequiresDimensions, getProfile } from "@shared/pricingProfiles";
+import { Textarea } from "@/components/ui/textarea";
+
+/**
+ * Helper function to format option price label based on priceMode
+ */
+function formatOptionPriceLabel(option: ProductOptionItem): string {
+  const amount = option.amount || 0;
+  
+  switch (option.priceMode) {
+    case "percent_of_base":
+      // Show as percentage
+      return `+${amount}%`;
+    case "flat_per_item":
+      // Show as per-item price
+      return `+$${amount.toFixed(2)} ea`;
+    case "per_sqft":
+      // Show as per-sqft price
+      return `+$${amount.toFixed(2)}/sqft`;
+    case "per_qty":
+      // Show as per-quantity price
+      return `+$${amount.toFixed(2)}/qty`;
+    case "flat":
+    default:
+      // Show as flat amount
+      return `+$${amount.toFixed(2)}`;
+  }
+}
 
 type QuoteLineItemDraft = {
   tempId?: string;
@@ -33,6 +60,7 @@ type QuoteLineItemDraft = {
   linePrice: number;
   priceBreakdown: any;
   displayOrder: number;
+  notes?: string;
 };
 
 export default function QuoteEditor() {
@@ -70,7 +98,27 @@ export default function QuoteEditor() {
     value: string | number | boolean;
     grommetsLocation?: string;
     grommetsSpacingCount?: number;
+    grommetsPerSign?: number;
+    customPlacementNote?: string;
   }>>({});
+
+  // Line item notes
+  const [lineItemNotes, setLineItemNotes] = useState<string>("");
+
+  // Helper to build selectedOptions payload from optionSelections state
+  const buildSelectedOptionsPayload = useCallback(() => {
+    const payload: Record<string, any> = {};
+    Object.entries(optionSelections).forEach(([optionId, selection]) => {
+      payload[optionId] = {
+        value: selection.value,
+        grommetsLocation: selection.grommetsLocation,
+        grommetsSpacingCount: selection.grommetsSpacingCount,
+        grommetsPerSign: selection.grommetsPerSign,
+        customPlacementNote: selection.customPlacementNote,
+      };
+    });
+    return payload;
+  }, [optionSelections]);
 
   // Load existing quote if editing
   const { data: quote, isLoading: quoteLoading } = useQuery<QuoteWithRelations>({
@@ -104,6 +152,7 @@ export default function QuoteEditor() {
         linePrice: parseFloat(item.linePrice),
         priceBreakdown: item.priceBreakdown,
         displayOrder: idx,
+        notes: (item.specsJson as any)?.notes || undefined,
       })) || []);
     }
   }, [quote, isNewQuote]);
@@ -196,7 +245,7 @@ export default function QuoteEditor() {
         width: widthNum,
         height: heightNum,
         quantity: quantityNum,
-        selectedOptions: {},
+        selectedOptions: buildSelectedOptionsPayload(),
       });
       const data = await response.json();
       setCalculatedPrice(data.price);
@@ -206,7 +255,7 @@ export default function QuoteEditor() {
     } finally {
       setIsCalculating(false);
     }
-  }, [selectedProductId, selectedVariantId, width, height, quantity, requiresDimensions]);
+  }, [selectedProductId, selectedVariantId, width, height, quantity, requiresDimensions, buildSelectedOptionsPayload]);
 
   // Debounced auto-calculation effect
   useEffect(() => {
@@ -236,7 +285,7 @@ export default function QuoteEditor() {
         width: requiresDimensions ? parseFloat(width) : 1,
         height: requiresDimensions ? parseFloat(height) : 1,
         quantity: parseInt(quantity),
-        selectedOptions: {},
+        selectedOptions: buildSelectedOptionsPayload(),
       });
       return await response.json();
     },
@@ -280,6 +329,7 @@ export default function QuoteEditor() {
           linePrice: item.linePrice,
           priceBreakdown: item.priceBreakdown,
           displayOrder: item.displayOrder,
+          notes: item.notes || undefined,
         })),
       };
 
@@ -381,11 +431,12 @@ export default function QuoteEditor() {
       width: widthVal,
       height: heightVal,
       quantity: quantityVal,
-      specsJson: {},
+      specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
       selectedOptions: selectedOptionsArray,
       linePrice: calculatedPrice,
       priceBreakdown: { basePrice: calculatedPrice, optionsPrice: 0, total: calculatedPrice, formula: "" },
       displayOrder: lineItems.length,
+      notes: lineItemNotes || undefined,
     };
 
     setLineItems([...lineItems, newItem]);
@@ -399,6 +450,7 @@ export default function QuoteEditor() {
     setCalculatedPrice(null);
     setCalcError(null);
     setOptionSelections({});
+    setLineItemNotes("");
 
     toast({
       title: "Line Item Added",
@@ -609,11 +661,9 @@ export default function QuoteEditor() {
                               />
                               <Label className="cursor-pointer">{option.label}</Label>
                             </div>
-                            {option.amount && (
+                            {option.amount !== undefined && option.amount !== null && (
                               <Badge variant="secondary">
-                                +${option.amount.toFixed(2)}
-                                {option.priceMode === "per_qty" && "/qty"}
-                                {option.priceMode === "per_sqft" && "/sqft"}
+                                {formatOptionPriceLabel(option)}
                               </Badge>
                             )}
                           </div>
@@ -624,11 +674,9 @@ export default function QuoteEditor() {
                           <div className="space-y-2">
                             <div className="flex items-center justify-between">
                               <Label>{option.label}</Label>
-                              {option.amount && (
+                              {option.amount !== undefined && option.amount !== null && (
                                 <Badge variant="secondary">
-                                  ${option.amount.toFixed(2)}
-                                  {option.priceMode === "per_qty" && "/qty"}
-                                  {option.priceMode === "per_sqft" && "/sqft"}
+                                  {formatOptionPriceLabel(option)}
                                 </Badge>
                               )}
                             </div>
@@ -682,35 +730,65 @@ export default function QuoteEditor() {
                                 }}
                               >
                                 {option.config.doubleLabel || "Double"}
-                                {option.config.doublePriceMultiplier && (
+                                {option.config.pricingMode !== "volume" && option.config.doublePriceMultiplier && (
                                   <span className="ml-1 text-xs">
                                     ({option.config.doublePriceMultiplier}x)
                                   </span>
                                 )}
+                                {option.config.pricingMode === "volume" && (
+                                  <span className="ml-1 text-xs text-muted-foreground">
+                                    (Volume)
+                                  </span>
+                                )}
                               </Button>
                             </div>
-                            {option.amount && (
-                              <p className="text-xs text-muted-foreground">
-                                Base: ${option.amount.toFixed(2)}
-                                {option.priceMode === "per_qty" && "/qty"}
-                                {option.priceMode === "per_sqft" && "/sqft"}
-                              </p>
-                            )}
                           </div>
                         )}
 
                         {/* Grommets with location selector */}
                         {option.config?.kind === "grommets" && isSelected && (
-                          <div className="space-y-2 mt-2 pl-6 border-l-2 border-orange-500">
+                          <div className="space-y-3 mt-2 pl-6 border-l-2 border-orange-500">
+                            {/* Grommets per sign input */}
+                            <div className="space-y-1">
+                              <Label className="text-sm">Grommets per sign</Label>
+                              <Input
+                                type="number"
+                                min="0"
+                                value={selection?.grommetsPerSign ?? 4}
+                                onChange={(e) => {
+                                  const count = parseInt(e.target.value) || 0;
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: {
+                                      ...prev[option.id],
+                                      grommetsPerSign: count
+                                    }
+                                  }));
+                                }}
+                                className="w-24"
+                              />
+                              <p className="text-xs text-muted-foreground">
+                                Total: {(selection?.grommetsPerSign ?? 4) * parseInt(quantity || "1")} grommets × ${(option.amount || 0).toFixed(2)} = ${((selection?.grommetsPerSign ?? 4) * parseInt(quantity || "1") * (option.amount || 0)).toFixed(2)}
+                              </p>
+                            </div>
+
                             <Label className="text-sm">Grommet Location</Label>
                             <Select
                               value={selection?.grommetsLocation || option.config.defaultLocation || "all_corners"}
                               onValueChange={(val) => {
+                                // Auto-set grommetsPerSign based on location if not already set
+                                let defaultCount = selection?.grommetsPerSign;
+                                if (!defaultCount) {
+                                  if (val === "all_corners") defaultCount = 4;
+                                  else if (val === "top_corners") defaultCount = 2;
+                                  else defaultCount = 4;
+                                }
                                 setOptionSelections(prev => ({
                                   ...prev,
                                   [option.id]: { 
                                     ...prev[option.id],
-                                    grommetsLocation: val
+                                    grommetsLocation: val,
+                                    grommetsPerSign: defaultCount
                                   }
                                 }));
                               }}
@@ -739,7 +817,8 @@ export default function QuoteEditor() {
                                       ...prev,
                                       [option.id]: {
                                         ...prev[option.id],
-                                        grommetsSpacingCount: count
+                                        grommetsSpacingCount: count,
+                                        grommetsPerSign: count // Update grommetsPerSign to match
                                       }
                                     }));
                                   }}
@@ -747,10 +826,30 @@ export default function QuoteEditor() {
                               </div>
                             )}
 
-                            {selection?.grommetsLocation === "custom" && option.config.customNotes && (
-                              <p className="text-xs text-muted-foreground italic">
-                                {option.config.customNotes}
-                              </p>
+                            {selection?.grommetsLocation === "custom" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">Custom Placement Notes</Label>
+                                <Textarea
+                                  placeholder="Enter custom grommet placement instructions..."
+                                  value={selection?.customPlacementNote || ""}
+                                  onChange={(e) => {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: {
+                                        ...prev[option.id],
+                                        customPlacementNote: e.target.value
+                                      }
+                                    }));
+                                  }}
+                                  rows={2}
+                                  className="text-sm"
+                                />
+                                {option.config.customNotes && (
+                                  <p className="text-xs text-muted-foreground italic">
+                                    Default: {option.config.customNotes}
+                                  </p>
+                                )}
+                              </div>
                             )}
                           </div>
                         )}
@@ -759,6 +858,18 @@ export default function QuoteEditor() {
                   })}
                 </div>
               )}
+
+              {/* Line Item Notes */}
+              <div className="space-y-2 border-t pt-4">
+                <Label className="text-base font-semibold">Line Item Notes</Label>
+                <Textarea
+                  placeholder="Optional notes for production (e.g., special instructions, custom placement details)..."
+                  value={lineItemNotes}
+                  onChange={(e) => setLineItemNotes(e.target.value)}
+                  rows={3}
+                  className="text-sm"
+                />
+              </div>
 
               {/* Live price display */}
               {isCalculating && (
@@ -842,6 +953,13 @@ export default function QuoteEditor() {
                                 </Badge>
                               ))}
                             </div>
+                          </div>
+                        )}
+                        
+                        {/* Display notes */}
+                        {item.notes && (
+                          <div className="mt-2 text-sm italic text-muted-foreground">
+                            Note: {item.notes}
                           </div>
                         )}
                       </div>

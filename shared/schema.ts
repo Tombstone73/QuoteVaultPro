@@ -427,8 +427,36 @@ const productOptionItemSchema = z.object({
       defaultSide: z.enum(["single", "double"]).optional(),
       doublePriceMultiplier: z.number().optional(),
       pricingMode: z.enum(["multiplier", "volume"]).optional(),
+      // Volume tiers for sides pricing
+      volumeTiers: z.array(z.object({
+        minSheets: z.number(),
+        maxSheets: z.number().nullable().optional(),
+        singlePricePerSheet: z.number(),
+        doublePricePerSheet: z.number(),
+      })).optional(),
+      // For thickness selector
+      defaultThicknessKey: z.string().optional(),
+      thicknessVariants: z.array(z.object({
+        key: z.string(),
+        label: z.string(),
+        materialId: z.string(),
+        pricingMode: z.enum(["multiplier", "volume"]),
+        priceMultiplier: z.number().optional(),
+        volumeTiers: z.array(z.object({
+          minSheets: z.number(),
+          maxSheets: z.number().nullable().optional(),
+          pricePerSheet: z.number(),
+        })).optional(),
+      })).optional(),
     })
     .optional(),
+  // Material add-on configuration
+  materialAddonConfig: z.object({
+    materialId: z.string(),
+    usageBasis: z.enum(["same_area", "same_sheets"]),
+    unitType: z.enum(["sqft", "sheet"]),
+    wasteFactor: z.number().optional(),
+  }).optional(),
 });
 
 // Zod schema for flat goods pricing config
@@ -1340,7 +1368,7 @@ export const jobs = pgTable("jobs", {
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'cascade' }), // added for direct order linkage
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   productType: varchar("product_type", { length: 50 }).notNull(),
-  statusKey: varchar("status_key", { length: 50 }).notNull().references(() => jobStatuses.key, { onDelete: 'restrict' }), // Changed from status to statusKey with FK
+  statusKey: varchar("status_key", { length: 50 }).notNull(),// Changed from status to statusKey with FK
   priority: varchar("priority", { length: 20 }).notNull().default("normal"), // rush, normal, low
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: 'set null' }),
@@ -1638,22 +1666,22 @@ export type InsertJobStatusLog = z.infer<typeof insertJobStatusLogSchema>;
 export type JobStatusLog = typeof jobStatusLog.$inferSelect;
 
 // Job Status Configuration - Configurable workflow pipeline
-export const jobStatuses = pgTable('job_statuses', {
-  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
-  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
-  key: varchar('key', { length: 50 }).notNull(), // pending_prepress, prepress, etc.
-  label: varchar('label', { length: 100 }).notNull(), // "Pending Prepress", "Prepress", etc.
-  position: integer('position').notNull(), // Column order on board
-  badgeVariant: varchar('badge_variant', { length: 50 }).default('default'), // UI variant for badge
-  isDefault: boolean('is_default').default(false).notNull(), // Initial status for new jobs
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-}, (table) => [
-  index('job_statuses_organization_id_idx').on(table.organizationId),
-  index('job_statuses_position_idx').on(table.position),
-  index('job_statuses_key_idx').on(table.key),
-  index('job_statuses_is_default_idx').on(table.isDefault),
-]);
+export const jobStatuses = pgTable("job_statuses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id),
+  key: varchar("key", { length: 50 }).notNull().unique(),  // SINGLE, UNIQUE VERSION
+  label: varchar("label", { length: 100 }).notNull(),
+  position: integer("position").notNull(),
+  badgeVariant: varchar("badge_variant", { length: 50 }).default("default"),
+  isDefault: boolean("is_default").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  jobStatusesOrganizationIdIdx: index("job_statuses_organization_id_idx").on(table.organizationId),
+  jobStatusesPositionIdx:       index("job_statuses_position_idx").on(table.position),
+  jobStatusesKeyIdx:            index("job_statuses_key_idx").on(table.key),
+  jobStatusesIsDefaultIdx:      index("job_statuses_is_default_idx").on(table.isDefault),
+}));
 
 export const insertJobStatusSchema = createInsertSchema(jobStatuses).omit({
   id: true,
@@ -1944,20 +1972,28 @@ export const materials = pgTable("materials", {
   name: varchar("name", { length: 255 }).notNull(),
   sku: varchar("sku", { length: 100 }).notNull(),
   type: varchar("type", { length: 50 }).notNull(), // sheet, roll, ink, consumable
+  category: varchar("category", { length: 100 }), // optional category for grouping
   unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(), // sheet, sqft, linear_ft, ml, ea
-  width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension
-  height: decimal("height", { precision: 10, scale: 2 }), // nullable for height dimension
+  width: decimal("width", { precision: 10, scale: 2 }), // nullable for width dimension (sheet width or roll width)
+  height: decimal("height", { precision: 10, scale: 2 }), // nullable for height dimension (sheet only)
   thickness: decimal("thickness", { precision: 10, scale: 4 }), // nullable for thickness
   thicknessUnit: varchar("thickness_unit", { length: 20 }), // in, mm, mil, gauge
   color: varchar("color", { length: 100 }), // nullable color specification
   costPerUnit: decimal("cost_per_unit", { precision: 10, scale: 4 }).notNull(),
   stockQuantity: decimal("stock_quantity", { precision: 10, scale: 2 }).notNull().default("0"),
   minStockAlert: decimal("min_stock_alert", { precision: 10, scale: 2 }).notNull().default("0"),
+  isActive: boolean("is_active").notNull().default(true), // whether material is active/available
   vendorId: varchar("vendor_id"), // legacy placeholder
   preferredVendorId: varchar("preferred_vendor_id").references(() => vendors.id, { onDelete: 'set null' }),
   vendorSku: varchar("vendor_sku", { length: 150 }),
   vendorCostPerUnit: decimal("vendor_cost_per_unit", { precision: 10, scale: 4 }),
   specsJson: jsonb("specs_json").$type<Record<string, any>>(), // router/ink/material metadata
+  // Roll-specific fields (only used when type === 'roll')
+  rollLengthFt: decimal("roll_length_ft", { precision: 10, scale: 2 }), // total roll length in feet
+  costPerRoll: decimal("cost_per_roll", { precision: 10, scale: 4 }), // vendor cost per roll
+  edgeWasteInPerSide: decimal("edge_waste_in_per_side", { precision: 10, scale: 2 }), // edge waste per side in inches
+  leadWasteFt: decimal("lead_waste_ft", { precision: 10, scale: 2 }).default("0"), // lead waste in feet
+  tailWasteFt: decimal("tail_waste_ft", { precision: 10, scale: 2 }).default("0"), // tail waste in feet
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -1980,6 +2016,12 @@ export const insertMaterialSchema = createInsertSchema(materials).omit({
   costPerUnit: z.coerce.number().nonnegative(),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
+  // Roll-specific fields
+  rollLengthFt: z.coerce.number().positive().optional().nullable(),
+  costPerRoll: z.coerce.number().nonnegative().optional().nullable(),
+  edgeWasteInPerSide: z.coerce.number().nonnegative().optional().nullable(),
+  leadWasteFt: z.coerce.number().nonnegative().default(0).optional().nullable(),
+  tailWasteFt: z.coerce.number().nonnegative().default(0).optional().nullable(),
 });
 
 export const updateMaterialSchema = insertMaterialSchema.partial();
@@ -1987,6 +2029,45 @@ export const updateMaterialSchema = insertMaterialSchema.partial();
 export type InsertMaterial = z.infer<typeof insertMaterialSchema>;
 export type UpdateMaterial = z.infer<typeof updateMaterialSchema>;
 export type Material = typeof materials.$inferSelect;
+
+// ============================================================
+// ROLL MATERIAL DERIVED VALUES HELPER
+// ============================================================
+
+/**
+ * Calculate derived values for roll materials (gross sqft, usable sqft, cost per sqft)
+ * These are computed from the stored fields, not persisted in the database.
+ */
+export interface RollDerivedValues {
+  grossSqftPerRoll: number;
+  usableWidthIn: number;
+  usableLengthFt: number;
+  usableSqftPerRoll: number;
+  costPerSqft: number;
+}
+
+export function calculateRollDerivedValues(
+  rollWidthIn: number,
+  rollLengthFt: number,
+  costPerRoll: number,
+  edgeWasteInPerSide: number = 0,
+  leadWasteFt: number = 0,
+  tailWasteFt: number = 0
+): RollDerivedValues {
+  const grossSqftPerRoll = (rollWidthIn / 12) * rollLengthFt;
+  const usableWidthIn = Math.max(0, rollWidthIn - 2 * edgeWasteInPerSide);
+  const usableLengthFt = Math.max(0, rollLengthFt - leadWasteFt - tailWasteFt);
+  const usableSqftPerRoll = (usableWidthIn / 12) * usableLengthFt;
+  const costPerSqft = usableSqftPerRoll > 0 ? costPerRoll / usableSqftPerRoll : 0;
+
+  return {
+    grossSqftPerRoll: parseFloat(grossSqftPerRoll.toFixed(2)),
+    usableWidthIn: parseFloat(usableWidthIn.toFixed(2)),
+    usableLengthFt: parseFloat(usableLengthFt.toFixed(2)),
+    usableSqftPerRoll: parseFloat(usableSqftPerRoll.toFixed(2)),
+    costPerSqft: parseFloat(costPerSqft.toFixed(4)),
+  };
+}
 
 // Inventory Adjustments table - logs all inventory changes
 export const inventoryAdjustments = pgTable("inventory_adjustments", {

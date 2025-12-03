@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMaterials, Material } from "@/hooks/useMaterials";
+import { useMaterials, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { MaterialForm } from "@/components/MaterialForm";
 import { AdjustInventoryForm } from "@/components/AdjustInventoryForm";
 import { LowStockBadge } from "@/components/LowStockBadge";
@@ -50,6 +50,18 @@ export default function MaterialsListPage() {
       ? `${parseFloat(m.thickness)} ${m.thicknessUnit}`
       : null;
 
+    // Calculate roll derived values for display
+    const rollDerived = m.type === "roll" && m.width && m.rollLengthFt && m.costPerRoll
+      ? calculateRollDerivedValues(
+          parseFloat(m.width),
+          parseFloat(m.rollLengthFt),
+          parseFloat(m.costPerRoll),
+          m.edgeWasteInPerSide ? parseFloat(m.edgeWasteInPerSide) : 0,
+          m.leadWasteFt ? parseFloat(m.leadWasteFt) : 0,
+          m.tailWasteFt ? parseFloat(m.tailWasteFt) : 0
+        )
+      : null;
+
     switch (columnId) {
       case "name":
         return <span className="font-medium">{m.name}</span>;
@@ -58,10 +70,25 @@ export default function MaterialsListPage() {
       case "type":
         return <span className="capitalize">{m.type}</span>;
       case "stock":
+        if (m.type === "roll" && rollDerived) {
+          const totalUsableSqft = stock * rollDerived.usableSqftPerRoll;
+          return (
+            <span title={`${stock} rolls × ${rollDerived.usableSqftPerRoll} sqft/roll`}>
+              {stock} rolls (~{totalUsableSqft.toLocaleString()} sqft)
+            </span>
+          );
+        }
         return stock;
       case "unit":
         return m.unitOfMeasure;
       case "cost":
+        if (m.type === "roll" && rollDerived) {
+          return (
+            <span title={`$${m.costPerRoll}/roll → $${rollDerived.costPerSqft.toFixed(4)}/sqft`}>
+              ${rollDerived.costPerSqft.toFixed(4)}/sqft
+            </span>
+          );
+        }
         return m.costPerUnit;
       case "vendor":
         return "—"; // Will be populated when vendor data is loaded

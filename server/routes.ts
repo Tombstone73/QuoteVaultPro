@@ -15,7 +15,7 @@ import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
 import * as quickbooksService from "./quickbooksService";
 import * as syncWorker from "./workers/syncProcessor";
 import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
-import { getProfile, profileRequiresDimensions, type FlatGoodsConfig, flatGoodsCalculator, buildFlatGoodsInput } from "@shared/pricingProfiles";
+import { getProfile, profileRequiresDimensions, type FlatGoodsConfig, type RollMaterialConfig, flatGoodsCalculator, buildFlatGoodsInput } from "@shared/pricingProfiles";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -701,8 +701,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const parsedData = insertProductSchema.parse(req.body);
       const productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
-        // Convert empty strings to null, but preserve null/undefined to let storage handle defaults
-        productData[k] = v === '' ? null : v;
+        // Convert empty strings to null for optional fields, but preserve strings for required fields like description
+        if (k === 'description' || k === 'name') {
+          productData[k] = v ?? '';
+        } else {
+          productData[k] = v === '' ? null : v;
+        }
       });
       
       console.log("[POST /api/products] Parsed & cleaned data:", JSON.stringify(productData, null, 2));
@@ -733,8 +737,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const parsedData = updateProductSchema.parse(req.body);
       const productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
-        // Convert empty strings to null, but preserve null/undefined to let storage handle defaults
-        productData[k] = v === '' ? null : v;
+        // Convert empty strings to null for optional fields, but preserve strings for required fields like description
+        if (k === 'description' || k === 'name') {
+          productData[k] = v ?? '';
+        } else {
+          productData[k] = v === '' ? null : v;
+        }
       });
       const product = await storage.updateProduct(organizationId, req.params.id, productData as UpdateProduct);
       res.json(product);
@@ -1188,6 +1196,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calculate base price using nesting calculator or formula
       let basePrice = 0;
       let nestingDetails: any = undefined;
+      let effectiveMaterial: any = null; // Material from thickness selector, if any
 
       console.log(`[PRICING DEBUG] Product: ${product.name}, pricingProfile: ${pricingProfile.key}, useFlatGoods: ${useFlatGoodsCalculator}${pricingFormulaName ? `, formula: ${pricingFormulaName}` : ''}`);
 
@@ -1200,7 +1209,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           // PRE-PROCESSING: Check for thickness selector to override material
           const productOptionsJson = (product.optionsJson as Array<any>) || [];
-          let effectiveMaterial: any = null;
           let thicknessMultiplier = 1.0;
           let thicknessVolumePricing: any = null;
           
@@ -1219,11 +1227,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   if (selectedVariant.pricingMode === "multiplier") {
                     thicknessMultiplier = selectedVariant.priceMultiplier || 1.0;
                   } else if (selectedVariant.pricingMode === "volume" && selectedVariant.volumeTiers) {
-                    thicknessVolumePricing = selectedVariant.volumeTiers.map((tier: any) => ({
-                      minQty: tier.minSheets,
-                      maxQty: tier.maxSheets,
-                      pricePerSheet: tier.pricePerSheet
-                    }));
+                    // NestingCalculator expects: { enabled: true, tiers: [{ minSheets, maxSheets, pricePerSheet }] }
+                    thicknessVolumePricing = {
+                      enabled: true,
+                      tiers: selectedVariant.volumeTiers.map((tier: any) => ({
+                        minSheets: tier.minSheets,
+                        maxSheets: tier.maxSheets || null,
+                        pricePerSheet: parseFloat(tier.pricePerSheet) || 0
+                      }))
+                    };
                   }
                   break;
                 }
@@ -1243,16 +1255,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           // If thickness selector provided a material, override sheet dimensions and cost
           if (effectiveMaterial) {
-            flatGoodsInput.sheetWidth = parseFloat(effectiveMaterial.width) || flatGoodsInput.sheetWidth;
-            flatGoodsInput.sheetHeight = parseFloat(effectiveMaterial.height) || flatGoodsInput.sheetHeight;
-            // Material cost per unit (assuming unit = sheet for flat goods)
-            const materialCostPerSheet = parseFloat(effectiveMaterial.costPerUnit) || 0;
-            // Calculate price per sqft from material cost
-            const sheetSqft = (flatGoodsInput.sheetWidth * flatGoodsInput.sheetHeight) / 144;
-            if (sheetSqft > 0) {
-              flatGoodsInput.basePricePerSqft = materialCostPerSheet / sheetSqft;
+            // Check if this is a roll material
+            if (effectiveMaterial.type === "roll") {
+              // Roll material handling
+              const rollWidthIn = parseFloat(effectiveMaterial.width) || 0;
+              const rollLengthFt = parseFloat(effectiveMaterial.rollLengthFt) || 0;
+              const costPerRoll = parseFloat(effectiveMaterial.costPerRoll) || 0;
+              const edgeWasteInPerSide = parseFloat(effectiveMaterial.edgeWasteInPerSide) || 0;
+              const leadWasteFt = parseFloat(effectiveMaterial.leadWasteFt) || 0;
+              const tailWasteFt = parseFloat(effectiveMaterial.tailWasteFt) || 0;
+              
+              // Set roll material configuration for the flat goods calculator
+              flatGoodsInput.rollMaterial = {
+                rollWidthIn,
+                rollLengthFt,
+                costPerRoll,
+                edgeWasteInPerSide,
+                leadWasteFt,
+                tailWasteFt,
+              };
+              
+              // Set material type to roll
+              flatGoodsInput.materialType = "roll";
+              
+              // Use roll width as sheet width (for compatibility with existing code)
+              flatGoodsInput.sheetWidth = rollWidthIn;
+              flatGoodsInput.sheetHeight = 0; // Rolls have no fixed height
+              
+              // Calculate and set costPerSqft based on usable sqft
+              const usableWidthIn = Math.max(0, rollWidthIn - 2 * edgeWasteInPerSide);
+              const usableLengthFt = Math.max(0, rollLengthFt - leadWasteFt - tailWasteFt);
+              const usableSqftPerRoll = (usableWidthIn / 12) * usableLengthFt;
+              
+              if (usableSqftPerRoll > 0 && costPerRoll > 0) {
+                flatGoodsInput.basePricePerSqft = costPerRoll / usableSqftPerRoll;
+                flatGoodsInput.rollMaterial.costPerSqft = flatGoodsInput.basePricePerSqft;
+              }
+              
+              console.log(`[PRICING DEBUG] Roll material override: ${rollWidthIn}" x ${rollLengthFt}', edge waste: ${edgeWasteInPerSide}"/side, usable: ${usableWidthIn}" x ${usableLengthFt}', $/sqft: ${flatGoodsInput.basePricePerSqft.toFixed(4)}`);
+            } else {
+              // Sheet material handling (existing logic)
+              flatGoodsInput.sheetWidth = parseFloat(effectiveMaterial.width) || flatGoodsInput.sheetWidth;
+              flatGoodsInput.sheetHeight = parseFloat(effectiveMaterial.height) || flatGoodsInput.sheetHeight;
+              // Material cost per unit (assuming unit = sheet for flat goods)
+              const materialCostPerSheet = parseFloat(effectiveMaterial.costPerUnit) || 0;
+              // Calculate price per sqft from material cost
+              const sheetSqft = (flatGoodsInput.sheetWidth * flatGoodsInput.sheetHeight) / 144;
+              if (sheetSqft > 0) {
+                flatGoodsInput.basePricePerSqft = materialCostPerSheet / sheetSqft;
+              }
+              console.log(`[PRICING DEBUG] Sheet material override: ${flatGoodsInput.sheetWidth}×${flatGoodsInput.sheetHeight}, cost/sheet: ${materialCostPerSheet}, $/sqft: ${flatGoodsInput.basePricePerSqft}`);
             }
-            console.log(`[PRICING DEBUG] Material override: ${flatGoodsInput.sheetWidth}×${flatGoodsInput.sheetHeight}, cost/sheet: ${materialCostPerSheet}, $/sqft: ${flatGoodsInput.basePricePerSqft}`);
           }
 
           // Apply thickness-based pricing if multiplier mode (no material override)
@@ -1264,27 +1317,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Apply thickness volume pricing if volume mode
           if (thicknessVolumePricing) {
             flatGoodsInput.volumePricing = thicknessVolumePricing;
-            console.log(`[PRICING DEBUG] Thickness volume pricing: applied ${thicknessVolumePricing.length} tiers`);
+            console.log(`[PRICING DEBUG] Thickness volume pricing: applied ${thicknessVolumePricing.tiers?.length || 0} tiers`);
           }
 
           // PRE-PROCESSING: Check if sides volume pricing is needed
           // Scan selectedOptions for sides option with volume pricing mode
           for (const optionJson of productOptionsJson) {
             if (optionJson.config?.kind === "sides") {
-              const selectedSideValue = selectedOptions[optionJson.id];
-              if (selectedSideValue && optionJson.config.pricingMode === "volume" && optionJson.config.volumeTiers) {
+              const rawSelectedSide = selectedOptions[optionJson.id];
+              // Extract actual value from complex object if needed
+              const selectedSideValue = (typeof rawSelectedSide === 'object' && rawSelectedSide !== null && 'value' in rawSelectedSide)
+                ? rawSelectedSide.value
+                : rawSelectedSide;
+                
+              if (selectedSideValue && optionJson.config.pricingMode === "volume" && optionJson.config.volumeTiers && optionJson.config.volumeTiers.length > 0) {
                 // Store context for later option processing
                 calculationContext.selectedSide = selectedSideValue;
                 calculationContext.sidesVolumeTiers = optionJson.config.volumeTiers;
                 
                 // Override volumePricing in flatGoodsInput based on selected side
-                flatGoodsInput.volumePricing = optionJson.config.volumeTiers.map((tier: any) => ({
-                  minQty: tier.minSheets,
-                  maxQty: tier.maxSheets,
-                  pricePerSheet: selectedSideValue === "double" ? tier.doublePricePerSheet : tier.singlePricePerSheet
-                }));
+                // NestingCalculator expects: { enabled: true, tiers: [{ minSheets, maxSheets, pricePerSheet }] }
+                flatGoodsInput.volumePricing = {
+                  enabled: true,
+                  tiers: optionJson.config.volumeTiers.map((tier: any) => ({
+                    minSheets: tier.minSheets,
+                    maxSheets: tier.maxSheets || null,
+                    pricePerSheet: parseFloat(selectedSideValue === "double" ? tier.doublePricePerSheet : tier.singlePricePerSheet) || 0
+                  }))
+                };
                 
-                console.log(`[PRICING DEBUG] Sides volume pricing: Applied ${selectedSideValue} tiers to flatGoodsInput.volumePricing`);
+                console.log(`[PRICING DEBUG] Sides volume pricing: Applied ${selectedSideValue} tiers to flatGoodsInput.volumePricing:`, JSON.stringify(flatGoodsInput.volumePricing));
                 break;
               }
             }
@@ -1515,12 +1577,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         let value: string | number | boolean;
         let grommetsLocation: string | undefined;
         let grommetsSpacingCount: number | undefined;
+        let grommetsPerSign: number | undefined;
+        let customPlacementNote: string | undefined;
         
         if (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData) {
           // Complex selection with grommets data
           value = selectionData.value;
           grommetsLocation = selectionData.grommetsLocation;
           grommetsSpacingCount = selectionData.grommetsSpacingCount;
+          grommetsPerSign = selectionData.grommetsPerSign;
+          customPlacementNote = selectionData.customPlacementNote;
         } else {
           // Simple value
           value = selectionData;
@@ -1552,12 +1618,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         // Handle grommets special pricing
-        if (optionJson.config?.kind === "grommets" && grommetsLocation) {
-          if (grommetsLocation === "top_even" && grommetsSpacingCount) {
-            // Multiply by spacing count for evenly-spaced grommets
-            calculatedCost *= grommetsSpacingCount;
+        if (optionJson.config?.kind === "grommets") {
+          // Use grommetsPerSign if provided, otherwise default based on location
+          let grommetCount = grommetsPerSign ?? 4; // Default to 4 grommets per sign
+          
+          if (!grommetsPerSign) {
+            // Fallback: infer count from location if grommetsPerSign not explicitly set
+            if (grommetsLocation === "all_corners") {
+              grommetCount = 4;
+            } else if (grommetsLocation === "top_corners") {
+              grommetCount = 2;
+            } else if (grommetsLocation === "top_even" && grommetsSpacingCount) {
+              grommetCount = grommetsSpacingCount;
+            } else if (grommetsLocation === "custom") {
+              grommetCount = grommetsPerSign ?? 4; // Custom uses explicit count or default
+            }
           }
-          // For other locations (all_corners, top_corners, custom), use flat pricing
+          
+          // For flat_per_item, multiply by grommet count and quantity
+          if (optionJson.priceMode === "flat_per_item") {
+            calculatedCost = optionAmount * grommetCount * quantityNum;
+            console.log(`[PRICING DEBUG] Grommets: ${grommetCount} grommets/sign × ${quantityNum} qty × $${optionAmount}/grommet = $${calculatedCost}`);
+          }
         }
         
         // Skip thickness selector option - already processed in pre-stage
@@ -1636,6 +1718,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const percentCost = mediaSubtotal * (percentValue / 100);
         optionsPrice += percentCost;
         
+        // Extract the actual value from selection data (could be simple or complex object)
+        const selectionData = selectedOptions[percentOpt.id];
+        const extractedValue = (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData)
+          ? selectionData.value
+          : selectionData;
+        
         // Find and update the option in selectedOptionsArray
         const existingOpt = selectedOptionsArray.find(o => o.optionId === percentOpt.id);
         if (existingOpt) {
@@ -1644,7 +1732,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           selectedOptionsArray.push({
             optionId: percentOpt.id,
             optionName: percentOpt.label,
-            value: selectedOptions[percentOpt.id],
+            value: extractedValue,
             setupCost: 0,
             calculatedCost: percentCost,
           });
@@ -1659,6 +1747,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const percentCost = basePrice * (percentValue / 100);
         optionsPrice += percentCost;
         
+        // Extract the actual value from selection data (could be simple or complex object)
+        const selectionData = selectedOptions[percentOpt.id];
+        const extractedValue = (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData)
+          ? selectionData.value
+          : selectionData;
+        
         // Find and update the option in selectedOptionsArray
         const existingOpt = selectedOptionsArray.find(o => o.optionId === percentOpt.id);
         if (existingOpt) {
@@ -1667,7 +1761,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           selectedOptionsArray.push({
             optionId: percentOpt.id,
             optionName: percentOpt.label,
-            value: selectedOptions[percentOpt.id],
+            value: extractedValue,
             setupCost: 0,
             calculatedCost: percentCost,
           });
@@ -1832,7 +1926,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error) {
       console.error("Error calculating price:", error);
-      res.status(500).json({ message: "Failed to calculate price" });
+      console.error("Request body:", JSON.stringify(req.body, null, 2));
+      console.error("Stack:", (error as Error).stack);
+      res.status(500).json({ message: "Failed to calculate price", error: (error as Error).message });
     }
   });
 
@@ -3210,13 +3306,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      console.log('[MATERIAL CREATE] Request body:', JSON.stringify(req.body, null, 2));
       const parsed = insertMaterialSchema.parse(req.body);
+      console.log('[MATERIAL CREATE] Parsed data:', JSON.stringify(parsed, null, 2));
       const { organizationId: _, ...materialData } = parsed;
       const created = await storage.createMaterial(organizationId, materialData);
       res.json({ success: true, data: created });
     } catch (err) {
-      if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
-      console.error('Error creating material', err);
+      if (err instanceof z.ZodError) {
+        console.error('[MATERIAL CREATE] Zod validation error:', fromZodError(err).message);
+        return res.status(400).json({ error: fromZodError(err).message });
+      }
+      console.error('[MATERIAL CREATE] Error creating material:', err);
       res.status(500).json({ error: 'Failed to create material' });
     }
   });
