@@ -46,6 +46,9 @@ export const organizations = pgTable("organizations", {
     };
   }>().default(sql`'{}'::jsonb`).notNull(),
   trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+  // Tax system fields
+  defaultTaxRate: decimal("default_tax_rate", { precision: 5, scale: 4 }).default("0").notNull(),
+  taxEnabled: boolean("tax_enabled").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -388,6 +391,8 @@ export const products = pgTable("products", {
   }>().default(sql`'{"enabled":false,"tiers":[]}'::jsonb`).notNull(),
   // Production workflow flag
   requiresProductionJob: boolean("requires_production_job").default(true).notNull(),
+  // Tax system
+  isTaxable: boolean("is_taxable").default(true).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -526,6 +531,11 @@ export const productVariants = pgTable("product_variants", {
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   basePricePerSqft: decimal("base_price_per_sqft", { precision: 10, scale: 4 }).notNull(),
+  // Tiered pricing support
+  wholesaleBaseRate: decimal("wholesale_base_rate", { precision: 10, scale: 4 }),
+  wholesaleMinCharge: decimal("wholesale_min_charge", { precision: 10, scale: 2 }),
+  retailBaseRate: decimal("retail_base_rate", { precision: 10, scale: 4 }),
+  retailMinCharge: decimal("retail_min_charge", { precision: 10, scale: 2 }),
   volumePricing: jsonb("volume_pricing").$type<{
     enabled: boolean;
     tiers: Array<{
@@ -534,6 +544,9 @@ export const productVariants = pgTable("product_variants", {
       pricePerSheet: number;
     }>;
   }>().default(sql`'{"enabled":false,"tiers":[]}'::jsonb`).notNull(),
+  // Tax system
+  isTaxable: boolean("is_taxable").default(true).notNull(),
+  taxCategoryId: varchar("tax_category_id").references(() => taxCategories.id, { onDelete: 'set null' }),
   isDefault: boolean("is_default").default(false).notNull(),
   displayOrder: integer("display_order").default(0).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
@@ -541,6 +554,7 @@ export const productVariants = pgTable("product_variants", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("product_variants_product_id_idx").on(table.productId),
+  index("product_variants_tax_category_idx").on(table.taxCategoryId),
 ]);
 
 export const insertProductVariantSchema = createInsertSchema(productVariants).omit({
@@ -549,6 +563,11 @@ export const insertProductVariantSchema = createInsertSchema(productVariants).om
   updatedAt: true,
 }).extend({
   basePricePerSqft: z.coerce.number().positive(),
+  // Tiered pricing fields
+  wholesaleBaseRate: z.coerce.number().nonnegative().optional().nullable(),
+  wholesaleMinCharge: z.coerce.number().nonnegative().optional().nullable(),
+  retailBaseRate: z.coerce.number().nonnegative().optional().nullable(),
+  retailMinCharge: z.coerce.number().nonnegative().optional().nullable(),
   displayOrder: z.coerce.number().int(),
 });
 
@@ -559,6 +578,146 @@ export const updateProductVariantSchema = insertProductVariantSchema.partial().e
 export type InsertProductVariant = z.infer<typeof insertProductVariantSchema>;
 export type UpdateProductVariant = z.infer<typeof updateProductVariantSchema>;
 export type ProductVariant = typeof productVariants.$inferSelect;
+
+// ============================================================
+// SAAS TAX SYSTEM - Multi-State, Multi-Zone
+// ============================================================
+
+// Tax Zones: Geographic areas with specific tax rates
+export const taxZones = pgTable("tax_zones", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  country: text("country").notNull().default("US"),
+  state: text("state"),
+  county: text("county"),
+  city: text("city"),
+  postalStart: text("postal_start"),
+  postalEnd: text("postal_end"),
+  combinedRate: decimal("combined_rate", { precision: 10, scale: 6 }).notNull().default("0"),
+  stateRate: decimal("state_rate", { precision: 10, scale: 6 }),
+  countyRate: decimal("county_rate", { precision: 10, scale: 6 }),
+  cityRate: decimal("city_rate", { precision: 10, scale: 6 }),
+  districtRate: decimal("district_rate", { precision: 10, scale: 6 }),
+  effectiveFrom: timestamp("effective_from", { withTimezone: true }),
+  effectiveTo: timestamp("effective_to", { withTimezone: true }),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("tax_zones_org_state_idx").on(table.organizationId, table.state, table.active),
+  index("tax_zones_postal_idx").on(table.organizationId, table.state, table.postalStart, table.postalEnd),
+]);
+
+export const insertTaxZoneSchema = createInsertSchema(taxZones).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  organizationId: true,
+}).extend({
+  combinedRate: z.coerce.number().nonnegative(),
+  stateRate: z.coerce.number().nonnegative().optional().nullable(),
+  countyRate: z.coerce.number().nonnegative().optional().nullable(),
+  cityRate: z.coerce.number().nonnegative().optional().nullable(),
+  districtRate: z.coerce.number().nonnegative().optional().nullable(),
+});
+
+export const updateTaxZoneSchema = insertTaxZoneSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertTaxZone = z.infer<typeof insertTaxZoneSchema>;
+export type UpdateTaxZone = z.infer<typeof updateTaxZoneSchema>;
+export type TaxZone = typeof taxZones.$inferSelect;
+
+// Tax Categories: Product classification for tax purposes
+export const taxCategories = pgTable("tax_categories", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  name: text("name").notNull(),
+  code: text("code"),
+  description: text("description"),
+  defaultTaxable: boolean("default_taxable").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("tax_categories_org_name_idx").on(table.organizationId, table.name),
+]);
+
+export const insertTaxCategorySchema = createInsertSchema(taxCategories).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  organizationId: true,
+});
+
+export const updateTaxCategorySchema = insertTaxCategorySchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertTaxCategory = z.infer<typeof insertTaxCategorySchema>;
+export type UpdateTaxCategory = z.infer<typeof updateTaxCategorySchema>;
+export type TaxCategory = typeof taxCategories.$inferSelect;
+
+// Organization Tax Nexus: Where organization must collect sales tax
+export const organizationTaxNexus = pgTable("organization_tax_nexus", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  country: text("country").notNull().default("US"),
+  state: text("state").notNull(),
+  county: text("county"),
+  city: text("city"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("org_tax_nexus_idx").on(table.organizationId, table.state, table.active),
+]);
+
+export const insertOrganizationTaxNexusSchema = createInsertSchema(organizationTaxNexus).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  organizationId: true,
+});
+
+export const updateOrganizationTaxNexusSchema = insertOrganizationTaxNexusSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertOrganizationTaxNexus = z.infer<typeof insertOrganizationTaxNexusSchema>;
+export type UpdateOrganizationTaxNexus = z.infer<typeof updateOrganizationTaxNexusSchema>;
+export type OrganizationTaxNexus = typeof organizationTaxNexus.$inferSelect;
+
+// Tax Rules: Per-zone, per-category overrides/exemptions
+export const taxRules = pgTable("tax_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  taxZoneId: varchar("tax_zone_id").notNull().references(() => taxZones.id, { onDelete: 'cascade' }),
+  taxCategoryId: varchar("tax_category_id").notNull().references(() => taxCategories.id, { onDelete: 'cascade' }),
+  taxable: boolean("taxable").notNull().default(true),
+  rateOverride: decimal("rate_override", { precision: 10, scale: 6 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("tax_rules_lookup_idx").on(table.organizationId, table.taxZoneId, table.taxCategoryId),
+]);
+
+export const insertTaxRuleSchema = createInsertSchema(taxRules).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  organizationId: true,
+}).extend({
+  rateOverride: z.coerce.number().nonnegative().optional().nullable(),
+});
+
+export const updateTaxRuleSchema = insertTaxRuleSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertTaxRule = z.infer<typeof insertTaxRuleSchema>;
+export type UpdateTaxRule = z.infer<typeof updateTaxRuleSchema>;
+export type TaxRule = typeof taxRules.$inferSelect;
 
 // Global Variables table
 export const globalVariables = pgTable("global_variables", {
@@ -645,7 +804,10 @@ export const quotes = pgTable("quotes", {
   customerName: varchar("customer_name", { length: 255 }),
   source: varchar("source", { length: 50 }).notNull().default('internal'),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
-  taxRate: decimal("tax_rate", { precision: 5, scale: 4 }).default("0").notNull(),
+  // Tax system fields (taxRate kept for backward compatibility but now represents effective snapshot)
+  taxRate: decimal("tax_rate", { precision: 5, scale: 4 }),
+  taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
+  taxableSubtotal: decimal("taxable_subtotal", { precision: 10, scale: 2 }).default("0").notNull(),
   marginPercentage: decimal("margin_percentage", { precision: 5, scale: 4 }).default("0").notNull(),
   discountAmount: decimal("discount_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -689,6 +851,9 @@ export const quoteLineItems = pgTable("quote_line_items", {
     variantInfo?: string;
   }>().notNull(),
   materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(),
+  // Tax system fields
+  taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
+  isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
   displayOrder: integer("display_order").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
@@ -707,7 +872,9 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   contactId: z.string().optional().nullable(),
   source: z.enum(['internal', 'customer_quick_quote']).default('internal'),
   subtotal: z.coerce.number().min(0),
-  taxRate: z.coerce.number().min(0).max(1),
+  taxRate: z.coerce.number().min(0).max(1).optional().nullable(),
+  taxAmount: z.coerce.number().min(0).default(0),
+  taxableSubtotal: z.coerce.number().min(0).default(0),
   marginPercentage: z.coerce.number().min(0).max(1),
   discountAmount: z.coerce.number().min(0),
   totalPrice: z.coerce.number().min(0),
@@ -1042,6 +1209,23 @@ export const customers = pgTable("customers", {
   taxId: varchar("tax_id", { length: 100 }),
   creditLimit: decimal("credit_limit", { precision: 10, scale: 2 }).default("0"),
 
+  // Pricing tier for wholesale/retail support
+  pricingTier: varchar("pricing_tier", { length: 20 }).default("default"),
+
+  // Per-customer pricing modifiers (applied after tier selection)
+  defaultDiscountPercent: decimal("default_discount_percent", { precision: 5, scale: 2 }),
+  defaultMarkupPercent: decimal("default_markup_percent", { precision: 5, scale: 2 }),
+  defaultMarginPercent: decimal("default_margin_percent", { precision: 5, scale: 2 }),
+
+  // Product visibility control for customer portal
+  productVisibilityMode: varchar("product_visibility_mode", { length: 20 }).default("default").notNull(),
+
+  // Tax system fields
+  isTaxExempt: boolean("is_tax_exempt").default(false).notNull(),
+  taxRateOverride: decimal("tax_rate_override", { precision: 5, scale: 4 }),
+  taxExemptReason: text("tax_exempt_reason"),
+  taxExemptCertificateRef: text("tax_exempt_certificate_ref"),
+
   // 🔥 SAFETY FIX — add back is_active so Drizzle stops trying to drop it
   isActive: boolean("is_active").default(true),
 
@@ -1074,6 +1258,17 @@ export const insertCustomerSchema = createInsertSchema(customers).omit({
   updatedAt: true,
   organizationId: true,
 }).extend({
+  pricingTier: z.enum(["default", "wholesale", "retail"]).default("default"),
+  // Per-customer pricing modifiers
+  defaultDiscountPercent: z.coerce.number().min(0).max(100).optional().nullable(),
+  defaultMarkupPercent: z.coerce.number().min(0).max(500).optional().nullable(),
+  defaultMarginPercent: z.coerce.number().min(0).max(95).optional().nullable(),
+  productVisibilityMode: z.enum(["default", "linked-only"]).default("default"),
+  // Tax fields
+  isTaxExempt: z.boolean().default(false),
+  taxRateOverride: z.coerce.number().min(0).max(0.30).optional().nullable().transform(val => val === undefined || isNaN(val as any) ? null : val),
+  taxExemptReason: z.string().max(255).optional().nullable(),
+  taxExemptCertificateRef: z.string().max(512).optional().nullable(),
   // All structured address fields are optional
   billingStreet1: z.string().max(255).optional(),
   billingStreet2: z.string().max(255).optional(),
@@ -1089,11 +1284,47 @@ export const insertCustomerSchema = createInsertSchema(customers).omit({
   shippingCountry: z.string().max(100).optional(),
 });
 
-export const updateCustomerSchema = insertCustomerSchema.partial();
+// Base schema for updates (before refinement)
+const baseCustomerSchema = insertCustomerSchema;
+
+// Refined schema with tax exempt validation
+export const insertCustomerSchemaRefined = insertCustomerSchema.refine(
+  (data) => {
+    // If tax exempt is true, require a reason
+    if (data.isTaxExempt && !data.taxExemptReason) {
+      return false;
+    }
+    return true;
+  },
+  {
+    message: "Tax exempt reason is required when marking customer as tax exempt",
+    path: ["taxExemptReason"],
+  }
+);
+
+export const updateCustomerSchema = baseCustomerSchema.partial();
 
 export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
 export type UpdateCustomer = z.infer<typeof updateCustomerSchema>;
 export type Customer = typeof customers.$inferSelect;
+
+// Customer Visible Products - Junction table for portal product visibility
+export const customerVisibleProducts = pgTable("customer_visible_products", {
+  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'cascade' }),
+  productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.customerId, table.productId] }),
+  index("customer_visible_products_customer_id_idx").on(table.customerId),
+  index("customer_visible_products_product_id_idx").on(table.productId),
+]);
+
+export const insertCustomerVisibleProductSchema = createInsertSchema(customerVisibleProducts).omit({
+  createdAt: true,
+});
+
+export type InsertCustomerVisibleProduct = z.infer<typeof insertCustomerVisibleProductSchema>;
+export type CustomerVisibleProduct = typeof customerVisibleProducts.$inferSelect;
 
 // Customer Contacts table
 export const customerContacts = pgTable("customer_contacts", {
@@ -1207,6 +1438,10 @@ export const orders = pgTable("orders", {
   promisedDate: timestamp("promised_date", { withTimezone: true }),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
   tax: decimal("tax", { precision: 10, scale: 2 }).notNull().default("0"),
+  // Tax system fields (new detailed tracking)
+  taxRate: decimal("tax_rate", { precision: 5, scale: 4 }),
+  taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
+  taxableSubtotal: decimal("taxable_subtotal", { precision: 10, scale: 2 }).default("0").notNull(),
   total: decimal("total", { precision: 10, scale: 2 }).notNull().default("0"),
   discount: decimal("discount", { precision: 10, scale: 2 }).notNull().default("0"),
   notesInternal: text("notes_internal"),
@@ -1253,6 +1488,9 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   fulfillmentStatus: z.enum(["pending", "packed", "shipped", "delivered"]).default("pending"),
   subtotal: z.coerce.number().min(0),
   tax: z.coerce.number().min(0),
+  taxRate: z.coerce.number().min(0).max(1).optional().nullable(),
+  taxAmount: z.coerce.number().min(0).default(0),
+  taxableSubtotal: z.coerce.number().min(0).default(0),
   total: z.coerce.number().min(0),
   discount: z.coerce.number().min(0).default(0),
   shippingAddress: z.object({
@@ -1329,6 +1567,9 @@ export const orderLineItems = pgTable("order_line_items", {
   }>>(), // snapshot of materials used
   materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(), // structured material usage tracking
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
+  // Tax system fields
+  taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
+  isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -1980,6 +2221,11 @@ export const materials = pgTable("materials", {
   thicknessUnit: varchar("thickness_unit", { length: 20 }), // in, mm, mil, gauge
   color: varchar("color", { length: 100 }), // nullable color specification
   costPerUnit: decimal("cost_per_unit", { precision: 10, scale: 4 }).notNull(),
+  // Tiered pricing support
+  wholesaleBaseRate: decimal("wholesale_base_rate", { precision: 10, scale: 4 }),
+  wholesaleMinCharge: decimal("wholesale_min_charge", { precision: 10, scale: 2 }),
+  retailBaseRate: decimal("retail_base_rate", { precision: 10, scale: 4 }),
+  retailMinCharge: decimal("retail_min_charge", { precision: 10, scale: 2 }),
   stockQuantity: decimal("stock_quantity", { precision: 10, scale: 2 }).notNull().default("0"),
   minStockAlert: decimal("min_stock_alert", { precision: 10, scale: 2 }).notNull().default("0"),
   isActive: boolean("is_active").notNull().default(true), // whether material is active/available
@@ -2014,6 +2260,11 @@ export const insertMaterialSchema = createInsertSchema(materials).omit({
   unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   costPerUnit: z.coerce.number().nonnegative(),
+  // Tiered pricing fields
+  wholesaleBaseRate: z.coerce.number().nonnegative().optional().nullable(),
+  wholesaleMinCharge: z.coerce.number().nonnegative().optional().nullable(),
+  retailBaseRate: z.coerce.number().nonnegative().optional().nullable(),
+  retailMinCharge: z.coerce.number().nonnegative().optional().nullable(),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
   // Roll-specific fields

@@ -27,6 +27,17 @@ const customerSchema = z.object({
   companyName: z.string().min(1, "Company name is required"),
   customerType: z.enum(["business", "individual"]),
   status: z.enum(["active", "inactive", "suspended"]),
+  pricingTier: z.enum(["default", "wholesale", "retail"]).default("default"),
+  // Per-customer pricing modifiers
+  defaultDiscountPercent: z.coerce.number().min(0).max(100).optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v).optional(),
+  defaultMarkupPercent: z.coerce.number().min(0).max(500).optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v).optional(),
+  defaultMarginPercent: z.coerce.number().min(0).max(95).optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v).optional(),
+  productVisibilityMode: z.enum(["default", "linked-only"]).default("default"),
+  // Tax fields
+  isTaxExempt: z.boolean().default(false),
+  taxRateOverride: z.coerce.number().min(0).max(30).optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v).optional(),
+  taxExemptReason: z.string().max(255).optional(),
+  taxExemptCertificateRef: z.string().max(512).optional(),
   email: z.string().email("Invalid email").optional().or(z.literal("")),
   phone: z.string().optional(),
   website: z.string().optional(),
@@ -81,6 +92,16 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       companyName: customer.companyName,
       customerType: customer.customerType as "business" | "individual",
       status: customer.status as "active" | "inactive" | "suspended",
+      pricingTier: (customer.pricingTier as "default" | "wholesale" | "retail") || "default",
+      defaultDiscountPercent: customer.defaultDiscountPercent ? parseFloat(customer.defaultDiscountPercent) : undefined,
+      defaultMarkupPercent: customer.defaultMarkupPercent ? parseFloat(customer.defaultMarkupPercent) : undefined,
+      defaultMarginPercent: customer.defaultMarginPercent ? parseFloat(customer.defaultMarginPercent) : undefined,
+      productVisibilityMode: (customer.productVisibilityMode as "default" | "linked-only") || "default",
+      // Tax fields
+      isTaxExempt: customer.isTaxExempt || false,
+      taxRateOverride: customer.taxRateOverride ? parseFloat(customer.taxRateOverride.toString()) : undefined,
+      taxExemptReason: customer.taxExemptReason || "",
+      taxExemptCertificateRef: customer.taxExemptCertificateRef || "",
       email: customer.email || "",
       phone: customer.phone || "",
       website: customer.website || "",
@@ -105,6 +126,16 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       companyName: "",
       customerType: "business",
       status: "active",
+      pricingTier: "default",
+      defaultDiscountPercent: undefined,
+      defaultMarkupPercent: undefined,
+      defaultMarginPercent: undefined,
+      productVisibilityMode: "default",
+      // Tax fields
+      isTaxExempt: false,
+      taxRateOverride: undefined,
+      taxExemptReason: "",
+      taxExemptCertificateRef: "",
       email: "",
       phone: "",
       website: "",
@@ -329,6 +360,187 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                   </SelectContent>
                 </Select>
               </div>
+
+              <div>
+                <Label htmlFor="pricingTier">Pricing Tier *</Label>
+                <Select
+                  value={watch("pricingTier") || "default"}
+                  onValueChange={(value) => setValue("pricingTier", value as any)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">Default (Base Pricing)</SelectItem>
+                    <SelectItem value="wholesale">Wholesale (Trade Pricing)</SelectItem>
+                    <SelectItem value="retail">Retail (Consumer Pricing)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Determines which pricing rates are used in quotes and orders.
+                </p>
+              </div>
+            </div>
+
+            {/* Customer Pricing Modifiers Section */}
+            <div className="space-y-4">
+              <h3 className="text-base font-medium">Customer Pricing Modifiers (Optional)</h3>
+              <p className="text-xs text-muted-foreground">
+                Apply automatic adjustments to this customer's pricing. Only one modifier can be active at a time. Priority: Margin → Markup → Discount.
+              </p>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                <div>
+                  <Label htmlFor="defaultDiscountPercent">Default Discount %</Label>
+                  <Input
+                    id="defaultDiscountPercent"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    placeholder="e.g., 10.00"
+                    {...register("defaultDiscountPercent")}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Reduce final price (0-100%)
+                  </p>
+                  {errors.defaultDiscountPercent && (
+                    <p className="text-xs text-red-600 mt-1">{errors.defaultDiscountPercent.message}</p>
+                  )}
+                </div>
+
+                <div>
+                  <Label htmlFor="defaultMarkupPercent">Default Markup %</Label>
+                  <Input
+                    id="defaultMarkupPercent"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="500"
+                    placeholder="e.g., 25.00"
+                    {...register("defaultMarkupPercent")}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Increase final price (0-500%)
+                  </p>
+                  {errors.defaultMarkupPercent && (
+                    <p className="text-xs text-red-600 mt-1">{errors.defaultMarkupPercent.message}</p>
+                  )}
+                </div>
+
+                <div>
+                  <Label htmlFor="defaultMarginPercent">Default Margin %</Label>
+                  <Input
+                    id="defaultMarginPercent"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="95"
+                    placeholder="e.g., 30.00"
+                    {...register("defaultMarginPercent")}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Target profit margin (0-95%)
+                  </p>
+                  {errors.defaultMarginPercent && (
+                    <p className="text-xs text-red-600 mt-1">{errors.defaultMarginPercent.message}</p>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <Label htmlFor="productVisibilityMode">Portal Product Visibility</Label>
+                <Select
+                  value={watch("productVisibilityMode") || "default"}
+                  onValueChange={(value) => setValue("productVisibilityMode", value as any)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">Default (All Products Visible)</SelectItem>
+                    <SelectItem value="linked-only">Linked Products Only</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Control which products this customer can see in the customer portal.
+                </p>
+              </div>
+            </div>
+
+            {/* Tax Settings Section */}
+            <div className="space-y-4">
+              <h3 className="text-base font-medium">Tax Settings</h3>
+              <p className="text-xs text-muted-foreground">
+                Configure sales tax exemptions and overrides for this customer.
+              </p>
+
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="isTaxExempt"
+                  className="h-4 w-4 rounded border-gray-300"
+                  {...register("isTaxExempt")}
+                />
+                <Label htmlFor="isTaxExempt" className="font-normal cursor-pointer">
+                  Tax Exempt
+                </Label>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                If checked, no sales tax will be applied to this customer's orders.
+              </p>
+
+              {watch("isTaxExempt") && (
+                <div>
+                  <Label htmlFor="taxExemptReason">Tax Exempt Reason *</Label>
+                  <Input
+                    id="taxExemptReason"
+                    placeholder="e.g., 'Resale certificate on file' or 'Non-profit 501(c)(3)'"
+                    {...register("taxExemptReason")}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Required when marking customer as tax exempt.
+                  </p>
+                  {errors.taxExemptReason && (
+                    <p className="text-xs text-red-600 mt-1">{errors.taxExemptReason.message}</p>
+                  )}
+                </div>
+              )}
+
+              {watch("isTaxExempt") && (
+                <div>
+                  <Label htmlFor="taxExemptCertificateRef">Tax Exempt Certificate Reference (Optional)</Label>
+                  <Input
+                    id="taxExemptCertificateRef"
+                    placeholder="e.g., certificate ID, filename, or URL"
+                    {...register("taxExemptCertificateRef")}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Optional reference to the certificate on file.
+                  </p>
+                </div>
+              )}
+
+              {!watch("isTaxExempt") && (
+                <div>
+                  <Label htmlFor="taxRateOverride">Tax Rate Override (%)</Label>
+                  <Input
+                    id="taxRateOverride"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="30"
+                    placeholder="e.g., 7.50"
+                    {...register("taxRateOverride")}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Optional. Overrides the company default tax rate for this customer (0-30%).
+                  </p>
+                  {errors.taxRateOverride && (
+                    <p className="text-xs text-red-600 mt-1">{errors.taxRateOverride.message}</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

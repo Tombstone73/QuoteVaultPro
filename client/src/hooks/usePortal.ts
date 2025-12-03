@@ -1,6 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
+export function usePortalProducts() {
+  return useQuery({
+    queryKey: ["portal", "products"],
+    queryFn: async () => {
+      const response = await fetch("/api/portal/products", {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to fetch products");
+      }
+      const result = await response.json();
+      return result.data || [];
+    },
+  });
+}
+
 export function useMyQuotes() {
   return useQuery({
     queryKey: ["portal", "my-quotes"],
