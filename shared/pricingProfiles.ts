@@ -118,6 +118,26 @@ export function getDefaultFormula(key: string | null | undefined): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Roll material configuration for pricing (used when materialType === "roll")
+ */
+export interface RollMaterialConfig {
+  /** Roll width in inches */
+  rollWidthIn: number;
+  /** Roll length in feet */
+  rollLengthFt: number;
+  /** Cost per roll (vendor cost) */
+  costPerRoll: number;
+  /** Edge waste per side in inches */
+  edgeWasteInPerSide?: number;
+  /** Lead waste in feet */
+  leadWasteFt?: number;
+  /** Tail waste in feet */
+  tailWasteFt?: number;
+  /** Pre-computed cost per usable sqft (if already calculated) */
+  costPerSqft?: number;
+}
+
+/**
  * Input for the flat goods calculator
  */
 export interface FlatGoodsInput {
@@ -146,6 +166,8 @@ export interface FlatGoodsInput {
       pricePerSheet: number;
     }>;
   } | null;
+  /** Roll material configuration for accurate cost calculation */
+  rollMaterial?: RollMaterialConfig | null;
 }
 
 /**
@@ -248,6 +270,7 @@ export function flatGoodsCalculator(
     materialType,
     minPricePerItem,
     volumePricing,
+    rollMaterial,
   } = input;
 
   // Calculate sheet cost based on variant price per sqft
@@ -258,8 +281,16 @@ export function flatGoodsCalculator(
     // ─────────────────────────────────────────────────────────────────────
     // Roll Material Calculation
     // ─────────────────────────────────────────────────────────────────────
-    const rollWidth = sheetWidth;
-    const piecesAcrossWidth = Math.floor(rollWidth / pieceWidth);
+    
+    // Determine effective roll width - use rollMaterial config if available
+    const rollWidth = rollMaterial?.rollWidthIn ?? sheetWidth;
+    
+    // Calculate usable width (accounting for edge waste)
+    const edgeWaste = rollMaterial?.edgeWasteInPerSide ?? 0;
+    const usableWidth = Math.max(0, rollWidth - 2 * edgeWaste);
+    
+    // Pieces across usable width
+    const piecesAcrossWidth = Math.floor(usableWidth / pieceWidth);
 
     if (piecesAcrossWidth === 0) {
       return {
@@ -267,7 +298,7 @@ export function flatGoodsCalculator(
         unitPrice: 0,
         sheetCount: 0,
         usedSqft: 0,
-        error: "Piece width exceeds roll width",
+        error: `Piece width (${pieceWidth}") exceeds usable roll width (${usableWidth}")`,
       };
     }
 
@@ -275,13 +306,32 @@ export function flatGoodsCalculator(
     const totalLinearInches = Math.ceil(quantity / piecesAcrossWidth) * linearInchesPerPiece;
     const linearFeet = totalLinearInches / 12;
 
-    // Price per linear foot from variant
-    const pricePerLinearFoot = basePricePerSqft * (rollWidth / 12);
-    const totalPrice = linearFeet * pricePerLinearFoot;
-    const unitPrice = totalPrice / quantity;
+    // Calculate used square footage (using usable width)
+    const usedSqft = (usableWidth * totalLinearInches) / 144;
 
-    // Calculate used square footage
-    const usedSqft = (rollWidth * totalLinearInches) / 144;
+    // Determine cost per sqft:
+    // 1. If rollMaterial has pre-computed costPerSqft, use it
+    // 2. If rollMaterial has costPerRoll, compute costPerSqft from usable sqft
+    // 3. Fall back to basePricePerSqft from variant
+    let effectiveCostPerSqft = basePricePerSqft;
+    
+    if (rollMaterial?.costPerSqft && rollMaterial.costPerSqft > 0) {
+      effectiveCostPerSqft = rollMaterial.costPerSqft;
+    } else if (rollMaterial?.costPerRoll && rollMaterial.rollLengthFt) {
+      // Compute usable sqft per roll
+      const leadWaste = rollMaterial.leadWasteFt ?? 0;
+      const tailWaste = rollMaterial.tailWasteFt ?? 0;
+      const usableLengthFt = Math.max(0, rollMaterial.rollLengthFt - leadWaste - tailWaste);
+      const usableSqftPerRoll = (usableWidth / 12) * usableLengthFt;
+      
+      if (usableSqftPerRoll > 0) {
+        effectiveCostPerSqft = rollMaterial.costPerRoll / usableSqftPerRoll;
+      }
+    }
+
+    // Calculate total material cost based on actual used sqft
+    const totalPrice = usedSqft * effectiveCostPerSqft;
+    const unitPrice = totalPrice / quantity;
 
     return {
       totalPrice: parseFloat(totalPrice.toFixed(2)),
@@ -291,8 +341,8 @@ export function flatGoodsCalculator(
       nestingDetails: {
         piecesAcrossWidth,
         linearFeet: parseFloat(linearFeet.toFixed(2)),
-        pattern: `${piecesAcrossWidth} pieces across ${rollWidth}" width`,
-        efficiency: 100, // Roll materials don't have waste in the same way
+        pattern: `${piecesAcrossWidth} pieces across ${usableWidth}" usable width (${rollWidth}" - ${edgeWaste * 2}" edge waste)`,
+        efficiency: usableWidth > 0 ? parseFloat(((usableWidth / rollWidth) * 100).toFixed(1)) : 0,
         costPerPiece: parseFloat(unitPrice.toFixed(2)),
         sheetWidth: rollWidth,
         sheetHeight: 0, // Roll has no fixed height
@@ -364,6 +414,7 @@ export function flatGoodsCalculator(
  * @param pieceWidth - Requested piece width
  * @param pieceHeight - Requested piece height
  * @param quantity - Requested quantity
+ * @param rollMaterial - Optional roll material configuration for roll-type materials
  */
 export function buildFlatGoodsInput(
   profileConfig: FlatGoodsConfig | null | undefined,
@@ -380,7 +431,8 @@ export function buildFlatGoodsInput(
   } | null,
   pieceWidth: number,
   pieceHeight: number,
-  quantity: number
+  quantity: number,
+  rollMaterial?: RollMaterialConfig | null
 ): FlatGoodsInput {
   // Get sheet dimensions from profile config or legacy product fields
   const sheetWidth = profileConfig?.sheetWidth 
@@ -410,5 +462,6 @@ export function buildFlatGoodsInput(
     materialType,
     minPricePerItem,
     volumePricing,
+    rollMaterial: rollMaterial ?? null,
   };
 }
