@@ -1548,16 +1548,16 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   }).optional().nullable(),
   dueDate: z.preprocess((val) => {
     if (!val) return null;
-    if (val instanceof Date) return val;
-    if (typeof val === 'string') return new Date(val);
-    return val;
-  }, z.date().nullable().optional()),
+    if (val instanceof Date) return val.toISOString();
+    if (typeof val === 'string') return val;
+    return null;
+  }, z.string().nullable().optional()),
   promisedDate: z.preprocess((val) => {
     if (!val) return null;
-    if (val instanceof Date) return val;
-    if (typeof val === 'string') return new Date(val);
-    return val;
-  }, z.date().nullable().optional()),
+    if (val instanceof Date) return val.toISOString();
+    if (typeof val === 'string') return val;
+    return null;
+  }, z.string().nullable().optional()),
 });
 
 export const updateOrderSchema = insertOrderSchema.partial().extend({

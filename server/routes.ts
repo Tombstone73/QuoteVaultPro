@@ -3975,8 +3975,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
         priority: req.body?.priority,
-        dueDate: req.body?.dueDate ? new Date(req.body.dueDate) : undefined,
-        promisedDate: req.body?.promisedDate ? new Date(req.body.promisedDate) : undefined,
+        dueDate: req.body?.dueDate || undefined,
+        promisedDate: req.body?.promisedDate || undefined,
         notesInternal: req.body?.internalNotes,
         customerId: customerId,
         contactId: quote.contactId || undefined,
