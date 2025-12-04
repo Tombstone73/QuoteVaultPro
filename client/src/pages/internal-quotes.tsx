@@ -297,79 +297,58 @@ export default function InternalQuotes() {
       <PageHeader
         title="Internal Quotes"
         subtitle="Manage internal quotes and convert them to orders"
+        className="pb-3"
         backButton={
-          <Button variant="ghost" onClick={() => navigate("/")}>
+          <Button variant="ghost" size="sm" onClick={() => navigate("/")}>
             <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Dashboard
+            Back
           </Button>
         }
         actions={
-          <Button onClick={() => navigate("/quotes/new")}>
+          <Button size="sm" onClick={() => navigate("/quotes/new")}>
             <Plus className="mr-2 h-4 w-4" />
             New Quote
           </Button>
         }
       />
 
-      <ContentLayout>
-        {/* Filters */}
-        <FilterPanel
-          title="Filter Quotes"
-          description="Search and narrow down internal quotes"
-        >
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            <div className="space-y-2">
-              <Label htmlFor="searchCustomer">Customer Name</Label>
-              <Input
-                id="searchCustomer"
-                placeholder="Search by customer"
-                value={searchCustomer}
-                onChange={(e) => setSearchCustomer(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="searchProduct">Product Type</Label>
-              <Select value={searchProduct} onValueChange={setSearchProduct}>
-                <SelectTrigger id="searchProduct">
-                  <SelectValue placeholder="All products" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All products</SelectItem>
-                  {products?.map((product) => (
-                    <SelectItem key={product.id} value={product.id}>
-                      {product.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="startDate">Start Date</Label>
-              <Input
-                id="startDate"
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="endDate">End Date</Label>
-              <Input
-                id="endDate"
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <Button variant="outline" onClick={handleClearFilters}>
-            Clear Filters
-          </Button>
-        </FilterPanel>
+      <ContentLayout className="space-y-3">
+        {/* Inline Filters */}
+        <div className="flex flex-row items-center gap-3 flex-wrap">
+          <Input
+            placeholder="Search customers..."
+            value={searchCustomer}
+            onChange={(e) => setSearchCustomer(e.target.value)}
+            className="flex-1 min-w-[200px] h-9"
+          />
+          <Select value={searchProduct} onValueChange={setSearchProduct}>
+            <SelectTrigger className="w-[180px] h-9">
+              <SelectValue placeholder="All Products" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Products</SelectItem>
+              {products?.map((product) => (
+                <SelectItem key={product.id} value={product.id}>
+                  {product.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            placeholder="Start date"
+            className="w-[140px] h-9"
+          />
+          <Input
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+            placeholder="End date"
+            className="w-[140px] h-9"
+          />
+        </div>
 
         {/* Quotes List */}
         <DataCard
@@ -377,6 +356,7 @@ export default function InternalQuotes() {
           description={`${quotes?.length ?? 0} quote${
             quotes?.length !== 1 ? "s" : ""
           } found`}
+          className="mt-0"
           headerActions={
             <ColumnConfig
               columns={QUOTE_COLUMNS}
@@ -387,8 +367,8 @@ export default function InternalQuotes() {
           }
         >
           {!quotes || quotes.length === 0 ? (
-            <div className="py-16 text-center">
-              <FileText className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
+            <div className="py-8 text-center">
+              <FileText className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
               <p className="mb-2 text-muted-foreground">No quotes found</p>
               <p className="mb-4 text-sm text-muted-foreground">
                 {searchCustomer || searchProduct || startDate || endDate
@@ -402,7 +382,7 @@ export default function InternalQuotes() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <Table>
+              <Table className="table-dense">
                 <TableHeader>
                   <TableRow>
                     {isVisible("quoteNumber") && (

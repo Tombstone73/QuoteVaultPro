@@ -498,16 +498,16 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
             </Card>
 
             {/* Order Details */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Order Details</CardTitle>
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium">Order Details</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label htmlFor="status">Status</Label>
+              <CardContent className="space-y-3 px-5 pb-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="status" className="text-xs text-muted-foreground">Status</Label>
                     <Select value={status} onValueChange={setStatus}>
-                      <SelectTrigger>
+                      <SelectTrigger className="h-9">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -523,10 +523,10 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                     </Select>
                   </div>
 
-                  <div>
-                    <Label htmlFor="priority">Priority</Label>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="priority" className="text-xs text-muted-foreground">Priority</Label>
                     <Select value={priority} onValueChange={setPriority}>
-                      <SelectTrigger>
+                      <SelectTrigger className="h-9">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -537,63 +537,67 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                     </Select>
                   </div>
 
-                  <div>
-                    <Label htmlFor="dueDate">Due Date</Label>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="dueDate" className="text-xs text-muted-foreground">Due Date</Label>
                     <Input
                       type="date"
                       value={dueDate}
                       onChange={(e) => setDueDate(e.target.value)}
+                      className="h-9"
                     />
                   </div>
 
-                  <div>
-                    <Label htmlFor="promisedDate">Promised Date</Label>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="promisedDate" className="text-xs text-muted-foreground">Promised Date</Label>
                     <Input
                       type="date"
                       value={promisedDate}
                       onChange={(e) => setPromisedDate(e.target.value)}
+                      className="h-9"
                     />
                   </div>
 
-                  <div>
-                    <Label htmlFor="discount">Discount Amount</Label>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="discount" className="text-xs text-muted-foreground">Discount Amount</Label>
                     <Input
                       type="number"
                       step="0.01"
                       value={discount}
                       onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
+                      className="h-9"
                     />
                   </div>
                 </div>
 
-                <div>
-                  <Label htmlFor="notesInternal">Internal Notes</Label>
+                <div className="space-y-1.5">
+                  <Label htmlFor="notesInternal" className="text-xs text-muted-foreground">Internal Notes</Label>
                   <Textarea
                     value={notesInternal}
                     onChange={(e) => setNotesInternal(e.target.value)}
                     placeholder="Add internal notes about this order..."
-                    rows={3}
+                    rows={4}
+                    className="text-sm resize-none min-h-[80px]"
                   />
                 </div>
               </CardContent>
             </Card>
 
             {/* Line Items */}
-            <Card>
-              <CardHeader>
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Line Items</CardTitle>
-                  <Button type="button" size="sm" onClick={() => setShowItemDialog(true)}>
+                  <CardTitle className="text-sm font-medium">Line Items</CardTitle>
+                  <Button type="button" size="sm" onClick={() => setShowItemDialog(true)} className="h-8">
                     <Plus className="w-4 h-4 mr-2" />
                     Add Item
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="px-5 pb-4">
                 {lineItems.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <p>No line items added yet</p>
-                    <Button type="button" variant="outline" size="sm" onClick={() => setShowItemDialog(true)} className="mt-2">
+                  <div className="text-center py-6 text-muted-foreground">
+                    <p className="text-sm">No line items added yet</p>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setShowItemDialog(true)} className="mt-2 h-8">
                       <Plus className="w-4 h-4 mr-2" />
                       Add First Item
                     </Button>

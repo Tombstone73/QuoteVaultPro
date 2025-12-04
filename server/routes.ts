@@ -3462,9 +3462,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
+      // Sanitize timestamp fields to avoid Drizzle toISOString errors
+      const sanitizeDateField = (value: any): string | null => {
+        if (!value) return null;
+        if (value instanceof Date) return value.toISOString();
+        if (typeof value === 'string') return value;
+        return null;
+      };
+
       // Create order with line items and tax totals
       const order = await storage.createOrder(organizationId, {
         ...orderFields,
+        dueDate: sanitizeDateField(orderFields.dueDate),
+        promisedDate: sanitizeDateField(orderFields.promisedDate),
         createdByUserId: userId,
         lineItems: lineItemsWithTax,
         // Tax totals
@@ -3863,8 +3873,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
         customerId: finalCustomerId,
         contactId: finalContactId || undefined,
-        dueDate: dueDate ? new Date(dueDate) : undefined,
-        promisedDate: promisedDate ? new Date(promisedDate) : undefined,
+        dueDate: dueDate || undefined,
+        promisedDate: promisedDate || undefined,
         priority,
         notesInternal,
       });

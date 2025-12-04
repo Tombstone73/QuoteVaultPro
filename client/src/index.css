@@ -437,4 +437,14 @@
   .border.active-elevate-2:not(.no-active-interaction-elevate)::after {
     inset: -1px;
   }
+
+  /* Table density improvements */
+  .table-dense th,
+  .table-dense td {
+    padding: 0.375rem 0.75rem;
+  }
+  
+  .table-dense tbody tr {
+    line-height: 1.4;
+  }
 }

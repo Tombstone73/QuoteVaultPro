@@ -32,7 +32,7 @@ type CustomerWithRelations = {
 
 interface SplitCustomerDetailProps {
   customerId: string | null;
-  onEdit: () => void;
+  onEdit: (customerId: string) => void;
 }
 
 export function SplitCustomerDetail({ customerId, onEdit }: SplitCustomerDetailProps) {
@@ -105,7 +105,7 @@ export function SplitCustomerDetail({ customerId, onEdit }: SplitCustomerDetailP
             </div>
           </div>
         </div>
-        <Button size="sm" variant="outline" onClick={onEdit}>
+        <Button size="sm" variant="outline" onClick={() => onEdit(customer.id)}>
           <Edit className="w-4 h-4 mr-2" />
           Edit
         </Button>
