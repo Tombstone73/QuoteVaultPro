@@ -4,7 +4,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments } from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -1578,16 +1578,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         let value: string | number | boolean;
         let grommetsLocation: string | undefined;
         let grommetsSpacingCount: number | undefined;
+        let grommetsSpacingInches: number | undefined;
         let grommetsPerSign: number | undefined;
         let customPlacementNote: string | undefined;
+        let hemsType: string | undefined;
+        let polePocket: string | undefined;
         
         if (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData) {
-          // Complex selection with grommets data
+          // Complex selection with grommets/hems/pole pocket data
           value = selectionData.value;
           grommetsLocation = selectionData.grommetsLocation;
           grommetsSpacingCount = selectionData.grommetsSpacingCount;
+          grommetsSpacingInches = selectionData.grommetsSpacingInches;
           grommetsPerSign = selectionData.grommetsPerSign;
           customPlacementNote = selectionData.customPlacementNote;
+          hemsType = selectionData.hemsType;
+          polePocket = selectionData.polePocket;
         } else {
           // Simple value
           value = selectionData;
@@ -1640,6 +1646,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (optionJson.priceMode === "flat_per_item") {
             calculatedCost = optionAmount * grommetCount * quantityNum;
             console.log(`[PRICING DEBUG] Grommets: ${grommetCount} grommets/sign × ${quantityNum} qty × $${optionAmount}/grommet = $${calculatedCost}`);
+          }
+        }
+
+        // Handle hems pricing
+        if (optionJson.config?.kind === "hems") {
+          const selectedHems = hemsType || optionJson.config.defaultHems || "none";
+          if (selectedHems !== "none") {
+            // Calculate hems cost - could be per linear foot or flat per piece
+            if (optionJson.priceMode === "flat_per_item") {
+              // Flat cost per piece based on hem selection
+              let hemMultiplier = 1;
+              if (selectedHems === "all_sides") hemMultiplier = 4;
+              else if (selectedHems === "top_bottom" || selectedHems === "left_right") hemMultiplier = 2;
+              calculatedCost = optionAmount * quantityNum * hemMultiplier;
+              console.log(`[PRICING DEBUG] Hems (${selectedHems}): ${hemMultiplier} sides × ${quantityNum} qty × $${optionAmount} = $${calculatedCost}`);
+            } else if (optionJson.priceMode === "per_sqft") {
+              // Linear foot based pricing - approximate perimeter based on dimensions
+              const perimeter = 2 * (widthNum + heightNum) / 12; // Convert to feet
+              let hemFeet = perimeter;
+              if (selectedHems === "top_bottom") hemFeet = 2 * widthNum / 12;
+              else if (selectedHems === "left_right") hemFeet = 2 * heightNum / 12;
+              calculatedCost = optionAmount * hemFeet * quantityNum;
+              console.log(`[PRICING DEBUG] Hems (${selectedHems}): ${hemFeet.toFixed(2)} linear ft × ${quantityNum} qty × $${optionAmount}/ft = $${calculatedCost}`);
+            }
+          } else {
+            calculatedCost = 0; // No hems selected
+          }
+        }
+
+        // Handle pole pockets pricing
+        if (optionJson.config?.kind === "pole_pockets") {
+          const selectedPolePocket = polePocket || optionJson.config.defaultPolePocket || "none";
+          if (selectedPolePocket !== "none") {
+            // Calculate pole pocket cost
+            if (optionJson.priceMode === "flat_per_item") {
+              // Flat cost per pocket per piece
+              let pocketCount = 1;
+              if (selectedPolePocket === "top_bottom") pocketCount = 2;
+              calculatedCost = optionAmount * pocketCount * quantityNum;
+              console.log(`[PRICING DEBUG] Pole Pockets (${selectedPolePocket}): ${pocketCount} pockets × ${quantityNum} qty × $${optionAmount} = $${calculatedCost}`);
+            } else if (optionJson.priceMode === "per_sqft") {
+              // Linear foot based - width of banner for each pocket
+              let pocketFeet = widthNum / 12;
+              if (selectedPolePocket === "top_bottom") pocketFeet *= 2;
+              calculatedCost = optionAmount * pocketFeet * quantityNum;
+              console.log(`[PRICING DEBUG] Pole Pockets (${selectedPolePocket}): ${pocketFeet.toFixed(2)} linear ft × ${quantityNum} qty × $${optionAmount}/ft = $${calculatedCost}`);
+            }
+          } else {
+            calculatedCost = 0; // No pole pockets selected
           }
         }
         
@@ -2424,6 +2479,81 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting line item:", error);
       res.status(500).json({ message: "Failed to delete line item" });
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Quote Files / Attachments
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // Get all attachments for a quote
+  app.get("/api/quotes/:id/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      const files = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.quoteId, req.params.id),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .orderBy(desc(quoteAttachments.createdAt));
+      
+      res.json({ success: true, data: files });
+    } catch (error) {
+      console.error("Error fetching quote files:", error);
+      res.status(500).json({ error: "Failed to fetch quote files" });
+    }
+  });
+
+  // Attach file to quote
+  app.post("/api/quotes/:id/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      
+      const { fileName, fileUrl, fileSize, mimeType, description } = req.body;
+      
+      if (!fileName || !fileUrl) {
+        return res.status(400).json({ error: "fileName and fileUrl are required" });
+      }
+      
+      const [attachment] = await db.insert(quoteAttachments).values({
+        quoteId: req.params.id,
+        organizationId,
+        uploadedByUserId: userId,
+        uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        fileName,
+        fileUrl,
+        fileSize: fileSize || null,
+        mimeType: mimeType || null,
+        description: description || null,
+      }).returning();
+      
+      res.json({ success: true, data: attachment });
+    } catch (error) {
+      console.error("Error attaching file to quote:", error);
+      res.status(500).json({ error: "Failed to attach file to quote" });
+    }
+  });
+
+  // Delete quote attachment
+  app.delete("/api/quotes/:id/files/:fileId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      await db.delete(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, req.params.fileId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ));
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting quote file:", error);
+      res.status(500).json({ error: "Failed to delete quote file" });
     }
   });
 
@@ -4379,7 +4509,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Update job (status, assignedTo, notes)
+  // Update job (status, assignedTo, notes, rollWidthUsedInches, materialId)
   app.patch("/api/jobs/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -4392,6 +4522,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof req.body?.statusKey === 'string') updates.statusKey = req.body.statusKey;
       if (typeof req.body?.assignedTo === 'string') updates.assignedTo = req.body.assignedTo;
       if (typeof req.body?.notes === 'string') updates.notes = req.body.notes;
+      // Production tracking fields - rollWidthUsedInches and materialId
+      if (req.body?.rollWidthUsedInches !== undefined) {
+        updates.rollWidthUsedInches = req.body.rollWidthUsedInches === null ? null : parseFloat(req.body.rollWidthUsedInches);
+      }
+      if (req.body?.materialId !== undefined) {
+        updates.materialId = req.body.materialId === null ? null : req.body.materialId;
+      }
       const userId = req.user?.claims?.sub || req.user?.id || undefined;
       const updated = await storage.updateJob(organizationId, req.params.id, updates, userId);
       res.json({ success: true, data: updated });

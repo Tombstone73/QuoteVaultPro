@@ -297,7 +297,7 @@ export type ProductOptionItem = {
     defaultLocation?: "all_corners" | "top_corners" | "top_even" | "custom";
     defaultSpacingCount?: number; // For top_even
     defaultSpacingInches?: number; // e.g., 12, 24 - for banner grommets with inch-based spacing
-    spacingOptions?: Array<{ value: number; label: string; }>; // e.g., [{ value: 12, label: "Every 12 inches" }, { value: 24, label: "Every 24 inches" }]
+    spacingOptions?: number[]; // e.g., [12, 24] for 12" and 24" spacing options
     customNotes?: string; // For custom
     // For sides toggle
     singleLabel?: string;
@@ -326,10 +326,10 @@ export type ProductOptionItem = {
       }>;
     }>;
     // For hems (banner finishing)
-    hemsChoices?: Array<{ value: string; label: string; }>; // e.g., [{ value: "none", label: "None" }, { value: "all_sides", label: "All Sides" }]
+    hemsChoices?: string[]; // e.g., ["none", "all_sides", "top_bottom", "left_right"]
     defaultHems?: "none" | "all_sides" | "top_bottom" | "left_right";
     // For pole pockets (banner finishing)
-    polePocketChoices?: Array<{ value: string; label: string; }>; // e.g., [{ value: "none", label: "None" }, { value: "top", label: "Top Only" }]
+    polePocketChoices?: string[]; // e.g., ["none", "top", "bottom", "top_bottom"]
     defaultPolePocket?: "none" | "top" | "bottom" | "top_bottom";
   };
   // Sub-config for nested options (e.g., grommets sub-options)
@@ -434,10 +434,7 @@ const productOptionItemSchema = z.object({
         .optional(),
       defaultSpacingCount: z.number().int().optional(),
       defaultSpacingInches: z.number().optional(), // e.g., 12, 24 for banner grommets
-      spacingOptions: z.array(z.object({
-        value: z.number(),
-        label: z.string(),
-      })).optional(),
+      spacingOptions: z.array(z.number()).optional(), // e.g., [12, 24]
       customNotes: z.string().optional(),
       // For sides toggle
       singleLabel: z.string().optional(),
@@ -467,16 +464,10 @@ const productOptionItemSchema = z.object({
         })).optional(),
       })).optional(),
       // For hems (banner finishing)
-      hemsChoices: z.array(z.object({
-        value: z.string(),
-        label: z.string(),
-      })).optional(),
+      hemsChoices: z.array(z.string()).optional(), // e.g., ["none", "all_sides", "top_bottom", "left_right"]
       defaultHems: z.enum(["none", "all_sides", "top_bottom", "left_right"]).optional(),
       // For pole pockets (banner finishing)
-      polePocketChoices: z.array(z.object({
-        value: z.string(),
-        label: z.string(),
-      })).optional(),
+      polePocketChoices: z.array(z.string()).optional(), // e.g., ["none", "top", "bottom", "top_bottom"]
       defaultPolePocket: z.enum(["none", "top", "bottom", "top_bottom"]).optional(),
     })
     .optional(),
@@ -927,6 +918,32 @@ export type UpdateQuote = z.infer<typeof updateQuoteSchema>;
 export type Quote = typeof quotes.$inferSelect;
 export type InsertQuoteLineItem = z.infer<typeof insertQuoteLineItemSchema>;
 export type QuoteLineItem = typeof quoteLineItems.$inferSelect;
+
+// Quote Attachments table - files uploaded during quote creation (before order conversion)
+export const quoteAttachments = pgTable("quote_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: 'cascade' }),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  uploadedByName: varchar("uploaded_by_name", { length: 255 }),
+  fileName: varchar("file_name", { length: 500 }).notNull(),
+  fileUrl: text("file_url").notNull(),
+  fileSize: integer("file_size"),
+  mimeType: varchar("mime_type", { length: 100 }),
+  description: text("description"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("quote_attachments_quote_id_idx").on(table.quoteId),
+  index("quote_attachments_organization_id_idx").on(table.organizationId),
+]);
+
+export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertQuoteAttachment = z.infer<typeof insertQuoteAttachmentSchema>;
+export type QuoteAttachment = typeof quoteAttachments.$inferSelect;
 
 // Pricing rules table
 export const pricingRules = pgTable("pricing_rules", {
@@ -1639,6 +1656,9 @@ export const jobs = pgTable("jobs", {
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: 'set null' }),
   notesInternal: text("notes_internal"),
+  // Production tracking fields - set by production staff, NOT required at quote/order time
+  rollWidthUsedInches: decimal("roll_width_used_inches", { precision: 10, scale: 2 }), // Roll width actually used in production
+  materialId: varchar("material_id").references(() => materials.id, { onDelete: 'set null' }), // Material used in production (for inventory/costing)
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -1647,6 +1667,7 @@ export const jobs = pgTable("jobs", {
   index("jobs_status_key_idx").on(table.statusKey),
   index("jobs_assigned_to_user_id_idx").on(table.assignedToUserId),
   index("jobs_order_id_idx").on(table.orderId),
+  index("jobs_material_id_idx").on(table.materialId),
 ]);
 
 export const insertJobSchema = createInsertSchema(jobs).omit({
@@ -1658,6 +1679,9 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
   statusKey: z.string().min(3).max(50), // Will be validated against configured job statuses at API level
   priority: z.enum(["rush", "normal", "low"]).default("normal"),
   specsJson: z.record(z.any()).optional().nullable(),
+  // Production tracking fields - optional, set by production staff
+  rollWidthUsedInches: z.coerce.number().positive().optional().nullable(),
+  materialId: z.string().optional().nullable(),
 });
 
 export const updateJobSchema = insertJobSchema.partial().extend({

@@ -789,6 +789,34 @@ export default function CalculatorComponent() {
                         {/* Grommets with location selector */}
                         {option.config?.kind === "grommets" && isSelected && (
                           <div className="space-y-3 mt-2 pl-6 border-l-2 border-orange-500">
+                            {/* Spacing options selector (12", 24", etc.) */}
+                            {option.config.spacingOptions && option.config.spacingOptions.length > 0 && (
+                              <div className="space-y-1">
+                                <Label className="text-sm">Grommet Spacing</Label>
+                                <Select
+                                  value={String(selection?.grommetsSpacingInches || option.config.defaultSpacingInches || option.config.spacingOptions[0])}
+                                  onValueChange={(val) => {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: {
+                                        ...prev[option.id],
+                                        grommetsSpacingInches: parseInt(val)
+                                      }
+                                    }));
+                                  }}
+                                >
+                                  <SelectTrigger data-testid={`select-grommets-spacing-inches-${option.id}`}>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {option.config.spacingOptions.map((sp: number) => (
+                                      <SelectItem key={sp} value={String(sp)}>{sp}" spacing</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            )}
+
                             {/* Grommets per sign input */}
                             <div className="space-y-1">
                               <Label className="text-sm">Grommets per sign</Label>
@@ -895,6 +923,72 @@ export default function CalculatorComponent() {
                                 )}
                               </div>
                             )}
+                          </div>
+                        )}
+
+                        {/* Hems option with dropdown */}
+                        {option.config?.kind === "hems" && isSelected && (
+                          <div className="space-y-2 mt-2 pl-6 border-l-2 border-blue-500">
+                            <Label className="text-sm">Hem Style</Label>
+                            <Select
+                              value={selection?.hemsType || option.config.defaultHems || "none"}
+                              onValueChange={(val) => {
+                                setOptionSelections(prev => ({
+                                  ...prev,
+                                  [option.id]: {
+                                    ...prev[option.id],
+                                    hemsType: val
+                                  }
+                                }));
+                              }}
+                            >
+                              <SelectTrigger data-testid={`select-hems-${option.id}`}>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {(option.config.hemsChoices || ["none", "all_sides", "top_bottom", "left_right"]).map((choice: string) => (
+                                  <SelectItem key={choice} value={choice}>
+                                    {choice === "none" ? "None" :
+                                     choice === "all_sides" ? "All Sides" :
+                                     choice === "top_bottom" ? "Top & Bottom" :
+                                     choice === "left_right" ? "Left & Right" : choice}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+
+                        {/* Pole Pockets option with dropdown */}
+                        {option.config?.kind === "pole_pockets" && isSelected && (
+                          <div className="space-y-2 mt-2 pl-6 border-l-2 border-green-500">
+                            <Label className="text-sm">Pole Pocket Location</Label>
+                            <Select
+                              value={selection?.polePocket || option.config.defaultPolePocket || "none"}
+                              onValueChange={(val) => {
+                                setOptionSelections(prev => ({
+                                  ...prev,
+                                  [option.id]: {
+                                    ...prev[option.id],
+                                    polePocket: val
+                                  }
+                                }));
+                              }}
+                            >
+                              <SelectTrigger data-testid={`select-pole-pocket-${option.id}`}>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {(option.config.polePocketChoices || ["none", "top", "bottom", "top_bottom"]).map((choice: string) => (
+                                  <SelectItem key={choice} value={choice}>
+                                    {choice === "none" ? "None" :
+                                     choice === "top" ? "Top" :
+                                     choice === "bottom" ? "Bottom" :
+                                     choice === "top_bottom" ? "Top & Bottom" : choice}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </div>
                         )}
                       </div>

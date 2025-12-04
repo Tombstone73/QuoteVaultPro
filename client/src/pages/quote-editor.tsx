@@ -1,22 +1,48 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { ArrowLeft, Save, Plus, Calculator, Trash2, Loader2 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Separator } from "@/components/ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { 
+  ArrowLeft, Save, Plus, Trash2, Loader2, Copy, Pencil, 
+  Truck, Store, Building2, DollarSign, Users, FileText, Shield, Send,
+  ChevronDown, Check, ChevronsUpDown, Upload, Paperclip, Download, X, ListOrdered
+} from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
-import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem } from "@shared/schema";
+import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem, Organization } from "@shared/schema";
 import { profileRequiresDimensions, getProfile } from "@shared/pricingProfiles";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+// Quote attachment type
+type QuoteAttachment = {
+  id: string;
+  fileName: string;
+  fileUrl: string;
+  fileSize?: number | null;
+  mimeType?: string | null;
+  createdAt: string;
+};
 
 /**
  * Helper function to format option price label based on priceMode
@@ -80,9 +106,30 @@ export default function QuoteEditor() {
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithContacts | undefined>(undefined);
 
+  // Logistics / Fulfillment
+  const [deliveryMethod, setDeliveryMethod] = useState<'pickup' | 'ship' | 'deliver'>('pickup');
+  const [useCustomerAddress, setUseCustomerAddress] = useState(false);
+  const [shippingAddress, setShippingAddress] = useState({
+    street1: '',
+    street2: '',
+    city: '',
+    state: '',
+    postalCode: '',
+    country: 'USA'
+  });
+  const [quoteNotes, setQuoteNotes] = useState('');
+
+  // Product search for combobox
+  const [productSearchOpen, setProductSearchOpen] = useState(false);
+  const [productSearchQuery, setProductSearchQuery] = useState("");
+
+  // File uploads
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Line item being added
   const [lineItems, setLineItems] = useState<QuoteLineItemDraft[]>([]);
-  const [editingLineItem, setEditingLineItem] = useState<QuoteLineItemDraft | null>(null);
+  const [editingLineItemId, setEditingLineItemId] = useState<string | null>(null);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [width, setWidth] = useState("");
@@ -99,7 +146,10 @@ export default function QuoteEditor() {
     grommetsLocation?: string;
     grommetsSpacingCount?: number;
     grommetsPerSign?: number;
+    grommetsSpacingInches?: number;
     customPlacementNote?: string;
+    hemsType?: string;
+    polePocket?: string;
   }>>({});
 
   // Line item notes
@@ -114,11 +164,27 @@ export default function QuoteEditor() {
         grommetsLocation: selection.grommetsLocation,
         grommetsSpacingCount: selection.grommetsSpacingCount,
         grommetsPerSign: selection.grommetsPerSign,
+        grommetsSpacingInches: selection.grommetsSpacingInches,
         customPlacementNote: selection.customPlacementNote,
+        hemsType: selection.hemsType,
+        polePocket: selection.polePocket,
       };
     });
     return payload;
   }, [optionSelections]);
+
+  // Query client for invalidation
+  const queryClientInstance = useQueryClient();
+
+  // Load organization for tax rate defaults
+  const { data: organization } = useQuery<Organization>({
+    queryKey: ["/api/organization/current"],
+    queryFn: async () => {
+      const response = await fetch("/api/organization/current", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch organization");
+      return response.json();
+    },
+  });
 
   // Load existing quote if editing
   const { data: quote, isLoading: quoteLoading } = useQuery<QuoteWithRelations>({
@@ -128,6 +194,19 @@ export default function QuoteEditor() {
       const response = await fetch(`/api/quotes/${quoteId}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to load quote");
       return response.json();
+    },
+    enabled: !isNewQuote && !!quoteId,
+  });
+
+  // Load quote files/attachments
+  const { data: quoteFiles = [], isLoading: filesLoading } = useQuery<QuoteAttachment[]>({
+    queryKey: ["/api/quotes", quoteId, "files"],
+    queryFn: async () => {
+      if (!quoteId) return [];
+      const response = await fetch(`/api/quotes/${quoteId}/files`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to load quote files");
+      const json = await response.json();
+      return json.data || [];
     },
     enabled: !isNewQuote && !!quoteId,
   });
@@ -160,6 +239,18 @@ export default function QuoteEditor() {
   const { data: products } = useQuery<Product[]>({
     queryKey: ["/api/products"],
   });
+
+  // Filter products for combobox search
+  const filteredProducts = useMemo(() => {
+    if (!products) return [];
+    const activeProducts = products.filter(p => p.isActive);
+    if (!productSearchQuery) return activeProducts;
+    const query = productSearchQuery.toLowerCase();
+    return activeProducts.filter(p => 
+      p.name.toLowerCase().includes(query) ||
+      (p.sku && p.sku.toLowerCase().includes(query))
+    );
+  }, [products, productSearchQuery]);
 
   // Fetch detailed product info when a product is selected to ensure we have options
   const { data: selectedProductDetail } = useQuery<Product>({
@@ -480,8 +571,159 @@ export default function QuoteEditor() {
     });
   };
 
+  const handleDuplicateLineItem = (itemId: string) => {
+    const item = lineItems.find(i => (i.tempId || i.id) === itemId);
+    if (!item) return;
+    
+    const duplicatedItem: QuoteLineItemDraft = {
+      ...item,
+      tempId: `temp-${Date.now()}`,
+      id: undefined,
+      displayOrder: lineItems.length,
+    };
+    
+    setLineItems([...lineItems, duplicatedItem]);
+    toast({
+      title: "Line Item Duplicated",
+      description: "Item duplicated successfully",
+    });
+  };
+
   const handleRemoveLineItem = (tempId: string) => {
     setLineItems(lineItems.filter(item => item.tempId !== tempId && item.id !== tempId));
+  };
+
+  // Copy customer address to shipping address
+  const handleCopyCustomerAddress = (checked: boolean) => {
+    setUseCustomerAddress(checked);
+    if (checked && selectedCustomer) {
+      setShippingAddress({
+        street1: selectedCustomer.shippingStreet1 || selectedCustomer.billingStreet1 || '',
+        street2: selectedCustomer.shippingStreet2 || selectedCustomer.billingStreet2 || '',
+        city: selectedCustomer.shippingCity || selectedCustomer.billingCity || '',
+        state: selectedCustomer.shippingState || selectedCustomer.billingState || '',
+        postalCode: selectedCustomer.shippingPostalCode || selectedCustomer.billingPostalCode || '',
+        country: selectedCustomer.shippingCountry || selectedCustomer.billingCountry || 'USA'
+      });
+    }
+  };
+
+  // Check if customer has any address on file
+  const customerHasAddress = selectedCustomer && (
+    selectedCustomer.shippingStreet1 || selectedCustomer.billingStreet1 ||
+    selectedCustomer.shippingCity || selectedCustomer.billingCity
+  );
+
+  // File upload handler
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    if (!quoteId) {
+      toast({
+        title: "Save Quote First",
+        description: "Please save the quote before attaching files.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      // Get upload URL from backend
+      const urlResponse = await fetch("/api/objects/upload", {
+        method: "POST",
+        credentials: "include",
+      });
+      
+      if (!urlResponse.ok) {
+        throw new Error("Failed to get upload URL");
+      }
+
+      const { url, method } = await urlResponse.json();
+
+      // Upload each file
+      for (const file of Array.from(e.target.files)) {
+        const uploadResponse = await fetch(url, {
+          method: method || "PUT",
+          body: file,
+          headers: {
+            "Content-Type": file.type,
+          },
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error(`Failed to upload ${file.name}`);
+        }
+
+        // Extract the uploaded file URL (remove query params)
+        const fileUrl = url.split("?")[0];
+
+        // Attach file to quote
+        const attachResponse = await fetch(`/api/quotes/${quoteId}/files`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            fileName: file.name,
+            fileUrl,
+            fileSize: file.size,
+            mimeType: file.type,
+          }),
+        });
+
+        if (!attachResponse.ok) {
+          throw new Error(`Failed to attach ${file.name} to quote`);
+        }
+      }
+
+      // Refresh file list
+      queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId, "files"] });
+
+      toast({
+        title: "Files Uploaded",
+        description: "Your files have been attached to the quote.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Upload Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploading(false);
+      // Clear input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  // Delete file handler
+  const handleDeleteFile = async (fileId: string) => {
+    if (!quoteId) return;
+
+    try {
+      const response = await fetch(`/api/quotes/${quoteId}/files/${fileId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to delete file");
+      }
+
+      queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId, "files"] });
+
+      toast({
+        title: "File Removed",
+        description: "The file has been removed from the quote.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Delete Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
   };
 
   if (!isInternalUser) {
@@ -505,33 +747,53 @@ export default function QuoteEditor() {
     );
   }
 
-  const total = lineItems.reduce((sum, item) => sum + item.linePrice, 0);
+  // Calculate pricing summary
+  const subtotal = lineItems.reduce((sum, item) => sum + item.linePrice, 0);
+  
+  // Get effective tax rate - customer override > org default
+  const effectiveTaxRate = selectedCustomer?.isTaxExempt 
+    ? 0 
+    : selectedCustomer?.taxRateOverride != null 
+      ? Number(selectedCustomer.taxRateOverride)
+      : Number(organization?.defaultTaxRate || 0);
+  
+  const taxAmount = subtotal * effectiveTaxRate;
+  const grandTotal = subtotal + taxAmount;
+
+  // Customer info computed values
+  const pricingTier = selectedCustomer?.pricingTier || 'default';
+  const discountPercent = selectedCustomer?.defaultDiscountPercent ? Number(selectedCustomer.defaultDiscountPercent) : null;
+  const markupPercent = selectedCustomer?.defaultMarkupPercent ? Number(selectedCustomer.defaultMarkupPercent) : null;
+  const marginPercent = selectedCustomer?.defaultMarginPercent ? Number(selectedCustomer.defaultMarginPercent) : null;
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
+    <div className="space-y-4">
+      {/* Header with navigation and actions */}
       <div className="flex items-center justify-between">
-        <Button variant="ghost" onClick={() => navigate("/quotes")}>
-          <ArrowLeft className="w-4 h-4 mr-2" />
+        <Button variant="ghost" onClick={() => navigate("/quotes")} className="gap-2">
+          <ArrowLeft className="w-4 h-4" />
           Back to Quotes
         </Button>
-        <div className="flex gap-2">
-          <Button
-            onClick={() => saveQuoteMutation.mutate()}
-            disabled={saveQuoteMutation.isPending || lineItems.length === 0 || !selectedCustomerId}
-          >
-            <Save className="w-4 h-4 mr-2" />
-            {saveQuoteMutation.isPending ? "Saving..." : isNewQuote ? "Create Quote" : "Update Quote"}
-          </Button>
-        </div>
+        <h1 className="text-xl font-semibold">
+          {isNewQuote ? "New Quote" : `Edit Quote #${quote?.quoteNumber || ''}`}
+        </h1>
+        <div className="w-32" /> {/* Spacer for centering */}
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-6">
-        {/* Left Column - Quote Header */}
-        <div className="space-y-6">
+      {/* 3-Column Cockpit Layout */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(260px,320px)_minmax(0,1.7fr)_minmax(260px,320px)]">
+        
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* LEFT COLUMN: Customer & Logistics */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        <div className="space-y-4 order-1 lg:order-1">
+          {/* Customer Card */}
           <Card>
-            <CardHeader>
-              <CardTitle>{isNewQuote ? "New Internal Quote" : "Edit Quote"}</CardTitle>
-              <CardDescription>Enter customer information</CardDescription>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Users className="w-4 h-4" />
+                Customer
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <CustomerSelect
@@ -540,347 +802,624 @@ export default function QuoteEditor() {
                   setSelectedCustomerId(customerId);
                   setSelectedCustomer(customer);
                   setSelectedContactId(contactId || null);
+                  // Pre-fill shipping address from customer if ship is selected
+                  if (customer && deliveryMethod === 'ship') {
+                    setShippingAddress({
+                      street1: customer.shippingStreet1 || '',
+                      street2: customer.shippingStreet2 || '',
+                      city: customer.shippingCity || '',
+                      state: customer.shippingState || '',
+                      postalCode: customer.shippingPostalCode || '',
+                      country: customer.shippingCountry || 'USA'
+                    });
+                  }
                 }}
                 autoFocus={isNewQuote}
-                label="Customer *"
-                placeholder="Search customers by name, email, or contact..."
+                label=""
+                placeholder="Search customers..."
               />
 
-              {selectedCustomerId && contacts && contacts.length > 0 && (
-                <div className="space-y-2">
-                  <Label htmlFor="contact">Contact (Optional)</Label>
-                  <Select value={selectedContactId || ""} onValueChange={setSelectedContactId}>
-                    <SelectTrigger id="contact">
-                      <SelectValue placeholder="Select a contact" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {contacts.map((contact: any) => (
-                        <SelectItem key={contact.id} value={contact.id}>
-                          {contact.firstName} {contact.lastName}
-                          {contact.email && ` - ${contact.email}`}
-                          {contact.isPrimary && " (Primary)"}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              {/* Customer info badges */}
+              {selectedCustomer && (
+                <div className="space-y-3">
+                  {/* Tier badge */}
+                  <div className="flex items-center gap-2">
+                    <Badge variant={pricingTier === 'wholesale' ? 'default' : pricingTier === 'retail' ? 'secondary' : 'outline'}>
+                      {pricingTier.charAt(0).toUpperCase() + pricingTier.slice(1)}
+                    </Badge>
+                    
+                    {/* Pricing modifiers */}
+                    {discountPercent && discountPercent > 0 && (
+                      <Badge variant="outline" className="text-green-600 border-green-300">
+                        -{discountPercent}% disc
+                      </Badge>
+                    )}
+                    {markupPercent && markupPercent > 0 && (
+                      <Badge variant="outline" className="text-blue-600 border-blue-300">
+                        +{markupPercent}% markup
+                      </Badge>
+                    )}
+                    {marginPercent && marginPercent > 0 && (
+                      <Badge variant="outline" className="text-purple-600 border-purple-300">
+                        {marginPercent}% margin
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Tax status */}
+                  <div className="flex items-center gap-2 text-sm">
+                    <Shield className="w-3.5 h-3.5 text-muted-foreground" />
+                    {selectedCustomer.isTaxExempt ? (
+                      <span className="text-green-600 font-medium">Tax Exempt</span>
+                    ) : selectedCustomer.taxRateOverride != null ? (
+                      <span>Tax: {(Number(selectedCustomer.taxRateOverride) * 100).toFixed(2)}% (override)</span>
+                    ) : (
+                      <span className="text-muted-foreground">Tax: {(effectiveTaxRate * 100).toFixed(2)}% (default)</span>
+                    )}
+                  </div>
+
+                  {/* Contact selector */}
+                  {contacts && contacts.length > 0 && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">Contact</Label>
+                      <Select value={selectedContactId || ""} onValueChange={setSelectedContactId}>
+                        <SelectTrigger className="h-8 text-sm">
+                          <SelectValue placeholder="Select contact" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {contacts.map((contact: any) => (
+                            <SelectItem key={contact.id} value={contact.id}>
+                              {contact.firstName} {contact.lastName}
+                              {contact.isPrimary && " ★"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Add Line Item Card */}
+          {/* Logistics Card */}
           <Card>
-            <CardHeader>
-              <CardTitle>Add Line Item</CardTitle>
-              <CardDescription>Configure product and calculate price</CardDescription>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Truck className="w-4 h-4" />
+                Fulfillment
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="product">Product</Label>
-                <Select value={selectedProductId} onValueChange={setSelectedProductId}>
-                  <SelectTrigger id="product">
-                    <SelectValue placeholder="Select a product" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {products?.filter(p => p.isActive).map((product) => (
-                      <SelectItem key={product.id} value={product.id}>
-                        {product.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              {/* Delivery method toggle */}
+              <div className="grid grid-cols-3 gap-1 p-1 bg-muted rounded-lg">
+                <Button
+                  type="button"
+                  variant={deliveryMethod === 'pickup' ? 'default' : 'ghost'}
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => setDeliveryMethod('pickup')}
+                >
+                  <Store className="w-3.5 h-3.5" />
+                  Pickup
+                </Button>
+                <Button
+                  type="button"
+                  variant={deliveryMethod === 'ship' ? 'default' : 'ghost'}
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => {
+                    setDeliveryMethod('ship');
+                    // Pre-fill from customer shipping address
+                    if (selectedCustomer) {
+                      setShippingAddress({
+                        street1: selectedCustomer.shippingStreet1 || '',
+                        street2: selectedCustomer.shippingStreet2 || '',
+                        city: selectedCustomer.shippingCity || '',
+                        state: selectedCustomer.shippingState || '',
+                        postalCode: selectedCustomer.shippingPostalCode || '',
+                        country: selectedCustomer.shippingCountry || 'USA'
+                      });
+                    }
+                  }}
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  Ship
+                </Button>
+                <Button
+                  type="button"
+                  variant={deliveryMethod === 'deliver' ? 'default' : 'ghost'}
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => {
+                    setDeliveryMethod('deliver');
+                    if (selectedCustomer) {
+                      setShippingAddress({
+                        street1: selectedCustomer.shippingStreet1 || '',
+                        street2: selectedCustomer.shippingStreet2 || '',
+                        city: selectedCustomer.shippingCity || '',
+                        state: selectedCustomer.shippingState || '',
+                        postalCode: selectedCustomer.shippingPostalCode || '',
+                        country: selectedCustomer.shippingCountry || 'USA'
+                      });
+                    }
+                  }}
+                >
+                  <Building2 className="w-3.5 h-3.5" />
+                  Deliver
+                </Button>
               </div>
 
-              {productVariants && productVariants.filter(v => v.isActive).length > 0 && (
-                <div className="space-y-2">
-                  <Label htmlFor="variant">Variant</Label>
-                  <Select value={selectedVariantId || ""} onValueChange={setSelectedVariantId}>
-                    <SelectTrigger id="variant">
-                      <SelectValue placeholder="Select a variant" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {productVariants.filter(v => v.isActive).map((variant) => (
-                        <SelectItem key={variant.id} value={variant.id}>
-                          {variant.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              {/* Address fields for ship/deliver */}
+              {(deliveryMethod === 'ship' || deliveryMethod === 'deliver') && (
+                <div className="space-y-3">
+                  {/* Use customer address checkbox */}
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="use-customer-address"
+                      checked={useCustomerAddress}
+                      onCheckedChange={handleCopyCustomerAddress}
+                      disabled={!customerHasAddress}
+                    />
+                    <Label 
+                      htmlFor="use-customer-address" 
+                      className={cn(
+                        "text-sm cursor-pointer",
+                        !customerHasAddress && "text-muted-foreground"
+                      )}
+                    >
+                      Use customer address
+                    </Label>
+                  </div>
+                  {!customerHasAddress && selectedCustomer && (
+                    <p className="text-xs text-muted-foreground">No address on file for this customer</p>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Street Address</Label>
+                    <Input
+                      value={shippingAddress.street1}
+                      onChange={(e) => {
+                        setUseCustomerAddress(false);
+                        setShippingAddress(prev => ({ ...prev, street1: e.target.value }));
+                      }}
+                      placeholder="123 Main St"
+                      className="h-8 text-sm"
+                    />
+                  </div>
+                  <Input
+                    value={shippingAddress.street2}
+                    onChange={(e) => {
+                      setUseCustomerAddress(false);
+                      setShippingAddress(prev => ({ ...prev, street2: e.target.value }));
+                    }}
+                    placeholder="Suite / Apt (optional)"
+                    className="h-8 text-sm"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">City</Label>
+                      <Input
+                        value={shippingAddress.city}
+                        onChange={(e) => {
+                          setUseCustomerAddress(false);
+                          setShippingAddress(prev => ({ ...prev, city: e.target.value }));
+                        }}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">State</Label>
+                      <Input
+                        value={shippingAddress.state}
+                        onChange={(e) => {
+                          setUseCustomerAddress(false);
+                          setShippingAddress(prev => ({ ...prev, state: e.target.value }));
+                        }}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Postal Code</Label>
+                      <Input
+                        value={shippingAddress.postalCode}
+                        onChange={(e) => {
+                          setUseCustomerAddress(false);
+                          setShippingAddress(prev => ({ ...prev, postalCode: e.target.value }));
+                        }}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Country</Label>
+                      <Input
+                        value={shippingAddress.country}
+                        onChange={(e) => {
+                          setUseCustomerAddress(false);
+                          setShippingAddress(prev => ({ ...prev, country: e.target.value }));
+                        }}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
 
-              {/* Dimensions - only show for products that require them */}
-              {requiresDimensions && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="width">Width (in)</Label>
-                    <Input
-                      id="width"
-                      type="number"
-                      step="0.01"
-                      value={width}
-                      onChange={(e) => setWidth(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="height">Height (in)</Label>
-                    <Input
-                      id="height"
-                      type="number"
-                      step="0.01"
-                      value={height}
-                      onChange={(e) => setHeight(e.target.value)}
-                    />
-                  </div>
-                </div>
-              )}
-              
-              {/* Info badge for non-dimension products */}
-              {selectedProductId && !requiresDimensions && (
-                <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
-                  <p>This product doesn't require dimensions. Only quantity is needed.</p>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="quantity">Quantity</Label>
-                <Input
-                  id="quantity"
-                  type="number"
-                  min="1"
-                  value={quantity}
-                  onChange={(e) => setQuantity(e.target.value)}
+              {/* Quote notes */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Quote Notes</Label>
+                <Textarea
+                  value={quoteNotes}
+                  onChange={(e) => setQuoteNotes(e.target.value)}
+                  placeholder="Internal notes, special instructions..."
+                  rows={3}
+                  className="text-sm resize-none"
                 />
               </div>
+            </CardContent>
+          </Card>
+        </div>
 
-              {/* Product Options Selection */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* CENTER COLUMN: Line Item Builder + Item List */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        <div className="space-y-4 order-3 lg:order-2">
+          {/* Product Configuration Panel */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Add Line Item</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Product & Variant selectors in a row */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Product</Label>
+                  <Popover open={productSearchOpen} onOpenChange={setProductSearchOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={productSearchOpen}
+                        className="h-9 w-full justify-between font-normal"
+                      >
+                        {selectedProductId
+                          ? products?.find(p => p.id === selectedProductId)?.name || "Select product..."
+                          : "Select product..."}
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[300px] p-0" align="start">
+                      <Command shouldFilter={false}>
+                        <CommandInput 
+                          placeholder="Search products..." 
+                          value={productSearchQuery}
+                          onValueChange={setProductSearchQuery}
+                        />
+                        <CommandList>
+                          <CommandEmpty>No products found.</CommandEmpty>
+                          <CommandGroup>
+                            {filteredProducts.map((product) => (
+                              <CommandItem
+                                key={product.id}
+                                value={product.id}
+                                onSelect={() => {
+                                  setSelectedProductId(product.id);
+                                  setProductSearchOpen(false);
+                                  setProductSearchQuery("");
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    selectedProductId === product.id ? "opacity-100" : "opacity-0"
+                                  )}
+                                />
+                                <span className="truncate">{product.name}</span>
+                                {product.sku && (
+                                  <span className="ml-2 text-xs text-muted-foreground">
+                                    {product.sku}
+                                  </span>
+                                )}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                {productVariants && productVariants.filter(v => v.isActive).length > 0 ? (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Variant</Label>
+                    <Select value={selectedVariantId || ""} onValueChange={setSelectedVariantId}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="Select variant" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {productVariants.filter(v => v.isActive).map((variant) => (
+                          <SelectItem key={variant.id} value={variant.id}>
+                            {variant.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : (
+                  <div /> /* Empty div to maintain grid */
+                )}
+              </div>
+
+              {/* Dimensions & Quantity row */}
+              <div className="grid grid-cols-3 gap-3">
+                {requiresDimensions ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Width (in)</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={width}
+                        onChange={(e) => setWidth(e.target.value)}
+                        className="h-9"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Height (in)</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={height}
+                        onChange={(e) => setHeight(e.target.value)}
+                        className="h-9"
+                      />
+                    </div>
+                  </>
+                ) : selectedProductId ? (
+                  <div className="col-span-2 flex items-end">
+                    <p className="text-xs text-muted-foreground pb-2">No dimensions required for this product</p>
+                  </div>
+                ) : (
+                  <div className="col-span-2" />
+                )}
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Quantity</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    className="h-9"
+                  />
+                </div>
+              </div>
+
+              {/* Product Options */}
               {selectedProduct && (selectedProduct.optionsJson as ProductOptionItem[])?.length > 0 && (
                 <div className="space-y-3 border-t pt-4">
-                  <Label className="text-base font-semibold">Product Options</Label>
-                  {((selectedProduct.optionsJson as ProductOptionItem[]) || []).map((option) => {
-                    const selection = optionSelections[option.id];
-                    const isSelected = !!selection;
+                  <Label className="text-sm font-medium">Product Options</Label>
+                  <div className="grid gap-2">
+                    {((selectedProduct.optionsJson as ProductOptionItem[]) || []).map((option) => {
+                      const selection = optionSelections[option.id];
+                      const isSelected = !!selection;
 
-                    return (
-                      <div key={option.id} className="space-y-2 p-3 border rounded-md">
-                        {/* Checkbox type */}
-                        {option.type === "checkbox" && (
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <Switch
-                                checked={isSelected}
-                                onCheckedChange={(checked) => {
-                                  if (checked) {
-                                    setOptionSelections(prev => ({
-                                      ...prev,
-                                      [option.id]: { value: true }
-                                    }));
-                                  } else {
-                                    const { [option.id]: _, ...rest } = optionSelections;
-                                    setOptionSelections(rest);
-                                  }
-                                }}
-                              />
-                              <Label className="cursor-pointer">{option.label}</Label>
-                            </div>
-                            {option.amount !== undefined && option.amount !== null && (
-                              <Badge variant="secondary">
-                                {formatOptionPriceLabel(option)}
-                              </Badge>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Quantity type */}
-                        {option.type === "quantity" && (
-                          <div className="space-y-2">
+                      return (
+                        <div key={option.id} className="p-3 border rounded-md space-y-2">
+                          {/* Checkbox type */}
+                          {option.type === "checkbox" && (
                             <div className="flex items-center justify-between">
-                              <Label>{option.label}</Label>
-                              {option.amount !== undefined && option.amount !== null && (
-                                <Badge variant="secondary">
+                              <div className="flex items-center gap-2">
+                                <Switch
+                                  checked={isSelected}
+                                  onCheckedChange={(checked) => {
+                                    if (checked) {
+                                      setOptionSelections(prev => ({
+                                        ...prev,
+                                        [option.id]: { value: true }
+                                      }));
+                                    } else {
+                                      const { [option.id]: _, ...rest } = optionSelections;
+                                      setOptionSelections(rest);
+                                    }
+                                  }}
+                                />
+                                <Label className="cursor-pointer text-sm">{option.label}</Label>
+                              </div>
+                              {option.amount != null && (
+                                <Badge variant="secondary" className="text-xs">
                                   {formatOptionPriceLabel(option)}
                                 </Badge>
                               )}
                             </div>
-                            <Input
-                              type="number"
-                              min="0"
-                              value={typeof selection?.value === "number" ? selection.value : 0}
-                              onChange={(e) => {
-                                const val = parseInt(e.target.value) || 0;
-                                if (val > 0) {
-                                  setOptionSelections(prev => ({
-                                    ...prev,
-                                    [option.id]: { value: val }
-                                  }));
-                                } else {
-                                  const { [option.id]: _, ...rest } = optionSelections;
-                                  setOptionSelections(rest);
-                                }
-                              }}
-                            />
-                          </div>
-                        )}
+                          )}
 
-                        {/* Toggle type (for sides: single/double) */}
-                        {option.type === "toggle" && option.config?.kind === "sides" && (
-                          <div className="space-y-2">
-                            <Label>{option.label}</Label>
-                            <div className="flex gap-2">
-                              <Button
-                                type="button"
-                                variant={selection?.value === "single" ? "default" : "outline"}
-                                className="flex-1"
-                                onClick={() => {
-                                  setOptionSelections(prev => ({
-                                    ...prev,
-                                    [option.id]: { value: "single" }
-                                  }));
-                                }}
-                              >
-                                {option.config.singleLabel || "Single"}
-                              </Button>
-                              <Button
-                                type="button"
-                                variant={selection?.value === "double" ? "default" : "outline"}
-                                className="flex-1"
-                                onClick={() => {
-                                  setOptionSelections(prev => ({
-                                    ...prev,
-                                    [option.id]: { value: "double" }
-                                  }));
-                                }}
-                              >
-                                {option.config.doubleLabel || "Double"}
-                                {option.config.pricingMode !== "volume" && option.config.doublePriceMultiplier && (
-                                  <span className="ml-1 text-xs">
-                                    ({option.config.doublePriceMultiplier}x)
-                                  </span>
+                          {/* Quantity type */}
+                          {option.type === "quantity" && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Label className="text-sm">{option.label}</Label>
+                                {option.amount != null && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    {formatOptionPriceLabel(option)}
+                                  </Badge>
                                 )}
-                                {option.config.pricingMode === "volume" && (
-                                  <span className="ml-1 text-xs text-muted-foreground">
-                                    (Volume)
-                                  </span>
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Generic toggle (not sides) */}
-                        {option.type === "toggle" && option.config?.kind !== "sides" && (
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <Switch
-                                checked={isSelected}
-                                onCheckedChange={(checked) => {
-                                  if (checked) {
+                              </div>
+                              <Input
+                                type="number"
+                                min="0"
+                                value={typeof selection?.value === "number" ? selection.value : 0}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value) || 0;
+                                  if (val > 0) {
                                     setOptionSelections(prev => ({
                                       ...prev,
-                                      [option.id]: { value: true }
+                                      [option.id]: { value: val }
                                     }));
                                   } else {
                                     const { [option.id]: _, ...rest } = optionSelections;
                                     setOptionSelections(rest);
                                   }
                                 }}
+                                className="h-8"
                               />
-                              <Label className="cursor-pointer">{option.label}</Label>
                             </div>
-                            {option.amount !== undefined && option.amount !== null && (
-                              <Badge variant="secondary">
-                                {formatOptionPriceLabel(option)}
-                              </Badge>
-                            )}
-                          </div>
-                        )}
+                          )}
 
-                        {/* Grommets with location selector */}
-                        {option.config?.kind === "grommets" && isSelected && (
-                          <div className="space-y-3 mt-2 pl-6 border-l-2 border-orange-500">
-                            {/* Grommets per sign input */}
-                            <div className="space-y-1">
-                              <Label className="text-sm">Grommets per sign</Label>
-                              <Input
-                                type="number"
-                                min="0"
-                                value={selection?.grommetsPerSign ?? 4}
-                                onChange={(e) => {
-                                  const count = parseInt(e.target.value) || 0;
-                                  setOptionSelections(prev => ({
-                                    ...prev,
-                                    [option.id]: {
-                                      ...prev[option.id],
-                                      grommetsPerSign: count
-                                    }
-                                  }));
-                                }}
-                                className="w-24"
-                              />
-                              <p className="text-xs text-muted-foreground">
-                                Total: {(selection?.grommetsPerSign ?? 4) * parseInt(quantity || "1")} grommets × ${(option.amount || 0).toFixed(2)} = ${((selection?.grommetsPerSign ?? 4) * parseInt(quantity || "1") * (option.amount || 0)).toFixed(2)}
-                              </p>
-                            </div>
-
-                            <Label className="text-sm">Grommet Location</Label>
-                            <Select
-                              value={selection?.grommetsLocation || option.config.defaultLocation || "all_corners"}
-                              onValueChange={(val) => {
-                                // Auto-set grommetsPerSign based on location if not already set
-                                let defaultCount = selection?.grommetsPerSign;
-                                if (!defaultCount) {
-                                  if (val === "all_corners") defaultCount = 4;
-                                  else if (val === "top_corners") defaultCount = 2;
-                                  else defaultCount = 4;
-                                }
-                                setOptionSelections(prev => ({
-                                  ...prev,
-                                  [option.id]: { 
-                                    ...prev[option.id],
-                                    grommetsLocation: val,
-                                    grommetsPerSign: defaultCount
-                                  }
-                                }));
-                              }}
-                            >
-                              <SelectTrigger>
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="all_corners">All Corners</SelectItem>
-                                <SelectItem value="top_corners">Top Corners Only</SelectItem>
-                                <SelectItem value="top_even">Top Edge (Even Spacing)</SelectItem>
-                                <SelectItem value="custom">Custom Placement</SelectItem>
-                              </SelectContent>
-                            </Select>
-
-                            {selection?.grommetsLocation === "top_even" && (
-                              <div className="space-y-1">
-                                <Label className="text-xs">Spacing Count</Label>
-                                <Input
-                                  type="number"
-                                  min="1"
-                                  value={selection?.grommetsSpacingCount || option.config.defaultSpacingCount || 1}
-                                  onChange={(e) => {
-                                    const count = parseInt(e.target.value) || 1;
+                          {/* Toggle type (for sides: single/double) */}
+                          {option.type === "toggle" && option.config?.kind === "sides" && (
+                            <div className="space-y-2">
+                              <Label className="text-sm">{option.label}</Label>
+                              <div className="flex gap-2">
+                                <Button
+                                  type="button"
+                                  variant={selection?.value === "single" ? "default" : "outline"}
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => {
                                     setOptionSelections(prev => ({
                                       ...prev,
-                                      [option.id]: {
-                                        ...prev[option.id],
-                                        grommetsSpacingCount: count,
-                                        grommetsPerSign: count // Update grommetsPerSign to match
-                                      }
+                                      [option.id]: { value: "single" }
                                     }));
                                   }}
-                                />
+                                >
+                                  {option.config.singleLabel || "Single"}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant={selection?.value === "double" ? "default" : "outline"}
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: { value: "double" }
+                                    }));
+                                  }}
+                                >
+                                  {option.config.doubleLabel || "Double"}
+                                  {option.config.pricingMode !== "volume" && option.config.doublePriceMultiplier && (
+                                    <span className="ml-1 text-xs">({option.config.doublePriceMultiplier}x)</span>
+                                  )}
+                                </Button>
                               </div>
-                            )}
+                            </div>
+                          )}
 
-                            {selection?.grommetsLocation === "custom" && (
-                              <div className="space-y-1">
-                                <Label className="text-xs">Custom Placement Notes</Label>
+                          {/* Generic toggle (not sides) */}
+                          {option.type === "toggle" && option.config?.kind !== "sides" && (
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Switch
+                                  checked={isSelected}
+                                  onCheckedChange={(checked) => {
+                                    if (checked) {
+                                      setOptionSelections(prev => ({
+                                        ...prev,
+                                        [option.id]: { value: true }
+                                      }));
+                                    } else {
+                                      const { [option.id]: _, ...rest } = optionSelections;
+                                      setOptionSelections(rest);
+                                    }
+                                  }}
+                                />
+                                <Label className="cursor-pointer text-sm">{option.label}</Label>
+                              </div>
+                              {option.amount != null && (
+                                <Badge variant="secondary" className="text-xs">
+                                  {formatOptionPriceLabel(option)}
+                                </Badge>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Grommets with location selector */}
+                          {option.config?.kind === "grommets" && isSelected && (
+                            <div className="space-y-2 mt-2 pl-4 border-l-2 border-orange-500">
+                              {option.config.spacingOptions && option.config.spacingOptions.length > 0 && (
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Grommet Spacing</Label>
+                                  <Select
+                                    value={String(selection?.grommetsSpacingInches || option.config.defaultSpacingInches || option.config.spacingOptions[0])}
+                                    onValueChange={(val) => {
+                                      setOptionSelections(prev => ({
+                                        ...prev,
+                                        [option.id]: {
+                                          ...prev[option.id],
+                                          grommetsSpacingInches: parseInt(val)
+                                        }
+                                      }));
+                                    }}
+                                  >
+                                    <SelectTrigger className="h-8">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {option.config.spacingOptions.map((sp: number) => (
+                                        <SelectItem key={sp} value={String(sp)}>{sp}" spacing</SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              )}
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Per Sign</Label>
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    value={selection?.grommetsPerSign ?? 4}
+                                    onChange={(e) => {
+                                      const count = parseInt(e.target.value) || 0;
+                                      setOptionSelections(prev => ({
+                                        ...prev,
+                                        [option.id]: {
+                                          ...prev[option.id],
+                                          grommetsPerSign: count
+                                        }
+                                      }));
+                                    }}
+                                    className="h-8"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs">Location</Label>
+                                  <Select
+                                    value={selection?.grommetsLocation || option.config.defaultLocation || "all_corners"}
+                                    onValueChange={(val) => {
+                                      let defaultCount = selection?.grommetsPerSign;
+                                      if (!defaultCount) {
+                                        if (val === "all_corners") defaultCount = 4;
+                                        else if (val === "top_corners") defaultCount = 2;
+                                        else defaultCount = 4;
+                                      }
+                                      setOptionSelections(prev => ({
+                                        ...prev,
+                                        [option.id]: { 
+                                          ...prev[option.id],
+                                          grommetsLocation: val,
+                                          grommetsPerSign: defaultCount
+                                        }
+                                      }));
+                                    }}
+                                  >
+                                    <SelectTrigger className="h-8">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="all_corners">All Corners</SelectItem>
+                                      <SelectItem value="top_corners">Top Corners</SelectItem>
+                                      <SelectItem value="top_even">Top Edge Even</SelectItem>
+                                      <SelectItem value="custom">Custom</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+                              {selection?.grommetsLocation === "custom" && (
                                 <Textarea
-                                  placeholder="Enter custom grommet placement instructions..."
+                                  placeholder="Custom placement notes..."
                                   value={selection?.customPlacementNote || ""}
                                   onChange={(e) => {
                                     setOptionSelections(prev => ({
@@ -892,151 +1431,435 @@ export default function QuoteEditor() {
                                     }));
                                   }}
                                   rows={2}
-                                  className="text-sm"
+                                  className="text-xs"
                                 />
-                                {option.config.customNotes && (
-                                  <p className="text-xs text-muted-foreground italic">
-                                    Default: {option.config.customNotes}
-                                  </p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                              )}
+                            </div>
+                          )}
 
-              {/* Line Item Notes */}
-              <div className="space-y-2 border-t pt-4">
-                <Label className="text-base font-semibold">Line Item Notes</Label>
-                <Textarea
-                  placeholder="Optional notes for production (e.g., special instructions, custom placement details)..."
-                  value={lineItemNotes}
-                  onChange={(e) => setLineItemNotes(e.target.value)}
-                  rows={3}
-                  className="text-sm"
-                />
-              </div>
+                          {/* Hems option */}
+                          {option.config?.kind === "hems" && isSelected && (
+                            <div className="space-y-1 mt-2 pl-4 border-l-2 border-blue-500">
+                              <Label className="text-xs">Hem Style</Label>
+                              <Select
+                                value={selection?.hemsType || option.config.defaultHems || "none"}
+                                onValueChange={(val) => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: {
+                                      ...prev[option.id],
+                                      hemsType: val
+                                    }
+                                  }));
+                                }}
+                              >
+                                <SelectTrigger className="h-8">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {(option.config.hemsChoices || ["none", "all_sides", "top_bottom", "left_right"]).map((choice: string) => (
+                                    <SelectItem key={choice} value={choice}>
+                                      {choice === "none" ? "None" :
+                                       choice === "all_sides" ? "All Sides" :
+                                       choice === "top_bottom" ? "Top & Bottom" :
+                                       choice === "left_right" ? "Left & Right" : choice}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          )}
 
-              {/* Live price display */}
-              {isCalculating && (
-                <div className="p-4 bg-muted rounded-md text-center">
-                  <div className="flex items-center justify-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <p className="text-sm text-muted-foreground">Calculating price...</p>
+                          {/* Pole Pockets option */}
+                          {option.config?.kind === "pole_pockets" && isSelected && (
+                            <div className="space-y-1 mt-2 pl-4 border-l-2 border-green-500">
+                              <Label className="text-xs">Pole Pocket Location</Label>
+                              <Select
+                                value={selection?.polePocket || option.config.defaultPolePocket || "none"}
+                                onValueChange={(val) => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: {
+                                      ...prev[option.id],
+                                      polePocket: val
+                                    }
+                                  }));
+                                }}
+                              >
+                                <SelectTrigger className="h-8">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {(option.config.polePocketChoices || ["none", "top", "bottom", "top_bottom"]).map((choice: string) => (
+                                    <SelectItem key={choice} value={choice}>
+                                      {choice === "none" ? "None" :
+                                       choice === "top" ? "Top" :
+                                       choice === "bottom" ? "Bottom" :
+                                       choice === "top_bottom" ? "Top & Bottom" : choice}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
-              {calcError && (
-                <div className="p-4 bg-destructive/10 rounded-md text-center">
-                  <p className="text-sm text-destructive">{calcError}</p>
-                </div>
-              )}
+              {/* Line Item Notes */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Line Item Notes</Label>
+                <Textarea
+                  placeholder="Special instructions for this item..."
+                  value={lineItemNotes}
+                  onChange={(e) => setLineItemNotes(e.target.value)}
+                  rows={2}
+                  className="text-sm resize-none"
+                />
+              </div>
 
-              {calculatedPrice !== null && !isCalculating && (
-                <div className="p-4 bg-primary/10 rounded-md text-center">
-                  <p className="text-sm text-muted-foreground">Price</p>
-                  <p className="text-2xl font-bold font-mono">${calculatedPrice.toFixed(2)}</p>
+              {/* Price display and Add button */}
+              <div className="flex items-center justify-between pt-2 border-t">
+                <div className="flex items-center gap-3">
+                  {isCalculating && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span className="text-sm">Calculating...</span>
+                    </div>
+                  )}
+                  {calcError && (
+                    <span className="text-sm text-destructive">{calcError}</span>
+                  )}
+                  {calculatedPrice !== null && !isCalculating && (
+                    <div className="text-lg font-semibold font-mono">
+                      ${calculatedPrice.toFixed(2)}
+                    </div>
+                  )}
                 </div>
-              )}
-
-              <div className="flex gap-2">
                 <Button
                   onClick={handleAddLineItem}
                   disabled={!calculatedPrice || isCalculating}
-                  className="flex-1"
+                  className="gap-2"
                 >
-                  <Plus className="w-4 h-4 mr-2" />
+                  <Plus className="w-4 h-4" />
                   Add Item
                 </Button>
               </div>
             </CardContent>
           </Card>
-        </div>
 
-        {/* Right Column - Line Items */}
-        <div className="space-y-6">
+          {/* Line Items Table */}
           <Card>
-            <CardHeader>
-              <CardTitle>Quote Line Items</CardTitle>
-              <CardDescription>{lineItems.length} item{lineItems.length !== 1 ? 's' : ''}</CardDescription>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Line Items</CardTitle>
+                <Badge variant="outline">{lineItems.length} item{lineItems.length !== 1 ? 's' : ''}</Badge>
+              </div>
             </CardHeader>
             <CardContent>
               {lineItems.length === 0 ? (
-                <div className="py-16 text-center text-muted-foreground">
-                  No line items yet. Add items using the form on the left.
+                <div className="py-12 text-center text-muted-foreground">
+                  <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No line items yet</p>
+                  <p className="text-xs">Configure a product above to add items</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {lineItems.map((item, idx) => (
-                    <div key={item.tempId || item.id} className="flex items-start justify-between p-4 border rounded-lg">
-                      <div className="flex-1">
-                        <div className="font-medium">{item.productName}</div>
-                        {item.variantName && (
-                          <div className="text-sm text-muted-foreground">Variant: {item.variantName}</div>
-                        )}
-                        <div className="text-sm text-muted-foreground mt-1">
-                          {item.width}" × {item.height}" • Qty: {item.quantity}
-                        </div>
-                        
-                        {/* Display selected options */}
-                        {item.selectedOptions && item.selectedOptions.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            <div className="text-xs font-semibold text-muted-foreground">Options:</div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {item.selectedOptions.map((opt: any, optIdx: number) => (
-                                <Badge key={optIdx} variant="outline" className="text-xs">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product</TableHead>
+                      <TableHead className="text-center">Size</TableHead>
+                      <TableHead className="text-center">Qty</TableHead>
+                      <TableHead className="text-right">Price</TableHead>
+                      <TableHead className="w-[80px]"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {lineItems.map((item) => (
+                      <TableRow key={item.tempId || item.id}>
+                        <TableCell>
+                          <div className="font-medium text-sm">{item.productName}</div>
+                          {item.variantName && (
+                            <div className="text-xs text-muted-foreground">{item.variantName}</div>
+                          )}
+                          {item.selectedOptions && item.selectedOptions.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {item.selectedOptions.map((opt: any, idx: number) => (
+                                <Badge key={idx} variant="outline" className="text-xs py-0">
                                   {opt.optionName}
-                                  {typeof opt.value === "boolean" 
-                                    ? "" 
-                                    : `: ${opt.value}`
-                                  }
-                                  {opt.calculatedCost > 0 && (
-                                    <span className="ml-1 text-muted-foreground">
-                                      (+${opt.calculatedCost.toFixed(2)})
-                                    </span>
-                                  )}
                                 </Badge>
                               ))}
                             </div>
-                          </div>
+                          )}
+                          {item.notes && (
+                            <div className="text-xs italic text-muted-foreground mt-1 truncate max-w-[200px]">
+                              {item.notes}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center text-sm">
+                          {item.width > 1 || item.height > 1 ? (
+                            `${item.width}" × ${item.height}"`
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center text-sm">{item.quantity}</TableCell>
+                        <TableCell className="text-right font-mono text-sm">
+                          ${item.linePrice.toFixed(2)}
+                        </TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8">
+                                <ChevronDown className="w-4 h-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleDuplicateLineItem(item.tempId || item.id || '')}>
+                                <Copy className="w-4 h-4 mr-2" />
+                                Duplicate
+                              </DropdownMenuItem>
+                              <DropdownMenuItem 
+                                onClick={() => handleRemoveLineItem(item.tempId || item.id || '')}
+                                className="text-destructive"
+                              >
+                                <Trash2 className="w-4 h-4 mr-2" />
+                                Remove
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Files & Artwork Card */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Paperclip className="w-4 h-4" />
+                Files & Artwork
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Upload button */}
+              <div>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  className="hidden"
+                  multiple
+                  accept="image/*,.pdf,.ai,.eps,.psd,.svg"
+                  onChange={handleFileUpload}
+                />
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading || isNewQuote}
+                >
+                  {isUploading ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Upload className="w-4 h-4 mr-2" />
+                  )}
+                  {isUploading ? "Uploading..." : "Upload Files"}
+                </Button>
+                {isNewQuote && (
+                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                    Save quote first to attach files
+                  </p>
+                )}
+              </div>
+
+              {/* File list */}
+              {quoteFiles && quoteFiles.length > 0 && (
+                <div className="space-y-2">
+                  {quoteFiles.map((file: QuoteAttachment) => (
+                    <div
+                      key={file.id}
+                      className="flex items-center gap-2 p-2 rounded-md bg-muted/50 hover:bg-muted transition-colors"
+                    >
+                      <Paperclip className="w-4 h-4 text-muted-foreground shrink-0" />
+                      <span className="text-sm truncate flex-1">{file.fileName}</span>
+                      <div className="flex gap-1 shrink-0">
+                        {file.fileUrl && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={() => window.open(file.fileUrl, '_blank')}
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </Button>
                         )}
-                        
-                        {/* Display notes */}
-                        {item.notes && (
-                          <div className="mt-2 text-sm italic text-muted-foreground">
-                            Note: {item.notes}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 ml-4">
-                        <div className="text-right">
-                          <div className="font-mono font-medium">${item.linePrice.toFixed(2)}</div>
-                        </div>
                         <Button
-                          size="icon"
                           variant="ghost"
-                          onClick={() => handleRemoveLineItem(item.tempId || item.id || '')}
+                          size="sm"
+                          className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                          onClick={() => handleDeleteFile(file.id)}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <X className="w-3.5 h-3.5" />
                         </Button>
                       </div>
                     </div>
                   ))}
-                  <div className="mt-4 pt-4 border-t">
-                    <div className="flex justify-between items-center">
-                      <span className="font-medium">Quote Total:</span>
-                      <span className="text-2xl font-bold font-mono">${total.toFixed(2)}</span>
-                    </div>
-                  </div>
                 </div>
+              )}
+
+              {(!quoteFiles || quoteFiles.length === 0) && !isNewQuote && (
+                <p className="text-sm text-muted-foreground text-center py-2">
+                  No files attached
+                </p>
               )}
             </CardContent>
           </Card>
+        </div>
+
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* RIGHT COLUMN: Summary & Totals */}
+        {/* ═══════════════════════════════════════════════════════════════ */}
+        <div className="space-y-4 order-2 lg:order-3">
+          {/* Finished Line Items Card - compact view */}
+          {lineItems.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <ListOrdered className="w-4 h-4" />
+                  Line Items ({lineItems.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="divide-y max-h-[300px] overflow-y-auto">
+                  {lineItems.map((item, index) => (
+                    <div key={index} className="px-4 py-2 hover:bg-muted/50 transition-colors">
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm truncate">
+                            {products?.find((p: any) => p.id === item.productId)?.name || 'Unknown Product'}
+                          </p>
+                          {item.description && (
+                            <p className="text-xs text-muted-foreground truncate">{item.description}</p>
+                          )}
+                          {(item.width || item.height) && (
+                            <p className="text-xs text-muted-foreground">
+                              {item.width}" × {item.height}"
+                            </p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-mono text-sm font-medium">${Number(item.lineTotal || 0).toFixed(2)}</p>
+                          <p className="text-xs text-muted-foreground">Qty: {item.quantity}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Quote Summary Card */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <DollarSign className="w-4 h-4" />
+                Quote Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {/* Subtotal */}
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Subtotal</span>
+                <span className="font-mono">${subtotal.toFixed(2)}</span>
+              </div>
+
+              {/* Discounts - show if customer has discount */}
+              {discountPercent && discountPercent > 0 && (
+                <div className="flex justify-between text-sm text-green-600">
+                  <span>Discount ({discountPercent}%)</span>
+                  <span className="font-mono">-${(subtotal * discountPercent / 100).toFixed(2)}</span>
+                </div>
+              )}
+
+              <Separator />
+
+              {/* Tax breakdown */}
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">
+                  Tax ({(effectiveTaxRate * 100).toFixed(2)}%)
+                  {selectedCustomer?.isTaxExempt && (
+                    <Badge variant="outline" className="ml-2 text-xs">Exempt</Badge>
+                  )}
+                </span>
+                <span className="font-mono">${taxAmount.toFixed(2)}</span>
+              </div>
+
+              {/* Shipping placeholder - to be implemented */}
+              {deliveryMethod === 'ship' && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Shipping</span>
+                  <span className="font-mono text-muted-foreground">TBD</span>
+                </div>
+              )}
+
+              <Separator />
+
+              {/* Grand Total */}
+              <div className="flex justify-between items-baseline">
+                <span className="font-medium">Grand Total</span>
+                <span className="text-2xl font-bold font-mono">${grandTotal.toFixed(2)}</span>
+              </div>
+            </CardContent>
+            <CardFooter className="flex-col gap-2 pt-0">
+              <Button
+                className="w-full"
+                onClick={() => saveQuoteMutation.mutate()}
+                disabled={saveQuoteMutation.isPending || lineItems.length === 0 || !selectedCustomerId}
+              >
+                <Save className="w-4 h-4 mr-2" />
+                {saveQuoteMutation.isPending ? "Saving..." : isNewQuote ? "Save Quote" : "Update Quote"}
+              </Button>
+              
+              {!isNewQuote && (
+                <div className="grid grid-cols-2 gap-2 w-full">
+                  <Button variant="outline" disabled>
+                    <Send className="w-4 h-4 mr-2" />
+                    Email
+                  </Button>
+                  <Button variant="secondary" disabled>
+                    Convert to Order
+                  </Button>
+                </div>
+              )}
+            </CardFooter>
+          </Card>
+
+          {/* Quick Info Card - only when customer selected */}
+          {selectedCustomer && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm text-muted-foreground">Customer Info</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm space-y-1">
+                <p className="font-medium">{selectedCustomer.companyName}</p>
+                {selectedCustomer.email && (
+                  <p className="text-muted-foreground">{selectedCustomer.email}</p>
+                )}
+                {selectedCustomer.phone && (
+                  <p className="text-muted-foreground">{selectedCustomer.phone}</p>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>

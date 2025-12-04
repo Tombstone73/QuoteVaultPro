@@ -20,6 +20,9 @@ export type Job = {
   specsJson?: any;
   assignedToUserId: string | null;
   notesInternal: string | null;
+  // Production tracking fields
+  rollWidthUsedInches?: number | null;
+  materialId?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -152,7 +155,7 @@ export function useUpdateJob(id: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: { statusKey?: string; assignedToUserId?: string; assignedTo?: string; notes?: string }) => {
+    mutationFn: async (data: { statusKey?: string; assignedToUserId?: string; assignedTo?: string; notes?: string; rollWidthUsedInches?: number | null; materialId?: string | null }) => {
       const res = await fetch(`/api/jobs/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
