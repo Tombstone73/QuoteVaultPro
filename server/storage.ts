@@ -3125,6 +3125,13 @@ export class DatabaseStorage implements IStorage {
       updateData.notesInternal = (data as any).notes;
       delete (updateData as any).notes;
     }
+    // Handle production tracking fields
+    if ((data as any).rollWidthUsedInches !== undefined) {
+      updateData.rollWidthUsedInches = (data as any).rollWidthUsedInches;
+    }
+    if ((data as any).materialId !== undefined) {
+      updateData.materialId = (data as any).materialId;
+    }
     const [updated] = await db.update(jobs).set(updateData).where(eq(jobs.id, id)).returning();
     if (!updated) throw new Error('Job not found after update');
     if (data.statusKey && data.statusKey !== existing.statusKey) {

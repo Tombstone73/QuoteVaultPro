@@ -936,6 +936,62 @@ export default function ProductsPage() {
                         <Sparkles className="h-4 w-4 mr-2" />
                         + Overlaminate
                       </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const current = addProductForm.getValues("optionsJson") || [];
+                          addProductForm.setValue("optionsJson", [
+                            ...current,
+                            { 
+                              id: generateOptionId(), 
+                              label: "Hems",
+                              type: "checkbox", 
+                              priceMode: "flat_per_item", 
+                              amount: 2.00,
+                              defaultSelected: false,
+                              config: {
+                                kind: "hems",
+                                hemsChoices: ["none", "all_sides", "top_bottom", "left_right"],
+                                defaultHems: "none"
+                              },
+                              sortOrder: current.length + 1
+                            }
+                          ]);
+                        }}
+                      >
+                        <Zap className="h-4 w-4 mr-2" />
+                        + Hems
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const current = addProductForm.getValues("optionsJson") || [];
+                          addProductForm.setValue("optionsJson", [
+                            ...current,
+                            { 
+                              id: generateOptionId(), 
+                              label: "Pole Pockets",
+                              type: "checkbox", 
+                              priceMode: "flat_per_item", 
+                              amount: 5.00,
+                              defaultSelected: false,
+                              config: {
+                                kind: "pole_pockets",
+                                polePocketChoices: ["none", "top", "bottom", "top_bottom"],
+                                defaultPolePocket: "none"
+                              },
+                              sortOrder: current.length + 1
+                            }
+                          ]);
+                        }}
+                      >
+                        <Zap className="h-4 w-4 mr-2" />
+                        + Pole Pockets
+                      </Button>
                     </div>
                   </div>
 
@@ -1575,6 +1631,64 @@ export default function ProductsPage() {
                         <Sparkles className="h-4 w-4 mr-2" />
                         + Overlaminate
                       </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const current = editProductForm.getValues("optionsJson") || [];
+                          const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
+                          editProductForm.setValue("optionsJson", [
+                            ...current,
+                            { 
+                              id: generateOptionId(), 
+                              label: "Hems",
+                              type: "checkbox", 
+                              priceMode: "flat_per_item", 
+                              amount: 2.00,
+                              defaultSelected: false,
+                              config: {
+                                kind: "hems",
+                                hemsChoices: ["none", "all_sides", "top_bottom", "left_right"],
+                                defaultHems: "none"
+                              },
+                              sortOrder: maxSortOrder + 1
+                            }
+                          ]);
+                        }}
+                      >
+                        <Zap className="h-4 w-4 mr-2" />
+                        + Hems
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const current = editProductForm.getValues("optionsJson") || [];
+                          const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
+                          editProductForm.setValue("optionsJson", [
+                            ...current,
+                            { 
+                              id: generateOptionId(), 
+                              label: "Pole Pockets",
+                              type: "checkbox", 
+                              priceMode: "flat_per_item", 
+                              amount: 5.00,
+                              defaultSelected: false,
+                              config: {
+                                kind: "pole_pockets",
+                                polePocketChoices: ["none", "top", "bottom", "top_bottom"],
+                                defaultPolePocket: "none"
+                              },
+                              sortOrder: maxSortOrder + 1
+                            }
+                          ]);
+                        }}
+                      >
+                        <Zap className="h-4 w-4 mr-2" />
+                        + Pole Pockets
+                      </Button>
                     </div>
                   </div>
 
@@ -1937,6 +2051,20 @@ function ProductOptionsEditor({
                           kind: "grommets",
                           defaultLocation: "all_corners",
                           locations: ["all_corners", "top_corners", "top_even", "custom"],
+                          spacingOptions: [12, 24],
+                          defaultSpacingInches: 24,
+                        });
+                      } else if (val === "hems") {
+                        updateConfig(index, {
+                          kind: "hems",
+                          hemsChoices: ["none", "all_sides", "top_bottom", "left_right"],
+                          defaultHems: "none",
+                        });
+                      } else if (val === "pole_pockets") {
+                        updateConfig(index, {
+                          kind: "pole_pockets",
+                          polePocketChoices: ["none", "top", "bottom", "top_bottom"],
+                          defaultPolePocket: "none",
                         });
                       } else if (val === "sides") {
                         updateConfig(index, {
@@ -1970,6 +2098,8 @@ function ProductOptionsEditor({
                     <SelectContent>
                       <SelectItem value="generic">None</SelectItem>
                       <SelectItem value="grommets">Grommets</SelectItem>
+                      <SelectItem value="hems">Hems</SelectItem>
+                      <SelectItem value="pole_pockets">Pole Pockets</SelectItem>
                       <SelectItem value="sides">Sides (Single/Double)</SelectItem>
                       <SelectItem value="thickness">Thickness Selector</SelectItem>
                     </SelectContent>
@@ -2025,6 +2155,107 @@ function ProductOptionsEditor({
                       />
                     </div>
                   )}
+                  {/* Spacing Options for grommets */}
+                  <div>
+                    <Label className="text-xs">Spacing Options (inches)</Label>
+                    <Input
+                      placeholder="e.g., 12,24"
+                      value={(opt.config.spacingOptions || []).join(",")}
+                      onChange={(e) => {
+                        const values = e.target.value.split(",").map(v => parseInt(v.trim())).filter(v => !isNaN(v));
+                        updateConfig(index, { spacingOptions: values });
+                      }}
+                      className="h-9"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Comma-separated values (e.g., 12,24 for 12" and 24" spacing)</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Default Spacing (inches)</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      placeholder="24"
+                      value={opt.config.defaultSpacingInches || ""}
+                      onChange={(e) => updateConfig(index, { defaultSpacingInches: parseInt(e.target.value) || undefined })}
+                      className="h-9"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Hems Sub-Config */}
+              {opt.config?.kind === "hems" && (
+                <div className="pl-4 border-l-2 border-blue-500/50 space-y-2">
+                  <div className="text-xs font-semibold text-blue-600">Hems Configuration</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">Default Hem Style</Label>
+                      <Select
+                        value={opt.config.defaultHems || "none"}
+                        onValueChange={(val) => updateConfig(index, { defaultHems: val as "none" | "all_sides" | "top_bottom" | "left_right" })}
+                      >
+                        <SelectTrigger className="h-9">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">None</SelectItem>
+                          <SelectItem value="all_sides">All Sides</SelectItem>
+                          <SelectItem value="top_bottom">Top & Bottom</SelectItem>
+                          <SelectItem value="left_right">Left & Right</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-xs">Available Choices</Label>
+                      <Input
+                        placeholder="none,all_sides,top_bottom,left_right"
+                        value={(opt.config.hemsChoices || []).join(",")}
+                        onChange={(e) => {
+                          const choices = e.target.value.split(",").map(v => v.trim()).filter(Boolean);
+                          updateConfig(index, { hemsChoices: choices });
+                        }}
+                        className="h-9"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Pole Pockets Sub-Config */}
+              {opt.config?.kind === "pole_pockets" && (
+                <div className="pl-4 border-l-2 border-green-500/50 space-y-2">
+                  <div className="text-xs font-semibold text-green-600">Pole Pockets Configuration</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">Default Pole Pocket</Label>
+                      <Select
+                        value={opt.config.defaultPolePocket || "none"}
+                        onValueChange={(val: "none" | "top" | "bottom" | "top_bottom") => updateConfig(index, { defaultPolePocket: val })}
+                      >
+                        <SelectTrigger className="h-9">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">None</SelectItem>
+                          <SelectItem value="top">Top</SelectItem>
+                          <SelectItem value="bottom">Bottom</SelectItem>
+                          <SelectItem value="top_bottom">Top & Bottom</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-xs">Available Choices</Label>
+                      <Input
+                        placeholder="none,top,bottom,top_bottom"
+                        value={(opt.config.polePocketChoices || []).join(",")}
+                        onChange={(e) => {
+                          const choices = e.target.value.split(",").map(v => v.trim()).filter(Boolean);
+                          updateConfig(index, { polePocketChoices: choices });
+                        }}
+                        className="h-9"
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
 
