@@ -11,9 +11,31 @@ import { useToast } from "@/hooks/use-toast";
 import { Calculator as CalcIcon, ExternalLink, Save, Plus, X, Trash2, Grid3x3, List } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
 import { useLocation } from "wouter";
-import type { Product, InsertQuote, ProductOption, ProductVariant, InsertQuoteLineItem, ProductOptionItem } from "@shared/schema";
+import type { Product, InsertQuote, ProductVariant, InsertQuoteLineItem, ProductOptionItem } from "@shared/schema";
+
+/**
+ * Helper function to format option price label based on priceMode
+ */
+function formatOptionPriceLabel(option: ProductOptionItem): string {
+  const amount = option.amount || 0;
+  
+  switch (option.priceMode) {
+    case "percent_of_base":
+      return `+${amount}%`;
+    case "flat_per_item":
+      return `+$${amount.toFixed(2)} ea`;
+    case "per_sqft":
+      return `+$${amount.toFixed(2)}/sqft`;
+    case "per_qty":
+      return `+$${amount.toFixed(2)}/qty`;
+    case "flat":
+    default:
+      return `+$${amount.toFixed(2)}`;
+  }
+}
 
 // Line item draft type (before saving to server)
 type LineItemDraft = {
@@ -40,7 +62,17 @@ export default function CalculatorComponent() {
   const [height, setHeight] = useState<string>("");
   const [quantity, setQuantity] = useState<string>("1");
   const [customerName, setCustomerName] = useState<string>("");
-  const [optionValues, setOptionValues] = useState<Record<string, any>>({});
+  // Enhanced option selections state (matches quote-editor structure)
+  const [optionSelections, setOptionSelections] = useState<Record<string, {
+    value: string | number | boolean;
+    grommetsLocation?: string;
+    grommetsSpacingCount?: number;
+    grommetsSpacingInches?: number;
+    grommetsPerSign?: number;
+    customPlacementNote?: string;
+    hemsType?: string;
+    polePocket?: string;
+  }>>({});
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [priceBreakdown, setPriceBreakdown] = useState<any>(null);
   const [lineItems, setLineItems] = useState<LineItemDraft[]>([]);
@@ -56,11 +88,6 @@ export default function CalculatorComponent() {
     queryKey: ["/api/products"],
   });
 
-  const { data: productOptions } = useQuery<ProductOption[]>({
-    queryKey: ["/api/products", selectedProductId, "options"],
-    enabled: !!selectedProductId,
-  });
-
   const { data: productVariants } = useQuery<ProductVariant[]>({
     queryKey: ["/api/products", selectedProductId, "variants"],
     enabled: !!selectedProductId,
@@ -71,9 +98,9 @@ export default function CalculatorComponent() {
   // Get inline options from product
   const productOptionsInline = selectedProduct?.optionsJson as ProductOptionItem[] | undefined;
 
-  // Reset option values and variant when product changes
+  // Reset option selections and variant when product changes
   useEffect(() => {
-    setOptionValues({});
+    setOptionSelections({});
     setSelectedVariant(null);
   }, [selectedProductId]);
 
@@ -90,29 +117,48 @@ export default function CalculatorComponent() {
   // Set default values when product options load (inline optionsJson)
   useEffect(() => {
     if (productOptionsInline && productOptionsInline.length > 0) {
-      const defaults: Record<string, any> = {};
+      const defaults: Record<string, { value: string | number | boolean; grommetsLocation?: string; grommetsSpacingCount?: number; grommetsPerSign?: number; }> = {};
 
       // Sort by sortOrder before processing defaults
       const sortedOptions = [...productOptionsInline].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
       sortedOptions.forEach(option => {
         if (option.defaultSelected) {
-          if (option.type === "checkbox" || option.type === "toggle") {
-            defaults[option.id] = true;
+          if (option.type === "checkbox") {
+            defaults[option.id] = { value: true };
+          } else if (option.type === "toggle" && option.config?.kind === "sides") {
+            defaults[option.id] = { value: option.config.defaultSide || "single" };
+          } else if (option.type === "toggle") {
+            defaults[option.id] = { value: true };
           } else if (option.type === "select") {
-            // For sides special config, use defaultSide if available
-            if (option.config?.kind === "sides") {
-              defaults[option.id] = option.config.defaultSide || "single";
-            } else if (option.config?.kind === "thickness") {
-              defaults[option.id] = option.config.defaultThicknessKey || "";
+            if (option.config?.kind === "thickness") {
+              defaults[option.id] = { value: option.config.defaultThicknessKey || "" };
             }
           }
         }
       });
 
-      setOptionValues(defaults);
+      setOptionSelections(defaults);
     }
   }, [productOptionsInline]);
+
+  // Helper to build selectedOptions payload from optionSelections state (for API calls)
+  const buildSelectedOptionsPayload = () => {
+    const payload: Record<string, any> = {};
+    Object.entries(optionSelections).forEach(([optionId, selection]) => {
+      payload[optionId] = {
+        value: selection.value,
+        grommetsLocation: selection.grommetsLocation,
+        grommetsSpacingCount: selection.grommetsSpacingCount,
+        grommetsSpacingInches: selection.grommetsSpacingInches,
+        grommetsPerSign: selection.grommetsPerSign,
+        customPlacementNote: selection.customPlacementNote,
+        hemsType: selection.hemsType,
+        polePocket: selection.polePocket,
+      };
+    });
+    return payload;
+  };
 
   // Auto-calculate price when inputs change
   useEffect(() => {
@@ -137,7 +183,7 @@ export default function CalculatorComponent() {
 
     // Trigger the calculation
     calculateMutation.mutate();
-  }, [selectedProductId, selectedVariant, width, height, quantity, optionValues]);
+  }, [selectedProductId, selectedVariant, width, height, quantity, optionSelections]);
 
   const calculateMutation = useMutation({
     mutationFn: async () => {
@@ -147,7 +193,7 @@ export default function CalculatorComponent() {
         width: parseFloat(width),
         height: parseFloat(height),
         quantity: parseInt(quantity),
-        selectedOptions: optionValues,
+        selectedOptions: buildSelectedOptionsPayload(),
       });
       return await response.json();
     },
@@ -214,7 +260,7 @@ export default function CalculatorComponent() {
       setWidth("");
       setHeight("");
       setQuantity("1");
-      setOptionValues({});
+      setOptionSelections({});
       setCalculatedPrice(null);
       setPriceBreakdown(null);
     },
@@ -314,7 +360,7 @@ export default function CalculatorComponent() {
     setWidth("");
     setHeight("");
     setQuantity("1");
-    setOptionValues({});
+    setOptionSelections({});
     setCalculatedPrice(null);
     setPriceBreakdown(null);
     
@@ -340,119 +386,6 @@ export default function CalculatorComponent() {
       description: "All line items have been removed.",
     });
   };
-
-  const handleOptionChange = (optionId: string, value: any, option: ProductOption) => {
-    // Coerce number-type options to actual numbers
-    let processedValue = value;
-    if (option.type === "number" && typeof value === "string") {
-      processedValue = value === "" ? null : parseFloat(value);
-    }
-    
-    setOptionValues(prev => {
-      const newValues = { ...prev };
-
-      // If this is a toggle being turned off, remove it and all child option values
-      if (option.type === "toggle" && !value) {
-        delete newValues[optionId];
-        if (childOptionsMap[optionId]) {
-          childOptionsMap[optionId].forEach(childOption => {
-            delete newValues[childOption.id];
-          });
-        }
-      } else {
-        // Set the value normally
-        newValues[optionId] = processedValue;
-      }
-
-      return newValues;
-    });
-  };
-
-  const renderOption = (option: ProductOption) => {
-    const value = optionValues[option.id];
-
-    switch (option.type) {
-      case "toggle":
-        return (
-          <div key={option.id} className="flex items-center justify-between gap-4 p-3 rounded-md border">
-            <div className="space-y-0.5 flex-1">
-              <Label htmlFor={`option-${option.id}`} data-testid={`label-option-${option.id}`}>
-                {option.name}
-              </Label>
-              {option.description && (
-                <p className="text-xs text-muted-foreground">{option.description}</p>
-              )}
-            </div>
-            <Switch
-              id={`option-${option.id}`}
-              checked={value ?? false}
-              onCheckedChange={(checked) => handleOptionChange(option.id, checked, option)}
-              data-testid={`switch-option-${option.id}`}
-            />
-          </div>
-        );
-
-      case "number":
-        return (
-          <div key={option.id} className="space-y-2">
-            <Label htmlFor={`option-${option.id}`} data-testid={`label-option-${option.id}`}>
-              {option.name}
-            </Label>
-            {option.description && (
-              <p className="text-xs text-muted-foreground">{option.description}</p>
-            )}
-            <Input
-              id={`option-${option.id}`}
-              type="number"
-              step="0.01"
-              min="0"
-              value={value ?? ""}
-              onChange={(e) => handleOptionChange(option.id, e.target.value, option)}
-              placeholder={option.defaultValue || "0"}
-              data-testid={`input-option-${option.id}`}
-            />
-          </div>
-        );
-
-      case "select":
-        const selectOptions = option.defaultValue?.split(",").map(opt => opt.trim()).filter(Boolean) || [];
-        return (
-          <div key={option.id} className="space-y-2">
-            <Label htmlFor={`option-${option.id}`} data-testid={`label-option-${option.id}`}>
-              {option.name}
-            </Label>
-            {option.description && (
-              <p className="text-xs text-muted-foreground">{option.description}</p>
-            )}
-            <Select value={value || ""} onValueChange={(val) => handleOptionChange(option.id, val, option)}>
-              <SelectTrigger id={`option-${option.id}`} data-testid={`select-option-${option.id}`}>
-                <SelectValue placeholder="Select an option" />
-              </SelectTrigger>
-              <SelectContent>
-                {selectOptions.map((opt) => (
-                  <SelectItem key={opt} value={opt} data-testid={`option-${option.id}-${opt}`}>
-                    {opt}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        );
-
-      default:
-        return null;
-    }
-  };
-
-  // Group options by parent
-  const topLevelOptions = productOptions?.filter(opt => !opt.parentOptionId && opt.isActive) || [];
-  const childOptionsMap = productOptions?.reduce((acc, opt) => {
-    if (opt.parentOptionId && opt.isActive) {
-      if (!acc[opt.parentOptionId]) acc[opt.parentOptionId] = [];
-      acc[opt.parentOptionId].push(opt);
-    }
-    return acc;
-  }, {} as Record<string, ProductOption[]>) || {};
 
   if (productsLoading) {
     return (
@@ -701,28 +634,279 @@ export default function CalculatorComponent() {
               )}
             </div>
 
-            {topLevelOptions.length > 0 && (
-              <div className="space-y-3">
-                <Label data-testid="label-options">Product Options</Label>
-                {topLevelOptions
-                  .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
+            {/* Product Options Selection - Inline options from product.optionsJson */}
+            {selectedProduct && productOptionsInline && productOptionsInline.length > 0 && (
+              <div className="space-y-3 border-t pt-4">
+                <Label className="text-base font-semibold" data-testid="label-options">Product Options</Label>
+                {[...productOptionsInline]
+                  .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
                   .map((option) => {
-                    // For toggle parent options, only show children if parent is enabled
-                    const showChildren = option.type !== "toggle" || optionValues[option.id] === true;
-                    
+                    const selection = optionSelections[option.id];
+                    const isSelected = !!selection;
+
                     return (
-                      <div key={option.id} className="space-y-2">
-                        {renderOption(option)}
-                        {childOptionsMap[option.id] && showChildren && (
-                          <div className="ml-6 space-y-2" data-testid={`child-options-${option.id}`}>
-                            {childOptionsMap[option.id]
-                              .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
-                              .map((childOption) => renderOption(childOption))}
+                      <div key={option.id} className="space-y-2 p-3 border rounded-md" data-testid={`option-container-${option.id}`}>
+                        {/* Checkbox type */}
+                        {option.type === "checkbox" && (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                id={`option-${option.id}`}
+                                checked={isSelected}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: { value: true }
+                                    }));
+                                  } else {
+                                    const { [option.id]: _, ...rest } = optionSelections;
+                                    setOptionSelections(rest);
+                                  }
+                                }}
+                                data-testid={`switch-option-${option.id}`}
+                              />
+                              <Label htmlFor={`option-${option.id}`} className="cursor-pointer">{option.label}</Label>
+                            </div>
+                            {option.amount !== undefined && option.amount !== null && (
+                              <Badge variant="secondary">
+                                {formatOptionPriceLabel(option)}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Quantity type */}
+                        {option.type === "quantity" && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Label htmlFor={`option-${option.id}`}>{option.label}</Label>
+                              {option.amount !== undefined && option.amount !== null && (
+                                <Badge variant="secondary">
+                                  {formatOptionPriceLabel(option)}
+                                </Badge>
+                              )}
+                            </div>
+                            <Input
+                              id={`option-${option.id}`}
+                              type="number"
+                              min="0"
+                              value={typeof selection?.value === "number" ? selection.value : 0}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value) || 0;
+                                if (val > 0) {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: val }
+                                  }));
+                                } else {
+                                  const { [option.id]: _, ...rest } = optionSelections;
+                                  setOptionSelections(rest);
+                                }
+                              }}
+                              data-testid={`input-option-${option.id}`}
+                            />
+                          </div>
+                        )}
+
+                        {/* Toggle type (for sides: single/double) */}
+                        {option.type === "toggle" && option.config?.kind === "sides" && (
+                          <div className="space-y-2">
+                            <Label>{option.label}</Label>
+                            <div className="flex gap-2">
+                              <Button
+                                type="button"
+                                variant={selection?.value === "single" ? "default" : "outline"}
+                                className="flex-1"
+                                onClick={() => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: "single" }
+                                  }));
+                                }}
+                                data-testid={`button-option-${option.id}-single`}
+                              >
+                                {option.config.singleLabel || "Single"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant={selection?.value === "double" ? "default" : "outline"}
+                                className="flex-1"
+                                onClick={() => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: "double" }
+                                  }));
+                                }}
+                                data-testid={`button-option-${option.id}-double`}
+                              >
+                                {option.config.doubleLabel || "Double"}
+                                {option.config.pricingMode !== "volume" && option.config.doublePriceMultiplier && (
+                                  <span className="ml-1 text-xs">
+                                    ({option.config.doublePriceMultiplier}x)
+                                  </span>
+                                )}
+                                {option.config.pricingMode === "volume" && (
+                                  <span className="ml-1 text-xs text-muted-foreground">
+                                    (Volume)
+                                  </span>
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Generic toggle (not sides) */}
+                        {option.type === "toggle" && option.config?.kind !== "sides" && (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                id={`option-${option.id}`}
+                                checked={isSelected}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: { value: true }
+                                    }));
+                                  } else {
+                                    const { [option.id]: _, ...rest } = optionSelections;
+                                    setOptionSelections(rest);
+                                  }
+                                }}
+                                data-testid={`switch-option-${option.id}`}
+                              />
+                              <Label htmlFor={`option-${option.id}`} className="cursor-pointer">{option.label}</Label>
+                            </div>
+                            {option.amount !== undefined && option.amount !== null && (
+                              <Badge variant="secondary">
+                                {formatOptionPriceLabel(option)}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Grommets with location selector */}
+                        {option.config?.kind === "grommets" && isSelected && (
+                          <div className="space-y-3 mt-2 pl-6 border-l-2 border-orange-500">
+                            {/* Grommets per sign input */}
+                            <div className="space-y-1">
+                              <Label className="text-sm">Grommets per sign</Label>
+                              <Input
+                                type="number"
+                                min="0"
+                                value={selection?.grommetsPerSign ?? 4}
+                                onChange={(e) => {
+                                  const count = parseInt(e.target.value) || 0;
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: {
+                                      ...prev[option.id],
+                                      grommetsPerSign: count
+                                    }
+                                  }));
+                                }}
+                                className="w-24"
+                                data-testid={`input-grommets-per-sign-${option.id}`}
+                              />
+                              <p className="text-xs text-muted-foreground">
+                                Total: {(selection?.grommetsPerSign ?? 4) * parseInt(quantity || "1")} grommets × ${(option.amount || 0).toFixed(2)} = ${((selection?.grommetsPerSign ?? 4) * parseInt(quantity || "1") * (option.amount || 0)).toFixed(2)}
+                              </p>
+                            </div>
+
+                            <Label className="text-sm">Grommet Location</Label>
+                            <Select
+                              value={selection?.grommetsLocation || option.config.defaultLocation || "all_corners"}
+                              onValueChange={(val) => {
+                                // Auto-set grommetsPerSign based on location if not already set
+                                let defaultCount = selection?.grommetsPerSign;
+                                if (!defaultCount) {
+                                  if (val === "all_corners") defaultCount = 4;
+                                  else if (val === "top_corners") defaultCount = 2;
+                                  else defaultCount = 4;
+                                }
+                                setOptionSelections(prev => ({
+                                  ...prev,
+                                  [option.id]: { 
+                                    ...prev[option.id],
+                                    grommetsLocation: val,
+                                    grommetsPerSign: defaultCount
+                                  }
+                                }));
+                              }}
+                            >
+                              <SelectTrigger data-testid={`select-grommets-location-${option.id}`}>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="all_corners">All Corners</SelectItem>
+                                <SelectItem value="top_corners">Top Corners Only</SelectItem>
+                                <SelectItem value="top_even">Top Edge (Even Spacing)</SelectItem>
+                                <SelectItem value="custom">Custom Placement</SelectItem>
+                              </SelectContent>
+                            </Select>
+
+                            {selection?.grommetsLocation === "top_even" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">Spacing Count</Label>
+                                <Input
+                                  type="number"
+                                  min="1"
+                                  value={selection?.grommetsSpacingCount || option.config.defaultSpacingCount || 1}
+                                  onChange={(e) => {
+                                    const count = parseInt(e.target.value) || 1;
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: {
+                                        ...prev[option.id],
+                                        grommetsSpacingCount: count,
+                                        grommetsPerSign: count
+                                      }
+                                    }));
+                                  }}
+                                  data-testid={`input-grommets-spacing-${option.id}`}
+                                />
+                              </div>
+                            )}
+
+                            {selection?.grommetsLocation === "custom" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">Custom Placement Notes</Label>
+                                <Textarea
+                                  placeholder="Enter custom grommet placement instructions..."
+                                  value={selection?.customPlacementNote || ""}
+                                  onChange={(e) => {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: {
+                                        ...prev[option.id],
+                                        customPlacementNote: e.target.value
+                                      }
+                                    }));
+                                  }}
+                                  rows={2}
+                                  className="text-sm"
+                                  data-testid={`textarea-grommets-custom-${option.id}`}
+                                />
+                                {option.config.customNotes && (
+                                  <p className="text-xs text-muted-foreground italic">
+                                    Default: {option.config.customNotes}
+                                  </p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
                     );
                   })}
+              </div>
+            )}
+
+            {/* Show message when no options for selected product */}
+            {selectedProduct && (!productOptionsInline || productOptionsInline.length === 0) && (
+              <div className="text-sm text-muted-foreground italic pt-2">
+                No additional options for this product.
               </div>
             )}
 

@@ -291,11 +291,13 @@ export type ProductOptionItem = {
   defaultSelected?: boolean; // Controls whether this option is selected by default on new line items
   sortOrder?: number; // Controls display order in calculator/quote UI
   config?: {
-    kind?: "grommets" | "sides" | "thickness" | "generic";
+    kind?: "grommets" | "sides" | "thickness" | "hems" | "pole_pockets" | "generic";
     // For grommets
     locations?: Array<"all_corners" | "top_corners" | "top_even" | "custom">;
     defaultLocation?: "all_corners" | "top_corners" | "top_even" | "custom";
     defaultSpacingCount?: number; // For top_even
+    defaultSpacingInches?: number; // e.g., 12, 24 - for banner grommets with inch-based spacing
+    spacingOptions?: Array<{ value: number; label: string; }>; // e.g., [{ value: 12, label: "Every 12 inches" }, { value: 24, label: "Every 24 inches" }]
     customNotes?: string; // For custom
     // For sides toggle
     singleLabel?: string;
@@ -323,6 +325,12 @@ export type ProductOptionItem = {
         pricePerSheet: number;
       }>;
     }>;
+    // For hems (banner finishing)
+    hemsChoices?: Array<{ value: string; label: string; }>; // e.g., [{ value: "none", label: "None" }, { value: "all_sides", label: "All Sides" }]
+    defaultHems?: "none" | "all_sides" | "top_bottom" | "left_right";
+    // For pole pockets (banner finishing)
+    polePocketChoices?: Array<{ value: string; label: string; }>; // e.g., [{ value: "none", label: "None" }, { value: "top", label: "Top Only" }]
+    defaultPolePocket?: "none" | "top" | "bottom" | "top_bottom";
   };
   // Sub-config for nested options (e.g., grommets sub-options)
   subConfig?: {
@@ -414,7 +422,7 @@ const productOptionItemSchema = z.object({
   sortOrder: z.number().optional(),
   config: z
     .object({
-      kind: z.enum(["grommets", "sides", "thickness", "generic"]).default("generic"),
+      kind: z.enum(["grommets", "sides", "thickness", "hems", "pole_pockets", "generic"]).default("generic"),
       // For grommets
       locations: z
         .array(
@@ -425,6 +433,11 @@ const productOptionItemSchema = z.object({
         .enum(["all_corners", "top_corners", "top_even", "custom"])
         .optional(),
       defaultSpacingCount: z.number().int().optional(),
+      defaultSpacingInches: z.number().optional(), // e.g., 12, 24 for banner grommets
+      spacingOptions: z.array(z.object({
+        value: z.number(),
+        label: z.string(),
+      })).optional(),
       customNotes: z.string().optional(),
       // For sides toggle
       singleLabel: z.string().optional(),
@@ -453,6 +466,18 @@ const productOptionItemSchema = z.object({
           pricePerSheet: z.number(),
         })).optional(),
       })).optional(),
+      // For hems (banner finishing)
+      hemsChoices: z.array(z.object({
+        value: z.string(),
+        label: z.string(),
+      })).optional(),
+      defaultHems: z.enum(["none", "all_sides", "top_bottom", "left_right"]).optional(),
+      // For pole pockets (banner finishing)
+      polePocketChoices: z.array(z.object({
+        value: z.string(),
+        label: z.string(),
+      })).optional(),
+      defaultPolePocket: z.enum(["none", "top", "bottom", "top_bottom"]).optional(),
     })
     .optional(),
   // Material add-on configuration
