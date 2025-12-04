@@ -2355,7 +2355,7 @@ export class DatabaseStorage implements IStorage {
           orderId: created.order.id,
           orderLineItemId: li.id,
           productType: productTypeName,
-          status: 'pending_prepress',
+          statusKey: 'new',
           priority: 'normal',
           specsJson: (li as any).specsJson || null,
           assignedToUserId: null,
@@ -2365,7 +2365,7 @@ export class DatabaseStorage implements IStorage {
         await db.insert(jobStatusLog).values({
           jobId: newJob.id,
           oldStatusKey: null,
-          newStatusKey: 'pending_prepress',
+          newStatusKey: 'new',
           userId: data.createdByUserId,
         } as InsertJobStatusLog).returning();
       }
@@ -2455,7 +2455,7 @@ export class DatabaseStorage implements IStorage {
     if (!existing) {
       // Fetch default status
       const [defaultStatus] = await db.select().from(jobStatuses).where(eq(jobStatuses.isDefault, true));
-      const initialStatusKey = defaultStatus?.key || 'pending_prepress';
+      const initialStatusKey = defaultStatus?.key || 'new';
 
       // find orderId and fetch product with productType
       const [orderRow] = await db.select().from(orders).where(eq(orders.id, created.orderId));
@@ -2469,7 +2469,7 @@ export class DatabaseStorage implements IStorage {
         orderId: orderRow?.id || created.orderId,
         orderLineItemId: created.id,
         productType: productTypeName,
-        statusKey: initialStatusKey,
+        statusKey: initialStatusKey || 'new',
         priority: 'normal',
         specsJson: (created as any).specsJson || null,
         assignedToUserId: null,
@@ -2506,7 +2506,7 @@ export class DatabaseStorage implements IStorage {
     if (!existingJob) {
       // Fetch default status and product with productType
       const [defaultStatus] = await db.select().from(jobStatuses).where(eq(jobStatuses.isDefault, true));
-      const initialStatusKey = defaultStatus?.key || 'pending_prepress';
+      const initialStatusKey = defaultStatus?.key || 'new';
 
       const productWithType = await db.query.products.findFirst({
         where: eq(products.id, updated.productId),
@@ -2518,7 +2518,7 @@ export class DatabaseStorage implements IStorage {
         orderId: updated.orderId,
         orderLineItemId: id,
         productType: productTypeName,
-        statusKey: initialStatusKey,
+        statusKey: initialStatusKey || 'new',
         priority: 'normal',
         specsJson: (updated as any).specsJson || null,
         assignedToUserId: null,
@@ -2665,7 +2665,7 @@ export class DatabaseStorage implements IStorage {
     // Auto-create jobs for each created line item
     // Fetch default status
     const [defaultStatus] = await db.select().from(jobStatuses).where(and(eq(jobStatuses.isDefault, true), eq(jobStatuses.organizationId, organizationId)));
-    const initialStatusKey = defaultStatus?.key || 'pending_prepress';
+    const initialStatusKey = defaultStatus?.key || 'new';
 
     await Promise.all(created.lineItems.map(async (li) => {
       // Check if product requires production job and fetch with productType
@@ -2686,7 +2686,7 @@ export class DatabaseStorage implements IStorage {
           orderId: created.order.id,
           orderLineItemId: li.id,
           productType: productTypeName,
-          statusKey: initialStatusKey,
+          statusKey: initialStatusKey || 'new',
           priority: 'normal',
           specsJson: (li as any).specsJson || null,
           assignedToUserId: null,
