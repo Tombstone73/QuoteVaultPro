@@ -4,12 +4,35 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Loader2, Calculator } from "lucide-react";
 import type { OrderLineItem } from "@/hooks/useOrders";
+import type { ProductOptionItem } from "@shared/schema";
+
+/**
+ * Helper function to format option price label based on priceMode
+ */
+function formatOptionPriceLabel(option: ProductOptionItem): string {
+  const amount = option.amount || 0;
+  
+  switch (option.priceMode) {
+    case "percent_of_base":
+      return `+${amount}%`;
+    case "flat_per_item":
+      return `+$${amount.toFixed(2)} ea`;
+    case "per_sqft":
+      return `+$${amount.toFixed(2)}/sqft`;
+    case "per_qty":
+      return `+$${amount.toFixed(2)}/qty`;
+    case "flat":
+    default:
+      return `+$${amount.toFixed(2)}`;
+  }
+}
 
 interface OrderLineItemDialogProps {
   open: boolean;
@@ -47,6 +70,16 @@ export function OrderLineItemDialog({
   const [priceOverrideMode, setPriceOverrideMode] = useState<'unit' | 'total' | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [optionSelections, setOptionSelections] = useState<Record<string, {
+    value: boolean | number | string;
+    grommetsLocation?: string;
+    grommetsSpacingCount?: number;
+    grommetsSpacingInches?: number;
+    grommetsPerSign?: number;
+    customPlacementNote?: string;
+    hemsType?: string;
+    polePocket?: string;
+  }>>({});
 
   // Fetch products for selection
   const { data: products = [] } = useQuery({
@@ -72,6 +105,33 @@ export function OrderLineItemDialog({
     },
     enabled: open && !!formData.productId,
   });
+
+  // Get inline options from selected product
+  const selectedProduct = products.find((p: any) => p.id === formData.productId);
+  const productOptionsInline = selectedProduct?.optionsJson as ProductOptionItem[] | undefined;
+
+  // Build selectedOptions payload for API
+  const buildSelectedOptionsPayload = useCallback(() => {
+    const payload: Record<string, any> = {};
+    Object.entries(optionSelections).forEach(([optionId, selection]) => {
+      payload[optionId] = {
+        value: selection.value,
+        grommetsLocation: selection.grommetsLocation,
+        grommetsSpacingCount: selection.grommetsSpacingCount,
+        grommetsSpacingInches: selection.grommetsSpacingInches,
+        grommetsPerSign: selection.grommetsPerSign,
+        customPlacementNote: selection.customPlacementNote,
+        hemsType: selection.hemsType,
+        polePocket: selection.polePocket,
+      };
+    });
+    return payload;
+  }, [optionSelections]);
+
+  // Reset options when product changes
+  useEffect(() => {
+    setOptionSelections({});
+  }, [formData.productId]);
 
   // Initialize form data when dialog opens
   useEffect(() => {
@@ -325,6 +385,7 @@ export function OrderLineItemDialog({
           quantity: quantityNum,
           width: widthNum,
           height: heightNum,
+          selectedOptions: buildSelectedOptionsPayload(),
         }),
       });
 
@@ -361,7 +422,7 @@ export function OrderLineItemDialog({
     } finally {
       setIsCalculating(false);
     }
-  }, [formData.productId, formData.productVariantId, formData.width, formData.height, formData.quantity, products, variants, priceOverrideMode]);
+  }, [formData.productId, formData.productVariantId, formData.width, formData.height, formData.quantity, products, variants, priceOverrideMode, buildSelectedOptionsPayload]);
 
   // Debounced auto-calculation
   useEffect(() => {
@@ -489,6 +550,351 @@ export function OrderLineItemDialog({
                 />
               </div>
             </div>
+
+            {/* Product Options Selection - Inline options from product.optionsJson */}
+            {selectedProduct && productOptionsInline && productOptionsInline.length > 0 && (
+              <div className="space-y-3 border-t pt-4">
+                <Label className="text-base font-semibold">Product Options</Label>
+                {[...productOptionsInline]
+                  .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+                  .map((option) => {
+                    const selection = optionSelections[option.id];
+                    const isSelected = !!selection;
+
+                    return (
+                      <div key={option.id} className="space-y-2 p-3 border rounded-md">
+                        {/* Checkbox type */}
+                        {option.type === "checkbox" && (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                id={`option-${option.id}`}
+                                checked={isSelected}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: { value: true }
+                                    }));
+                                  } else {
+                                    const { [option.id]: _, ...rest } = optionSelections;
+                                    setOptionSelections(rest);
+                                  }
+                                }}
+                              />
+                              <Label htmlFor={`option-${option.id}`} className="cursor-pointer">{option.label}</Label>
+                            </div>
+                            {option.amount !== undefined && option.amount !== null && (
+                              <Badge variant="secondary">
+                                {formatOptionPriceLabel(option)}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Quantity type */}
+                        {option.type === "quantity" && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Label htmlFor={`option-${option.id}`}>{option.label}</Label>
+                              {option.amount !== undefined && option.amount !== null && (
+                                <Badge variant="secondary">
+                                  {formatOptionPriceLabel(option)}
+                                </Badge>
+                              )}
+                            </div>
+                            <Input
+                              id={`option-${option.id}`}
+                              type="number"
+                              min="0"
+                              value={typeof selection?.value === "number" ? selection.value : 0}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value) || 0;
+                                if (val > 0) {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: val }
+                                  }));
+                                } else {
+                                  const { [option.id]: _, ...rest } = optionSelections;
+                                  setOptionSelections(rest);
+                                }
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        {/* Toggle type (for sides: single/double) */}
+                        {option.type === "toggle" && option.config?.kind === "sides" && (
+                          <div className="space-y-2">
+                            <Label>{option.label}</Label>
+                            <div className="flex gap-2">
+                              <Button
+                                type="button"
+                                variant={selection?.value === "single" ? "default" : "outline"}
+                                className="flex-1"
+                                onClick={() => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: "single" }
+                                  }));
+                                }}
+                              >
+                                {option.config.singleLabel || "Single"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant={selection?.value === "double" ? "default" : "outline"}
+                                className="flex-1"
+                                onClick={() => {
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: { value: "double" }
+                                  }));
+                                }}
+                              >
+                                {option.config.doubleLabel || "Double"}
+                                {option.config.pricingMode !== "volume" && option.config.doublePriceMultiplier && (
+                                  <span className="ml-1 text-xs">
+                                    ({option.config.doublePriceMultiplier}x)
+                                  </span>
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Generic toggle (not sides) */}
+                        {option.type === "toggle" && option.config?.kind !== "sides" && (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                id={`option-${option.id}`}
+                                checked={isSelected}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: { value: true }
+                                    }));
+                                  } else {
+                                    const { [option.id]: _, ...rest } = optionSelections;
+                                    setOptionSelections(rest);
+                                  }
+                                }}
+                              />
+                              <Label htmlFor={`option-${option.id}`} className="cursor-pointer">{option.label}</Label>
+                            </div>
+                            {option.amount !== undefined && option.amount !== null && (
+                              <Badge variant="secondary">
+                                {formatOptionPriceLabel(option)}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Grommets with location selector */}
+                        {option.config?.kind === "grommets" && isSelected && (
+                          <div className="space-y-3 mt-2 pl-6 border-l-2 border-orange-500">
+                            {/* Spacing selector for banners (if spacingOptions defined) */}
+                            {option.config.spacingOptions && option.config.spacingOptions.length > 0 && (
+                              <div className="space-y-1">
+                                <Label className="text-sm">Grommet Spacing</Label>
+                                <Select
+                                  value={String(selection?.grommetsSpacingInches || option.config.defaultSpacingInches || 24)}
+                                  onValueChange={(val) => {
+                                    const inches = parseInt(val);
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: {
+                                        ...prev[option.id],
+                                        grommetsSpacingInches: inches
+                                      }
+                                    }));
+                                  }}
+                                >
+                                  <SelectTrigger className="w-48">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {option.config.spacingOptions.map((opt: { value: number; label: string }) => (
+                                      <SelectItem key={opt.value} value={String(opt.value)}>
+                                        {opt.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            )}
+
+                            <div className="space-y-1">
+                              <Label className="text-sm">Grommets per sign</Label>
+                              <Input
+                                type="number"
+                                min="0"
+                                value={selection?.grommetsPerSign ?? 4}
+                                onChange={(e) => {
+                                  const count = parseInt(e.target.value) || 0;
+                                  setOptionSelections(prev => ({
+                                    ...prev,
+                                    [option.id]: {
+                                      ...prev[option.id],
+                                      grommetsPerSign: count
+                                    }
+                                  }));
+                                }}
+                                className="w-24"
+                              />
+                            </div>
+
+                            <Label className="text-sm">Grommet Location</Label>
+                            <Select
+                              value={selection?.grommetsLocation || option.config.defaultLocation || "all_corners"}
+                              onValueChange={(val) => {
+                                let defaultCount = selection?.grommetsPerSign;
+                                if (!defaultCount) {
+                                  if (val === "all_corners") defaultCount = 4;
+                                  else if (val === "top_corners") defaultCount = 2;
+                                  else defaultCount = 4;
+                                }
+                                setOptionSelections(prev => ({
+                                  ...prev,
+                                  [option.id]: { 
+                                    ...prev[option.id],
+                                    grommetsLocation: val,
+                                    grommetsPerSign: defaultCount
+                                  }
+                                }));
+                              }}
+                            >
+                              <SelectTrigger className="w-48">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="all_corners">All Corners</SelectItem>
+                                <SelectItem value="top_corners">Top Corners Only</SelectItem>
+                                <SelectItem value="top_even">Top Edge (Even Spacing)</SelectItem>
+                                <SelectItem value="custom">Custom Placement</SelectItem>
+                              </SelectContent>
+                            </Select>
+
+                            {selection?.grommetsLocation === "custom" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">Custom Placement Notes</Label>
+                                <Textarea
+                                  placeholder="Enter custom grommet placement instructions..."
+                                  value={selection?.customPlacementNote || ""}
+                                  onChange={(e) => {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: {
+                                        ...prev[option.id],
+                                        customPlacementNote: e.target.value
+                                      }
+                                    }));
+                                  }}
+                                  rows={2}
+                                  className="text-sm"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Hems option (banner finishing) */}
+                        {option.config?.kind === "hems" && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Label>{option.label}</Label>
+                              {option.amount !== undefined && option.amount !== null && (
+                                <Badge variant="secondary">
+                                  {formatOptionPriceLabel(option)}
+                                </Badge>
+                              )}
+                            </div>
+                            <Select
+                              value={selection?.hemsType || option.config.defaultHems || "none"}
+                              onValueChange={(val) => {
+                                setOptionSelections(prev => ({
+                                  ...prev,
+                                  [option.id]: { 
+                                    ...prev[option.id],
+                                    value: val !== "none",
+                                    hemsType: val
+                                  }
+                                }));
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {option.config.hemsChoices?.map((choice: { value: string; label: string }) => (
+                                  <SelectItem key={choice.value} value={choice.value}>
+                                    {choice.label}
+                                  </SelectItem>
+                                )) || (
+                                  <>
+                                    <SelectItem value="none">None</SelectItem>
+                                    <SelectItem value="all_sides">All Sides</SelectItem>
+                                    <SelectItem value="top_bottom">Top & Bottom Only</SelectItem>
+                                    <SelectItem value="left_right">Left & Right Only</SelectItem>
+                                  </>
+                                )}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+
+                        {/* Pole Pockets option (banner finishing) */}
+                        {option.config?.kind === "pole_pockets" && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Label>{option.label}</Label>
+                              {option.amount !== undefined && option.amount !== null && (
+                                <Badge variant="secondary">
+                                  {formatOptionPriceLabel(option)}
+                                </Badge>
+                              )}
+                            </div>
+                            <Select
+                              value={selection?.polePocket || option.config.defaultPolePocket || "none"}
+                              onValueChange={(val) => {
+                                setOptionSelections(prev => ({
+                                  ...prev,
+                                  [option.id]: { 
+                                    ...prev[option.id],
+                                    value: val !== "none",
+                                    polePocket: val
+                                  }
+                                }));
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {option.config.polePocketChoices?.map((choice: { value: string; label: string }) => (
+                                  <SelectItem key={choice.value} value={choice.value}>
+                                    {choice.label}
+                                  </SelectItem>
+                                )) || (
+                                  <>
+                                    <SelectItem value="none">None</SelectItem>
+                                    <SelectItem value="top">Top Only</SelectItem>
+                                    <SelectItem value="bottom">Bottom Only</SelectItem>
+                                    <SelectItem value="top_bottom">Top & Bottom</SelectItem>
+                                  </>
+                                )}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
 
             {/* Calculated Price Display */}
             {calculatedPrice !== null && !priceOverrideMode && (

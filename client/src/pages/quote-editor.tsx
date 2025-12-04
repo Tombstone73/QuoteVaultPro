@@ -767,6 +767,34 @@ export default function QuoteEditor() {
                           </div>
                         )}
 
+                        {/* Generic toggle (not sides) */}
+                        {option.type === "toggle" && option.config?.kind !== "sides" && (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                checked={isSelected}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setOptionSelections(prev => ({
+                                      ...prev,
+                                      [option.id]: { value: true }
+                                    }));
+                                  } else {
+                                    const { [option.id]: _, ...rest } = optionSelections;
+                                    setOptionSelections(rest);
+                                  }
+                                }}
+                              />
+                              <Label className="cursor-pointer">{option.label}</Label>
+                            </div>
+                            {option.amount !== undefined && option.amount !== null && (
+                              <Badge variant="secondary">
+                                {formatOptionPriceLabel(option)}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
                         {/* Grommets with location selector */}
                         {option.config?.kind === "grommets" && isSelected && (
                           <div className="space-y-3 mt-2 pl-6 border-l-2 border-orange-500">
