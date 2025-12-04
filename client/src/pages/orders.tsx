@@ -203,6 +203,7 @@ export default function Orders() {
       <PageHeader
         title="Orders"
         subtitle="Manage production orders and job tracking"
+        className="pb-3"
         backButton={
           <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
             <ArrowLeft className="w-5 h-5" />
@@ -210,7 +211,7 @@ export default function Orders() {
         }
         actions={
           <Link to="/orders/new">
-            <Button>
+            <Button size="sm">
               <Plus className="w-4 h-4 mr-2" />
               New Order
             </Button>
@@ -218,59 +219,58 @@ export default function Orders() {
         }
       />
 
-      <ContentLayout>
-        {/* Filters */}
-        <FilterPanel title="Filter Orders" description="Search and narrow down orders">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Search orders..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="All Statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="new">New</SelectItem>
-                <SelectItem value="scheduled">Scheduled</SelectItem>
-                <SelectItem value="in_production">In Production</SelectItem>
-                <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
-                <SelectItem value="shipped">Shipped</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-                <SelectItem value="on_hold">On Hold</SelectItem>
-                <SelectItem value="canceled">Canceled</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="All Priorities" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Priorities</SelectItem>
-                <SelectItem value="rush">Rush</SelectItem>
-                <SelectItem value="normal">Normal</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
-              </SelectContent>
-            </Select>
-            {orders && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Package className="w-4 h-4" />
-                <span>{orders.length} order{orders.length !== 1 ? 's' : ''}</span>
-              </div>
-            )}
+      <ContentLayout className="space-y-3">
+        {/* Inline Filters */}
+        <div className="flex flex-row items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search orders..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8 h-9"
+            />
           </div>
-        </FilterPanel>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-[160px] h-9">
+              <SelectValue placeholder="All Statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="new">New</SelectItem>
+              <SelectItem value="scheduled">Scheduled</SelectItem>
+              <SelectItem value="in_production">In Production</SelectItem>
+              <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
+              <SelectItem value="shipped">Shipped</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="on_hold">On Hold</SelectItem>
+              <SelectItem value="canceled">Canceled</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+            <SelectTrigger className="w-[140px] h-9">
+              <SelectValue placeholder="All Priorities" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Priorities</SelectItem>
+              <SelectItem value="rush">Rush</SelectItem>
+              <SelectItem value="normal">Normal</SelectItem>
+              <SelectItem value="low">Low</SelectItem>
+            </SelectContent>
+          </Select>
+          {orders && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Package className="w-4 h-4" />
+              <span>{orders.length} order{orders.length !== 1 ? 's' : ''}</span>
+            </div>
+          )}
+        </div>
 
         {/* Orders Table */}
         <DataCard
           title="Orders"
           description={`${orders?.length ?? 0} order${orders?.length !== 1 ? 's' : ''} found`}
+          className="mt-0"
           headerActions={
             <ColumnConfig
               columns={ORDER_COLUMNS}
@@ -282,7 +282,7 @@ export default function Orders() {
           noPadding
         >
           <div className="overflow-x-auto">
-            <Table>
+            <Table className="table-dense">
             <TableHeader>
               <TableRow className="text-left">
                 {isVisible("orderNumber") && (
@@ -374,9 +374,9 @@ export default function Orders() {
                 </TableRow>
               ) : !orders || orders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={visibleColumnCount} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={visibleColumnCount} className="text-center py-6 text-muted-foreground">
                     <div className="flex flex-col items-center gap-2">
-                      <Package className="w-12 h-12 text-muted-foreground" />
+                      <Package className="w-8 h-8 text-muted-foreground" />
                       <p>No orders found</p>
                       <Link to="/orders/new">
                         <Button variant="outline" size="sm">

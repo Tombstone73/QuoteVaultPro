@@ -1476,8 +1476,8 @@ export const orders = pgTable("orders", {
   status: varchar("status", { length: 50 }).notNull().default("new"), // new, scheduled, in_production, ready_for_pickup, shipped, completed, on_hold, canceled
   priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low
   fulfillmentStatus: varchar("fulfillment_status", { length: 50 }).notNull().default("pending"), // pending, packed, shipped, delivered
-  dueDate: timestamp("due_date", { withTimezone: true }),
-  promisedDate: timestamp("promised_date", { withTimezone: true }),
+  dueDate: timestamp("due_date", { withTimezone: true, mode: "string" }),
+  promisedDate: timestamp("promised_date", { withTimezone: true, mode: "string" }),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
   tax: decimal("tax", { precision: 10, scale: 2 }).notNull().default("0"),
   // Tax system fields (new detailed tracking)
@@ -1503,10 +1503,10 @@ export const orders = pgTable("orders", {
   externalAccountingId: varchar("external_accounting_id", { length: 64 }),
   syncStatus: varchar("sync_status", { length: 20 }),
   syncError: text("sync_error"),
-  syncedAt: timestamp("synced_at", { withTimezone: false }),
+  syncedAt: timestamp("synced_at", { withTimezone: false, mode: "string" }),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { mode: "string" }).defaultNow().notNull(),
 }, (table) => [
   index("orders_organization_id_idx").on(table.organizationId),
   index("orders_order_number_idx").on(table.orderNumber),

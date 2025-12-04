@@ -2264,8 +2264,8 @@ export class DatabaseStorage implements IStorage {
     quoteId?: string | null;
     status?: string;
     priority?: string;
-    dueDate?: Date | null;
-    promisedDate?: Date | null;
+    dueDate?: Date | string | null;
+    promisedDate?: Date | string | null;
     discount?: number;
     notesInternal?: string | null;
     createdByUserId: string;
@@ -2281,6 +2281,14 @@ export class DatabaseStorage implements IStorage {
     const taxAmount = data.taxAmount ?? 0;
     const total = subtotal - discount + taxAmount;
 
+    // Sanitize date fields: convert Date objects to ISO strings, keep strings as-is, convert undefined/invalid to null
+    const sanitizeDateField = (value: any): string | null => {
+      if (!value) return null;
+      if (value instanceof Date) return value.toISOString();
+      if (typeof value === 'string') return value;
+      return null;
+    };
+
     const created = await db.transaction(async (tx) => {
       const orderNumber = await this.generateNextOrderNumber(organizationId, tx);
       const orderInsert: typeof orders.$inferInsert = {
@@ -2291,8 +2299,8 @@ export class DatabaseStorage implements IStorage {
         contactId: data.contactId || null,
         status: data.status || 'new',
         priority: data.priority || 'normal',
-        dueDate: data.dueDate || null,
-        promisedDate: data.promisedDate || null,
+        dueDate: sanitizeDateField(data.dueDate),
+        promisedDate: sanitizeDateField(data.promisedDate),
         subtotal: subtotal.toString(),
         tax: taxAmount.toString(),
         taxRate: data.taxRate ?? null,
@@ -2390,11 +2398,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateOrder(organizationId: string, id: string, order: Partial<InsertOrder>): Promise<Order> {
-    const updateData: Record<string, any> = { ...order, updatedAt: new Date() };
+    // Sanitize date fields
+    const sanitizeDateField = (value: any): string | null => {
+      if (!value) return null;
+      if (value instanceof Date) return value.toISOString();
+      if (typeof value === 'string') return value;
+      return null;
+    };
+
+    const updateData: Record<string, any> = { ...order, updatedAt: new Date().toISOString() };
     if (order.subtotal !== undefined) updateData.subtotal = order.subtotal.toString();
     if (order.tax !== undefined) updateData.tax = order.tax.toString();
     if (order.total !== undefined) updateData.total = order.total.toString();
     if (order.discount !== undefined) updateData.discount = order.discount.toString();
+    if (order.dueDate !== undefined) updateData.dueDate = sanitizeDateField(order.dueDate);
+    if (order.promisedDate !== undefined) updateData.promisedDate = sanitizeDateField(order.promisedDate);
+    if (order.syncedAt !== undefined) updateData.syncedAt = sanitizeDateField(order.syncedAt);
+    
     const [updated] = await db.update(orders).set(updateData).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId))).returning();
     if (!updated) throw new Error('Order not found');
     return updated;
@@ -2566,16 +2586,24 @@ export class DatabaseStorage implements IStorage {
   async convertQuoteToOrder(organizationId: string, quoteId: string, createdByUserId: string, options?: {
     customerId?: string;
     contactId?: string;
-    dueDate?: Date;
-    promisedDate?: Date;
+    dueDate?: Date | string;
+    promisedDate?: Date | string;
     priority?: string;
-    notesInternal?: Date; // Note: original interface had Date, likely should be string
+    notesInternal?: string;
     }): Promise<OrderWithRelations> {
     const quote = await this.getQuoteById(organizationId, quoteId);
     if (!quote) throw new Error('Quote not found');
     const customerId = options?.customerId || quote.customerId;
     if (!customerId) throw new Error('Quote missing customer');
     const contactId = options?.contactId || quote.contactId || null;
+    
+    // Sanitize date fields
+    const sanitizeDateField = (value: any): string | null => {
+      if (!value) return null;
+      if (value instanceof Date) return value.toISOString();
+      if (typeof value === 'string') return value;
+      return null;
+    };
     
     // Preserve tax snapshots from quote
     const subtotal = quote.lineItems.reduce((sum, li: any) => sum + Number(li.linePrice), 0);
@@ -2593,8 +2621,8 @@ export class DatabaseStorage implements IStorage {
         contactId: contactId || null,
         status: 'new',
         priority: options?.priority || 'normal',
-        dueDate: options?.dueDate || null,
-        promisedDate: options?.promisedDate || null,
+        dueDate: sanitizeDateField(options?.dueDate),
+        promisedDate: sanitizeDateField(options?.promisedDate),
         subtotal: subtotal.toString(),
         tax: quoteTaxAmount.toString(),
         // Preserve tax snapshots from quote

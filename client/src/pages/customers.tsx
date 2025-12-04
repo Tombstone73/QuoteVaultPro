@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Search, Plus } from "lucide-react";
@@ -20,6 +21,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const enhancedRef = (typeof window !== 'undefined') ? (document.getElementById('enhanced-view-anchor') as HTMLElement | null) : null;
   const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
+  const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
   const getStorageKey = () => {
@@ -34,6 +36,18 @@ export default function Customers({ embedded = false }: CustomersProps) {
     } catch {
       return "split";
     }
+  });
+
+  // Fetch customer for editing
+  const { data: editingCustomer } = useQuery({
+    queryKey: [`/api/customers/${editingCustomerId}`],
+    queryFn: async () => {
+      if (!editingCustomerId) return null;
+      const res = await fetch(`/api/customers/${editingCustomerId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch customer");
+      return res.json();
+    },
+    enabled: !!editingCustomerId && showNewCustomerForm,
   });
 
   useEffect(() => {
@@ -55,6 +69,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
   };
 
   const handleNewCustomer = () => {
+    setEditingCustomerId(null);
     setShowNewCustomerForm(true);
   };
 
@@ -62,7 +77,8 @@ export default function Customers({ embedded = false }: CustomersProps) {
     setViewMode(v => v === "split" ? "enhanced" : "split");
   };
 
-  const handleEdit = () => {
+  const handleEdit = (customerId: string) => {
+    setEditingCustomerId(customerId);
     setShowNewCustomerForm(true);
   };
 
@@ -82,7 +98,14 @@ export default function Customers({ embedded = false }: CustomersProps) {
             <SplitCustomerDetail customerId={selectedCustomerId} onEdit={handleEdit} />
           </div>
         </div>
-        <CustomerForm open={showNewCustomerForm} onOpenChange={setShowNewCustomerForm} />
+        <CustomerForm 
+          open={showNewCustomerForm} 
+          onOpenChange={(open) => {
+            setShowNewCustomerForm(open);
+            if (!open) setEditingCustomerId(null);
+          }}
+          customer={editingCustomer}
+        />
       </div>
     );
   }
@@ -92,24 +115,25 @@ export default function Customers({ embedded = false }: CustomersProps) {
       <PageHeader
         title="Customers"
         subtitle="Manage your customer relationships and accounts"
+        className="pb-3"
         actions={
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* View Mode Toggle */}
-            <div className="inline-flex items-center rounded-full border border-border bg-muted/50 px-1 py-0.5">
+            <div className="inline-flex items-center rounded-full border border-border bg-muted/50 px-0.5 py-0.5">
               <button
                 onClick={() => setViewMode('split')}
-                className={`text-xs px-3 py-1 rounded-full transition ${viewMode === 'split' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                className={`text-xs px-2.5 py-1 rounded-full transition ${viewMode === 'split' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
               >
                 Split
               </button>
               <button
                 onClick={() => setViewMode('enhanced')}
-                className={`text-xs px-3 py-1 rounded-full transition ${viewMode === 'enhanced' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                className={`text-xs px-2.5 py-1 rounded-full transition ${viewMode === 'enhanced' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
               >
                 Enhanced
               </button>
             </div>
-            <Button onClick={handleNewCustomer}>
+            <Button size="sm" onClick={handleNewCustomer}>
               <Plus className="w-4 h-4 mr-2" />
               New Customer
             </Button>
@@ -117,23 +141,23 @@ export default function Customers({ embedded = false }: CustomersProps) {
         }
       />
 
-      <ContentLayout>
-        {/* Search Filter */}
-        <FilterPanel title="Search Customers" description="Find customers by company name">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+      <ContentLayout className="space-y-3">
+        {/* Inline Search */}
+        <div className="flex flex-row items-center gap-3">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Search companies..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
+              className="pl-8 h-9"
             />
           </div>
-        </FilterPanel>
+        </div>
 
         {/* Customer List/Detail View */}
         {viewMode === "split" ? (
-          <div className="grid grid-cols-[360px,1fr] gap-4 h-[calc(100vh-280px)]">
+          <div className="grid grid-cols-[360px,1fr] gap-3 h-[calc(100vh-280px)]">
             <DataCard noPadding className="overflow-hidden flex flex-col">
               <CustomerList
                 selectedCustomerId={selectedCustomerId || undefined}
@@ -147,7 +171,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
             </DataCard>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {/* Customer list - hide when customer selected and no search */}
             <DataCard noPadding className={`overflow-hidden ${(viewMode === "enhanced" && selectedCustomerId && search.trim().length === 0) ? "hidden" : ""}`}>
               <CustomerList
@@ -175,7 +199,14 @@ export default function Customers({ embedded = false }: CustomersProps) {
         )}
       </ContentLayout>
 
-      <CustomerForm open={showNewCustomerForm} onOpenChange={setShowNewCustomerForm} />
+      <CustomerForm 
+        open={showNewCustomerForm} 
+        onOpenChange={(open) => {
+          setShowNewCustomerForm(open);
+          if (!open) setEditingCustomerId(null);
+        }}
+        customer={editingCustomer}
+      />
     </Page>
   );
 }

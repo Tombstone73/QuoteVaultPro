@@ -300,8 +300,7 @@ export function CustomerSelect({
       {/* Show selected customer details */}
       {value && selectedCustomer && (
         <div className="text-xs text-muted-foreground">
-          Selected: {selectedCustomer.companyName}
-          {selectedCustomer.email && ` • ${selectedCustomer.email}`}
+          {selectedCustomer.email && `${selectedCustomer.email}`}
         </div>
       )}
     </div>

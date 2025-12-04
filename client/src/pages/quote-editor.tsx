@@ -767,10 +767,10 @@ export default function QuoteEditor() {
   const marginPercent = selectedCustomer?.defaultMarginPercent ? Number(selectedCustomer.defaultMarginPercent) : null;
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-7xl mx-auto space-y-3 px-4">
       {/* Header with navigation and actions */}
-      <div className="flex items-center justify-between">
-        <Button variant="ghost" onClick={() => navigate("/quotes")} className="gap-2">
+      <div className="flex items-center justify-between py-2">
+        <Button variant="ghost" onClick={() => navigate("/quotes")} className="gap-2 h-9">
           <ArrowLeft className="w-4 h-4" />
           Back to Quotes
         </Button>
@@ -781,43 +781,51 @@ export default function QuoteEditor() {
       </div>
 
       {/* 3-Column Cockpit Layout */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(260px,320px)_minmax(0,1.7fr)_minmax(260px,320px)]">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)_minmax(280px,340px)]">
         
         {/* ═══════════════════════════════════════════════════════════════ */}
         {/* LEFT COLUMN: Customer & Logistics */}
         {/* ═══════════════════════════════════════════════════════════════ */}
-        <div className="space-y-4 order-1 lg:order-1">
+        <div className="space-y-3 order-1 xl:order-1">
           {/* Customer Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2">
+          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+            <CardHeader className="pb-2 px-5 pt-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Users className="w-4 h-4" />
                 Customer
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <CustomerSelect
-                value={selectedCustomerId}
-                onChange={(customerId, customer, contactId) => {
-                  setSelectedCustomerId(customerId);
-                  setSelectedCustomer(customer);
-                  setSelectedContactId(contactId || null);
-                  // Pre-fill shipping address from customer if ship is selected
-                  if (customer && deliveryMethod === 'ship') {
-                    setShippingAddress({
-                      street1: customer.shippingStreet1 || '',
-                      street2: customer.shippingStreet2 || '',
-                      city: customer.shippingCity || '',
-                      state: customer.shippingState || '',
-                      postalCode: customer.shippingPostalCode || '',
-                      country: customer.shippingCountry || 'USA'
-                    });
-                  }
-                }}
-                autoFocus={isNewQuote}
-                label=""
-                placeholder="Search customers..."
-              />
+            <CardContent className="space-y-3 px-5 pb-4">
+              <div className="space-y-1.5">
+                <CustomerSelect
+                  value={selectedCustomerId}
+                  onChange={(customerId, customer, contactId) => {
+                    setSelectedCustomerId(customerId);
+                    setSelectedCustomer(customer);
+                    setSelectedContactId(contactId || null);
+                    // Pre-fill shipping address from customer if ship is selected
+                    if (customer && deliveryMethod === 'ship') {
+                      setShippingAddress({
+                        street1: customer.shippingStreet1 || '',
+                        street2: customer.shippingStreet2 || '',
+                        city: customer.shippingCity || '',
+                        state: customer.shippingState || '',
+                        postalCode: customer.shippingPostalCode || '',
+                        country: customer.shippingCountry || 'USA'
+                      });
+                    }
+                  }}
+                  autoFocus={isNewQuote}
+                  label=""
+                  placeholder="Search customers..."
+                />
+                {selectedCustomer && (
+                  <div className="text-xs text-muted-foreground space-y-0.5">
+                    {selectedCustomer.phone && <div>{selectedCustomer.phone}</div>}
+                    {selectedCustomer.email && <div>{selectedCustomer.email}</div>}
+                  </div>
+                )}
+              </div>
 
               {/* Customer info badges */}
               {selectedCustomer && (
@@ -883,14 +891,14 @@ export default function QuoteEditor() {
           </Card>
 
           {/* Logistics Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2">
+          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+            <CardHeader className="pb-2 px-5 pt-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Truck className="w-4 h-4" />
                 Fulfillment
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3 px-5 pb-4">
               {/* Delivery method toggle */}
               <div className="grid grid-cols-3 gap-1 p-1 bg-muted rounded-lg">
                 <Button
@@ -1049,13 +1057,13 @@ export default function QuoteEditor() {
 
               {/* Quote notes */}
               <div className="space-y-1.5">
-                <Label className="text-xs">Quote Notes</Label>
+                <Label className="text-xs text-muted-foreground">Quote Notes</Label>
                 <Textarea
                   value={quoteNotes}
                   onChange={(e) => setQuoteNotes(e.target.value)}
                   placeholder="Internal notes, special instructions..."
-                  rows={3}
-                  className="text-sm resize-none"
+                  rows={4}
+                  className="text-sm resize-none min-h-[80px]"
                 />
               </div>
             </CardContent>
@@ -1065,13 +1073,13 @@ export default function QuoteEditor() {
         {/* ═══════════════════════════════════════════════════════════════ */}
         {/* CENTER COLUMN: Line Item Builder + Item List */}
         {/* ═══════════════════════════════════════════════════════════════ */}
-        <div className="space-y-4 order-3 lg:order-2">
+        <div className="space-y-3 order-3 xl:order-2">
           {/* Product Configuration Panel */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Add Line Item</CardTitle>
+          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+            <CardHeader className="pb-2 px-5 pt-4">
+              <CardTitle className="text-sm font-medium">Add Line Item</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3 px-5 pb-4">
               {/* Product & Variant selectors in a row */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
@@ -1552,16 +1560,16 @@ export default function QuoteEditor() {
           </Card>
 
           {/* Line Items Table */}
-          <Card>
-            <CardHeader className="pb-3">
+          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+            <CardHeader className="pb-2 px-5 pt-4">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base">Line Items</CardTitle>
+                <CardTitle className="text-sm font-medium">Line Items</CardTitle>
                 <Badge variant="outline">{lineItems.length} item{lineItems.length !== 1 ? 's' : ''}</Badge>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="px-5 pb-4">
               {lineItems.length === 0 ? (
-                <div className="py-12 text-center text-muted-foreground">
+                <div className="py-6 text-center text-muted-foreground">
                   <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
                   <p className="text-sm">No line items yet</p>
                   <p className="text-xs">Configure a product above to add items</p>
@@ -1642,14 +1650,14 @@ export default function QuoteEditor() {
           </Card>
 
           {/* Files & Artwork Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2">
+          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+            <CardHeader className="pb-2 px-5 pt-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Paperclip className="w-4 h-4" />
                 Files & Artwork
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3 px-5 pb-4">
               {/* Upload button */}
               <div>
                 <input
@@ -1727,12 +1735,12 @@ export default function QuoteEditor() {
         {/* ═══════════════════════════════════════════════════════════════ */}
         {/* RIGHT COLUMN: Summary & Totals */}
         {/* ═══════════════════════════════════════════════════════════════ */}
-        <div className="space-y-4 order-2 lg:order-3">
+        <div className="space-y-3 order-2 xl:order-3">
           {/* Finished Line Items Card - compact view */}
           {lineItems.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base flex items-center gap-2">
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
                   <ListOrdered className="w-4 h-4" />
                   Line Items ({lineItems.length})
                 </CardTitle>
@@ -1768,14 +1776,14 @@ export default function QuoteEditor() {
           )}
 
           {/* Quote Summary Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2">
+          <Card className="rounded-xl bg-card/70 border-border/60 shadow-lg">
+            <CardHeader className="pb-2 px-5 pt-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <DollarSign className="w-4 h-4" />
                 Quote Summary
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-3 px-5 pb-4">
               {/* Subtotal */}
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Subtotal</span>
@@ -1814,14 +1822,14 @@ export default function QuoteEditor() {
               <Separator />
 
               {/* Grand Total */}
-              <div className="flex justify-between items-baseline">
-                <span className="font-medium">Grand Total</span>
+              <div className="flex justify-between items-baseline pt-1">
+                <span className="font-semibold">Grand Total</span>
                 <span className="text-2xl font-bold font-mono">${grandTotal.toFixed(2)}</span>
               </div>
             </CardContent>
-            <CardFooter className="flex-col gap-2 pt-0">
+            <CardFooter className="flex-col gap-2 pt-0 px-5 pb-4">
               <Button
-                className="w-full"
+                className="w-full h-10"
                 onClick={() => saveQuoteMutation.mutate()}
                 disabled={saveQuoteMutation.isPending || lineItems.length === 0 || !selectedCustomerId}
               >
@@ -1831,11 +1839,11 @@ export default function QuoteEditor() {
               
               {!isNewQuote && (
                 <div className="grid grid-cols-2 gap-2 w-full">
-                  <Button variant="outline" disabled>
+                  <Button variant="outline" disabled size="sm">
                     <Send className="w-4 h-4 mr-2" />
                     Email
                   </Button>
-                  <Button variant="secondary" disabled>
+                  <Button variant="secondary" disabled size="sm">
                     Convert to Order
                   </Button>
                 </div>
@@ -1845,17 +1853,17 @@ export default function QuoteEditor() {
 
           {/* Quick Info Card - only when customer selected */}
           {selectedCustomer && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-muted-foreground">Customer Info</CardTitle>
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-xs font-medium text-muted-foreground">Customer Info</CardTitle>
               </CardHeader>
-              <CardContent className="text-sm space-y-1">
+              <CardContent className="text-sm space-y-1 px-5 pb-4">
                 <p className="font-medium">{selectedCustomer.companyName}</p>
                 {selectedCustomer.email && (
-                  <p className="text-muted-foreground">{selectedCustomer.email}</p>
+                  <p className="text-muted-foreground text-xs">{selectedCustomer.email}</p>
                 )}
                 {selectedCustomer.phone && (
-                  <p className="text-muted-foreground">{selectedCustomer.phone}</p>
+                  <p className="text-muted-foreground text-xs">{selectedCustomer.phone}</p>
                 )}
               </CardContent>
             </Card>

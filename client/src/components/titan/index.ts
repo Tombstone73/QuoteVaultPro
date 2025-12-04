@@ -6,3 +6,4 @@ export { FilterPanel } from "./FilterPanel";
 export { ContentLayout } from "./ContentLayout";
 export { ColumnConfig, useColumnSettings, getColumnStyle, isColumnVisible } from "./ColumnConfig";
 export type { ColumnDefinition, ColumnState, ColumnSettings } from "./ColumnConfig";
+export { TitanStatCard } from "./TitanStatCard";
