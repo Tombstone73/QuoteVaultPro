@@ -1,5 +1,4 @@
 import * as React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowUpRight, ArrowDownRight, LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -16,7 +15,7 @@ interface TitanStatCardProps {
 
 /**
  * TitanStatCard - Figma-inspired stat card for dashboard metrics
- * Based on CustomerDetailPanel pattern with uniform styling
+ * Uses TitanOS design tokens consistently
  */
 export function TitanStatCard({
   label,
@@ -32,42 +31,39 @@ export function TitanStatCard({
   const hasChange = change !== null && change !== undefined;
 
   return (
-    <Card
+    <div
       className={cn(
-        "bg-card/50 border-border/60 backdrop-blur-sm shadow-lg transition-all hover:shadow-xl",
-        onClick && "cursor-pointer hover:bg-card/60",
+        "bg-titan-bg-card border border-titan-border-subtle rounded-titan-lg p-4 shadow-titan-card",
+        "transition-all hover:shadow-titan-md",
+        onClick && "cursor-pointer hover:bg-titan-bg-card-elevated",
         className
       )}
       onClick={onClick}
     >
-      <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-2">
-          {Icon && <Icon className="w-3.5 h-3.5" />}
-          {label}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-lg font-bold text-foreground">{value}</div>
-        {hasChange && (
-          <div className={cn(
-            "flex items-center gap-1 text-xs mt-1",
-            isPositive ? "text-green-600" : "text-red-600"
-          )}>
-            {isPositive ? (
-              <ArrowUpRight className="w-3 h-3" />
-            ) : (
-              <ArrowDownRight className="w-3 h-3" />
-            )}
-            <span>
-              {Math.abs(change!).toFixed(1)}% {changeLabel || "vs prev month"}
-            </span>
-          </div>
-        )}
-        {!hasChange && changeLabel && (
-          <p className="text-xs text-muted-foreground mt-1">{changeLabel}</p>
-        )}
-      </CardContent>
-    </Card>
+      <div className="flex items-center gap-2 text-titan-xs font-medium text-titan-text-muted mb-2">
+        {Icon && <Icon className="w-3.5 h-3.5" />}
+        {label}
+      </div>
+      <div className="text-titan-lg font-bold text-titan-text-primary">{value}</div>
+      {hasChange && (
+        <div className={cn(
+          "flex items-center gap-1 text-titan-xs mt-1",
+          isPositive ? "text-titan-success" : "text-titan-error"
+        )}>
+          {isPositive ? (
+            <ArrowUpRight className="w-3 h-3" />
+          ) : (
+            <ArrowDownRight className="w-3 h-3" />
+          )}
+          <span>
+            {Math.abs(change!).toFixed(1)}% {changeLabel || "vs prev month"}
+          </span>
+        </div>
+      )}
+      {!hasChange && changeLabel && (
+        <p className="text-titan-xs text-titan-text-muted mt-1">{changeLabel}</p>
+      )}
+    </div>
   );
 }
 

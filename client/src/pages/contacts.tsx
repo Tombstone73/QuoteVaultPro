@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useNavigate } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { useContacts, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
@@ -16,7 +16,6 @@ import { ListViewSettings } from "@/components/list/ListViewSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Search, Mail, Phone, ArrowLeft, Building2, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -47,6 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 
 const defaultColumns = [
   { id: "name", label: "Name", visible: true },
@@ -61,7 +61,7 @@ const defaultColumns = [
 
 export default function ContactsPage() {
   const { user } = useAuth();
-  const [, navigate] = useLocation();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [editingContact, setEditingContact] = useState<ContactWithStats | null>(null);
@@ -97,13 +97,22 @@ export default function ContactsPage() {
   // Role check - only internal users can access
   if (user?.role === "customer") {
     return (
-      <div className="min-h-screen bg-background p-8">
-        <div className="max-w-2xl mx-auto text-center">
-          <h1 className="text-2xl font-bold mb-4">Access Denied</h1>
-          <p className="text-muted-foreground mb-4">This page is only available to staff members.</p>
-          <Button onClick={() => navigate("/")}>Return Home</Button>
-        </div>
-      </div>
+      <Page>
+        <ContentLayout>
+          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+            <div className="py-16 text-center">
+              <h1 className="text-titan-xl font-bold mb-4 text-titan-text-primary">Access Denied</h1>
+              <p className="text-titan-text-muted mb-4">This page is only available to staff members.</p>
+              <Button 
+                onClick={() => navigate("/")}
+                className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md"
+              >
+                Return Home
+              </Button>
+            </div>
+          </DataCard>
+        </ContentLayout>
+      </Page>
     );
   }
 
@@ -132,29 +141,29 @@ export default function ContactsPage() {
       case "name":
         return (
           <div className="flex flex-col">
-            <span className="font-medium">
+            <span className="font-medium text-titan-text-primary">
               {contact.firstName} {contact.lastName}
             </span>
             {contact.title && (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-titan-text-muted">
                 {contact.title}
               </span>
             )}
             {contact.isPrimary && (
-              <Badge variant="secondary" className="w-fit mt-1 text-xs">
+              <StatusPill variant="info" className="w-fit mt-1">
                 Primary
-              </Badge>
+              </StatusPill>
             )}
           </div>
         );
       case "company":
         return (
           <div className="flex items-center gap-2">
-            <Building2 className="w-4 h-4 text-muted-foreground" />
+            <Building2 className="w-4 h-4 text-titan-text-muted" />
             <Link
-              href={`/customers/${contact.customerId}`}
+              to={`/customers/${contact.customerId}`}
               onClick={(e) => e.stopPropagation()}
-              className="hover:underline"
+              className="hover:underline text-titan-text-secondary hover:text-titan-text-primary"
             >
               {contact.companyName}
             </Link>
@@ -163,40 +172,48 @@ export default function ContactsPage() {
       case "email":
         return contact.email ? (
           <div className="flex items-center gap-2">
-            <Mail className="w-4 h-4 text-muted-foreground" />
+            <Mail className="w-4 h-4 text-titan-text-muted" />
             <a
               href={`mailto:${contact.email}`}
               onClick={(e) => e.stopPropagation()}
-              className="hover:underline text-sm"
+              className="hover:underline text-titan-sm text-titan-text-secondary"
             >
               {contact.email}
             </a>
           </div>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-titan-text-muted">—</span>
         );
       case "phone":
         return contact.phone ? (
           <div className="flex items-center gap-2">
-            <Phone className="w-4 h-4 text-muted-foreground" />
+            <Phone className="w-4 h-4 text-titan-text-muted" />
             <a
               href={`tel:${contact.phone}`}
               onClick={(e) => e.stopPropagation()}
-              className="hover:underline text-sm"
+              className="hover:underline text-titan-sm text-titan-text-secondary"
             >
               {contact.phone}
             </a>
           </div>
         ) : (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-titan-text-muted">—</span>
         );
       case "orders":
-        return <Badge variant="outline">{contact.ordersCount}</Badge>;
+        return (
+          <Badge variant="outline" className="border-titan-border text-titan-text-secondary">
+            {contact.ordersCount}
+          </Badge>
+        );
       case "quotes":
-        return <Badge variant="outline">{contact.quotesCount}</Badge>;
+        return (
+          <Badge variant="outline" className="border-titan-border text-titan-text-secondary">
+            {contact.quotesCount}
+          </Badge>
+        );
       case "lastActivity":
         return (
-          <span className="text-sm text-muted-foreground">
+          <span className="text-titan-sm text-titan-text-muted">
             {formatDate(contact.lastActivityAt)}
           </span>
         );
@@ -205,19 +222,19 @@ export default function ContactsPage() {
           <div className="text-right">
             <DropdownMenu>
               <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                <Button variant="ghost" size="icon">
+                <Button variant="ghost" size="icon" className="text-titan-text-secondary hover:text-titan-text-primary">
                   <MoreHorizontal className="w-4 h-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => setEditingContact(contact)}>
+              <DropdownMenuContent align="end" className="bg-titan-bg-card border-titan-border">
+                <DropdownMenuLabel className="text-titan-text-primary">Actions</DropdownMenuLabel>
+                <DropdownMenuSeparator className="bg-titan-border-subtle" />
+                <DropdownMenuItem onClick={() => setEditingContact(contact)} className="text-titan-text-secondary hover:text-titan-text-primary">
                   <Pencil className="w-4 h-4 mr-2" />
                   Edit
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  className="text-destructive"
+                  className="text-titan-error"
                   onClick={() => setDeletingContact(contact)}
                 >
                   <Trash2 className="w-4 h-4 mr-2" />
@@ -233,75 +250,77 @@ export default function ContactsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b bg-background sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
-            <div>
-              <h1 className="text-2xl font-bold">Contacts</h1>
-              <p className="text-sm text-muted-foreground">
-                Manage all customer contacts across the system
-              </p>
-            </div>
-          </div>
-        </div>
-      </header>
+    <Page>
+      <PageHeader
+        title="Contacts"
+        subtitle="Manage all customer contacts across the system"
+        className="pb-3"
+        backButton={
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            onClick={() => navigate("/")}
+            className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+          >
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Back
+          </Button>
+        }
+      />
 
-      <main className="container mx-auto px-4 py-8">
-        <Card>
-          <CardHeader>
-            <CardTitle>All Contacts</CardTitle>
-            <CardDescription>
-              Search contacts by name, email, or company name
-            </CardDescription>
-            <div className="flex items-center gap-2 mt-4">
-              <div className="relative flex-1 max-w-md">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search contacts by name, email, or company..."
-                  value={searchQuery}
-                  onChange={(e) => handleSearchChange(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-              {data && (
-                <div className="text-sm text-muted-foreground">
-                  {data.total} contact{data.total !== 1 ? "s" : ""}
-                </div>
-              )}
-              <ListViewSettings
-                columns={columns}
-                onToggleVisibility={toggleVisibility}
-                onReorder={setColumnOrder}
-                onWidthChange={setColumnWidth}
-              />
+      <ContentLayout className="space-y-3">
+        {/* Search and Filters */}
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-titan-text-muted" />
+            <Input
+              placeholder="Search contacts by name, email, or company..."
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              className="pl-8 h-9 bg-titan-bg-input border-titan-border-subtle text-titan-text-primary placeholder:text-titan-text-muted rounded-titan-md"
+            />
+          </div>
+          {data && (
+            <span className="text-titan-sm text-titan-text-muted">
+              {data.total} contact{data.total !== 1 ? "s" : ""}
+            </span>
+          )}
+          <ListViewSettings
+            columns={columns}
+            onToggleVisibility={toggleVisibility}
+            onReorder={setColumnOrder}
+            onWidthChange={setColumnWidth}
+          />
+        </div>
+
+        {/* Contacts Table */}
+        <DataCard 
+          title="All Contacts"
+          description="Search contacts by name, email, or company name"
+          className="bg-titan-bg-card border-titan-border-subtle"
+        >
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="w-8 h-8 border-4 border-titan-accent border-t-transparent rounded-full animate-spin" />
             </div>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-              </div>
-            ) : error ? (
-              <div className="text-center py-8 text-destructive">
-                Failed to load contacts. Please try again.
-              </div>
-            ) : !data || data.contacts.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                {searchQuery ? "No contacts found matching your search." : "No contacts found."}
-              </div>
-            ) : (
+          ) : error ? (
+            <div className="text-center py-8 text-titan-error">
+              Failed to load contacts. Please try again.
+            </div>
+          ) : !data || data.contacts.length === 0 ? (
+            <div className="text-center py-8 text-titan-text-muted">
+              {searchQuery ? "No contacts found matching your search." : "No contacts found."}
+            </div>
+          ) : (
+            <div className="rounded-titan-lg border border-titan-border-subtle overflow-hidden">
               <Table>
                 <TableHeader>
-                  <TableRow>
+                  <TableRow className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
                     {visibleColumns.map((col) => (
                       <TableHead
                         key={col.id}
                         style={{ width: col.width ? `${col.width}px` : undefined }}
-                        className={col.id === "orders" || col.id === "quotes" ? "text-center" : col.id === "actions" ? "text-right" : undefined}
+                        className={`text-titan-text-secondary ${col.id === "orders" || col.id === "quotes" ? "text-center" : col.id === "actions" ? "text-right" : ""}`}
                       >
                         {col.label}
                       </TableHead>
@@ -312,7 +331,7 @@ export default function ContactsPage() {
                   {data.contacts.map((contact) => (
                     <TableRow
                       key={contact.id}
-                      className="cursor-pointer hover:bg-muted/50"
+                      className="cursor-pointer hover:bg-titan-bg-card-elevated/50 border-b border-titan-border-subtle"
                       onClick={(e) => handleRowClick(contact.id, e)}
                     >
                       {visibleColumns.map((col) => {
@@ -321,7 +340,7 @@ export default function ContactsPage() {
                           <TableCell
                             key={col.id}
                             style={{ width: col.width ? `${col.width}px` : undefined }}
-                            className={col.id === "orders" || col.id === "quotes" ? "text-center" : undefined}
+                            className={col.id === "orders" || col.id === "quotes" ? "text-center" : ""}
                           >
                             {cellContent}
                           </TableCell>
@@ -331,10 +350,10 @@ export default function ContactsPage() {
                   ))}
                 </TableBody>
               </Table>
-            )}
-          </CardContent>
-        </Card>
-      </main>
+            </div>
+          )}
+        </DataCard>
+      </ContentLayout>
 
       {/* Edit Contact Dialog */}
       {editingContact && (
@@ -373,7 +392,7 @@ export default function ContactsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </Page>
   );
 }
 

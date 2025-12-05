@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Link, useLocation, useParams } from "wouter";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -41,11 +41,12 @@ import type { Shipment } from "@shared/schema";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 
 export default function OrderDetail() {
   const { user } = useAuth();
   const params = useParams();
-  const [, navigate] = useLocation();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -467,70 +468,77 @@ export default function OrderDetail() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="flex items-center gap-2">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <span>Loading order...</span>
+      <Page>
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="flex items-center gap-2">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-titan-accent"></div>
+            <span className="text-titan-text-secondary">Loading order...</span>
+          </div>
         </div>
-      </div>
+      </Page>
     );
   }
 
   if (!order) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold mb-2">Order not found</h2>
-          <p className="text-muted-foreground mb-4">The order you're looking for doesn't exist.</p>
-          <Link href="/orders">
-            <Button>Back to Orders</Button>
-          </Link>
-        </div>
-      </div>
+      <Page>
+        <ContentLayout>
+          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+            <div className="py-16 text-center">
+              <h2 className="text-titan-xl font-bold mb-2 text-titan-text-primary">Order not found</h2>
+              <p className="text-titan-text-muted mb-4">The order you're looking for doesn't exist.</p>
+              <Link to="/orders">
+                <Button className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md">
+                  Back to Orders
+                </Button>
+              </Link>
+            </div>
+          </DataCard>
+        </ContentLayout>
+      </Page>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b sticky top-0 bg-background z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <Link href="/orders">
-                <Button variant="ghost" size="icon">
-                  <ArrowLeft className="w-5 h-5" />
-                </Button>
-              </Link>
-              <div>
-                <h1 className="text-2xl font-bold font-mono">{order.orderNumber}</h1>
-                <p className="text-sm text-muted-foreground">
-                  Created {formatDate(order.createdAt)}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {isAdminOrOwner && (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => setShowDeleteDialog(true)}
-                  disabled={deleteOrder.isPending}
-                >
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Delete
-                </Button>
-              )}
-            </div>
-          </div>
-        </div>
-      </header>
+    <Page>
+      <PageHeader
+        title={order.orderNumber}
+        subtitle={`Created ${formatDate(order.createdAt)}`}
+        className="pb-3"
+        backButton={
+          <Link to="/orders">
+            <Button 
+              variant="ghost" 
+              size="sm"
+              className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+            >
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back
+            </Button>
+          </Link>
+        }
+        actions={
+          isAdminOrOwner ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowDeleteDialog(true)}
+              disabled={deleteOrder.isPending}
+              className="rounded-titan-md"
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              Delete
+            </Button>
+          ) : null
+        }
+      />
 
-      <main className="container mx-auto px-4 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <ContentLayout>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Main Content */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="lg:col-span-2 space-y-4">
             {/* Order Details */}
-            <Card>
+            <Card className="bg-titan-bg-card border-titan-border-subtle">
               <CardHeader>
                 <CardTitle>Order Details</CardTitle>
               </CardHeader>
@@ -1066,7 +1074,7 @@ export default function OrderDetail() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <div>
-                  <Link href={`/customers/${order.customer.id}`}>
+                  <Link to={`/customers/${order.customer.id}`}>
                     <Button variant="link" className="p-0 h-auto font-medium text-base">
                       {order.customer.companyName}
                     </Button>
@@ -1095,7 +1103,7 @@ export default function OrderDetail() {
                   <CardTitle className="text-base">Source Quote</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Link href={`/quotes/${order.quoteId}`}>
+                  <Link to={`/quotes/${order.quoteId}`}>
                     <Button variant="outline" size="sm" className="w-full">
                       View Quote #{order.quote.quoteNumber}
                     </Button>
@@ -1125,7 +1133,7 @@ export default function OrderDetail() {
             </Card>
           </div>
         </div>
-      </main>
+      </ContentLayout>
 
       {/* Change Customer Dialog */}
       <Dialog open={showCustomerDialog} onOpenChange={setShowCustomerDialog}>
@@ -1266,7 +1274,7 @@ export default function OrderDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </Page>
   );
 }
 

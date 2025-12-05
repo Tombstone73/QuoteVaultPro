@@ -9,8 +9,69 @@ export default {
         lg: ".5625rem", /* 9px */
         md: ".375rem", /* 6px */
         sm: ".1875rem", /* 3px */
+        // TitanOS radii
+        "titan-sm": "0.25rem",
+        "titan-md": "0.5rem",
+        "titan-lg": "0.75rem",
+        "titan-xl": "1rem",
+        "titan-2xl": "1.25rem",
+      },
+      fontSize: {
+        // TitanOS typography scale
+        "titan-xs": ["0.6875rem", { lineHeight: "1rem" }],
+        "titan-sm": ["0.75rem", { lineHeight: "1.125rem" }],
+        "titan-base": ["0.8125rem", { lineHeight: "1.25rem" }],
+        "titan-md": ["0.875rem", { lineHeight: "1.375rem" }],
+        "titan-lg": ["1rem", { lineHeight: "1.5rem" }],
+        "titan-xl": ["1.125rem", { lineHeight: "1.625rem" }],
+        "titan-2xl": ["1.5rem", { lineHeight: "2rem" }],
+      },
+      boxShadow: {
+        // TitanOS shadows
+        "titan-card": "0 4px 12px -2px hsl(220 40% 2% / 0.25), 0 2px 4px -1px hsl(220 40% 2% / 0.15)",
+        "titan-sm": "0 1px 2px 0 hsl(220 40% 2% / 0.2)",
+        "titan-md": "0 4px 8px -2px hsl(220 40% 2% / 0.3)",
+        "titan-lg": "0 8px 16px -4px hsl(220 40% 2% / 0.35)",
+        "titan-glow-blue": "0 0 20px hsl(221 83% 60% / 0.25)",
       },
       colors: {
+        // TitanOS design system tokens
+        titan: {
+          bg: {
+            app: "hsl(var(--background))",
+            sidebar: "hsl(var(--sidebar))",
+            card: "hsl(var(--card))",
+            "card-elevated": "hsl(var(--muted))",
+            "card-highlight": "hsl(var(--accent))",
+            input: "hsl(var(--input))",
+            "table-row": "hsl(var(--muted) / 0.3)",
+          },
+          border: {
+            DEFAULT: "hsl(var(--border))",
+            subtle: "hsl(var(--border) / 0.6)",
+          },
+          text: {
+            primary: "hsl(var(--foreground))",
+            secondary: "hsl(var(--muted-foreground))",
+            muted: "hsl(var(--muted-foreground) / 0.7)",
+          },
+          accent: {
+            DEFAULT: "hsl(var(--primary))",
+            hover: "hsl(var(--primary) / 0.9)",
+          },
+          success: {
+            DEFAULT: "hsl(142 76% 45%)",
+            bg: "hsl(142 76% 45% / 0.15)",
+          },
+          warning: {
+            DEFAULT: "hsl(32 95% 55%)",
+            bg: "hsl(32 95% 55% / 0.15)",
+          },
+          error: {
+            DEFAULT: "hsl(0 78% 55%)",
+            bg: "hsl(0 78% 55% / 0.15)",
+          },
+        },
         // Flat / base colors (regular buttons)
         background: "hsl(var(--background) / <alpha-value>)",
         foreground: "hsl(var(--foreground) / <alpha-value>)",

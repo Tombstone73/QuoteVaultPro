@@ -18,7 +18,7 @@ import Admin from "@/pages/admin";
 import AdminUsers from "@/pages/admin-users";
 import UserManagement from "@/pages/user-management";
 import Customers from "@/pages/customers";
-import CustomerDetail from "@/pages/customer-detail";
+import CustomerDetail from "@/pages/customer-detail-enhanced";
 import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
 import CreateOrder from "@/pages/create-order";

@@ -1,23 +1,25 @@
 import * as React from "react";
+import { cn } from "@/lib/utils";
 
 interface PageHeaderProps {
   title: string;
   subtitle?: string;
   actions?: React.ReactNode;
   backButton?: React.ReactNode;
+  className?: string;
 }
 
-export function PageHeader({ title, subtitle, actions, backButton }: PageHeaderProps) {
+export function PageHeader({ title, subtitle, actions, backButton, className }: PageHeaderProps) {
   return (
-    <div className="flex items-center justify-between mb-6">
+    <div className={cn("flex items-center justify-between mb-6", className)}>
       <div className="flex items-center gap-4">
         {backButton}
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+          <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
             {title}
           </h1>
           {subtitle && (
-            <p className="text-sm text-muted-foreground mt-1">{subtitle}</p>
+            <p className="text-titan-sm text-titan-text-muted mt-1">{subtitle}</p>
           )}
         </div>
       </div>

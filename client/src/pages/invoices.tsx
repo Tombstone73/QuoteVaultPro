@@ -1,24 +1,31 @@
 import { useState } from "react";
-import { Link } from "wouter";
+import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { PageShell } from "@/components/ui/PageShell";
-import { TitanCard } from "@/components/ui/TitanCard";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Plus, FileText, DollarSign, Calendar } from "lucide-react";
+import { Search, Plus, FileText, DollarSign } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useInvoices } from "@/hooks/useInvoices";
-import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
-
-const statusColors: Record<string, string> = {
-  draft: "bg-gray-500",
-  sent: "bg-blue-500",
-  partially_paid: "bg-yellow-500",
-  paid: "bg-green-500",
-  overdue: "bg-red-500",
-};
+import { ROUTES } from "@/config/routes";
+import {
+  Page,
+  PageHeader,
+  ContentLayout,
+  DataCard,
+  TitanStatCard,
+  TitanSearchInput,
+  TitanTableContainer,
+  TitanTable,
+  TitanTableHeader,
+  TitanTableHead,
+  TitanTableBody,
+  TitanTableRow,
+  TitanTableCell,
+  TitanTableEmpty,
+  TitanTableLoading,
+  StatusPill,
+  getStatusVariant,
+} from "@/components/titan";
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -30,6 +37,7 @@ const statusLabels: Record<string, string> = {
 
 export default function InvoicesListPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
@@ -62,103 +70,68 @@ export default function InvoicesListPage() {
     return matchesSearch;
   }) || [];
 
-  const badgeStyleForStatus = (status: string): React.CSSProperties => {
-    switch (status) {
-      case 'paid':
-        return { backgroundColor: 'var(--badge-success-bg)', color: 'var(--badge-success-text)', border: '1px solid var(--badge-success-border)' };
-      case 'overdue':
-        return { backgroundColor: 'var(--badge-danger-bg)', color: 'var(--badge-danger-text)', border: '1px solid var(--badge-danger-border)' };
-      case 'partially_paid':
-        return { backgroundColor: 'var(--badge-warning-bg)', color: 'var(--badge-warning-text)', border: '1px solid var(--badge-warning-border)' };
-      case 'sent':
-        return { backgroundColor: 'var(--badge-muted-bg)', color: 'var(--badge-muted-text)', border: '1px solid var(--badge-muted-border)' };
-      case 'draft':
-      default:
-        return { backgroundColor: 'var(--badge-muted-bg)', color: 'var(--badge-muted-text)', border: '1px solid var(--badge-muted-border)' };
-    }
-  };
+  // Calculate stats
+  const totalOutstanding = filteredInvoices
+    .filter(inv => inv.status !== 'paid')
+    .reduce((sum, inv) => sum + Number(inv.balanceDue || inv.total), 0);
+  
+  const overdueCount = filteredInvoices.filter(inv => inv.status === 'overdue').length;
+  
+  const paidThisMonth = filteredInvoices
+    .filter(inv => inv.status === 'paid')
+    .reduce((sum, inv) => sum + Number(inv.total), 0);
 
   return (
-    <PageShell>
-      <div className="space-y-6">
-        {/* Header */}
-        <TitanCard className="p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>Invoices</h1>
-              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Manage invoices and payments</p>
-            </div>
-            {isAdminOrOwner && (
-              <Button asChild>
-                <Link href="/orders">
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create from Order
-                </Link>
-              </Button>
-            )}
-          </div>
-        </TitanCard>
+    <Page>
+      <PageHeader
+        title="Invoices"
+        subtitle="Manage invoices and payments"
+        actions={
+          isAdminOrOwner && (
+            <Button asChild>
+              <Link to={ROUTES.orders.list}>
+                <Plus className="mr-2 h-4 w-4" />
+                Create from Order
+              </Link>
+            </Button>
+          )
+        }
+      />
 
+      <ContentLayout>
         {/* Stats Cards */}
         <div className="grid gap-4 md:grid-cols-4">
-          <TitanCard className="p-4">
-            <div className="flex items-center justify-between pb-2">
-              <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>Total Outstanding</div>
-              <DollarSign className="h-4 w-4" style={{ color: 'var(--text-muted)' }} />
-            </div>
-            <div className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
-              {formatCurrency(
-                filteredInvoices
-                  .filter(inv => inv.status !== 'paid')
-                  .reduce((sum, inv) => sum + Number(inv.balanceDue || inv.total), 0)
-              )}
-            </div>
-          </TitanCard>
-          <TitanCard className="p-4">
-            <div className="flex items-center justify-between pb-2">
-              <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>Overdue</div>
-              <FileText className="h-4 w-4" style={{ color: 'var(--text-muted)' }} />
-            </div>
-            <div className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
-              {filteredInvoices.filter(inv => inv.status === 'overdue').length}
-            </div>
-          </TitanCard>
-          <TitanCard className="p-4">
-            <div className="flex items-center justify-between pb-2">
-              <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>Paid This Month</div>
-              <DollarSign className="h-4 w-4" style={{ color: 'var(--text-muted)' }} />
-            </div>
-            <div className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
-              {formatCurrency(
-                filteredInvoices
-                  .filter(inv => inv.status === 'paid')
-                  .reduce((sum, inv) => sum + Number(inv.total), 0)
-              )}
-            </div>
-          </TitanCard>
-          <TitanCard className="p-4">
-            <div className="flex items-center justify-between pb-2">
-              <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>Total Invoices</div>
-              <FileText className="h-4 w-4" style={{ color: 'var(--text-muted)' }} />
-            </div>
-            <div className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{filteredInvoices.length}</div>
-          </TitanCard>
+          <TitanStatCard
+            label="Total Outstanding"
+            value={formatCurrency(totalOutstanding)}
+            icon={DollarSign}
+          />
+          <TitanStatCard
+            label="Overdue"
+            value={overdueCount}
+            icon={FileText}
+          />
+          <TitanStatCard
+            label="Paid This Month"
+            value={formatCurrency(paidThisMonth)}
+            icon={DollarSign}
+          />
+          <TitanStatCard
+            label="Total Invoices"
+            value={filteredInvoices.length}
+            icon={FileText}
+          />
         </div>
 
         {/* Filters */}
-        <TitanCard className="p-4">
+        <DataCard>
           <div className="flex gap-4">
-            <div className="flex-1">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
-                <Input
-                  placeholder="Search invoices..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-10"
-                />
-              </div>
-            </div>
+            <TitanSearchInput
+              placeholder="Search invoices..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              containerClassName="flex-1"
+            />
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger className="w-[200px]">
                 <SelectValue placeholder="Filter by status" />
@@ -173,64 +146,78 @@ export default function InvoicesListPage() {
               </SelectContent>
             </Select>
           </div>
-        </TitanCard>
+        </DataCard>
 
         {/* Invoices Table */}
-        <TitanCard className="p-0">
-          {isLoading ? (
-            <div className="text-center py-8" style={{ color: 'var(--text-muted)' }}>Loading invoices...</div>
-          ) : filteredInvoices.length === 0 ? (
-            <div className="text-center py-8" style={{ color: 'var(--text-muted)' }}>No invoices found</div>
-          ) : (
-            <Table>
-              <TableHeader style={{ backgroundColor: 'var(--table-header-bg)' }}>
-                <TableRow style={{ color: 'var(--table-header-text)' }}>
-                  <TableHead>Invoice #</TableHead>
-                  <TableHead>Issue Date</TableHead>
-                  <TableHead>Due Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Total</TableHead>
-                  <TableHead>Paid</TableHead>
-                  <TableHead>Balance</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredInvoices.map((invoice) => (
-                  <TableRow key={invoice.id}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--table-row-hover-bg'))}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                    style={{ borderTop: '1px solid var(--table-border-color)' }}
-                  >
-                    <TableCell className="font-medium">
-                      <Link href={`/invoices/${invoice.id}`} className="hover:underline" style={{ color: 'var(--accent-primary)' }}>
-                        #{invoice.invoiceNumber}
-                      </Link>
-                    </TableCell>
-                    <TableCell>{formatDate(invoice.issueDate)}</TableCell>
-                    <TableCell>{formatDate(invoice.dueDate)}</TableCell>
-                    <TableCell>
-                      <Badge style={badgeStyleForStatus(invoice.status)}>
-                        {statusLabels[invoice.status]}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{formatCurrency(invoice.total)}</TableCell>
-                    <TableCell>{formatCurrency(invoice.amountPaid)}</TableCell>
-                    <TableCell className="font-semibold">
-                      {formatCurrency(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))}
-                    </TableCell>
-                    <TableCell>
+        <TitanTableContainer>
+          <TitanTable>
+            <TitanTableHeader>
+              <TitanTableRow>
+                <TitanTableHead>Invoice #</TitanTableHead>
+                <TitanTableHead>Issue Date</TitanTableHead>
+                <TitanTableHead>Due Date</TitanTableHead>
+                <TitanTableHead>Status</TitanTableHead>
+                <TitanTableHead className="text-right">Total</TitanTableHead>
+                <TitanTableHead className="text-right">Paid</TitanTableHead>
+                <TitanTableHead className="text-right">Balance</TitanTableHead>
+                <TitanTableHead>Actions</TitanTableHead>
+              </TitanTableRow>
+            </TitanTableHeader>
+            <TitanTableBody>
+              {isLoading && <TitanTableLoading colSpan={8} message="Loading invoices..." />}
+              
+              {!isLoading && filteredInvoices.length === 0 && (
+                <TitanTableEmpty
+                  colSpan={8}
+                  icon={<FileText className="w-12 h-12" />}
+                  message="No invoices found"
+                  action={
+                    isAdminOrOwner && (
                       <Button variant="outline" size="sm" asChild>
-                        <Link href={`/invoices/${invoice.id}`}>View</Link>
+                        <Link to={ROUTES.orders.list}>
+                          <Plus className="w-4 h-4 mr-2" />
+                          Create from Order
+                        </Link>
                       </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </TitanCard>
-      </div>
-    </PageShell>
+                    )
+                  }
+                />
+              )}
+              
+              {!isLoading && filteredInvoices.map((invoice) => (
+                <TitanTableRow
+                  key={invoice.id}
+                  clickable
+                  onClick={() => navigate(`/invoices/${invoice.id}`)}
+                >
+                  <TitanTableCell className="font-medium">
+                    <span className="text-titan-accent hover:underline">
+                      #{invoice.invoiceNumber}
+                    </span>
+                  </TitanTableCell>
+                  <TitanTableCell>{formatDate(invoice.issueDate)}</TitanTableCell>
+                  <TitanTableCell>{formatDate(invoice.dueDate)}</TitanTableCell>
+                  <TitanTableCell>
+                    <StatusPill variant={getStatusVariant(invoice.status)}>
+                      {statusLabels[invoice.status]}
+                    </StatusPill>
+                  </TitanTableCell>
+                  <TitanTableCell className="text-right">{formatCurrency(invoice.total)}</TitanTableCell>
+                  <TitanTableCell className="text-right">{formatCurrency(invoice.amountPaid)}</TitanTableCell>
+                  <TitanTableCell className="text-right font-semibold">
+                    {formatCurrency(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))}
+                  </TitanTableCell>
+                  <TitanTableCell onClick={(e) => e.stopPropagation()}>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link to={`/invoices/${invoice.id}`}>View</Link>
+                    </Button>
+                  </TitanTableCell>
+                </TitanTableRow>
+              ))}
+            </TitanTableBody>
+          </TitanTable>
+        </TitanTableContainer>
+      </ContentLayout>
+    </Page>
   );
 }
