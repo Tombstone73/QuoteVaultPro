@@ -1,17 +1,33 @@
 import { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { usePurchaseOrders } from "@/hooks/usePurchaseOrders";
 import { useVendors } from "@/hooks/useVendors";
 import { PurchaseOrderForm } from "@/components/PurchaseOrderForm";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
-import { Link, useLocation } from "wouter";
-import { Search, Plus, ClipboardList } from "lucide-react";
-import { Page, PageHeader, ContentLayout, FilterPanel, DataCard } from "@/components/titan";
+import { Plus, ClipboardList } from "lucide-react";
+import {
+  Page,
+  PageHeader,
+  ContentLayout,
+  DataCard,
+  TitanSearchInput,
+  TitanTableContainer,
+  TitanTable,
+  TitanTableHeader,
+  TitanTableHead,
+  TitanTableBody,
+  TitanTableRow,
+  TitanTableCell,
+  TitanTableEmpty,
+  TitanTableLoading,
+  StatusPill,
+  getStatusVariant,
+} from "@/components/titan";
 
 export default function PurchaseOrdersPage() {
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [vendorId, setVendorId] = useState<string | undefined>(undefined);
   const [status, setStatus] = useState<string>("all");
@@ -22,7 +38,13 @@ export default function PurchaseOrdersPage() {
     vendorId: vendorId || undefined,
     status: status !== 'all' ? status : undefined,
   });
-  const [, navigate] = useLocation();
+
+  const formatCurrency = (amount: string | number) => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+    }).format(Number(amount));
+  };
 
   return (
     <Page>
@@ -38,19 +60,15 @@ export default function PurchaseOrdersPage() {
       />
 
       <ContentLayout>
-        <FilterPanel title="Filter Purchase Orders" description="Search and filter by vendor or status">
+        <DataCard title="Filter Purchase Orders" description="Search and filter by vendor or status">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9"
-              />
-            </div>
+            <TitanSearchInput
+              placeholder="Search..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
             <div className="space-y-2">
-              <Label className="text-xs font-medium">Vendor</Label>
+              <Label className="text-titan-xs font-medium text-titan-text-muted">Vendor</Label>
               <Select value={vendorId} onValueChange={(v) => setVendorId(v === "all" ? undefined : v)}>
                 <SelectTrigger>
                   <SelectValue placeholder="All Vendors" />
@@ -66,7 +84,7 @@ export default function PurchaseOrdersPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label className="text-xs font-medium">Status</Label>
+              <Label className="text-titan-xs font-medium text-titan-text-muted">Status</Label>
               <Select value={status} onValueChange={(v) => setStatus(v)}>
                 <SelectTrigger>
                   <SelectValue />
@@ -82,63 +100,62 @@ export default function PurchaseOrdersPage() {
               </Select>
             </div>
           </div>
-        </FilterPanel>
+        </DataCard>
 
-        <DataCard
-          title="Purchase Orders"
-          description={`${pos.length} purchase order${pos.length !== 1 ? 's' : ''} found`}
-          noPadding
-        >
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>PO #</TableHead>
-                <TableHead>Vendor</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Issue Date</TableHead>
-                <TableHead>Expected</TableHead>
-                <TableHead>Total</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    Loading...
-                  </TableCell>
-                </TableRow>
-              )}
+        <TitanTableContainer>
+          <TitanTable>
+            <TitanTableHeader>
+              <TitanTableRow>
+                <TitanTableHead>PO #</TitanTableHead>
+                <TitanTableHead>Vendor</TitanTableHead>
+                <TitanTableHead>Status</TitanTableHead>
+                <TitanTableHead>Issue Date</TitanTableHead>
+                <TitanTableHead>Expected</TitanTableHead>
+                <TitanTableHead className="text-right">Total</TitanTableHead>
+              </TitanTableRow>
+            </TitanTableHeader>
+            <TitanTableBody>
+              {isLoading && <TitanTableLoading colSpan={6} message="Loading purchase orders..." />}
+              
               {!isLoading && pos.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    <div className="flex flex-col items-center gap-2">
-                      <ClipboardList className="w-12 h-12 text-muted-foreground" />
-                      <p>No purchase orders found</p>
-                      <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
-                        <Plus className="w-4 h-4 mr-2" />
-                        Create first PO
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
+                <TitanTableEmpty
+                  colSpan={6}
+                  icon={<ClipboardList className="w-12 h-12" />}
+                  message="No purchase orders found"
+                  action={
+                    <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Create first PO
+                    </Button>
+                  }
+                />
               )}
-              {pos.map((po) => (
-                <TableRow
+              
+              {!isLoading && pos.map((po) => (
+                <TitanTableRow
                   key={po.id}
-                  className="cursor-pointer hover:bg-muted/50"
+                  clickable
                   onClick={() => navigate(`/purchase-orders/${po.id}`)}
                 >
-                  <TableCell className="underline text-primary">{po.poNumber}</TableCell>
-                  <TableCell>{po.vendor?.name || '-'}</TableCell>
-                  <TableCell>{po.status}</TableCell>
-                  <TableCell>{po.issueDate?.substring(0, 10)}</TableCell>
-                  <TableCell>{po.expectedDate?.substring(0, 10) || '-'}</TableCell>
-                  <TableCell>${parseFloat(po.grandTotal).toFixed(2)}</TableCell>
-                </TableRow>
+                  <TitanTableCell className="font-medium">
+                    <span className="text-titan-accent hover:underline">{po.poNumber}</span>
+                  </TitanTableCell>
+                  <TitanTableCell>{po.vendor?.name || '-'}</TitanTableCell>
+                  <TitanTableCell>
+                    <StatusPill variant={getStatusVariant(po.status)}>
+                      {po.status}
+                    </StatusPill>
+                  </TitanTableCell>
+                  <TitanTableCell>{po.issueDate?.substring(0, 10)}</TitanTableCell>
+                  <TitanTableCell>{po.expectedDate?.substring(0, 10) || '-'}</TitanTableCell>
+                  <TitanTableCell className="text-right font-medium">
+                    {formatCurrency(po.grandTotal)}
+                  </TitanTableCell>
+                </TitanTableRow>
               ))}
-            </TableBody>
-          </Table>
-        </DataCard>
+            </TitanTableBody>
+          </TitanTable>
+        </TitanTableContainer>
       </ContentLayout>
 
       <PurchaseOrderForm open={showCreate} onOpenChange={setShowCreate} />

@@ -16,17 +16,20 @@ export function DataCard({ title, description, headerActions, children, classNam
 
   return (
     <div 
-      className={cn("rounded-xl border border-border/60 bg-card/60 shadow-sm", className)}
+      className={cn(
+        "rounded-titan-xl border border-titan-border-subtle bg-titan-bg-card shadow-titan-card",
+        className
+      )}
       onClick={onClick}
     >
       {hasHeader && (
-        <div className="flex items-center justify-between border-b border-border/60 px-6 py-4">
+        <div className="flex items-center justify-between border-b border-titan-border-subtle px-5 py-4 bg-titan-bg-card-elevated rounded-t-titan-xl">
           <div>
             {title && (
-              <h3 className="text-lg font-semibold text-foreground">{title}</h3>
+              <h3 className="text-titan-md font-semibold text-titan-text-primary">{title}</h3>
             )}
             {description && (
-              <p className="text-sm text-muted-foreground">{description}</p>
+              <p className="text-titan-sm text-titan-text-muted mt-0.5">{description}</p>
             )}
           </div>
           {headerActions && (
@@ -34,7 +37,7 @@ export function DataCard({ title, description, headerActions, children, classNam
           )}
         </div>
       )}
-      <div className={noPadding ? "" : "p-6"}>{children}</div>
+      <div className={noPadding ? "" : "p-5"}>{children}</div>
     </div>
   );
 }

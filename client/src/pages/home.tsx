@@ -1,28 +1,26 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useNavigate } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Calculator, FileText, LogOut, Settings, User, Eye, Users, Shield, Crown, Package, UserCircle, ShoppingCart, Factory } from "lucide-react";
+import { Calculator, FileText, Settings, User, Eye, Shield, Package, UserCircle, ShoppingCart, Factory } from "lucide-react";
 import CalculatorComponent from "@/components/calculator";
-import QuoteHistory from "@/components/quote-history";
 import AdminDashboard from "@/components/admin-dashboard";
 import AdminSettings from "@/components/admin-settings";
 import CustomersPage from "@/pages/customers";
 import OrdersPage from "@/pages/orders";
 import AuditLogs from "@/pages/audit-logs";
-import GlobalSearch from "@/components/global-search";
+import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
+import { cn } from "@/lib/utils";
 
 export default function Home() {
   const { user, isLoading, isAuthenticated, isAdmin } = useAuth();
   const { toast } = useToast();
-  const [, navigate] = useLocation();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("calculator");
   const [viewMode, setViewMode] = useState<"admin" | "customer">(() => {
     if (typeof window !== "undefined") {
@@ -88,10 +86,10 @@ export default function Home() {
 
   if (isLoading || !user) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-titan-bg flex items-center justify-center">
         <div className="text-center">
-          <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading...</p>
+          <div className="w-16 h-16 border-4 border-titan-accent border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-titan-text-muted">Loading...</p>
         </div>
       </div>
     );
@@ -102,158 +100,106 @@ export default function Home() {
     : user.email?.[0]?.toUpperCase() || "U";
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b sticky top-0 bg-background z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2">
-              <Calculator className="w-6 h-6 text-primary" data-testid="logo-calculator" />
-              <h1 className="text-xl font-semibold" data-testid="text-app-title">Pricing Calculator</h1>
-            </div>
-
-            <div className="flex-1 max-w-md mx-4">
-              <GlobalSearch />
-            </div>
-
-            <div className="flex items-center gap-4">
-              {showAdminFeatures && (
-                <Button
-                  onClick={() => navigate("/production")}
-                  variant="default"
-                  size="sm"
-                  data-testid="button-production"
-                >
-                  <Factory className="h-4 w-4 mr-2" />
-                  Production
-                </Button>
-              )}
-              {isAdmin && (
-                <div className="flex items-center gap-2" data-testid="container-view-toggle">
-                  <Eye className="w-4 h-4 text-muted-foreground" />
-                  <Label htmlFor="view-mode" className="text-sm text-muted-foreground cursor-pointer" data-testid="label-view-mode">
-                    {viewMode === "admin" ? "Admin View" : "Customer View"}
-                  </Label>
-                  <Switch
-                    id="view-mode"
-                    checked={viewMode === "admin"}
-                    onCheckedChange={handleViewModeChange}
-                    data-testid="switch-view-mode"
-                  />
-                </div>
-              )}
-
-              <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="relative h-9 w-9 rounded-full" data-testid="button-user-menu">
-                  <Avatar className="h-9 w-9">
-                    <AvatarImage src={user.profileImageUrl || undefined} alt={user.email || "User"} />
-                    <AvatarFallback data-testid="text-user-initials">{initials}</AvatarFallback>
-                  </Avatar>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" data-testid="menu-user">
-                <DropdownMenuLabel>
-                  <div className="flex flex-col space-y-1">
-                    <p className="text-sm font-medium leading-none" data-testid="text-user-name">
-                      {user.firstName && user.lastName
-                        ? `${user.firstName} ${user.lastName}`
-                        : "User"}
-                    </p>
-                    <p className="text-xs leading-none text-muted-foreground" data-testid="text-user-email">
-                      {user.email || "No email"}
-                    </p>
-                    {user.role === "owner" && (
-                      <p className="text-xs leading-none text-purple-600 font-medium flex items-center gap-1" data-testid="text-owner-badge">
-                        <Crown className="w-3 h-3" />
-                        Owner
-                      </p>
-                    )}
-                    {user.role === "admin" && (
-                      <p className="text-xs leading-none text-primary font-medium flex items-center gap-1" data-testid="text-admin-badge">
-                        <Shield className="w-3 h-3" />
-                        Admin
-                      </p>
-                    )}
-                    {user.role === "manager" && (
-                      <p className="text-xs leading-none text-muted-foreground font-medium" data-testid="text-manager-badge">
-                        Manager
-                      </p>
-                    )}
-                  </div>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {isAdmin && (
-                  <>
-                    <DropdownMenuItem asChild>
-                      <Link href="/users" data-testid="link-user-management">
-                        <Users className="w-4 h-4 mr-2" />
-                        User Management
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem asChild>
-                      <Link href="/admin" data-testid="link-admin-settings">
-                        <Settings className="w-4 h-4 mr-2" />
-                        Admin Settings
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem asChild>
-                      <Link href="/settings" data-testid="link-company-settings">
-                        <Settings className="w-4 h-4 mr-2" />
-                        Company Settings
-                      </Link>
-                    </DropdownMenuItem>
-                  </>
-                )}
-                <DropdownMenuItem asChild>
-                  <a href="/api/logout" data-testid="button-logout">
-                    <LogOut className="w-4 h-4 mr-2" />
-                    Sign Out
-                  </a>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            </div>
+    <Page>
+      <PageHeader
+        title="Dashboard"
+        subtitle="Pricing calculator and quick access to your workspace"
+        className="pb-3"
+        actions={
+          <div className="flex items-center gap-4">
+            {showAdminFeatures && (
+              <Button
+                onClick={() => navigate("/production")}
+                size="sm"
+                className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md text-titan-sm font-medium"
+                data-testid="button-production"
+              >
+                <Factory className="h-4 w-4 mr-2" />
+                Production
+              </Button>
+            )}
+            {isAdmin && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-titan-md border border-titan-border bg-titan-bg-card-elevated" data-testid="container-view-toggle">
+                <Eye className="w-4 h-4 text-titan-text-muted" />
+                <Label htmlFor="view-mode" className="text-titan-sm text-titan-text-secondary cursor-pointer" data-testid="label-view-mode">
+                  {viewMode === "admin" ? "Admin View" : "Customer View"}
+                </Label>
+                <Switch
+                  id="view-mode"
+                  checked={viewMode === "admin"}
+                  onCheckedChange={handleViewModeChange}
+                  data-testid="switch-view-mode"
+                />
+              </div>
+            )}
           </div>
-        </div>
-      </header>
+        }
+      />
 
-      <main className="container mx-auto px-4 py-8">
-        <Tabs value={activeTab} onValueChange={handleTabChange} data-testid="tabs-main">
-          <TabsList className="grid w-full max-w-3xl mx-auto" style={{
-            gridTemplateColumns: showAdminFeatures
-              ? 'repeat(6, 1fr)'
-              : viewMode === 'customer'
-                ? 'repeat(3, 1fr)'
-                : 'repeat(5, 1fr)'
-          }}>
-            <TabsTrigger value="calculator" data-testid="tab-calculator">
+      <ContentLayout>
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full" data-testid="tabs-main">
+          <TabsList 
+            className={cn(
+              "grid w-full max-w-3xl mx-auto bg-titan-bg-card-elevated border border-titan-border rounded-titan-lg p-1",
+              showAdminFeatures
+                ? 'grid-cols-6'
+                : viewMode === 'customer'
+                  ? 'grid-cols-3'
+                  : 'grid-cols-5'
+            )}
+          >
+            <TabsTrigger 
+              value="calculator" 
+              className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+              data-testid="tab-calculator"
+            >
               <Calculator className="w-4 h-4 mr-2" />
               Calculator
             </TabsTrigger>
             {viewMode === 'customer' ? (
               <>
-                <TabsTrigger value="portal-quotes" data-testid="tab-portal-quotes">
+                <TabsTrigger 
+                  value="portal-quotes" 
+                  className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                  data-testid="tab-portal-quotes"
+                >
                   <FileText className="w-4 h-4 mr-2" />
                   My Quotes
                 </TabsTrigger>
-                <TabsTrigger value="portal-orders" data-testid="tab-portal-orders">
+                <TabsTrigger 
+                  value="portal-orders" 
+                  className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                  data-testid="tab-portal-orders"
+                >
                   <ShoppingCart className="w-4 h-4 mr-2" />
                   My Orders
                 </TabsTrigger>
               </>
             ) : (
-              <TabsTrigger value="quotes" data-testid="tab-quotes">
+              <TabsTrigger 
+                value="quotes" 
+                className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                data-testid="tab-quotes"
+              >
                 <FileText className="w-4 h-4 mr-2" />
                 {viewMode === 'admin' ? 'Quotes' : 'My Quotes'}
               </TabsTrigger>
             )}
             {viewMode === 'admin' && (
               <>
-                <TabsTrigger value="contacts" data-testid="tab-contacts">
+                <TabsTrigger 
+                  value="contacts" 
+                  className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                  data-testid="tab-contacts"
+                >
                   <UserCircle className="w-4 h-4 mr-2" />
                   Contacts
                 </TabsTrigger>
-                <TabsTrigger value="orders" data-testid="tab-orders">
+                <TabsTrigger 
+                  value="orders" 
+                  className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                  data-testid="tab-orders"
+                >
                   <Package className="w-4 h-4 mr-2" />
                   Orders
                 </TabsTrigger>
@@ -261,37 +207,51 @@ export default function Home() {
             )}
             {showAdminFeatures && (
               <>
-                <TabsTrigger value="admin" data-testid="tab-admin">
+                <TabsTrigger 
+                  value="admin" 
+                  className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                  data-testid="tab-admin"
+                >
                   <User className="w-4 h-4 mr-2" />
                   Admin
                 </TabsTrigger>
-                <TabsTrigger value="settings" data-testid="tab-settings">
+                <TabsTrigger 
+                  value="settings" 
+                  className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                  data-testid="tab-settings"
+                >
                   <Settings className="w-4 h-4 mr-2" />
                   Settings
                 </TabsTrigger>
               </>
             )}
             {isOwner && (
-              <TabsTrigger value="audit-logs" data-testid="tab-audit-logs">
+              <TabsTrigger 
+                value="audit-logs" 
+                className="rounded-titan-md data-[state=active]:bg-titan-accent data-[state=active]:text-white text-titan-text-secondary"
+                data-testid="tab-audit-logs"
+              >
                 <Shield className="w-4 h-4 mr-2" />
                 Audit Log
               </TabsTrigger>
             )}
           </TabsList>
 
-          <div className="mt-8">
-            <TabsContent value="calculator" data-testid="content-calculator">
-              <CalculatorComponent />
+          <div className="mt-6">
+            <TabsContent value="calculator" className="mt-0" data-testid="content-calculator">
+              <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+                <CalculatorComponent />
+              </DataCard>
             </TabsContent>
 
             {/* Quotes tab now navigates directly, no content needed */}
 
             {viewMode === 'admin' && (
               <>
-                <TabsContent value="customers" data-testid="content-customers">
+                <TabsContent value="customers" className="mt-0" data-testid="content-customers">
                   <CustomersPage embedded={true} />
                 </TabsContent>
-                <TabsContent value="orders" data-testid="content-orders">
+                <TabsContent value="orders" className="mt-0" data-testid="content-orders">
                   <OrdersPage />
                 </TabsContent>
               </>
@@ -299,24 +259,28 @@ export default function Home() {
 
             {showAdminFeatures && (
               <>
-                <TabsContent value="admin" data-testid="content-admin">
-                  <AdminDashboard />
+                <TabsContent value="admin" className="mt-0" data-testid="content-admin">
+                  <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+                    <AdminDashboard />
+                  </DataCard>
                 </TabsContent>
 
-                <TabsContent value="settings" data-testid="content-settings">
-                  <AdminSettings />
+                <TabsContent value="settings" className="mt-0" data-testid="content-settings">
+                  <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+                    <AdminSettings />
+                  </DataCard>
                 </TabsContent>
               </>
             )}
 
             {isOwner && (
-              <TabsContent value="audit-logs" data-testid="content-audit-logs">
+              <TabsContent value="audit-logs" className="mt-0" data-testid="content-audit-logs">
                 <AuditLogs />
               </TabsContent>
             )}
           </div>
         </Tabs>
-      </main>
-    </div>
+      </ContentLayout>
+    </Page>
   );
 }
