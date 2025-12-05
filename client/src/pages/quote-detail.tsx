@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
+import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -35,11 +36,11 @@ export default function QuoteDetail() {
 
   const handleBack = () => {
     if (quote?.source === 'customer_quick_quote' && !isInternalUser) {
-      navigate("/my-quotes");
+      navigate(ROUTES.portal.myQuotes);
     } else if (isInternalUser) {
-      navigate("/quotes");
+      navigate(ROUTES.quotes.list);
     } else {
-      navigate("/");
+      navigate(ROUTES.dashboard);
     }
   };
 
@@ -77,12 +78,12 @@ export default function QuoteDetail() {
         </Button>
         <div className="flex gap-2">
           {isInternalUser && quote.source === 'internal' && (
-            <Button variant="outline" onClick={() => navigate(`/quotes/${quote.id}/edit`)}>
+            <Button variant="outline" onClick={() => navigate(ROUTES.quotes.edit(quote.id))}>
               <Edit className="w-4 h-4 mr-2" />
               Edit Quote
             </Button>
           )}
-          <Button onClick={() => navigate(`/orders/new?fromQuote=${quote.id}`)}>
+          <Button onClick={() => navigate(ROUTES.orders.new + `?fromQuote=${quote.id}`)}>
             <Package className="w-4 h-4 mr-2" />
             Convert to Order
           </Button>

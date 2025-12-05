@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Building2, Mail, Phone, MapPin, Globe, Edit, DollarSign, FileText, Users, MessageSquare, CreditCard, Trash2, Package, Plus, Calendar } from "lucide-react";
+import { ArrowLeft, Building2, Mail, Phone, MapPin, Globe, Edit, DollarSign, FileText, Users, MessageSquare, CreditCard, Trash2, Package, Plus, Calendar, Eye, Edit2, Download, MailOpen } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import CustomerForm from "@/components/customer-form";
@@ -17,6 +17,7 @@ import CreditForm from "@/components/credit-form";
 import { useOrders } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
+import { ROUTES } from "@/config/routes";
 
 // Component for showing customer orders
 function OrdersForCustomer({ customerId }: { customerId: string }) {
@@ -90,10 +91,9 @@ function OrdersForCustomer({ customerId }: { customerId: string }) {
                     <div className="text-sm text-white/60">{formatDate(order.dueDate)}</div>
                     <div><OrderStatusBadge status={order.status} /></div>
                     <div className="flex items-center justify-end gap-2">
-                      <Link href={`/orders/${order.id}`}><Button variant="ghost" size="icon" className="hover:bg-white/10"><Eye className="w-4 h-4" /></Button></Link>
-                      <Link href={`/orders/${order.id}`}><Button variant="ghost" size="icon" className="hover:bg-white/10"><Edit2 className="w-4 h-4" /></Button></Link>
-                      <Button variant="ghost" size="icon" className="hover:bg-white/10"><Download className="w-4 h-4" /></Button>
-                      <Button variant="ghost" size="icon" className="hover:bg-white/10"><MailIcon className="w-4 h-4" /></Button>
+                      <Link href={ROUTES.orders.detail(order.id)}><Button variant="ghost" size="icon" className="hover:bg-white/10" title="View Order"><Eye className="w-4 h-4" /></Button></Link>
+                      <Button variant="ghost" size="icon" className="hover:bg-white/10" title="Download" disabled><Download className="w-4 h-4" /></Button>
+                      <Button variant="ghost" size="icon" className="hover:bg-white/10" title="Email" disabled><MailOpen className="w-4 h-4" /></Button>
                     </div>
                   </div>
                 ))}
@@ -223,7 +223,7 @@ export default function CustomerDetail() {
         <div className="text-center">
           <Building2 className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
           <p className="text-muted-foreground">Customer not found</p>
-          <Link href="/customers">
+          <Link href={ROUTES.customers.list}>
             <Button className="mt-4">Back to Customers</Button>
           </Link>
         </div>
@@ -247,7 +247,7 @@ export default function CustomerDetail() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <Link href="/customers">
+              <Link href={ROUTES.customers.list}>
                 <Button variant="ghost" size="icon">
                   <ArrowLeft className="w-5 h-5" />
                 </Button>
@@ -552,7 +552,7 @@ export default function CustomerDetail() {
                 ) : (
                   <div className="space-y-2">
                     {customer.quotes.map((quote) => (
-                      <Link key={quote.id} href={`/quotes/${quote.id}/edit`}>
+                      <Link key={quote.id} href={ROUTES.quotes.detail(quote.id)}>
                         <div className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent cursor-pointer">
                           <div>
                             <div className="font-medium">Quote #{quote.quoteNumber}</div>

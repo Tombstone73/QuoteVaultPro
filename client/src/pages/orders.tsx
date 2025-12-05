@@ -11,6 +11,7 @@ import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, FilterPanel, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, type ColumnDefinition } from "@/components/titan";
+import { ROUTES } from "@/config/routes";
 
 type SortKey = "date" | "orderNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items";
 
@@ -205,12 +206,12 @@ export default function Orders() {
         subtitle="Manage production orders and job tracking"
         className="pb-3"
         backButton={
-          <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
+          <Button variant="ghost" size="icon" onClick={() => navigate(ROUTES.dashboard)}>
             <ArrowLeft className="w-5 h-5" />
           </Button>
         }
         actions={
-          <Link to="/orders/new">
+          <Link to={ROUTES.orders.new}>
             <Button size="sm">
               <Plus className="w-4 h-4 mr-2" />
               New Order
@@ -378,7 +379,7 @@ export default function Orders() {
                     <div className="flex flex-col items-center gap-2">
                       <Package className="w-8 h-8 text-muted-foreground" />
                       <p>No orders found</p>
-                      <Link to="/orders/new">
+                      <Link to={ROUTES.orders.new}>
                         <Button variant="outline" size="sm">
                           <Plus className="w-4 h-4 mr-2" />
                           Create first order
@@ -392,7 +393,7 @@ export default function Orders() {
                   <TableRow key={order.id} className="cursor-pointer hover:bg-muted/50">
                     {isVisible("orderNumber") && (
                       <TableCell className="font-mono font-medium" style={getColStyle("orderNumber")}>
-                        <Link to={`/orders/${order.id}`}>
+                        <Link to={ROUTES.orders.detail(order.id)}>
                           <span className="hover:underline text-primary">{order.orderNumber}</span>
                         </Link>
                       </TableCell>
@@ -402,7 +403,7 @@ export default function Orders() {
                         <div className="flex items-center gap-2">
                           <div>
                             {order.customer ? (
-                              <Link to={`/customers/${order.customer.id}`}>
+                              <Link to={ROUTES.customers.detail(order.customer.id)}>
                                 <div className="font-medium hover:underline cursor-pointer text-primary">
                                   {order.customer.companyName}
                                 </div>

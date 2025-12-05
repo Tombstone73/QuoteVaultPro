@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useRoute, useLocation, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -263,7 +264,7 @@ export default function EditQuote() {
               </SelectContent>
             </Select>
             {customerId && (
-              <Link href={`/customers/${customerId}`}>
+              <Link href={ROUTES.customers.detail(customerId)}>
                 <Button variant="link" size="sm" className="p-0 h-auto">
                   <ExternalLink className="w-3 h-3 mr-1" />
                   View Customer Details
