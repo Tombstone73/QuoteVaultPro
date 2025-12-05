@@ -463,9 +463,9 @@ export default function InternalQuotes() {
                     >
                       {isVisible("quoteNumber") && (
                         <TableCell style={getColStyle("quoteNumber")}>
-                          <Badge variant="outline" className="font-mono">
+                          <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer">
                             {quote.quoteNumber || "N/A"}
-                          </Badge>
+                          </span>
                         </TableCell>
                       )}
                       {isVisible("date") && (

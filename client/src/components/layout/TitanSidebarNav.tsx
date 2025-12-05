@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   Home,
@@ -20,6 +20,8 @@ import {
   UserCog,
   Plus,
   ChevronLeft,
+  ChevronDown,
+  ChevronRight,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -42,12 +44,14 @@ export type NavItemConfig = {
 
 export type NavSectionConfig = {
   section: string;
+  sectionKey: string; // Unique key for section (e.g., "sales", "production")
   items: NavItemConfig[];
 };
 
 export const NAV_CONFIG: NavSectionConfig[] = [
   {
     section: "SALES",
+    sectionKey: "sales",
     items: [
       { id: "dashboard", name: "Dashboard", icon: Home, path: ROUTES.dashboard },
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
@@ -58,12 +62,14 @@ export const NAV_CONFIG: NavSectionConfig[] = [
   },
   {
     section: "PRODUCTION",
+    sectionKey: "production",
     items: [
       { id: "production", name: "Production Board", icon: Factory, path: ROUTES.production.board },
     ],
   },
   {
     section: "INVENTORY",
+    sectionKey: "inventory",
     items: [
       { id: "materials", name: "Materials", icon: Boxes, path: ROUTES.materials.list },
       { id: "vendors", name: "Vendors", icon: Package, path: ROUTES.vendors.list },
@@ -72,6 +78,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
   },
   {
     section: "SHIPPING & FULFILLMENT",
+    sectionKey: "shipping",
     items: [
       { id: "fulfillment", name: "Fulfillment", icon: Truck, path: "/fulfillment" },
       { id: "shipping", name: "Shipping Labels", icon: Tag, path: "/shipping" },
@@ -80,6 +87,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
   },
   {
     section: "ACCOUNTING",
+    sectionKey: "accounting",
     items: [
       { id: "invoices", name: "Invoices", icon: Receipt, path: ROUTES.invoices.list },
       { id: "payments", name: "Payments", icon: CreditCard, path: "/payments" },
@@ -87,6 +95,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
   },
   {
     section: "SYSTEM",
+    sectionKey: "system",
     items: [
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
       { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
@@ -111,6 +120,45 @@ function filterNavByRole(sections: NavSectionConfig[], role?: string | null): Na
     .filter((section) => section.items.length > 0);
 }
 
+// Helper to determine which section a path belongs to
+function getSectionKeyForPath(pathname: string, sections: NavSectionConfig[]): string | null {
+  for (const section of sections) {
+    for (const item of section.items) {
+      if (pathname === item.path || (item.path !== "/" && pathname.startsWith(item.path))) {
+        return section.sectionKey;
+      }
+    }
+  }
+  return null;
+}
+
+// LocalStorage helpers for section collapse state
+const STORAGE_KEY = "titan_sidebar_sections";
+
+function loadSectionState(sections: NavSectionConfig[]): Record<string, boolean> {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.warn("Failed to load sidebar section state:", e);
+  }
+  // Default: all sections open
+  return sections.reduce((acc, section) => {
+    acc[section.sectionKey] = true;
+    return acc;
+  }, {} as Record<string, boolean>);
+}
+
+function saveSectionState(state: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.warn("Failed to save sidebar section state:", e);
+  }
+}
+
 // ============================================================
 // NAV ITEM COMPONENT
 // ============================================================
@@ -133,7 +181,7 @@ function NavItem({ item, isCollapsed }: NavItemProps) {
     <NavLink
       to={item.path}
       className={cn(
-        "flex items-center gap-3 rounded-titan-md px-3 py-2.5 text-sm font-medium transition-colors",
+        "flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
         "hover:bg-titan-bg-card-elevated hover:text-titan-text-primary",
         isActive
           ? "bg-titan-accent/10 text-titan-accent border-l-2 border-titan-accent"
@@ -155,22 +203,41 @@ function NavItem({ item, isCollapsed }: NavItemProps) {
 interface NavSectionProps {
   section: NavSectionConfig;
   isCollapsed: boolean;
+  isExpanded: boolean;
+  onToggle: () => void;
 }
 
-function NavSection({ section, isCollapsed }: NavSectionProps) {
+function NavSection({ section, isCollapsed, isExpanded, onToggle }: NavSectionProps) {
+  const sectionId = `nav-section-${section.sectionKey}`;
+  const ChevronIcon = isExpanded ? ChevronDown : ChevronRight;
+
   return (
-    <div className="mb-2">
+    <div className="mb-1">
       {!isCollapsed && (
-        <div className="px-3 pt-4 pb-2 text-[10px] font-semibold uppercase tracking-widest text-titan-text-muted">
-          {section.section}
+        <button
+          type="button"
+          onClick={onToggle}
+          className={cn(
+            "w-full flex items-center justify-between px-3 py-1.5 rounded-titan-md",
+            "text-[10px] font-semibold uppercase tracking-widest text-titan-text-muted",
+            "hover:bg-titan-bg-card-elevated/50 transition-colors",
+            "focus:outline-none focus-visible:ring-2 focus-visible:ring-titan-accent"
+          )}
+          aria-expanded={isExpanded}
+          aria-controls={sectionId}
+        >
+          <span>{section.section}</span>
+          <ChevronIcon className="h-3 w-3" />
+        </button>
+      )}
+      {isCollapsed && <div className="h-3" />}
+      {isExpanded && (
+        <div id={sectionId} className="space-y-0.5 px-2 mt-1">
+          {section.items.map((item) => (
+            <NavItem key={item.id} item={item} isCollapsed={isCollapsed} />
+          ))}
         </div>
       )}
-      {isCollapsed && <div className="h-4" />}
-      <div className="space-y-1 px-2">
-        {section.items.map((item) => (
-          <NavItem key={item.id} item={item} isCollapsed={isCollapsed} />
-        ))}
-      </div>
     </div>
   );
 }
@@ -187,8 +254,45 @@ interface TitanSidebarNavProps {
 export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: TitanSidebarNavProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const role = user?.role ?? null;
   const filteredSections = filterNavByRole(NAV_CONFIG, role);
+
+  // Initialize section open/close state
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
+    const savedState = loadSectionState(filteredSections);
+    // Auto-expand section containing current route
+    const currentSectionKey = getSectionKeyForPath(location.pathname, filteredSections);
+    if (currentSectionKey) {
+      savedState[currentSectionKey] = true;
+    }
+    return savedState;
+  });
+
+  // Auto-expand section when route changes
+  useEffect(() => {
+    const currentSectionKey = getSectionKeyForPath(location.pathname, filteredSections);
+    if (currentSectionKey) {
+      setOpenSections((prev) => {
+        // Only update if the section is currently closed
+        if (!prev[currentSectionKey]) {
+          const newState = { ...prev, [currentSectionKey]: true };
+          saveSectionState(newState);
+          return newState;
+        }
+        return prev;
+      });
+    }
+  }, [location.pathname, filteredSections]);
+
+  // Toggle section open/close
+  const toggleSection = (sectionKey: string) => {
+    setOpenSections((prev) => {
+      const newState = { ...prev, [sectionKey]: !prev[sectionKey] };
+      saveSectionState(newState);
+      return newState;
+    });
+  };
 
   return (
     <aside
@@ -200,7 +304,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
     >
       {/* Logo / Brand - ALWAYS rendered with consistent toggle location */}
       <div className={cn(
-        "flex items-center border-b border-titan-border-subtle px-3 py-4",
+        "flex items-center border-b border-titan-border-subtle px-3 py-3",
         isCollapsed ? "justify-center" : "justify-between"
       )}>
         {/* Logo + App Name (clickable to toggle) */}
@@ -245,7 +349,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       </div>
 
       {/* New Order Button */}
-      <div className={cn("px-3 py-3", isCollapsed && "px-2")}>
+      <div className={cn("px-3 py-2", isCollapsed && "px-2")}>
         <Button
           onClick={() => navigate(ROUTES.orders.new)}
           className={cn(
@@ -261,15 +365,21 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       </div>
 
       {/* Navigation Sections */}
-      <nav className="flex-1 overflow-y-auto py-2">
+      <nav className="flex-1 overflow-y-auto py-1">
         {filteredSections.map((section) => (
-          <NavSection key={section.section} section={section} isCollapsed={isCollapsed} />
+          <NavSection 
+            key={section.section} 
+            section={section} 
+            isCollapsed={isCollapsed}
+            isExpanded={openSections[section.sectionKey] ?? true}
+            onToggle={() => toggleSection(section.sectionKey)}
+          />
         ))}
       </nav>
 
       {/* Footer */}
       <div className={cn(
-        "border-t border-titan-border-subtle px-3 py-3",
+        "border-t border-titan-border-subtle px-3 py-2",
         "flex items-center",
         isCollapsed ? "justify-center" : "justify-between"
       )}>

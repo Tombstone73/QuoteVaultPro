@@ -555,7 +555,7 @@ export default function CustomerDetail() {
                       <Link key={quote.id} href={ROUTES.quotes.detail(quote.id)}>
                         <div className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent cursor-pointer">
                           <div>
-                            <div className="font-medium">Quote #{quote.quoteNumber}</div>
+                            <div className="font-medium text-titan-accent hover:text-titan-accent-hover">Quote #{quote.quoteNumber}</div>
                             <div className="text-sm text-muted-foreground">
                               {new Date(quote.createdAt).toLocaleDateString()}
                             </div>

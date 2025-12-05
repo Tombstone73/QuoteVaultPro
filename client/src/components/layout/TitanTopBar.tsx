@@ -1,8 +1,9 @@
 import * as React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings } from "lucide-react";
+import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { useGlobalSearch } from "@/hooks/useGlobalSearch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -14,6 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ROUTES } from "@/config/routes";
+import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -100,6 +102,11 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   const navigate = useNavigate();
   const { user } = useAuth();
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [showSearchResults, setShowSearchResults] = React.useState(false);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+  const searchContainerRef = React.useRef<HTMLDivElement>(null);
+
+  const { results, isLoading, firstResult } = useGlobalSearch(searchQuery);
 
   const pageTitle = getPageTitle(location.pathname);
   const breadcrumbs = getBreadcrumbs(location.pathname);
@@ -125,6 +132,72 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
     }
     return "U";
   }, [user]);
+
+  // Global keyboard shortcut: Ctrl+K / Cmd+K
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        setShowSearchResults(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Close search results when clicking outside
+  React.useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        searchContainerRef.current &&
+        !searchContainerRef.current.contains(e.target as Node)
+      ) {
+        setShowSearchResults(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Handle search input changes
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    console.log("[TITAN TOP BAR] Search input changed to:", value);
+    setSearchQuery(value);
+    setShowSearchResults(value.length >= 2);
+    console.log("[TITAN TOP BAR] Show results:", value.length >= 2);
+  };
+
+  // Handle search input key presses
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && firstResult) {
+      e.preventDefault();
+      navigate(firstResult.url);
+      setShowSearchResults(false);
+      setSearchQuery("");
+      searchInputRef.current?.blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setShowSearchResults(false);
+      searchInputRef.current?.blur();
+    }
+  };
+
+  // Clear search
+  const handleClearSearch = () => {
+    setSearchQuery("");
+    setShowSearchResults(false);
+    searchInputRef.current?.focus();
+  };
+
+  // Handle result selection
+  const handleResultClick = () => {
+    setShowSearchResults(false);
+    setSearchQuery("");
+  };
 
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur-md md:px-6">
@@ -175,15 +248,38 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
       {/* Center - Search (hidden on mobile) */}
       <div className="hidden flex-1 max-w-md mx-8 lg:block">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <div className="relative" ref={searchContainerRef}>
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none z-10" />
           <Input
+            ref={searchInputRef}
             type="search"
-            placeholder="Search..."
+            placeholder="Search... (Ctrl+K)"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-9 w-full bg-muted/50 pl-9 text-sm placeholder:text-muted-foreground focus:bg-background"
+            onChange={handleSearchChange}
+            onKeyDown={handleSearchKeyDown}
+            onFocus={() => searchQuery.length >= 2 && setShowSearchResults(true)}
+            className="h-9 w-full bg-muted/50 pl-9 pr-9 text-sm placeholder:text-muted-foreground focus:bg-background"
           />
+          {searchQuery && (
+            <button
+              onClick={handleClearSearch}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground z-10"
+              aria-label="Clear search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+          {showSearchResults && (
+            <>
+              {console.log("[TITAN TOP BAR] Rendering GlobalSearchOverlay with:", { results, isLoading, searchQuery, showSearchResults })}
+              <GlobalSearchOverlay
+                results={results}
+                isLoading={isLoading}
+                query={searchQuery}
+                onResultClick={handleResultClick}
+              />
+            </>
+          )}
         </div>
       </div>
 

@@ -43,6 +43,14 @@ type QuoteAttachment = {
   fileSize?: number | null;
   mimeType?: string | null;
   createdAt: string;
+  // New storage model fields
+  originalFilename?: string | null;
+  storedFilename?: string | null;
+  relativePath?: string | null;
+  storageProvider?: string | null;
+  extension?: string | null;
+  sizeBytes?: number | null;
+  checksum?: string | null;
 };
 
 /**
@@ -1698,7 +1706,7 @@ export default function QuoteEditor() {
                       className="flex items-center gap-2 p-2 rounded-md bg-muted/50 hover:bg-muted transition-colors"
                     >
                       <Paperclip className="w-4 h-4 text-muted-foreground shrink-0" />
-                      <span className="text-sm truncate flex-1">{file.fileName}</span>
+                      <span className="text-sm truncate flex-1">{file.originalFilename || file.fileName}</span>
                       <div className="flex gap-1 shrink-0">
                         {file.fileUrl && (
                           <Button

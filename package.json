@@ -12,6 +12,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:sync-users": "tsx sync-users-customers.ts",
     "fix-user": "tsx fix-user-role.ts",
+    "migrate:file-storage": "powershell ./scripts/run_file_storage_migration.ps1",
     "test": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest",
     "test:smoke": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --testPathPattern=smoke",
     "test:watch": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --watch"
