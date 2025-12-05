@@ -59,6 +59,8 @@ const customerSchema = z.object({
   shippingState: z.string().optional(),
   shippingPostalCode: z.string().optional(),
   shippingCountry: z.string().optional(),
+  // Address behavior
+  sameAsBilling: z.boolean().default(true),
   creditLimit: z.number().min(0).optional(),
   notes: z.string().optional(),
   primaryContact: primaryContactSchema.optional(),
@@ -120,6 +122,15 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       shippingState: customer.shippingState || "",
       shippingPostalCode: customer.shippingPostalCode || "",
       shippingCountry: customer.shippingCountry || "",
+      // Determine if billing === shipping
+      sameAsBilling: (
+        customer.billingStreet1 === customer.shippingStreet1 &&
+        customer.billingStreet2 === customer.shippingStreet2 &&
+        customer.billingCity === customer.shippingCity &&
+        customer.billingState === customer.shippingState &&
+        customer.billingPostalCode === customer.shippingPostalCode &&
+        customer.billingCountry === customer.shippingCountry
+      ),
       creditLimit: customer.creditLimit ? Number(customer.creditLimit) : 0,
       notes: customer.notes || "",
     } : {
@@ -154,6 +165,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       shippingState: "",
       shippingPostalCode: "",
       shippingCountry: "",
+      sameAsBilling: true,
       creditLimit: 0,
       notes: "",
       primaryContact: {
@@ -170,7 +182,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const createMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
       // Convert creditLimit to string for database and normalize primaryContact
-      const { primaryContact, ...rest } = data;
+      const { primaryContact, sameAsBilling, ...rest } = data;
 
       const hasPrimaryContact = primaryContact && (
         primaryContact.firstName.trim() !== "" ||
@@ -221,12 +233,33 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
   const updateMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
-      // Convert creditLimit to string for database (ignore primaryContact on update for now)
-      const { primaryContact: _pc, ...rest } = data;
-      const payload = {
+      // Convert creditLimit to string for database
+      const { primaryContact, sameAsBilling, ...rest } = data;
+
+      const hasPrimaryContact = primaryContact && (
+        primaryContact.firstName.trim() !== "" ||
+        primaryContact.lastName.trim() !== "" ||
+        primaryContact.email.trim() !== "" ||
+        (primaryContact.phone ?? "").trim() !== "" ||
+        (primaryContact.title ?? "").trim() !== ""
+      );
+
+      const payload: any = {
         ...rest,
         creditLimit: rest.creditLimit?.toString() || "0",
       };
+
+      if (hasPrimaryContact) {
+        payload.primaryContact = {
+          firstName: primaryContact.firstName,
+          lastName: primaryContact.lastName,
+          email: primaryContact.email,
+          phone: primaryContact.phone || undefined,
+          title: primaryContact.title || undefined,
+          isPrimary: primaryContact.isPrimary ?? true,
+        };
+      }
+
       const response = await fetch(`/api/customers/${customer?.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -249,9 +282,21 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
   const onSubmit = async (data: CustomerFormData) => {
     setIsSubmitting(true);
+    
+    // Handle "same as billing" logic: copy billing to shipping when checked
+    let submitData = { ...data };
+    if (data.sameAsBilling) {
+      submitData.shippingStreet1 = data.billingStreet1;
+      submitData.shippingStreet2 = data.billingStreet2;
+      submitData.shippingCity = data.billingCity;
+      submitData.shippingState = data.billingState;
+      submitData.shippingPostalCode = data.billingPostalCode;
+      submitData.shippingCountry = data.billingCountry;
+    }
+    
     try {
       if (customer) {
-        await updateMutation.mutateAsync(data);
+        await updateMutation.mutateAsync(submitData);
       } else {
         // Check for duplicate company name
         const response = await fetch(`/api/customers?search=${encodeURIComponent(data.companyName)}`, {
@@ -264,14 +309,14 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
           );
 
           if (exactMatch) {
-            setPendingData(data);
+            setPendingData(submitData);
             setShowDuplicateWarning(true);
             setIsSubmitting(false);
             return;
           }
         }
 
-        await createMutation.mutateAsync(data);
+        await createMutation.mutateAsync(submitData);
       }
     } finally {
       setIsSubmitting(false);
@@ -298,6 +343,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
   const customerType = watch("customerType");
   const status = watch("status");
+  const sameAsBilling = watch("sameAsBilling");
 
   return (
     <>
@@ -311,7 +357,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-          {/* Basic Information */}
+          {/* 1. Basic Information */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Basic Information</h3>
 
@@ -360,32 +406,313 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+          </div>
 
-              <div>
-                <Label htmlFor="pricingTier">Pricing Tier *</Label>
-                <Select
-                  value={watch("pricingTier") || "default"}
-                  onValueChange={(value) => setValue("pricingTier", value as any)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="default">Default (Base Pricing)</SelectItem>
-                    <SelectItem value="wholesale">Wholesale (Trade Pricing)</SelectItem>
-                    <SelectItem value="retail">Retail (Consumer Pricing)</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Determines which pricing rates are used in quotes and orders.
-                </p>
+          {/* 2. Company Contact & Primary Contact */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Company Contact & Primary Contact</h3>
+            
+            {/* General company contact info */}
+            <div>
+              <h4 className="text-sm font-medium text-muted-foreground mb-3">General Contact Information</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    {...register("email")}
+                    placeholder="contact@acme.com"
+                  />
+                  {errors.email && (
+                    <p className="text-sm text-destructive mt-1">{errors.email.message}</p>
+                  )}
+                </div>
+
+                <div>
+                  <Label htmlFor="phone">Phone</Label>
+                  <Input
+                    id="phone"
+                    {...register("phone")}
+                    placeholder="(555) 123-4567"
+                  />
+                </div>
+
+                <div className="col-span-2">
+                  <Label htmlFor="website">Website</Label>
+                  <Input
+                    id="website"
+                    {...register("website")}
+                    placeholder="https://acme.com"
+                  />
+                  {errors.website && (
+                    <p className="text-sm text-destructive mt-1">{errors.website.message}</p>
+                  )}
+                </div>
               </div>
             </div>
 
-            {/* Customer Pricing Modifiers Section */}
-            <div className="space-y-4">
-              <h3 className="text-base font-medium">Customer Pricing Modifiers (Optional)</h3>
-              <p className="text-xs text-muted-foreground">
+            {/* Primary Contact */}
+            <div className="pt-4 border-t">
+              <h4 className="text-sm font-medium text-muted-foreground mb-3">Primary Contact Person</h4>
+              <p className="text-xs text-muted-foreground mb-3">
+                Strongly recommended: add a primary contact for this company.
+              </p>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="primaryFirstName">First Name</Label>
+                  <Input
+                    id="primaryFirstName"
+                    {...register("primaryContact.firstName")}
+                    placeholder="Jane"
+                  />
+                  {errors.primaryContact?.firstName && (
+                    <p className="text-sm text-destructive mt-1">{errors.primaryContact.firstName.message}</p>
+                  )}
+                </div>
+
+                <div>
+                  <Label htmlFor="primaryLastName">Last Name</Label>
+                  <Input
+                    id="primaryLastName"
+                    {...register("primaryContact.lastName")}
+                    placeholder="Doe"
+                  />
+                  {errors.primaryContact?.lastName && (
+                    <p className="text-sm text-destructive mt-1">{errors.primaryContact.lastName.message}</p>
+                  )}
+                </div>
+
+                <div>
+                  <Label htmlFor="primaryEmail">Email</Label>
+                  <Input
+                    id="primaryEmail"
+                    type="email"
+                    {...register("primaryContact.email")}
+                    placeholder="jane.doe@example.com"
+                  />
+                  {errors.primaryContact?.email && (
+                    <p className="text-sm text-destructive mt-1">{errors.primaryContact.email.message}</p>
+                  )}
+                </div>
+
+                <div>
+                  <Label htmlFor="primaryPhone">Phone</Label>
+                  <Input
+                    id="primaryPhone"
+                    {...register("primaryContact.phone")}
+                    placeholder="(555) 987-6543"
+                  />
+                </div>
+
+                <div className="col-span-2">
+                  <Label htmlFor="primaryTitle">Role / Title</Label>
+                  <Input
+                    id="primaryTitle"
+                    {...register("primaryContact.title")}
+                    placeholder="Buyer, Designer, Accounting, etc."
+                  />
+                </div>
+
+                <div className="col-span-2 flex items-center space-x-2">
+                  <Checkbox
+                    id="primaryIsPrimary"
+                    checked={watch("primaryContact.isPrimary") ?? true}
+                    onCheckedChange={(checked) => setValue("primaryContact.isPrimary", Boolean(checked))}
+                  />
+                  <Label htmlFor="primaryIsPrimary" className="font-normal cursor-pointer">
+                    Make this the primary contact for this company
+                  </Label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Addresses */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Addresses</h3>
+
+            {/* Billing Address */}
+            <div className="space-y-3">
+              <h4 className="font-medium">Billing Address</h4>
+              <div className="grid gap-3">
+                <div>
+                  <Label htmlFor="billingStreet1">Street Address</Label>
+                  <Input
+                    id="billingStreet1"
+                    {...register("billingStreet1")}
+                    placeholder="123 Main St"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="billingStreet2">Street Address 2 (Optional)</Label>
+                  <Input
+                    id="billingStreet2"
+                    {...register("billingStreet2")}
+                    placeholder="Suite 100"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label htmlFor="billingCity">City</Label>
+                    <Input
+                      id="billingCity"
+                      {...register("billingCity")}
+                      placeholder="City"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="billingState">State</Label>
+                    <Input
+                      id="billingState"
+                      {...register("billingState")}
+                      placeholder="State"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label htmlFor="billingPostalCode">Postal Code</Label>
+                    <Input
+                      id="billingPostalCode"
+                      {...register("billingPostalCode")}
+                      placeholder="12345"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="billingCountry">Country</Label>
+                    <Input
+                      id="billingCountry"
+                      {...register("billingCountry")}
+                      placeholder="USA"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Same as Billing Checkbox */}
+            <div className="flex items-center space-x-2 pt-2">
+              <Checkbox
+                id="sameAsBilling"
+                checked={sameAsBilling}
+                onCheckedChange={(checked) => setValue("sameAsBilling", Boolean(checked))}
+              />
+              <Label htmlFor="sameAsBilling" className="font-normal cursor-pointer">
+                Billing address is same as shipping
+              </Label>
+            </div>
+
+            {/* Shipping Address - only show if NOT same as billing */}
+            {!sameAsBilling && (
+              <div className="space-y-3 pt-2">
+                <h4 className="font-medium">Shipping Address</h4>
+                <div className="grid gap-3">
+                  <div>
+                    <Label htmlFor="shippingStreet1">Street Address</Label>
+                    <Input
+                      id="shippingStreet1"
+                      {...register("shippingStreet1")}
+                      placeholder="123 Main St"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="shippingStreet2">Street Address 2 (Optional)</Label>
+                    <Input
+                      id="shippingStreet2"
+                      {...register("shippingStreet2")}
+                      placeholder="Suite 100"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label htmlFor="shippingCity">City</Label>
+                      <Input
+                        id="shippingCity"
+                        {...register("shippingCity")}
+                        placeholder="City"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="shippingState">State</Label>
+                      <Input
+                        id="shippingState"
+                        {...register("shippingState")}
+                        placeholder="State"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label htmlFor="shippingPostalCode">Postal Code</Label>
+                      <Input
+                        id="shippingPostalCode"
+                        {...register("shippingPostalCode")}
+                        placeholder="12345"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="shippingCountry">Country</Label>
+                      <Input
+                        id="shippingCountry"
+                        {...register("shippingCountry")}
+                        placeholder="USA"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 4. Pricing & Terms */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Pricing & Terms</h3>
+
+            <div>
+              <Label htmlFor="pricingTier">Pricing Tier *</Label>
+              <Select
+                value={watch("pricingTier") || "default"}
+                onValueChange={(value) => setValue("pricingTier", value as any)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Default (Base Pricing)</SelectItem>
+                  <SelectItem value="wholesale">Wholesale (Trade Pricing)</SelectItem>
+                  <SelectItem value="retail">Retail (Consumer Pricing)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Determines which pricing rates are used in quotes and orders.
+              </p>
+            </div>
+
+            <div>
+              <Label htmlFor="productVisibilityMode">Portal Product Visibility</Label>
+              <Select
+                value={watch("productVisibilityMode") || "default"}
+                onValueChange={(value) => setValue("productVisibilityMode", value as any)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Default (All Products Visible)</SelectItem>
+                  <SelectItem value="linked-only">Linked Products Only</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Control which products this customer can see in the customer portal.
+              </p>
+            </div>
+
+            <div className="pt-2">
+              <h4 className="text-sm font-medium mb-3">Customer Pricing Modifiers (Optional)</h4>
+              <p className="text-xs text-muted-foreground mb-3">
                 Apply automatic adjustments to this customer's pricing. Only one modifier can be active at a time. Priority: Margin → Markup → Discount.
               </p>
 
@@ -447,50 +774,41 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                   )}
                 </div>
               </div>
-
-              <div>
-                <Label htmlFor="productVisibilityMode">Portal Product Visibility</Label>
-                <Select
-                  value={watch("productVisibilityMode") || "default"}
-                  onValueChange={(value) => setValue("productVisibilityMode", value as any)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="default">Default (All Products Visible)</SelectItem>
-                    <SelectItem value="linked-only">Linked Products Only</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Control which products this customer can see in the customer portal.
-                </p>
-              </div>
             </div>
 
-            {/* Tax Settings Section */}
-            <div className="space-y-4">
-              <h3 className="text-base font-medium">Tax Settings</h3>
-              <p className="text-xs text-muted-foreground">
-                Configure sales tax exemptions and overrides for this customer.
-              </p>
+            <div>
+              <Label htmlFor="creditLimit">Credit Limit ($)</Label>
+              <Input
+                id="creditLimit"
+                type="number"
+                step="0.01"
+                {...register("creditLimit", { valueAsNumber: true })}
+                placeholder="0.00"
+              />
+            </div>
+          </div>
 
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="isTaxExempt"
-                  className="h-4 w-4 rounded border-gray-300"
-                  {...register("isTaxExempt")}
-                />
-                <Label htmlFor="isTaxExempt" className="font-normal cursor-pointer">
-                  Tax Exempt
-                </Label>
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                If checked, no sales tax will be applied to this customer's orders.
-              </p>
+          {/* 5. Tax Settings & Financial */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Tax Settings & Financial</h3>
 
-              {watch("isTaxExempt") && (
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="isTaxExempt"
+                className="h-4 w-4 rounded border-gray-300"
+                {...register("isTaxExempt")}
+              />
+              <Label htmlFor="isTaxExempt" className="font-normal cursor-pointer">
+                Tax Exempt
+              </Label>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              If checked, no sales tax will be applied to this customer's orders.
+            </p>
+
+            {watch("isTaxExempt") && (
+              <>
                 <div>
                   <Label htmlFor="taxExemptReason">Tax Exempt Reason *</Label>
                   <Input
@@ -505,9 +823,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                     <p className="text-xs text-red-600 mt-1">{errors.taxExemptReason.message}</p>
                   )}
                 </div>
-              )}
 
-              {watch("isTaxExempt") && (
                 <div>
                   <Label htmlFor="taxExemptCertificateRef">Tax Exempt Certificate Reference (Optional)</Label>
                   <Input
@@ -519,295 +835,41 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                     Optional reference to the certificate on file.
                   </p>
                 </div>
-              )}
+              </>
+            )}
 
-              {!watch("isTaxExempt") && (
-                <div>
-                  <Label htmlFor="taxRateOverride">Tax Rate Override (%)</Label>
-                  <Input
-                    id="taxRateOverride"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="30"
-                    placeholder="e.g., 7.50"
-                    {...register("taxRateOverride")}
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Optional. Overrides the company default tax rate for this customer (0-30%).
-                  </p>
-                  {errors.taxRateOverride && (
-                    <p className="text-xs text-red-600 mt-1">{errors.taxRateOverride.message}</p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Contact Information */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Contact Information</h3>
-
-            <div className="grid grid-cols-2 gap-4">
+            {!watch("isTaxExempt") && (
               <div>
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="taxRateOverride">Tax Rate Override (%)</Label>
                 <Input
-                  id="email"
-                  type="email"
-                  {...register("email")}
-                  placeholder="contact@acme.com"
-                />
-                {errors.email && (
-                  <p className="text-sm text-destructive mt-1">{errors.email.message}</p>
-                )}
-              </div>
-
-              <div>
-                <Label htmlFor="phone">Phone</Label>
-                <Input
-                  id="phone"
-                  {...register("phone")}
-                  placeholder="(555) 123-4567"
-                />
-              </div>
-
-              <div className="col-span-2">
-                <Label htmlFor="website">Website</Label>
-                <Input
-                  id="website"
-                  {...register("website")}
-                  placeholder="https://acme.com"
-                />
-                {errors.website && (
-                  <p className="text-sm text-destructive mt-1">{errors.website.message}</p>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Primary Contact */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Primary Contact</h3>
-            <p className="text-sm text-muted-foreground">
-              Strongly recommended: add a primary contact for this company.
-            </p>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="primaryFirstName">First Name</Label>
-                <Input
-                  id="primaryFirstName"
-                  {...register("primaryContact.firstName")}
-                  placeholder="Jane"
-                />
-                {errors.primaryContact?.firstName && (
-                  <p className="text-sm text-destructive mt-1">{errors.primaryContact.firstName.message}</p>
-                )}
-              </div>
-
-              <div>
-                <Label htmlFor="primaryLastName">Last Name</Label>
-                <Input
-                  id="primaryLastName"
-                  {...register("primaryContact.lastName")}
-                  placeholder="Doe"
-                />
-                {errors.primaryContact?.lastName && (
-                  <p className="text-sm text-destructive mt-1">{errors.primaryContact.lastName.message}</p>
-                )}
-              </div>
-
-              <div>
-                <Label htmlFor="primaryEmail">Email</Label>
-                <Input
-                  id="primaryEmail"
-                  type="email"
-                  {...register("primaryContact.email")}
-                  placeholder="jane.doe@example.com"
-                />
-                {errors.primaryContact?.email && (
-                  <p className="text-sm text-destructive mt-1">{errors.primaryContact.email.message}</p>
-                )}
-              </div>
-
-              <div>
-                <Label htmlFor="primaryPhone">Phone</Label>
-                <Input
-                  id="primaryPhone"
-                  {...register("primaryContact.phone")}
-                  placeholder="(555) 987-6543"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="primaryTitle">Role / Title</Label>
-                <Input
-                  id="primaryTitle"
-                  {...register("primaryContact.title")}
-                  placeholder="Buyer, Designer, Accounting, etc."
-                />
-              </div>
-
-              <div className="flex items-center space-x-2 mt-6">
-                <Checkbox
-                  id="primaryIsPrimary"
-                  checked={watch("primaryContact.isPrimary") ?? true}
-                  onCheckedChange={(checked) => setValue("primaryContact.isPrimary", Boolean(checked))}
-                />
-                <Label htmlFor="primaryIsPrimary">Make this the primary contact</Label>
-              </div>
-            </div>
-          </div>
-
-          {/* Addresses */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Addresses</h3>
-
-            <div className="grid grid-cols-2 gap-6">
-              {/* Billing Address */}
-              <div className="space-y-3">
-                <h4 className="font-medium">Billing Address</h4>
-                <div>
-                  <Label htmlFor="billingStreet1">Street Address</Label>
-                  <Input
-                    id="billingStreet1"
-                    {...register("billingStreet1")}
-                    placeholder="123 Main St"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="billingStreet2">Street Address 2 (Optional)</Label>
-                  <Input
-                    id="billingStreet2"
-                    {...register("billingStreet2")}
-                    placeholder="Suite 100"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <Label htmlFor="billingCity">City</Label>
-                    <Input
-                      id="billingCity"
-                      {...register("billingCity")}
-                      placeholder="City"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="billingState">State</Label>
-                    <Input
-                      id="billingState"
-                      {...register("billingState")}
-                      placeholder="State"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <Label htmlFor="billingPostalCode">Postal Code</Label>
-                    <Input
-                      id="billingPostalCode"
-                      {...register("billingPostalCode")}
-                      placeholder="12345"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="billingCountry">Country</Label>
-                    <Input
-                      id="billingCountry"
-                      {...register("billingCountry")}
-                      placeholder="USA"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Shipping Address */}
-              <div className="space-y-3">
-                <h4 className="font-medium">Shipping Address</h4>
-                <div>
-                  <Label htmlFor="shippingStreet1">Street Address</Label>
-                  <Input
-                    id="shippingStreet1"
-                    {...register("shippingStreet1")}
-                    placeholder="123 Main St"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="shippingStreet2">Street Address 2 (Optional)</Label>
-                  <Input
-                    id="shippingStreet2"
-                    {...register("shippingStreet2")}
-                    placeholder="Suite 100"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <Label htmlFor="shippingCity">City</Label>
-                    <Input
-                      id="shippingCity"
-                      {...register("shippingCity")}
-                      placeholder="City"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="shippingState">State</Label>
-                    <Input
-                      id="shippingState"
-                      {...register("shippingState")}
-                      placeholder="State"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <Label htmlFor="shippingPostalCode">Postal Code</Label>
-                    <Input
-                      id="shippingPostalCode"
-                      {...register("shippingPostalCode")}
-                      placeholder="12345"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="shippingCountry">Country</Label>
-                    <Input
-                      id="shippingCountry"
-                      {...register("shippingCountry")}
-                      placeholder="USA"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Financial Information */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Financial Information</h3>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="taxId">Tax ID / EIN</Label>
-                <Input
-                  id="taxId"
-                  {...register("taxId")}
-                  placeholder="12-3456789"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="creditLimit">Credit Limit ($)</Label>
-                <Input
-                  id="creditLimit"
+                  id="taxRateOverride"
                   type="number"
                   step="0.01"
-                  {...register("creditLimit", { valueAsNumber: true })}
-                  placeholder="0.00"
+                  min="0"
+                  max="30"
+                  placeholder="e.g., 7.50"
+                  {...register("taxRateOverride")}
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Optional. Overrides the company default tax rate for this customer (0-30%).
+                </p>
+                {errors.taxRateOverride && (
+                  <p className="text-xs text-red-600 mt-1">{errors.taxRateOverride.message}</p>
+                )}
               </div>
+            )}
+
+            <div>
+              <Label htmlFor="taxId">Tax ID / EIN</Label>
+              <Input
+                id="taxId"
+                {...register("taxId")}
+                placeholder="12-3456789"
+              />
             </div>
           </div>
 
-          {/* Notes */}
+          {/* 6. Notes */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Notes</h3>
             <Textarea
