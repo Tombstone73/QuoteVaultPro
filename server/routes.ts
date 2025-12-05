@@ -4,7 +4,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables } from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -96,6 +96,126 @@ import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatu
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
+}
+
+/**
+ * Snapshot customer data for quotes and orders
+ * Fetches customer (and optional contact) and builds billTo and shipTo snapshot fields
+ * 
+ * @param organizationId - Organization ID for multi-tenant filtering
+ * @param customerId - Customer ID to fetch
+ * @param contactId - Optional contact ID to use for billTo name
+ * @param shippingMethod - 'pickup' | 'ship' | 'deliver' (defaults to 'ship')
+ * @param shippingMode - 'single_shipment' | 'multi_shipment' (defaults to 'single_shipment')
+ * @returns Snapshot object with billTo and shipTo fields, shippingMethod, shippingMode
+ */
+async function snapshotCustomerData(
+  organizationId: string,
+  customerId: string,
+  contactId?: string | null,
+  shippingMethod?: string | null,
+  shippingMode?: string | null
+): Promise<Record<string, any>> {
+  // Fetch customer
+  const [customer] = await db
+    .select()
+    .from(customers)
+    .where(and(
+      eq(customers.id, customerId),
+      eq(customers.organizationId, organizationId)
+    ))
+    .limit(1);
+
+  if (!customer) {
+    throw new Error(`Customer not found: ${customerId}`);
+  }
+
+  // Optionally fetch contact
+  let contact = null;
+  if (contactId) {
+    const [foundContact] = await db
+      .select()
+      .from(customerContacts as any)
+      .where(eq((customerContacts as any).id, contactId))
+      .limit(1);
+    contact = foundContact;
+  }
+
+  // Build billTo snapshot
+  const billToName = contact
+    ? `${contact.firstName} ${contact.lastName}`.trim()
+    : customer.companyName;
+
+  const billToSnapshot = {
+    billToName,
+    billToCompany: customer.companyName,
+    billToAddress1: customer.billingStreet1 || customer.billingAddress || null,
+    billToAddress2: customer.billingStreet2 || null,
+    billToCity: customer.billingCity || null,
+    billToState: customer.billingState || null,
+    billToPostalCode: customer.billingPostalCode || null,
+    billToCountry: customer.billingCountry || 'US',
+    billToPhone: customer.phone || null,
+    billToEmail: customer.email || null,
+  };
+
+  // Determine shipping method
+  const finalShippingMethod = shippingMethod || 'ship';
+  const finalShippingMode = shippingMode || 'single_shipment';
+
+  // Build shipTo snapshot
+  let shipToSnapshot: Record<string, any>;
+
+  if (finalShippingMethod === 'pickup') {
+    // For pickup, mirror billTo address
+    shipToSnapshot = {
+      shipToName: billToName,
+      shipToCompany: customer.companyName,
+      shipToAddress1: customer.billingStreet1 || customer.billingAddress || null,
+      shipToAddress2: customer.billingStreet2 || null,
+      shipToCity: customer.billingCity || null,
+      shipToState: customer.billingState || null,
+      shipToPostalCode: customer.billingPostalCode || null,
+      shipToCountry: customer.billingCountry || 'US',
+      shipToPhone: customer.phone || null,
+      shipToEmail: customer.email || null,
+    };
+  } else {
+    // For ship/deliver, use shipping address if available, fall back to billing
+    const hasShippingAddress = !!customer.shippingStreet1 || !!customer.shippingAddress;
+
+    shipToSnapshot = {
+      shipToName: billToName,
+      shipToCompany: customer.companyName,
+      shipToAddress1: hasShippingAddress
+        ? (customer.shippingStreet1 || customer.shippingAddress || null)
+        : (customer.billingStreet1 || customer.billingAddress || null),
+      shipToAddress2: hasShippingAddress
+        ? (customer.shippingStreet2 || null)
+        : (customer.billingStreet2 || null),
+      shipToCity: hasShippingAddress
+        ? (customer.shippingCity || null)
+        : (customer.billingCity || null),
+      shipToState: hasShippingAddress
+        ? (customer.shippingState || null)
+        : (customer.billingState || null),
+      shipToPostalCode: hasShippingAddress
+        ? (customer.shippingPostalCode || null)
+        : (customer.billingPostalCode || null),
+      shipToCountry: hasShippingAddress
+        ? (customer.shippingCountry || 'US')
+        : (customer.billingCountry || 'US'),
+      shipToPhone: customer.phone || null,
+      shipToEmail: customer.email || null,
+    };
+  }
+
+  return {
+    ...billToSnapshot,
+    ...shipToSnapshot,
+    shippingMethod: finalShippingMethod,
+    shippingMode: finalShippingMode,
+  };
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -2133,6 +2253,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
+      // Generate customer/shipping snapshot if customerId is provided
+      let snapshotData: Record<string, any> = {};
+      if (finalCustomerId) {
+        try {
+          snapshotData = await snapshotCustomerData(
+            organizationId,
+            finalCustomerId,
+            contactId || null,
+            req.body.shippingMethod || null,
+            req.body.shippingMode || null
+          );
+        } catch (error) {
+          console.error('[QuoteCreation] Snapshot failed:', error);
+          // Continue without snapshot - fields will be null
+        }
+      }
+
       const quote = await storage.createQuote(organizationId, {
         userId,
         customerId: finalCustomerId,
@@ -2144,6 +2281,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         taxRate: totalsResult.taxRate,
         taxAmount: totalsResult.taxAmount,
         taxableSubtotal: totalsResult.taxableSubtotal,
+        // Snapshot fields
+        status: req.body.status || 'pending',
+        ...snapshotData,
+        requestedDueDate: req.body.requestedDueDate || undefined,
+        validUntil: req.body.validUntil || undefined,
+        carrier: req.body.carrier || undefined,
+        carrierAccountNumber: req.body.carrierAccountNumber || undefined,
+        shippingInstructions: req.body.shippingInstructions || undefined,
       });
       
       res.json(quote);
@@ -2215,7 +2360,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userRole = req.user.role || 'customer';
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
-      const { customerName, subtotal, taxRate, marginPercentage, discountAmount, totalPrice } = req.body;
+      const { 
+        customerName, 
+        subtotal, 
+        taxRate, 
+        marginPercentage, 
+        discountAmount, 
+        totalPrice,
+        customerId,
+        contactId,
+        shippingMethod,
+        shippingMode,
+        status,
+        requestedDueDate,
+        validUntil,
+        carrier,
+        carrierAccountNumber,
+        shippingInstructions,
+      } = req.body;
 
       console.log(`[PATCH /api/quotes/${id}] Received update data:`, {
         customerName,
@@ -2224,6 +2386,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         marginPercentage,
         discountAmount,
         totalPrice,
+        customerId,
+        shippingMethod,
+        shippingMode,
+        status,
       });
 
       // Internal users can update any quote, customers only their own
@@ -2234,6 +2400,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[PATCH /api/quotes/${id}] Existing customerName:`, existing.customerName);
 
+      // Determine if we need to refresh snapshots
+      const customerChanged = customerId && customerId !== existing.customerId;
+      const shippingMethodChanged = shippingMethod && shippingMethod !== existing.shippingMethod;
+      const shippingModeChanged = shippingMode && shippingMode !== existing.shippingMode;
+      const shouldRefreshSnapshot = customerChanged || shippingMethodChanged || shippingModeChanged;
+
+      let snapshotData: Record<string, any> = {};
+      if (shouldRefreshSnapshot) {
+        const finalCustomerId = customerId || existing.customerId;
+        const finalContactId = contactId !== undefined ? contactId : existing.contactId;
+        const finalShippingMethod = shippingMethod || existing.shippingMethod;
+        const finalShippingMode = shippingMode || existing.shippingMode;
+
+        if (finalCustomerId) {
+          try {
+            snapshotData = await snapshotCustomerData(
+              organizationId,
+              finalCustomerId,
+              finalContactId,
+              finalShippingMethod,
+              finalShippingMode
+            );
+            console.log(`[PATCH /api/quotes/${id}] Refreshed snapshot due to changes`);
+          } catch (error) {
+            console.error('[QuoteUpdate] Snapshot refresh failed:', error);
+            // Continue without snapshot refresh
+          }
+        }
+      }
+
       const updatedQuote = await storage.updateQuote(organizationId, id, {
         customerName,
         subtotal,
@@ -2241,6 +2437,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         marginPercentage,
         discountAmount,
         totalPrice,
+        customerId,
+        contactId,
+        status,
+        requestedDueDate,
+        validUntil,
+        carrier,
+        carrierAccountNumber,
+        shippingInstructions,
+        ...snapshotData,
       });
 
       console.log(`[PATCH /api/quotes/${id}] Updated customerName:`, updatedQuote.customerName);
@@ -2513,23 +2718,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       
-      const { fileName, fileUrl, fileSize, mimeType, description } = req.body;
+      const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename } = req.body;
       
-      if (!fileName || !fileUrl) {
-        return res.status(400).json({ error: "fileName and fileUrl are required" });
+      // Support both legacy and new upload methods
+      if (!fileName && !originalFilename) {
+        return res.status(400).json({ error: "fileName or originalFilename is required" });
       }
       
-      const [attachment] = await db.insert(quoteAttachments).values({
+      let attachmentData: any = {
         quoteId: req.params.id,
         organizationId,
         uploadedByUserId: userId,
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-        fileName,
-        fileUrl,
-        fileSize: fileSize || null,
-        mimeType: mimeType || null,
         description: description || null,
-      }).returning();
+      };
+
+      // New storage model with local file system
+      if (fileBuffer && originalFilename) {
+        const { processUploadedFile } = await import('./utils/fileStorage.js');
+        const buffer = Buffer.from(fileBuffer, 'base64');
+        
+        const fileMetadata = await processUploadedFile({
+          originalFilename,
+          buffer,
+          mimeType: mimeType || 'application/octet-stream',
+          organizationId,
+          resourceType: 'quote',
+          resourceId: req.params.id,
+        });
+
+        attachmentData = {
+          ...attachmentData,
+          // Legacy fields (for backward compatibility)
+          fileName: originalFilename,
+          fileUrl: fileMetadata.relativePath, // Store relative path in fileUrl for now
+          fileSize: fileMetadata.sizeBytes,
+          mimeType: mimeType || 'application/octet-stream',
+          // New storage fields
+          originalFilename: fileMetadata.originalFilename,
+          storedFilename: fileMetadata.storedFilename,
+          relativePath: fileMetadata.relativePath,
+          storageProvider: 'local',
+          extension: fileMetadata.extension,
+          sizeBytes: fileMetadata.sizeBytes,
+          checksum: fileMetadata.checksum,
+        };
+      }
+      // Legacy method (GCS or direct URL)
+      else {
+        if (!fileUrl) {
+          return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
+        }
+        attachmentData = {
+          ...attachmentData,
+          fileName,
+          fileUrl,
+          fileSize: fileSize || null,
+          mimeType: mimeType || null,
+        };
+      }
+      
+      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
       
       res.json({ success: true, data: attachment });
     } catch (error) {
@@ -2911,51 +3160,135 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Global search endpoint
+  // Global search endpoint - searches across all major entities
   app.get("/api/search", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
+      console.log("[GLOBAL SEARCH API] Request received. OrgId:", organizationId);
+      
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
       const query = req.query.q as string;
+      console.log("[GLOBAL SEARCH API] Query param 'q':", query);
+      
       if (!query || query.length < 2) {
-        return res.json([]);
+        console.log("[GLOBAL SEARCH API] Query too short or empty, returning empty results");
+        return res.json({ customers: [], contacts: [], orders: [], quotes: [], invoices: [], jobs: [] });
       }
 
-      const results: any[] = [];
+      const lowerQuery = query.toLowerCase();
+      console.log("[GLOBAL SEARCH API] Searching with lowercase query:", lowerQuery);
 
       // Search customers
-      const customers = await storage.getAllCustomers(organizationId, { search: query });
-      customers.slice(0, 5).forEach((customer: any) => {
-        results.push({
-          type: "customer",
-          id: customer.id,
-          title: customer.companyName,
-          subtitle: customer.email || customer.phone || undefined,
-          url: `/customers/${customer.id}`,
-        });
-      });
+      console.log("[GLOBAL SEARCH API] Calling storage.getAllCustomers...");
+      const customersResults = await storage.getAllCustomers(organizationId, { search: query });
+      console.log("[GLOBAL SEARCH API] Raw customers results count:", customersResults?.length || 0);
+      if (customersResults && customersResults.length > 0) {
+        console.log("[GLOBAL SEARCH API] First customer:", customersResults[0]);
+      }
+      const customers = customersResults.slice(0, 5).map((customer: any) => ({
+        id: customer.id,
+        title: customer.companyName,
+        subtitle: customer.email || customer.phone || undefined,
+        url: `/customers/${customer.id}`,
+      }));
+
+      // Search contacts
+      const contactsResults = await storage.getAllContacts(organizationId, { search: query, page: 1, pageSize: 5 });
+      const contacts = contactsResults.slice(0, 5).map((contact: any) => ({
+        id: contact.id,
+        title: `${contact.firstName} ${contact.lastName}`,
+        subtitle: contact.email || contact.companyName || undefined,
+        url: `/contacts/${contact.id}`,
+      }));
+
+      // Search orders
+      const allOrders = await storage.getAllOrders(organizationId);
+      const matchingOrders = allOrders
+        .filter((order: any) =>
+          String(order.orderNumber || '').toLowerCase().includes(lowerQuery) ||
+          String(order.jobNumber || '').toLowerCase().includes(lowerQuery) ||
+          String(order.customerPO || '').toLowerCase().includes(lowerQuery) ||
+          String(order.customerName || '').toLowerCase().includes(lowerQuery)
+        )
+        .slice(0, 5)
+        .map((order: any) => ({
+          id: order.id,
+          title: `Order #${order.orderNumber || order.id.slice(0, 8)}`,
+          subtitle: order.customerName || order.status || undefined,
+          url: `/orders/${order.id}`,
+        }));
 
       // Search quotes
-      const quotes = await storage.getAllQuotes(organizationId);
-      const matchingQuotes = quotes
+      const allQuotes = await storage.getAllQuotes(organizationId);
+      const matchingQuotes = allQuotes
         .filter((quote: any) =>
-          quote.quoteNumber?.toLowerCase().includes(query.toLowerCase()) ||
-          quote.customerName?.toLowerCase().includes(query.toLowerCase())
+          String(quote.quoteNumber || '').toLowerCase().includes(lowerQuery) ||
+          String(quote.customerName || '').toLowerCase().includes(lowerQuery)
         )
-        .slice(0, 5);
-
-      matchingQuotes.forEach((quote: any) => {
-        results.push({
-          type: "quote",
+        .slice(0, 5)
+        .map((quote: any) => ({
           id: quote.id,
           title: `Quote #${quote.quoteNumber || quote.id.slice(0, 8)}`,
           subtitle: quote.customerName || undefined,
           url: `/edit-quote/${quote.id}`,
-        });
-      });
+        }));
 
-      res.json(results);
+      // Search invoices
+      const allInvoices = await db
+        .select()
+        .from(invoices)
+        .where(eq(invoices.organizationId, organizationId))
+        .orderBy(desc(invoices.createdAt));
+
+      const matchingInvoices = allInvoices
+        .filter((invoice: any) =>
+          String(invoice.invoiceNumber || '').toLowerCase().includes(lowerQuery) ||
+          String(invoice.customerName || '').toLowerCase().includes(lowerQuery)
+        )
+        .slice(0, 5)
+        .map((invoice: any) => ({
+          id: invoice.id,
+          title: `Invoice #${invoice.invoiceNumber || invoice.id.slice(0, 8)}`,
+          subtitle: invoice.customerName || invoice.status || undefined,
+          url: `/invoices/${invoice.id}`,
+        }));
+
+      // Search jobs (from orders)
+      const jobsFromOrders = allOrders
+        .filter((order: any) => 
+          order.jobNumber && String(order.jobNumber).toLowerCase().includes(lowerQuery)
+        )
+        .slice(0, 5)
+        .map((order: any) => ({
+          id: order.id,
+          title: `Job ${order.jobNumber}`,
+          subtitle: order.customerName || order.status || undefined,
+          url: `/production/${order.id}`,
+        }));
+
+      const response = {
+        customers,
+        contacts,
+        orders: matchingOrders,
+        quotes: matchingQuotes,
+        invoices: matchingInvoices,
+        jobs: jobsFromOrders,
+      };
+      
+      console.log("[GLOBAL SEARCH API] Sending response:", {
+        customersCount: customers.length,
+        contactsCount: contacts.length,
+        ordersCount: matchingOrders.length,
+        quotesCount: matchingQuotes.length,
+        invoicesCount: matchingInvoices.length,
+        jobsCount: jobsFromOrders.length,
+      });
+      console.log("[GLOBAL SEARCH API] First customer in response:", customers[0]);
+      
+      res.json(response);
     } catch (error) {
-      console.error("Error performing search:", error);
+      console.error("[GLOBAL SEARCH API] Error performing search:", error);
       res.status(500).json({ message: "Search failed" });
     }
   });
@@ -3470,17 +3803,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return null;
       };
 
+      // Generate customer/shipping snapshot if customerId is provided
+      let snapshotData: Record<string, any> = {};
+      if (orderFields.customerId) {
+        try {
+          snapshotData = await snapshotCustomerData(
+            organizationId,
+            orderFields.customerId,
+            orderFields.contactId || null,
+            orderFields.shippingMethod || null,
+            orderFields.shippingMode || null
+          );
+        } catch (error) {
+          console.error('[OrderCreation] Snapshot failed:', error);
+          // Continue without snapshot - fields will be null
+        }
+      }
+
       // Create order with line items and tax totals
       const order = await storage.createOrder(organizationId, {
         ...orderFields,
         dueDate: sanitizeDateField(orderFields.dueDate),
         promisedDate: sanitizeDateField(orderFields.promisedDate),
+        requestedDueDate: sanitizeDateField(orderFields.requestedDueDate),
+        productionDueDate: sanitizeDateField(orderFields.productionDueDate),
+        shippedAt: sanitizeDateField(orderFields.shippedAt),
         createdByUserId: userId,
         lineItems: lineItemsWithTax,
         // Tax totals
         taxRate: totalsResult.taxRate,
         taxAmount: totalsResult.taxAmount,
         taxableSubtotal: totalsResult.taxableSubtotal,
+        // Snapshot fields
+        status: orderFields.status || 'new',
+        ...snapshotData,
+        trackingNumber: orderFields.trackingNumber || undefined,
+        carrier: orderFields.carrier || undefined,
+        carrierAccountNumber: orderFields.carrierAccountNumber || undefined,
+        shippingInstructions: orderFields.shippingInstructions || undefined,
       });
 
       // Create audit log
@@ -3529,8 +3889,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get old values for audit
       const oldOrder = await storage.getOrderById(organizationId, req.params.id);
       
+      // Determine if we need to refresh snapshots
+      const customerChanged = req.body.customerId && req.body.customerId !== oldOrder?.customerId;
+      const shippingMethodChanged = req.body.shippingMethod && req.body.shippingMethod !== oldOrder?.shippingMethod;
+      const shippingModeChanged = req.body.shippingMode && req.body.shippingMode !== oldOrder?.shippingMode;
+      const shouldRefreshSnapshot = customerChanged || shippingMethodChanged || shippingModeChanged;
+
+      let snapshotData: Record<string, any> = {};
+      if (shouldRefreshSnapshot && oldOrder) {
+        const finalCustomerId = req.body.customerId || oldOrder.customerId;
+        const finalContactId = req.body.contactId !== undefined ? req.body.contactId : oldOrder.contactId;
+        const finalShippingMethod = req.body.shippingMethod || oldOrder.shippingMethod;
+        const finalShippingMode = req.body.shippingMode || oldOrder.shippingMode;
+
+        if (finalCustomerId) {
+          try {
+            snapshotData = await snapshotCustomerData(
+              organizationId,
+              finalCustomerId,
+              finalContactId,
+              finalShippingMethod,
+              finalShippingMode
+            );
+            console.log(`[PATCH /api/orders/${req.params.id}] Refreshed snapshot due to changes`);
+          } catch (error) {
+            console.error('[OrderUpdate] Snapshot refresh failed:', error);
+            // Continue without snapshot refresh
+          }
+        }
+      }
+
       // Update order - now returns full OrderWithRelations
-      const order = await storage.updateOrder(organizationId, req.params.id, updateData);
+      const order = await storage.updateOrder(organizationId, req.params.id, {
+        ...updateData,
+        ...snapshotData,
+      });
 
       // Auto inventory deduction when moving to production
       if (userId && oldOrder && oldOrder.status !== 'in_production' && order.status === 'in_production') {
@@ -3774,7 +4167,220 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Convert quote to order
+  // NEW: Convert quote to order (Phase 2 - with snapshot copying)
+  // This endpoint copies customer/shipping snapshots from the quote
+  app.post("/api/quotes/:id/convert-to-order", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "User not authenticated" });
+      }
+
+      const { id: quoteId } = req.params;
+
+      console.log('[QUOTE TO ORDER CONVERSION] Starting:', { quoteId, userId });
+
+      // Fetch quote with line items
+      const [quote] = await db
+        .select()
+        .from(quotes)
+        .where(and(
+          eq(quotes.id, quoteId),
+          eq(quotes.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      // Guard rails
+      if (quote.convertedToOrderId) {
+        return res.status(400).json({ 
+          message: "Quote has already been converted to an order",
+          existingOrderId: quote.convertedToOrderId
+        });
+      }
+
+      if (quote.status === 'canceled') {
+        return res.status(400).json({ message: "Cannot convert a canceled quote to an order" });
+      }
+
+      // Fetch quote line items
+      const lineItems = await db
+        .select()
+        .from(quoteLineItems as any)
+        .where(eq((quoteLineItems as any).quoteId, quoteId))
+        .orderBy((quoteLineItems as any).displayOrder);
+
+      if (!lineItems || lineItems.length === 0) {
+        return res.status(400).json({ message: "Quote has no line items" });
+      }
+
+      // Generate order number
+      const [globalVar] = await db
+        .select()
+        .from(globalVariables as any)
+        .where(and(
+          eq((globalVariables as any).key, 'orderNumber'),
+          eq((globalVariables as any).organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!globalVar) {
+        return res.status(500).json({ message: "Order numbering not configured" });
+      }
+
+      const nextOrderNum = (parseInt(globalVar.value as string) || 0) + 1;
+      const orderNumber = `ORD-${String(nextOrderNum).padStart(5, '0')}`;
+
+      console.log('[QUOTE TO ORDER CONVERSION] Generated order number:', orderNumber);
+
+      // Create order - copy ALL snapshot fields from quote
+      const [newOrder] = await db
+        .insert(orders)
+        .values({
+          organizationId,
+          quoteId: quote.id,
+          customerId: quote.customerId!,
+          contactId: quote.contactId,
+          orderNumber,
+          status: 'new',
+          priority: req.body.priority || 'normal',
+          fulfillmentStatus: 'pending',
+          
+          // Copy financial data
+          subtotal: quote.subtotal,
+          tax: quote.taxRate || '0',
+          taxRate: quote.taxRate,
+          taxAmount: quote.taxAmount,
+          taxableSubtotal: quote.taxableSubtotal,
+          total: quote.totalPrice,
+          discount: quote.discountAmount || '0',
+          
+          // Copy ALL customer snapshot fields from quote
+          billToName: quote.billToName,
+          billToCompany: quote.billToCompany,
+          billToAddress1: quote.billToAddress1,
+          billToAddress2: quote.billToAddress2,
+          billToCity: quote.billToCity,
+          billToState: quote.billToState,
+          billToPostalCode: quote.billToPostalCode,
+          billToCountry: quote.billToCountry,
+          billToPhone: quote.billToPhone,
+          billToEmail: quote.billToEmail,
+          
+          // Copy ALL shipping snapshot fields from quote
+          shippingMethod: quote.shippingMethod,
+          shippingMode: quote.shippingMode,
+          shipToName: quote.shipToName,
+          shipToCompany: quote.shipToCompany,
+          shipToAddress1: quote.shipToAddress1,
+          shipToAddress2: quote.shipToAddress2,
+          shipToCity: quote.shipToCity,
+          shipToState: quote.shipToState,
+          shipToPostalCode: quote.shipToPostalCode,
+          shipToCountry: quote.shipToCountry,
+          shipToPhone: quote.shipToPhone,
+          shipToEmail: quote.shipToEmail,
+          carrier: quote.carrier,
+          carrierAccountNumber: quote.carrierAccountNumber,
+          shippingInstructions: quote.shippingInstructions,
+          
+          // Copy dates
+          requestedDueDate: quote.requestedDueDate,
+          dueDate: req.body.dueDate || quote.requestedDueDate,
+          promisedDate: req.body.promisedDate || null,
+          
+          // Audit
+          createdByUserId: userId,
+          notesInternal: req.body.notesInternal || null,
+        })
+        .returning();
+
+      console.log('[QUOTE TO ORDER CONVERSION] Order created:', {
+        orderId: newOrder.id,
+        orderNumber: newOrder.orderNumber
+      });
+
+      // Clone line items
+      for (const lineItem of lineItems) {
+        await db
+          .insert(orderLineItems as any)
+          .values({
+            orderId: newOrder.id,
+            quoteLineItemId: lineItem.id,
+            productId: lineItem.productId,
+            variantId: lineItem.variantId,
+            description: lineItem.description,
+            quantity: lineItem.quantity,
+            unitPrice: lineItem.unitPrice,
+            linePrice: lineItem.linePrice,
+            productType: lineItem.productType,
+            width: lineItem.width,
+            height: lineItem.height,
+            specsJson: lineItem.specsJson,
+            selectedOptions: lineItem.selectedOptions,
+            priceBreakdown: lineItem.priceBreakdown,
+            materialUsages: lineItem.materialUsages,
+            displayOrder: lineItem.displayOrder,
+            taxAmount: lineItem.taxAmount,
+            isTaxableSnapshot: lineItem.isTaxableSnapshot,
+          });
+      }
+
+      console.log('[QUOTE TO ORDER CONVERSION] Cloned', lineItems.length, 'line items');
+
+      // Update quote - link to order and set status to accepted
+      await db
+        .update(quotes)
+        .set({
+          convertedToOrderId: newOrder.id,
+          status: 'accepted',
+        })
+        .where(eq(quotes.id, quote.id));
+
+      // Increment order number
+      await db
+        .update(globalVariables as any)
+        .set({ value: String(nextOrderNum) })
+        .where(and(
+          eq((globalVariables as any).key, 'orderNumber'),
+          eq((globalVariables as any).organizationId, organizationId)
+        ));
+
+      // Create audit log
+      await storage.createAuditLog(organizationId, {
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: 'CREATE',
+        entityType: 'order',
+        entityId: newOrder.id,
+        entityName: newOrder.orderNumber,
+        description: `Converted quote ${quote.quoteNumber} to order ${newOrder.orderNumber}`,
+        newValues: newOrder,
+      });
+
+      console.log('[QUOTE TO ORDER CONVERSION] Complete:', {
+        quoteId: quote.id,
+        orderId: newOrder.id,
+        orderNumber: newOrder.orderNumber
+      });
+
+      res.json({ success: true, order: newOrder });
+    } catch (error) {
+      console.error("[QUOTE TO ORDER CONVERSION] Error:", error);
+      console.error("[QUOTE TO ORDER CONVERSION] Stack:", (error as Error).stack);
+      res.status(500).json({ 
+        message: "Failed to convert quote to order",
+        error: (error as Error).message
+      });
+    }
+  });
+
+  // Convert quote to order (LEGACY ENDPOINT - kept for backward compatibility)
   app.post("/api/orders/from-quote/:quoteId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -4086,9 +4692,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Attach file to order with artwork metadata
-  app.post('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
+  app.post('/api/orders/:id/files', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
+      
       const { 
         fileName, 
         fileUrl, 
@@ -4100,11 +4709,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         role,
         side,
         isPrimary,
-        thumbnailUrl
+        thumbnailUrl,
+        fileBuffer,
+        originalFilename,
+        orderNumber
       } = req.body;
       
-      if (!fileName || !fileUrl) {
-        return res.status(400).json({ error: 'fileName and fileUrl are required' });
+      // Support both legacy and new upload methods
+      if (!fileName && !originalFilename) {
+        return res.status(400).json({ error: 'fileName or originalFilename is required' });
       }
 
       // Validate role and side if provided
@@ -4119,22 +4732,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
       }
 
-      const attachment = await storage.attachFileToOrder({
+      let attachmentData: any = {
         orderId: req.params.id,
+        organizationId,
         orderLineItemId: orderLineItemId || null,
         quoteId: quoteId || null,
         uploadedByUserId: userId,
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-        fileName,
-        fileUrl,
-        fileSize: fileSize || null,
-        mimeType: mimeType || null,
         description: description || null,
         role: role || 'other',
         side: side || 'na',
         isPrimary: isPrimary || false,
-        thumbnailUrl: thumbnailUrl || null,
-      });
+      };
+
+      // New storage model with local file system
+      if (fileBuffer && originalFilename) {
+        const { processUploadedFile } = await import('./utils/fileStorage.js');
+        const buffer = Buffer.from(fileBuffer, 'base64');
+        
+        const fileMetadata = await processUploadedFile({
+          originalFilename,
+          buffer,
+          mimeType: mimeType || 'application/octet-stream',
+          organizationId,
+          orderNumber,
+          lineItemId: orderLineItemId,
+        });
+
+        attachmentData = {
+          ...attachmentData,
+          // Legacy fields (for backward compatibility)
+          fileName: originalFilename,
+          fileUrl: fileMetadata.relativePath,
+          fileSize: fileMetadata.sizeBytes,
+          mimeType: mimeType || 'application/octet-stream',
+          thumbnailUrl: thumbnailUrl || null,
+          // New storage fields
+          originalFilename: fileMetadata.originalFilename,
+          storedFilename: fileMetadata.storedFilename,
+          relativePath: fileMetadata.relativePath,
+          storageProvider: 'local',
+          extension: fileMetadata.extension,
+          sizeBytes: fileMetadata.sizeBytes,
+          checksum: fileMetadata.checksum,
+        };
+      }
+      // Legacy method (GCS or direct URL)
+      else {
+        if (!fileUrl) {
+          return res.status(400).json({ error: 'fileUrl is required for legacy uploads' });
+        }
+        attachmentData = {
+          ...attachmentData,
+          fileName,
+          fileUrl,
+          fileSize: fileSize || null,
+          mimeType: mimeType || null,
+          thumbnailUrl: thumbnailUrl || null,
+        };
+      }
+
+      const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
 
       await storage.createOrderAuditLog({
         orderId: req.params.id,
@@ -4143,14 +4801,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         actionType: 'file_uploaded',
         fromStatus: null,
         toStatus: null,
-        note: `File attached: ${fileName} (${role || 'other'})`,
-        metadata: { fileId: attachment.id, fileName, role, side } as any,
+        note: `File attached: ${originalFilename || fileName} (${role || 'other'})`,
+        metadata: { fileId: attachment.id, fileName: originalFilename || fileName, role, side } as any,
       });
 
       res.json({ success: true, data: attachment });
     } catch (error) {
-      console.error('Error attaching file:', error);
-      res.status(500).json({ error: 'Failed to attach file' });
+      console.error('Error attaching file to order:', error);
+      res.status(500).json({ error: 'Failed to attach file to order' });
     }
   });
 

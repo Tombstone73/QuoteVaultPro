@@ -256,7 +256,7 @@ export default function QuoteCheckout() {
                       >
                         <div className="flex items-center gap-2">
                           <FileIcon className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm">{file.fileName}</span>
+                          <span className="text-sm">{file.originalFilename || file.fileName}</span>
                           <span className="text-xs text-muted-foreground">
                             ({(file.fileSize / 1024).toFixed(1)} KB)
                           </span>

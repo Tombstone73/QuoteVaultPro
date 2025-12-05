@@ -30,9 +30,12 @@ export class CustomersRepository {
         customerType?: string;
         assignedTo?: string;
     }): Promise<(Customer & { contacts?: CustomerContact[] })[]> {
+        console.log("[CUSTOMERS REPO] getAllCustomers called with:", { organizationId, filters });
+        
         // If search is provided, we need to search across customers AND contacts
         if (filters?.search) {
             const searchPattern = `%${filters.search}%`;
+            console.log("[CUSTOMERS REPO] Search pattern:", searchPattern);
 
             // Get all customers that match the search
             const customerConditions = [
@@ -58,6 +61,11 @@ export class CustomersRepository {
                 .from(customers)
                 .where(and(...customerConditions))
                 .orderBy(customers.companyName);
+                
+            console.log("[CUSTOMERS REPO] Matched customers count:", matchedCustomers?.length || 0);
+            if (matchedCustomers && matchedCustomers.length > 0) {
+                console.log("[CUSTOMERS REPO] First matched customer:", matchedCustomers[0]);
+            }
 
             // Also search for customers by contact name/email
             const matchedContacts = await this.dbInstance

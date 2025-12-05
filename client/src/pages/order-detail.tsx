@@ -1054,17 +1054,19 @@ export default function OrderDetail() {
           </div>
 
           {/* Sidebar */}
-          <div className="space-y-6">{/* Customer Info */}
+          <div className="space-y-6">
+            {/* Bill To */}
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Customer</CardTitle>
+                  <CardTitle className="text-base">Bill To</CardTitle>
                   {isAdminOrOwner && (
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={handleCustomerChange}
                       disabled={changeCustomerMutation.isPending}
+                      title="Change customer will refresh bill to/ship to snapshot"
                     >
                       <UserCog className="w-4 h-4 mr-1" />
                       Change
@@ -1072,26 +1074,104 @@ export default function OrderDetail() {
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <div>
-                  <Link to={`/customers/${order.customer.id}`}>
-                    <Button variant="link" className="p-0 h-auto font-medium text-base">
-                      {order.customer.companyName}
-                    </Button>
-                  </Link>
-                </div>
-                {order.contact && (
-                  <div className="text-sm space-y-1">
-                    <div className="font-medium">
-                      {order.contact.firstName} {order.contact.lastName}
-                    </div>
-                    {order.contact.email && (
-                      <div className="text-muted-foreground">{order.contact.email}</div>
+              <CardContent className="space-y-2">
+                {order.billToName ? (
+                  <>
+                    <div className="font-medium text-base">{order.billToName}</div>
+                    {order.billToCompany && (
+                      <div className="text-sm text-muted-foreground">{order.billToCompany}</div>
                     )}
-                    {order.contact.phone && (
-                      <div className="text-muted-foreground">{order.contact.phone}</div>
+                    {order.billToAddress1 && (
+                      <div className="text-sm text-muted-foreground">{order.billToAddress1}</div>
+                    )}
+                    {order.billToAddress2 && (
+                      <div className="text-sm text-muted-foreground">{order.billToAddress2}</div>
+                    )}
+                    {(order.billToCity || order.billToState || order.billToPostalCode) && (
+                      <div className="text-sm text-muted-foreground">
+                        {order.billToCity && `${order.billToCity}, `}
+                        {order.billToState && `${order.billToState} `}
+                        {order.billToPostalCode}
+                      </div>
+                    )}
+                    {order.billToPhone && (
+                      <div className="text-sm text-muted-foreground">{order.billToPhone}</div>
+                    )}
+                    {order.billToEmail && (
+                      <div className="text-sm text-muted-foreground">{order.billToEmail}</div>
+                    )}
+                    {order.customer && (
+                      <div className="mt-3 pt-3 border-t">
+                        <Link to={`/customers/${order.customer.id}`}>
+                          <Button variant="link" className="p-0 h-auto text-xs text-muted-foreground hover:text-primary">
+                            View Customer Record
+                          </Button>
+                        </Link>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    {order.customer ? (
+                      <Link to={`/customers/${order.customer.id}`}>
+                        <Button variant="link" className="p-0 h-auto font-medium text-base">
+                          {order.customer.companyName}
+                        </Button>
+                      </Link>
+                    ) : (
+                      '—'
                     )}
                   </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Ship To */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Ship To</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {order.shipToName ? (
+                  <>
+                    <div className="font-medium text-base">{order.shipToName}</div>
+                    {order.shipToCompany && (
+                      <div className="text-sm text-muted-foreground">{order.shipToCompany}</div>
+                    )}
+                    {order.shipToAddress1 && (
+                      <div className="text-sm text-muted-foreground">{order.shipToAddress1}</div>
+                    )}
+                    {order.shipToAddress2 && (
+                      <div className="text-sm text-muted-foreground">{order.shipToAddress2}</div>
+                    )}
+                    {(order.shipToCity || order.shipToState || order.shipToPostalCode) && (
+                      <div className="text-sm text-muted-foreground">
+                        {order.shipToCity && `${order.shipToCity}, `}
+                        {order.shipToState && `${order.shipToState} `}
+                        {order.shipToPostalCode}
+                      </div>
+                    )}
+                    {order.shippingMethod && (
+                      <div className="mt-2">
+                        <Badge variant="outline" className="text-xs">
+                          {order.shippingMethod}
+                        </Badge>
+                      </div>
+                    )}
+                    {order.carrier && (
+                      <div className="text-sm text-muted-foreground">
+                        Carrier: {order.carrier}
+                      </div>
+                    )}
+                    {order.trackingNumber && (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">Tracking: </span>
+                        <span className="font-mono">{order.trackingNumber}</span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-sm text-muted-foreground">—</div>
                 )}
               </CardContent>
             </Card>
@@ -1104,7 +1184,7 @@ export default function OrderDetail() {
                 </CardHeader>
                 <CardContent>
                   <Link to={`/quotes/${order.quoteId}`}>
-                    <Button variant="outline" size="sm" className="w-full">
+                    <Button variant="outline" size="sm" className="w-full text-titan-accent hover:text-titan-accent-hover">
                       View Quote #{order.quote.quoteNumber}
                     </Button>
                   </Link>

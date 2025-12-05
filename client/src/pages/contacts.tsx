@@ -16,7 +16,7 @@ import { ListViewSettings } from "@/components/list/ListViewSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Search, Mail, Phone, ArrowLeft, Building2, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Search, Mail, Phone, ArrowLeft, Building2, MoreHorizontal, Pencil, Trash2, Eye } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -219,20 +219,40 @@ export default function ContactsPage() {
         );
       case "actions":
         return (
-          <div className="text-right">
+          <div className="flex gap-1 justify-end flex-nowrap" onClick={(e) => e.stopPropagation()}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigate(`/contacts/${contact.id}`)}
+              title="View contact"
+            >
+              <Eye className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setEditingContact(contact)}
+              title="Edit contact"
+            >
+              <Pencil className="h-4 w-4" />
+            </Button>
+            {contact.email && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => window.location.href = `mailto:${contact.email}`}
+                title="Email contact"
+              >
+                <Mail className="h-4 w-4" />
+              </Button>
+            )}
             <DropdownMenu>
-              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                <Button variant="ghost" size="icon" className="text-titan-text-secondary hover:text-titan-text-primary">
-                  <MoreHorizontal className="w-4 h-4" />
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" title="More actions">
+                  <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="bg-titan-bg-card border-titan-border">
-                <DropdownMenuLabel className="text-titan-text-primary">Actions</DropdownMenuLabel>
-                <DropdownMenuSeparator className="bg-titan-border-subtle" />
-                <DropdownMenuItem onClick={() => setEditingContact(contact)} className="text-titan-text-secondary hover:text-titan-text-primary">
-                  <Pencil className="w-4 h-4 mr-2" />
-                  Edit
-                </DropdownMenuItem>
                 <DropdownMenuItem
                   className="text-titan-error"
                   onClick={() => setDeletingContact(contact)}

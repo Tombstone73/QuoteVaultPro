@@ -55,7 +55,7 @@ export default function MyQuotes() {
               <DataCard key={quote.id} className="bg-titan-bg-card border-titan-border-subtle">
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <h3 className="text-titan-lg font-semibold text-titan-text-primary">
+                    <h3 className="text-titan-lg font-semibold text-titan-accent hover:text-titan-accent-hover">
                       Quote #{quote.quoteNumber}
                     </h3>
                     <p className="text-titan-sm text-titan-text-muted mt-1">

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
@@ -10,12 +10,15 @@ import { format } from "date-fns";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
+import { useToast } from "@/hooks/use-toast";
 import type { QuoteWithRelations } from "@shared/schema";
 
 export default function QuoteDetail() {
   const params = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const quoteId = params?.id;
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
@@ -33,6 +36,40 @@ export default function QuoteDetail() {
     },
     enabled: !!quoteId,
   });
+
+  const convertToOrderMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/quotes/${quoteId}/convert-to-order`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Conversion failed');
+      }
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Success",
+        description: `Quote converted to order ${data.order.orderNumber}`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+      navigate(ROUTES.orders.detail(data.order.id));
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Conversion Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleConvertToOrder = () => {
+    convertToOrderMutation.mutate();
+  };
 
   const handleBack = () => {
     if (quote?.source === 'customer_quick_quote' && !isInternalUser) {
@@ -107,37 +144,108 @@ export default function QuoteDetail() {
                 Edit Quote
               </Button>
             )}
-            <Button 
-              size="sm"
-              onClick={() => navigate(ROUTES.orders.new + `?fromQuote=${quote.id}`)}
-              className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md"
-            >
-              <Package className="w-4 h-4 mr-2" />
-              Convert to Order
-            </Button>
+            {quote.status !== 'canceled' && !quote.convertedToOrderId && (
+              <Button 
+                size="sm"
+                onClick={handleConvertToOrder}
+                disabled={convertToOrderMutation.isPending}
+                className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md"
+              >
+                <Package className="w-4 h-4 mr-2" />
+                {convertToOrderMutation.isPending ? 'Converting...' : 'Convert to Order'}
+              </Button>
+            )}
+            {quote.convertedToOrderId && (
+              <Button 
+                size="sm"
+                variant="outline"
+                onClick={() => navigate(ROUTES.orders.detail(quote.convertedToOrderId!))}
+                className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+              >
+                <Package className="w-4 h-4 mr-2" />
+                View Order
+              </Button>
+            )}
           </div>
         }
       />
 
       <ContentLayout className="space-y-4">
         {/* Quote Info Cards */}
-        <div className="grid md:grid-cols-2 gap-4">
+        <div className="grid md:grid-cols-3 gap-4">
           <DataCard 
-            title="Customer Information"
+            title="Bill To"
             className="bg-titan-bg-card border-titan-border-subtle"
           >
-            <div className="space-y-2 text-titan-sm">
-              <div>
-                <span className="text-titan-text-muted">Name: </span>
-                <span className="text-titan-text-primary">
-                  {quote.customerName || <span className="text-titan-text-muted">—</span>}
-                </span>
-              </div>
-              {quote.customerId && (
-                <div>
-                  <span className="text-titan-text-muted">Customer ID: </span>
-                  <span className="text-titan-text-secondary font-mono">{quote.customerId}</span>
+            <div className="space-y-1 text-titan-sm">
+              {quote.billToName ? (
+                <>
+                  <div className="font-medium text-titan-text-primary">{quote.billToName}</div>
+                  {quote.billToCompany && (
+                    <div className="text-titan-text-secondary">{quote.billToCompany}</div>
+                  )}
+                  {quote.billToAddress1 && (
+                    <div className="text-titan-text-secondary">{quote.billToAddress1}</div>
+                  )}
+                  {quote.billToAddress2 && (
+                    <div className="text-titan-text-secondary">{quote.billToAddress2}</div>
+                  )}
+                  {(quote.billToCity || quote.billToState || quote.billToPostalCode) && (
+                    <div className="text-titan-text-secondary">
+                      {quote.billToCity && `${quote.billToCity}, `}
+                      {quote.billToState && `${quote.billToState} `}
+                      {quote.billToPostalCode}
+                    </div>
+                  )}
+                  {quote.billToPhone && (
+                    <div className="text-titan-text-secondary">{quote.billToPhone}</div>
+                  )}
+                  {quote.billToEmail && (
+                    <div className="text-titan-text-secondary">{quote.billToEmail}</div>
+                  )}
+                </>
+              ) : (
+                <div className="text-titan-text-muted">
+                  {quote.customerName || '—'}
                 </div>
+              )}
+            </div>
+          </DataCard>
+
+          <DataCard 
+            title="Ship To"
+            className="bg-titan-bg-card border-titan-border-subtle"
+          >
+            <div className="space-y-1 text-titan-sm">
+              {quote.shipToName ? (
+                <>
+                  <div className="font-medium text-titan-text-primary">{quote.shipToName}</div>
+                  {quote.shipToCompany && (
+                    <div className="text-titan-text-secondary">{quote.shipToCompany}</div>
+                  )}
+                  {quote.shipToAddress1 && (
+                    <div className="text-titan-text-secondary">{quote.shipToAddress1}</div>
+                  )}
+                  {quote.shipToAddress2 && (
+                    <div className="text-titan-text-secondary">{quote.shipToAddress2}</div>
+                  )}
+                  {(quote.shipToCity || quote.shipToState || quote.shipToPostalCode) && (
+                    <div className="text-titan-text-secondary">
+                      {quote.shipToCity && `${quote.shipToCity}, `}
+                      {quote.shipToState && `${quote.shipToState} `}
+                      {quote.shipToPostalCode}
+                    </div>
+                  )}
+                  {quote.shippingMethod && (
+                    <div className="mt-2">
+                      <Badge variant="outline" className="border-titan-border text-titan-text-secondary">
+                        {quote.shippingMethod}
+                      </Badge>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-titan-text-muted">—</div>
               )}
             </div>
           </DataCard>

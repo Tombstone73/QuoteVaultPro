@@ -819,6 +819,7 @@ export const quotes = pgTable("quotes", {
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   customerName: varchar("customer_name", { length: 255 }),
   source: varchar("source", { length: 50 }).notNull().default('internal'),
+  status: varchar("status", { length: 50 }).default("pending"), // draft, pending, accepted, rejected, canceled, expired
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
   // Tax system fields (taxRate kept for backward compatibility but now represents effective snapshot)
   taxRate: decimal("tax_rate", { precision: 5, scale: 4 }),
@@ -827,6 +828,43 @@ export const quotes = pgTable("quotes", {
   marginPercentage: decimal("margin_percentage", { precision: 5, scale: 4 }).default("0").notNull(),
   discountAmount: decimal("discount_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull().default("0"),
+  
+  // Customer snapshot (billing address)
+  billToName: text("bill_to_name"),
+  billToCompany: text("bill_to_company"),
+  billToAddress1: text("bill_to_address1"),
+  billToAddress2: text("bill_to_address2"),
+  billToCity: text("bill_to_city"),
+  billToState: text("bill_to_state"),
+  billToPostalCode: text("bill_to_postal_code"),
+  billToCountry: text("bill_to_country"),
+  billToPhone: text("bill_to_phone"),
+  billToEmail: text("bill_to_email"),
+  
+  // Shipping snapshot
+  shippingMethod: varchar("shipping_method", { length: 50 }), // pickup, ship, deliver
+  shippingMode: varchar("shipping_mode", { length: 50 }), // single_shipment, multi_shipment
+  shipToName: text("ship_to_name"),
+  shipToCompany: text("ship_to_company"),
+  shipToAddress1: text("ship_to_address1"),
+  shipToAddress2: text("ship_to_address2"),
+  shipToCity: text("ship_to_city"),
+  shipToState: text("ship_to_state"),
+  shipToPostalCode: text("ship_to_postal_code"),
+  shipToCountry: text("ship_to_country"),
+  shipToPhone: text("ship_to_phone"),
+  shipToEmail: text("ship_to_email"),
+  carrier: text("carrier"),
+  carrierAccountNumber: text("carrier_account_number"),
+  shippingInstructions: text("shipping_instructions"),
+  
+  // Dates
+  requestedDueDate: timestamp("requested_due_date", { withTimezone: true, mode: "string" }),
+  validUntil: timestamp("valid_until", { withTimezone: true, mode: "string" }),
+  
+  // Quote ⇄ Order linking
+  convertedToOrderId: varchar("converted_to_order_id").references(() => orders.id, { onDelete: 'set null' }),
+  
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("quotes_organization_id_idx").on(table.organizationId),
@@ -883,9 +921,11 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   quoteNumber: true,
   createdAt: true,
   organizationId: true,
+  convertedToOrderId: true,
 }).extend({
   customerId: z.string().optional().nullable(),
   contactId: z.string().optional().nullable(),
+  status: z.enum(['draft', 'pending', 'accepted', 'rejected', 'canceled', 'expired']).default('pending').optional(),
   source: z.enum(['internal', 'customer_quick_quote']).default('internal'),
   subtotal: z.coerce.number().min(0),
   taxRate: z.coerce.number().min(0).max(1).optional().nullable(),
@@ -894,6 +934,11 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   marginPercentage: z.coerce.number().min(0).max(1),
   discountAmount: z.coerce.number().min(0),
   totalPrice: z.coerce.number().min(0),
+  // Snapshot fields
+  shippingMethod: z.enum(['pickup', 'ship', 'deliver']).optional().nullable(),
+  shippingMode: z.enum(['single_shipment', 'multi_shipment']).optional().nullable(),
+  requestedDueDate: z.string().optional().nullable(),
+  validUntil: z.string().optional().nullable(),
 });
 
 export const updateQuoteSchema = insertQuoteSchema.partial().extend({
@@ -919,6 +964,9 @@ export type Quote = typeof quotes.$inferSelect;
 export type InsertQuoteLineItem = z.infer<typeof insertQuoteLineItemSchema>;
 export type QuoteLineItem = typeof quoteLineItems.$inferSelect;
 
+// Storage provider enum - for future multi-provider support
+export const storageProviderEnum = pgEnum('storage_provider', ['local', 's3', 'gcs', 'supabase']);
+
 // Quote Attachments table - files uploaded during quote creation (before order conversion)
 export const quoteAttachments = pgTable("quote_attachments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -926,12 +974,25 @@ export const quoteAttachments = pgTable("quote_attachments", {
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }),
+  // Legacy fields (keep for backward compatibility)
   fileName: varchar("file_name", { length: 500 }).notNull(),
   fileUrl: text("file_url").notNull(),
   fileSize: integer("file_size"),
   mimeType: varchar("mime_type", { length: 100 }),
   description: text("description"),
+  // NEW: Enhanced file storage fields
+  originalFilename: varchar("original_filename", { length: 500 }), // Exact client-provided name
+  storedFilename: varchar("stored_filename", { length: 500 }), // Sanitized disk filename
+  relativePath: text("relative_path"), // Path relative to storage root
+  storageProvider: storageProviderEnum("storage_provider").default('local'), // local, s3, gcs, etc.
+  extension: varchar("extension", { length: 20 }), // File extension without dot
+  sizeBytes: integer("size_bytes"), // File size in bytes
+  checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
+  // Thumbnail support (future)
+  thumbnailRelativePath: text("thumbnail_relative_path"),
+  thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("quote_attachments_quote_id_idx").on(table.quoteId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
@@ -1473,7 +1534,7 @@ export const orders = pgTable("orders", {
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
-  status: varchar("status", { length: 50 }).notNull().default("new"), // new, scheduled, in_production, ready_for_pickup, shipped, completed, on_hold, canceled
+  status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled
   priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low
   fulfillmentStatus: varchar("fulfillment_status", { length: 50 }).notNull().default("pending"), // pending, packed, shipped, delivered
   dueDate: timestamp("due_date", { withTimezone: true, mode: "string" }),
@@ -1487,6 +1548,42 @@ export const orders = pgTable("orders", {
   total: decimal("total", { precision: 10, scale: 2 }).notNull().default("0"),
   discount: decimal("discount", { precision: 10, scale: 2 }).notNull().default("0"),
   notesInternal: text("notes_internal"),
+  
+  // Customer snapshot (billing address)
+  billToName: text("bill_to_name"),
+  billToCompany: text("bill_to_company"),
+  billToAddress1: text("bill_to_address1"),
+  billToAddress2: text("bill_to_address2"),
+  billToCity: text("bill_to_city"),
+  billToState: text("bill_to_state"),
+  billToPostalCode: text("bill_to_postal_code"),
+  billToCountry: text("bill_to_country"),
+  billToPhone: text("bill_to_phone"),
+  billToEmail: text("bill_to_email"),
+  
+  // Shipping snapshot
+  shippingMethod: varchar("shipping_method", { length: 50 }), // pickup, ship, deliver
+  shippingMode: varchar("shipping_mode", { length: 50 }), // single_shipment, multi_shipment
+  shipToName: text("ship_to_name"),
+  shipToCompany: text("ship_to_company"),
+  shipToAddress1: text("ship_to_address1"),
+  shipToAddress2: text("ship_to_address2"),
+  shipToCity: text("ship_to_city"),
+  shipToState: text("ship_to_state"),
+  shipToPostalCode: text("ship_to_postal_code"),
+  shipToCountry: text("ship_to_country"),
+  shipToPhone: text("ship_to_phone"),
+  shipToEmail: text("ship_to_email"),
+  carrier: text("carrier"),
+  carrierAccountNumber: text("carrier_account_number"),
+  shippingInstructions: text("shipping_instructions"),
+  trackingNumber: text("tracking_number"),
+  shippedAt: timestamp("shipped_at", { withTimezone: true, mode: "string" }),
+  
+  // Dates
+  requestedDueDate: timestamp("requested_due_date", { withTimezone: true, mode: "string" }),
+  productionDueDate: timestamp("production_due_date", { withTimezone: true, mode: "string" }),
+  
   shippingAddress: jsonb("shipping_address").$type<{
     name?: string;
     company?: string;
@@ -1525,7 +1622,7 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   organizationId: true,
 }).extend({
   orderNumber: z.string().min(1),
-  status: z.enum(["new", "scheduled", "in_production", "ready_for_pickup", "shipped", "completed", "on_hold", "canceled"]).default("new"),
+  status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "completed", "canceled"]).default("new"),
   priority: z.enum(["rush", "normal", "low"]).default("normal"),
   fulfillmentStatus: z.enum(["pending", "packed", "shipped", "delivered"]).default("pending"),
   subtotal: z.coerce.number().min(0),
@@ -1535,6 +1632,8 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   taxableSubtotal: z.coerce.number().min(0).default(0),
   total: z.coerce.number().min(0),
   discount: z.coerce.number().min(0).default(0),
+  shippingMethod: z.enum(['pickup', 'ship', 'deliver']).optional().nullable(),
+  shippingMode: z.enum(['single_shipment', 'multi_shipment']).optional().nullable(),
   shippingAddress: z.object({
     name: z.string().optional(),
     company: z.string().optional(),
@@ -1558,6 +1657,9 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
     if (typeof val === 'string') return val;
     return null;
   }, z.string().nullable().optional()),
+  requestedDueDate: z.string().optional().nullable(),
+  productionDueDate: z.string().optional().nullable(),
+  shippedAt: z.string().optional().nullable(),
 });
 
 export const updateOrderSchema = insertOrderSchema.partial().extend({
@@ -2021,17 +2123,30 @@ export const orderAttachments = pgTable("order_attachments", {
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }), // Track if uploaded during quote checkout
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }), // Snapshot
+  // Legacy fields (keep for backward compatibility)
   fileName: varchar("file_name", { length: 500 }).notNull(),
-  fileUrl: text("file_url").notNull(), // GCS path
+  fileUrl: text("file_url").notNull(), // GCS path or legacy URL
   fileSize: integer("file_size"), // bytes
   mimeType: varchar("mime_type", { length: 100 }),
   description: text("description"),
-  // NEW artwork metadata fields
+  // NEW: Enhanced file storage fields
+  originalFilename: varchar("original_filename", { length: 500 }), // Exact client-provided name
+  storedFilename: varchar("stored_filename", { length: 500 }), // Sanitized disk filename
+  relativePath: text("relative_path"), // Path relative to storage root
+  storageProvider: storageProviderEnum("storage_provider").default('local'), // local, s3, gcs, etc.
+  extension: varchar("extension", { length: 20 }), // File extension without dot
+  sizeBytes: integer("size_bytes"), // File size in bytes
+  checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
+  // Thumbnail support (future)
+  thumbnailRelativePath: text("thumbnail_relative_path"),
+  thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
+  // Artwork metadata fields
   role: fileRoleEnum("role").default('other'), // artwork, proof, reference, etc.
   side: fileSideEnum("side").default('na'), // front, back, or n/a
   isPrimary: boolean("is_primary").default(false).notNull(), // Primary artwork for this side/role
-  thumbnailUrl: text("thumbnail_url"), // Optional thumbnail for quick preview
+  thumbnailUrl: text("thumbnail_url"), // Optional thumbnail for quick preview (legacy GCS)
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("order_attachments_order_id_idx").on(table.orderId),
   index("order_attachments_order_line_item_id_idx").on(table.orderLineItemId),

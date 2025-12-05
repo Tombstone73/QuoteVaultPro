@@ -338,7 +338,7 @@ export default function ContactDetailPage() {
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={() => navigate(`/quotes/${quote.id}`)}
                     >
-                      <TableCell className="font-medium">#{quote.quoteNumber}</TableCell>
+                      <TableCell className="font-medium text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer">#{quote.quoteNumber}</TableCell>
                       <TableCell>
                         {quote.status ? (
                           <Badge className={getQuoteStatusColor(quote.status)}>

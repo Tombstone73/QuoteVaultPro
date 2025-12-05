@@ -159,9 +159,9 @@ export default function CustomerQuotes() {
                       onClick={() => navigate(`/quotes/${quote.id}`)}
                     >
                       <TableCell>
-                        <Badge variant="outline" className="font-mono">
+                        <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer">
                           {quote.quoteNumber || 'N/A'}
-                        </Badge>
+                        </span>
                       </TableCell>
                       <TableCell>
                         {format(new Date(quote.createdAt), 'MMM d, yyyy')}

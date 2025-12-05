@@ -186,7 +186,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                         {file.thumbnailUrl ? (
                           <img 
                             src={file.thumbnailUrl} 
-                            alt={file.fileName} 
+                            alt={file.originalFilename || file.fileName} 
                             className="h-10 w-10 object-cover rounded"
                           />
                         ) : (
@@ -199,7 +199,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                             rel="noopener noreferrer"
                             className="font-medium hover:underline text-sm"
                           >
-                            {file.fileName}
+                            {file.originalFilename || file.fileName}
                           </a>
                           {file.description && (
                             <div className="text-xs text-muted-foreground truncate max-w-[200px]">
@@ -266,7 +266,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
           <DialogHeader>
             <DialogTitle>Edit File Metadata</DialogTitle>
             <DialogDescription>
-              Update role, side, and primary flag for {editingFile?.fileName}
+              Update role, side, and primary flag for {editingFile?.originalFilename || editingFile?.fileName}
             </DialogDescription>
           </DialogHeader>
 

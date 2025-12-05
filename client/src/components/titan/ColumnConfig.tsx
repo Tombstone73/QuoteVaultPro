@@ -7,8 +7,9 @@ import {
 } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Slider } from "@/components/ui/slider";
-import { Settings2, RotateCcw } from "lucide-react";
+import { Settings2, RotateCcw, GripVertical } from "lucide-react";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 export interface ColumnDefinition {
   key: string;
@@ -28,6 +29,7 @@ export interface ColumnState {
 
 export interface ColumnSettings {
   [key: string]: ColumnState;
+  _columnOrder?: string[]; // Special key to store column order
 }
 
 interface ColumnConfigProps {
@@ -49,6 +51,8 @@ export function useColumnSettings(
         width: col.defaultWidth || 150,
       };
     });
+    // Initialize default column order
+    defaults._columnOrder = columns.map(col => col.key);
     return defaults;
   };
 
@@ -59,7 +63,18 @@ export function useColumnSettings(
         const parsed = JSON.parse(saved);
         // Merge with defaults to handle new columns
         const defaults = getDefaultSettings();
-        return { ...defaults, ...parsed };
+        const merged = { ...defaults, ...parsed };
+        // Ensure _columnOrder exists and includes all columns
+        if (!merged._columnOrder || !Array.isArray(merged._columnOrder)) {
+          merged._columnOrder = defaults._columnOrder;
+        } else {
+          // Add any new columns not in the saved order
+          const savedOrder = merged._columnOrder;
+          const allKeys = columns.map(col => col.key);
+          const missingKeys = allKeys.filter(key => !savedOrder.includes(key));
+          merged._columnOrder = [...savedOrder.filter(key => allKeys.includes(key)), ...missingKeys];
+        }
+        return merged;
       }
     } catch (e) {
       console.error("Failed to load column settings:", e);
@@ -85,6 +100,16 @@ export function ColumnConfig({
   onSettingsChange,
 }: ColumnConfigProps) {
   const [open, setOpen] = useState(false);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  // Get ordered columns based on settings
+  const orderedColumns = React.useMemo(() => {
+    const order = settings._columnOrder || columns.map(col => col.key);
+    return order
+      .map(key => columns.find(col => col.key === key))
+      .filter(Boolean) as ColumnDefinition[];
+  }, [columns, settings._columnOrder]);
 
   const handleVisibilityChange = (key: string, visible: boolean) => {
     onSettingsChange({
@@ -108,10 +133,53 @@ export function ColumnConfig({
         width: col.defaultWidth || 150,
       };
     });
+    defaults._columnOrder = columns.map(col => col.key);
     onSettingsChange(defaults);
   };
 
-  const visibleCount = Object.values(settings).filter((s) => s.visible).length;
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    
+    if (draggedIndex === null || draggedIndex === dropIndex) {
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+
+    const newOrder = [...orderedColumns];
+    const [draggedItem] = newOrder.splice(draggedIndex, 1);
+    newOrder.splice(dropIndex, 0, draggedItem);
+
+    onSettingsChange({
+      ...settings,
+      _columnOrder: newOrder.map(col => col.key),
+    });
+
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const visibleCount = Object.values(settings).filter((s) => s && typeof s === 'object' && 'visible' in s && s.visible).length;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -146,34 +214,55 @@ export function ColumnConfig({
             </Button>
           </div>
 
-          <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
-            {columns.map((col) => {
+          <div className="text-xs text-muted-foreground px-1">
+            Drag to reorder columns
+          </div>
+
+          <div className="space-y-1 max-h-[400px] overflow-y-auto pr-2">
+            {orderedColumns.map((col, index) => {
               const colSettings = settings[col.key] || {
                 visible: true,
                 width: col.defaultWidth || 150,
               };
+              const isDragging = draggedIndex === index;
+              const isDragOver = dragOverIndex === index && draggedIndex !== index;
+              
               return (
                 <div
                   key={col.key}
-                  className="space-y-2 pb-3 border-b border-border/50 last:border-0"
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, index)}
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, index)}
+                  onDragEnd={handleDragEnd}
+                  className={cn(
+                    "space-y-2 p-2 rounded-md border transition-all cursor-move",
+                    isDragging && "opacity-50 border-titan-accent",
+                    isDragOver && "border-titan-accent bg-titan-accent/10",
+                    !isDragging && !isDragOver && "border-transparent hover:border-border/50 hover:bg-muted/30"
+                  )}
                 >
                   <div className="flex items-center gap-2">
+                    <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
                     <Checkbox
                       id={`col-${col.key}`}
                       checked={colSettings.visible}
                       onCheckedChange={(checked) =>
                         handleVisibilityChange(col.key, checked === true)
                       }
+                      onClick={(e) => e.stopPropagation()}
                     />
                     <Label
                       htmlFor={`col-${col.key}`}
                       className="text-sm font-medium cursor-pointer flex-1"
+                      onClick={(e) => e.stopPropagation()}
                     >
                       {col.label}
                     </Label>
                   </div>
                   {colSettings.visible && (
-                    <div className="pl-6 space-y-1">
+                    <div className="pl-9 space-y-1">
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
                         <span>Width</span>
                         <span>{colSettings.width}px</span>
@@ -187,6 +276,7 @@ export function ColumnConfig({
                         max={col.maxWidth || 300}
                         step={10}
                         className="w-full"
+                        onClick={(e) => e.stopPropagation()}
                       />
                     </div>
                   )}
@@ -216,4 +306,14 @@ export function getColumnStyle(
 
 export function isColumnVisible(settings: ColumnSettings, key: string): boolean {
   return settings[key]?.visible !== false;
+}
+
+export function getColumnOrder(
+  columns: ColumnDefinition[],
+  settings: ColumnSettings
+): ColumnDefinition[] {
+  const order = settings._columnOrder || columns.map(col => col.key);
+  return order
+    .map(key => columns.find(col => col.key === key))
+    .filter(Boolean) as ColumnDefinition[];
 }
