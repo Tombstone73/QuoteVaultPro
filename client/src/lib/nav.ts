@@ -1,4 +1,5 @@
 import { type LucideIcon, Home, Users, ClipboardList, Receipt, Factory, Boxes, Package, Truck, FileText, Settings as SettingsIcon } from "lucide-react";
+import { ROUTES } from "@/config/routes";
 
 export type UserRole = "owner" | "admin" | "manager" | "employee" | "staff" | "csr" | "accounting" | "viewer";
 
@@ -12,16 +13,16 @@ export type NavItem = {
 };
 
 export const NAV_ITEMS: NavItem[] = [
-  { id: "dashboard", label: "Dashboard", icon: Home, path: "/" },
+  { id: "dashboard", label: "Dashboard", icon: Home, path: ROUTES.dashboard },
   {
     id: "sales",
     label: "Sales",
     icon: ClipboardList,
     children: [
-      { id: "customers", label: "Customers", icon: Users, path: "/customers", roles: ["staff", "admin", "owner", "manager"] },
-      { id: "contacts", label: "Contacts", icon: Users, path: "/contacts", roles: ["staff", "admin", "owner", "manager"] },
-      { id: "quotes", label: "Quotes", icon: ClipboardList, path: "/quotes", roles: ["staff", "admin", "owner", "manager"] },
-      { id: "orders", label: "Orders", icon: Receipt, path: "/orders", roles: ["staff", "admin", "owner", "manager"] },
+      { id: "customers", label: "Customers", icon: Users, path: ROUTES.customers.list, roles: ["staff", "admin", "owner", "manager"] },
+      { id: "contacts", label: "Contacts", icon: Users, path: ROUTES.contacts.list, roles: ["staff", "admin", "owner", "manager"] },
+      { id: "quotes", label: "Quotes", icon: ClipboardList, path: ROUTES.quotes.list, roles: ["staff", "admin", "owner", "manager"] },
+      { id: "orders", label: "Orders", icon: Receipt, path: ROUTES.orders.list, roles: ["staff", "admin", "owner", "manager"] },
     ],
   },
   {
@@ -29,7 +30,7 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Production",
     icon: Factory,
     children: [
-      { id: "board", label: "Production Board", icon: Factory, path: "/production", roles: ["staff", "admin", "owner", "manager"] },
+      { id: "board", label: "Production Board", icon: Factory, path: ROUTES.production.board, roles: ["staff", "admin", "owner", "manager"] },
     ],
   },
   {
@@ -37,9 +38,9 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Inventory",
     icon: Boxes,
     children: [
-      { id: "materials", label: "Materials", icon: Boxes, path: "/materials", roles: ["admin", "owner", "manager"] },
-      { id: "vendors", label: "Vendors", icon: Package, path: "/vendors", roles: ["admin", "owner", "manager"] },
-      { id: "purchase-orders", label: "Purchase Orders", icon: ClipboardList, path: "/purchase-orders", roles: ["admin", "owner", "manager"] },
+      { id: "materials", label: "Materials", icon: Boxes, path: ROUTES.materials.list, roles: ["admin", "owner", "manager"] },
+      { id: "vendors", label: "Vendors", icon: Package, path: ROUTES.vendors.list, roles: ["admin", "owner", "manager"] },
+      { id: "purchase-orders", label: "Purchase Orders", icon: ClipboardList, path: ROUTES.purchaseOrders.list, roles: ["admin", "owner", "manager"] },
     ],
   },
   {
@@ -47,11 +48,13 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Shipping",
     icon: Truck,
     children: [
-      { id: "fulfillment", label: "Fulfillment", icon: Truck, path: "/fulfillment", roles: ["staff", "admin", "owner", "manager"] },
+      // TODO: /fulfillment route not implemented yet - commented out until page exists
+      // { id: "fulfillment", label: "Fulfillment", icon: Truck, path: "/fulfillment", roles: ["staff", "admin", "owner", "manager"] },
     ],
   },
-  { id: "reports", label: "Reports", icon: FileText, path: "/reports", roles: ["admin", "owner", "manager"] },
-  { id: "settings", label: "Settings", icon: SettingsIcon, path: "/settings", roles: ["admin", "owner"] },
+  // TODO: /reports route not implemented yet - commented out until page exists
+  // { id: "reports", label: "Reports", icon: FileText, path: "/reports", roles: ["admin", "owner", "manager"] },
+  { id: "settings", label: "Settings", icon: SettingsIcon, path: ROUTES.settings.root, roles: ["admin", "owner"] },
 ];
 
 export function filterNavByRole(items: NavItem[], role?: string | null): NavItem[] {

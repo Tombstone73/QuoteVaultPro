@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useLocation } from "wouter";
+import { ROUTES } from "@/config/routes";
 import { ArrowLeft } from "lucide-react";
 import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
 
@@ -47,7 +48,7 @@ export default function ProductionBoard() {
         title="Production Board"
         subtitle="Track and manage job production workflow"
         backButton={
-          <Button variant="ghost" size="icon" onClick={() => navigate("/orders")}>
+          <Button variant="ghost" size="icon" onClick={() => navigate(ROUTES.orders.list)}>
             <ArrowLeft className="w-5 h-5" />
           </Button>
         }
@@ -92,7 +93,7 @@ export default function ProductionBoard() {
                       onDragStart={(e) => handleDragStart(e, job.id)}
                       onDragEnd={handleDragEnd}
                       className={`cursor-pointer transition border ${activeDragId === job.id ? 'opacity-50' : ''} hover:shadow-md`}
-                      onClick={() => navigate(`/jobs/${job.id}`)}
+                      onClick={() => navigate(ROUTES.jobs.detail(job.id))}
                     >
                       <CardHeader className="p-3">
                         <CardTitle className="text-sm flex flex-col gap-1">

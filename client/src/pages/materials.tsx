@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { useLocation } from "wouter";
+import { ROUTES } from "@/config/routes";
 import { Copy, Pencil, Settings } from "lucide-react";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
 import { ListViewSettings } from "@/components/list/ListViewSettings";

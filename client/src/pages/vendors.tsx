@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
+import { ROUTES } from "@/config/routes";
 import { Search, Plus, Building2 } from "lucide-react";
 import { Page, PageHeader, ContentLayout, FilterPanel, DataCard } from "@/components/titan";
 
@@ -83,7 +84,7 @@ export default function VendorsPage() {
               {vendors.map((v) => (
                 <TableRow key={v.id} className="hover:bg-muted/50">
                   <TableCell>
-                    <Link href={`/vendors/${v.id}`} className="underline text-primary">
+                    <Link href={ROUTES.vendors.detail(v.id)} className="underline text-primary">
                       {v.name}
                     </Link>
                   </TableCell>
@@ -105,7 +106,7 @@ export default function VendorsPage() {
                   <TableCell>
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" asChild>
-                        <Link href={`/vendors/${v.id}`}>View</Link>
+                        <Link href={ROUTES.vendors.detail(v.id)}>View</Link>
                       </Button>
                       <Button
                         variant="destructive"

@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
+import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -252,7 +253,7 @@ export default function InternalQuotes() {
       });
 
       if (result?.id) {
-        navigate(`/orders/${result.id}`);
+        navigate(ROUTES.orders.detail(result.id));
       }
     } catch (error) {
       console.error("[INTERNAL QUOTES] Conversion error:", error);
@@ -299,13 +300,13 @@ export default function InternalQuotes() {
         subtitle="Manage internal quotes and convert them to orders"
         className="pb-3"
         backButton={
-          <Button variant="ghost" size="sm" onClick={() => navigate("/")}>
+          <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.dashboard)}>
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
           </Button>
         }
         actions={
-          <Button size="sm" onClick={() => navigate("/quotes/new")}>
+          <Button size="sm" onClick={() => navigate(ROUTES.quotes.new)}>
             <Plus className="mr-2 h-4 w-4" />
             New Quote
           </Button>
@@ -375,7 +376,7 @@ export default function InternalQuotes() {
                   ? "Try adjusting your filters"
                   : "Create your first internal quote"}
               </p>
-              <Button onClick={() => navigate("/quotes/new")}>
+              <Button onClick={() => navigate(ROUTES.quotes.new)}>
                 <Plus className="mr-2 h-4 w-4" />
                 New Quote
               </Button>
@@ -458,7 +459,7 @@ export default function InternalQuotes() {
                     <TableRow
                       key={quote.id}
                       className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => navigate(`/quotes/${quote.id}`)}
+                      onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
                     >
                       {isVisible("quoteNumber") && (
                         <TableCell style={getColStyle("quoteNumber")}>
@@ -480,7 +481,7 @@ export default function InternalQuotes() {
                           }}
                         >
                           {quote.customerId ? (
-                            <Link to={`/customers/${quote.customerId}`}>
+                            <Link to={ROUTES.customers.detail(quote.customerId)}>
                               <Button
                                 variant="link"
                                 className="h-auto p-0 font-normal"
@@ -539,7 +540,7 @@ export default function InternalQuotes() {
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => navigate(`/quotes/${quote.id}`)}
+                              onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
                               title="View quote"
                             >
                               <Eye className="h-4 w-4" />
@@ -548,7 +549,7 @@ export default function InternalQuotes() {
                               size="sm"
                               variant="outline"
                               onClick={() =>
-                                navigate(`/quotes/${quote.id}/edit`)
+                                navigate(ROUTES.quotes.edit(quote.id))
                               }
                               title="Edit quote"
                             >

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
+import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -463,7 +464,7 @@ export default function QuoteEditor() {
         description: isNewQuote ? "Quote created successfully" : "Quote updated successfully",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      navigate("/quotes");
+      navigate(ROUTES.quotes.list);
     },
     onError: (error: Error) => {
       toast({
@@ -770,7 +771,7 @@ export default function QuoteEditor() {
     <div className="max-w-7xl mx-auto space-y-3 px-4">
       {/* Header with navigation and actions */}
       <div className="flex items-center justify-between py-2">
-        <Button variant="ghost" onClick={() => navigate("/quotes")} className="gap-2 h-9">
+        <Button variant="ghost" onClick={() => navigate(ROUTES.quotes.list)} className="gap-2 h-9">
           <ArrowLeft className="w-4 h-4" />
           Back to Quotes
         </Button>

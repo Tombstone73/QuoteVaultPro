@@ -12,6 +12,7 @@
  */
 
 import { useLocation, useRoute } from "wouter";
+import { ROUTES } from "@/config/routes";
 import { useContactDetail } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";

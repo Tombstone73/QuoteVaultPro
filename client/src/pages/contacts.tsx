@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
+import { ROUTES } from "@/config/routes";
 import { useContacts, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
