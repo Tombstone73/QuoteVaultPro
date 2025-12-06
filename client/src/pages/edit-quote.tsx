@@ -214,6 +214,8 @@ export default function EditQuote() {
     },
   });
 
+  // This mutation is now only used when finalizing/creating items directly against an existing quote,
+  // but the primary flow for enabling artwork is via temporary line items.
   const addLineItemMutation = useMutation({
     mutationFn: async (lineItem: any) => {
       console.log("[Add Line Item] Sending to:", `/api/quotes/${quoteId}/line-items`);
@@ -221,22 +223,20 @@ export default function EditQuote() {
       try {
         const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, lineItem);
         console.log("[Add Line Item] Response OK");
-        return response;
+        const createdLineItem = await response.json();
+        return createdLineItem;
       } catch (err) {
         console.error("[Add Line Item] Request failed:", err);
         throw err;
       }
     },
     onSuccess: () => {
-      toast({ title: "Line Item Added", description: "The item has been added to the quote." });
+      toast({ title: "Line Item Added", description: "The item has been added." });
       queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
-      resetLineItemForm();
-      setLineItemDialogOpen(false);
     },
     onError: (error: Error) => {
       console.error("[Add Line Item] Mutation error:", error);
       const message = error.message || "Failed to add line item";
-      // Check for network errors
       const isNetworkError = message === "Failed to fetch" || message.includes("NetworkError");
       const displayMessage = isNetworkError 
         ? "Unable to reach server. Check if dev server is running."
@@ -348,9 +348,34 @@ export default function EditQuote() {
     setLineItemError(null);
   };
 
-  const handleOpenAddLineItem = () => {
+  // Create a TEMPORARY line item as soon as a product is selected.
+  // This returns a real lineItemId so artwork can be attached immediately.
+  const createTemporaryLineItemMutation = useMutation({
+    mutationFn: async (payload: { productId: string; productName?: string }) => {
+      console.log("[Create Temp Line Item] Payload:", payload);
+      const response = await apiRequest("POST", "/api/line-items/temp", payload);
+      const json = await response.json();
+      return json.data as QuoteLineItem;
+    },
+    onSuccess: (createdLineItem: QuoteLineItem) => {
+      console.log("[Create Temp Line Item] Created:", createdLineItem);
+      setEditingLineItem(createdLineItem);
+    },
+    onError: (error: Error) => {
+      console.error("[Create Temp Line Item] Error:", error);
+      toast({
+        title: "Error",
+        description: "Failed to create line item. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Handle closing the dialog - no special cleanup now that temporary items
+  // are real records the user can always remove explicitly.
+  const handleCloseLineItemDialog = () => {
     resetLineItemForm();
-    setLineItemDialogOpen(true);
+    setLineItemDialogOpen(false);
   };
 
   const handleOpenEditLineItem = (lineItem: QuoteLineItem) => {
@@ -598,9 +623,14 @@ export default function EditQuote() {
               size="sm" 
               onClick={handleOpenAddLineItem}
               data-testid="button-add-line-item"
+              disabled={createPlaceholderLineItemMutation.isPending}
             >
-              <Plus className="w-4 h-4 mr-2" />
-              Add Item
+              {createPlaceholderLineItemMutation.isPending ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Plus className="w-4 h-4 mr-2" />
+              )}
+              {createPlaceholderLineItemMutation.isPending ? "Creating..." : "Add Item"}
             </Button>
           </div>
         </CardHeader>
@@ -612,9 +642,14 @@ export default function EditQuote() {
                 variant="outline" 
                 className="mt-4"
                 onClick={handleOpenAddLineItem}
+                disabled={createPlaceholderLineItemMutation.isPending}
               >
-                <Plus className="w-4 h-4 mr-2" />
-                Add First Item
+                {createPlaceholderLineItemMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Plus className="w-4 h-4 mr-2" />
+                )}
+                {createPlaceholderLineItemMutation.isPending ? "Creating..." : "Add First Item"}
               </Button>
             </div>
           ) : (
@@ -790,7 +825,8 @@ export default function EditQuote() {
       {/* Line Item Dialog (FIX #1 and #3) */}
       <Dialog open={lineItemDialogOpen} onOpenChange={(open) => {
         if (!open) {
-          resetLineItemForm();
+          handleCloseLineItemDialog();
+          return; // handleCloseLineItemDialog already sets the state
         }
         setLineItemDialogOpen(open);
       }}>
@@ -943,16 +979,14 @@ export default function EditQuote() {
               )}
             </div>
 
-            {/* Artwork Attachments - only show when editing existing line item */}
-            {editingLineItem && (
-              <div className="pt-2 border-t">
-                <LineItemAttachmentsPanel
-                  quoteId={quoteId!}
-                  lineItemId={editingLineItem.id}
-                  defaultExpanded={true}
-                />
-              </div>
-            )}
+            {/* Artwork Attachments - always show, but functionality depends on whether line item exists */}
+            <div className="pt-2 border-t">
+              <LineItemAttachmentsPanel
+                quoteId={quoteId!}
+                lineItemId={editingLineItem?.id}
+                defaultExpanded={!!editingLineItem}
+              />
+            </div>
 
             {/* Inline Error Display */}
             {lineItemError && (
@@ -963,8 +997,11 @@ export default function EditQuote() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setLineItemDialogOpen(false)}>
-              Cancel
+            <Button 
+              variant="outline" 
+              onClick={handleCloseLineItemDialog}
+            >
+              {editingLineItem && editingLineItem.productId ? "Done" : "Cancel"}
             </Button>
             <Button 
               onClick={handleSaveLineItem}

@@ -880,7 +880,7 @@ export const quotes = pgTable("quotes", {
 // Quote Line Items table
 export const quoteLineItems = pgTable("quote_line_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: 'cascade' }),
+  quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'cascade' }),
   productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
   productName: varchar("product_name", { length: 255 }).notNull(),
   variantId: varchar("variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
@@ -910,6 +910,9 @@ export const quoteLineItems = pgTable("quote_line_items", {
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
   displayOrder: integer("display_order").default(0).notNull(),
+  // Temporary line item support (for artwork before quote is saved)
+  isTemporary: boolean("is_temporary").default(false).notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("quote_line_items_quote_id_idx").on(table.quoteId),
