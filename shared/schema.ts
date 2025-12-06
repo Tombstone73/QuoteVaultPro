@@ -814,6 +814,7 @@ export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   quoteNumber: integer("quote_number"),
+  label: text("label"), // Free-text label for categorization/notes
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'set null' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
@@ -968,9 +969,11 @@ export type QuoteLineItem = typeof quoteLineItems.$inferSelect;
 export const storageProviderEnum = pgEnum('storage_provider', ['local', 's3', 'gcs', 'supabase']);
 
 // Quote Attachments table - files uploaded during quote creation (before order conversion)
+// Supports both quote-level attachments (quoteLineItemId = null) and line-item attachments
 export const quoteAttachments = pgTable("quote_attachments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: 'cascade' }),
+  quoteLineItemId: varchar("quote_line_item_id").references(() => quoteLineItems.id, { onDelete: 'cascade' }), // NEW: Per-line-item attachment
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   uploadedByName: varchar("uploaded_by_name", { length: 255 }),
@@ -995,12 +998,15 @@ export const quoteAttachments = pgTable("quote_attachments", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("quote_attachments_quote_id_idx").on(table.quoteId),
+  index("quote_attachments_quote_line_item_id_idx").on(table.quoteLineItemId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
 ]);
 
 export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).omit({
   id: true,
   createdAt: true,
+}).extend({
+  quoteLineItemId: z.string().optional().nullable(),
 });
 
 export type InsertQuoteAttachment = z.infer<typeof insertQuoteAttachmentSchema>;
@@ -1531,6 +1537,8 @@ export const orders = pgTable("orders", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   orderNumber: varchar("order_number", { length: 50 }).notNull(),
+  poNumber: varchar("po_number", { length: 64 }), // Customer PO number
+  label: text("label"), // Free-text label for categorization/notes
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),

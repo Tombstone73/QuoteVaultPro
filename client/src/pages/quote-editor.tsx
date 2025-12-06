@@ -18,7 +18,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { 
   ArrowLeft, Save, Plus, Trash2, Loader2, Copy, Pencil, 
   Truck, Store, Building2, DollarSign, Users, FileText, Shield, Send,
-  ChevronDown, Check, ChevronsUpDown, Upload, Paperclip, Download, X, ListOrdered
+  ChevronDown, Check, ChevronsUpDown, ListOrdered
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -34,24 +34,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { LineItemArtworkBadge } from "@/components/LineItemAttachmentsPanel";
 
-// Quote attachment type
-type QuoteAttachment = {
-  id: string;
-  fileName: string;
-  fileUrl: string;
-  fileSize?: number | null;
-  mimeType?: string | null;
-  createdAt: string;
-  // New storage model fields
-  originalFilename?: string | null;
-  storedFilename?: string | null;
-  relativePath?: string | null;
-  storageProvider?: string | null;
-  extension?: string | null;
-  sizeBytes?: number | null;
-  checksum?: string | null;
-};
+// Note: QuoteAttachment type removed - artwork is now handled per line item via LineItemAttachmentsPanel
 
 /**
  * Helper function to format option price label based on priceMode
@@ -132,9 +117,8 @@ export default function QuoteEditor() {
   const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [productSearchQuery, setProductSearchQuery] = useState("");
 
-  // File uploads
-  const [isUploading, setIsUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Note: Per-line-item artwork is now managed via LineItemAttachmentsPanel.
+  // Old quote-level file upload state has been removed.
 
   // Line item being added
   const [lineItems, setLineItems] = useState<QuoteLineItemDraft[]>([]);
@@ -207,18 +191,7 @@ export default function QuoteEditor() {
     enabled: !isNewQuote && !!quoteId,
   });
 
-  // Load quote files/attachments
-  const { data: quoteFiles = [], isLoading: filesLoading } = useQuery<QuoteAttachment[]>({
-    queryKey: ["/api/quotes", quoteId, "files"],
-    queryFn: async () => {
-      if (!quoteId) return [];
-      const response = await fetch(`/api/quotes/${quoteId}/files`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to load quote files");
-      const json = await response.json();
-      return json.data || [];
-    },
-    enabled: !isNewQuote && !!quoteId,
-  });
+  // Note: Quote-level file query removed. Artwork is now attached to individual line items.
 
   // Load data when editing existing quote
   useEffect(() => {
@@ -623,117 +596,8 @@ export default function QuoteEditor() {
     selectedCustomer.shippingCity || selectedCustomer.billingCity
   );
 
-  // File upload handler
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    if (!quoteId) {
-      toast({
-        title: "Save Quote First",
-        description: "Please save the quote before attaching files.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsUploading(true);
-    try {
-      // Get upload URL from backend
-      const urlResponse = await fetch("/api/objects/upload", {
-        method: "POST",
-        credentials: "include",
-      });
-      
-      if (!urlResponse.ok) {
-        throw new Error("Failed to get upload URL");
-      }
-
-      const { url, method } = await urlResponse.json();
-
-      // Upload each file
-      for (const file of Array.from(e.target.files)) {
-        const uploadResponse = await fetch(url, {
-          method: method || "PUT",
-          body: file,
-          headers: {
-            "Content-Type": file.type,
-          },
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error(`Failed to upload ${file.name}`);
-        }
-
-        // Extract the uploaded file URL (remove query params)
-        const fileUrl = url.split("?")[0];
-
-        // Attach file to quote
-        const attachResponse = await fetch(`/api/quotes/${quoteId}/files`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            fileName: file.name,
-            fileUrl,
-            fileSize: file.size,
-            mimeType: file.type,
-          }),
-        });
-
-        if (!attachResponse.ok) {
-          throw new Error(`Failed to attach ${file.name} to quote`);
-        }
-      }
-
-      // Refresh file list
-      queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId, "files"] });
-
-      toast({
-        title: "Files Uploaded",
-        description: "Your files have been attached to the quote.",
-      });
-    } catch (error: any) {
-      toast({
-        title: "Upload Failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsUploading(false);
-      // Clear input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
-  };
-
-  // Delete file handler
-  const handleDeleteFile = async (fileId: string) => {
-    if (!quoteId) return;
-
-    try {
-      const response = await fetch(`/api/quotes/${quoteId}/files/${fileId}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to delete file");
-      }
-
-      queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId, "files"] });
-
-      toast({
-        title: "File Removed",
-        description: "The file has been removed from the quote.",
-      });
-    } catch (error: any) {
-      toast({
-        title: "Delete Failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    }
-  };
+  // Note: Quote-level file upload handlers removed.
+  // Artwork is now attached to individual line items via LineItemAttachmentsPanel.
 
   if (!isInternalUser) {
     return (
@@ -1591,6 +1455,7 @@ export default function QuoteEditor() {
                       <TableHead className="text-center">Size</TableHead>
                       <TableHead className="text-center">Qty</TableHead>
                       <TableHead className="text-right">Price</TableHead>
+                      <TableHead className="text-center">Artwork</TableHead>
                       <TableHead className="w-[80px]"></TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1628,6 +1493,17 @@ export default function QuoteEditor() {
                         <TableCell className="text-right font-mono text-sm">
                           ${item.linePrice.toFixed(2)}
                         </TableCell>
+                        <TableCell className="text-center">
+                          {/* Only show artwork badge for saved line items (has real id, not tempId) */}
+                          {item.id && quoteId ? (
+                            <LineItemArtworkBadge 
+                              quoteId={quoteId} 
+                              lineItemId={item.id}
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Save first</span>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -1658,87 +1534,9 @@ export default function QuoteEditor() {
             </CardContent>
           </Card>
 
-          {/* Files & Artwork Card */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Paperclip className="w-4 h-4" />
-                Files & Artwork
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-4">
-              {/* Upload button */}
-              <div>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  className="hidden"
-                  multiple
-                  accept="image/*,.pdf,.ai,.eps,.psd,.svg"
-                  onChange={handleFileUpload}
-                />
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading || isNewQuote}
-                >
-                  {isUploading ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  ) : (
-                    <Upload className="w-4 h-4 mr-2" />
-                  )}
-                  {isUploading ? "Uploading..." : "Upload Files"}
-                </Button>
-                {isNewQuote && (
-                  <p className="text-xs text-muted-foreground mt-2 text-center">
-                    Save quote first to attach files
-                  </p>
-                )}
-              </div>
-
-              {/* File list */}
-              {quoteFiles && quoteFiles.length > 0 && (
-                <div className="space-y-2">
-                  {quoteFiles.map((file: QuoteAttachment) => (
-                    <div
-                      key={file.id}
-                      className="flex items-center gap-2 p-2 rounded-md bg-muted/50 hover:bg-muted transition-colors"
-                    >
-                      <Paperclip className="w-4 h-4 text-muted-foreground shrink-0" />
-                      <span className="text-sm truncate flex-1">{file.originalFilename || file.fileName}</span>
-                      <div className="flex gap-1 shrink-0">
-                        {file.fileUrl && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0"
-                            onClick={() => window.open(file.fileUrl, '_blank')}
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-                          onClick={() => handleDeleteFile(file.id)}
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {(!quoteFiles || quoteFiles.length === 0) && !isNewQuote && (
-                <p className="text-sm text-muted-foreground text-center py-2">
-                  No files attached
-                </p>
-              )}
-            </CardContent>
-          </Card>
+          {/* Note: Per-line-item artwork replaces the old quote-level Files & Artwork panel.
+              Artwork is now attached to individual line items using the Artwork column badges above.
+              To attach artwork, save the quote first, then click on a line item's artwork badge. */}
         </div>
 
         {/* ═══════════════════════════════════════════════════════════════ */}

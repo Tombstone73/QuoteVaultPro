@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import type { Customer } from "@shared/schema";
 
 const primaryContactSchema = z.object({
+  id: z.string().optional(), // Include id for updating existing primary contact
   firstName: z.string().min(1, "First name is required"),
   lastName: z.string().min(1, "Last name is required"),
   email: z.string().email("Invalid email"),
@@ -68,10 +69,58 @@ const customerSchema = z.object({
 
 type CustomerFormData = z.infer<typeof customerSchema>;
 
+// Extended Customer type that may include contacts - works with both Customer and CustomerWithRelations
+interface CustomerWithContacts {
+  id: string;
+  companyName: string;
+  displayName?: string | null;
+  customerType: string;
+  status: string;
+  pricingTier?: string | null;
+  defaultDiscountPercent?: string | number | null;
+  defaultMarkupPercent?: string | number | null;
+  defaultMarginPercent?: string | number | null;
+  productVisibilityMode?: string | null;
+  isTaxExempt?: boolean | null;
+  taxRateOverride?: string | number | null;
+  taxExemptReason?: string | null;
+  taxExemptCertificateRef?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  website?: string | null;
+  taxId?: string | null;
+  billingAddress?: string | null;
+  shippingAddress?: string | null;
+  billingStreet1?: string | null;
+  billingStreet2?: string | null;
+  billingCity?: string | null;
+  billingState?: string | null;
+  billingPostalCode?: string | null;
+  billingCountry?: string | null;
+  shippingStreet1?: string | null;
+  shippingStreet2?: string | null;
+  shippingCity?: string | null;
+  shippingState?: string | null;
+  shippingPostalCode?: string | null;
+  shippingCountry?: string | null;
+  creditLimit?: string | number | null;
+  notes?: string | null;
+  contacts?: Array<{
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string | null;
+    phone: string | null;
+    title: string | null;
+    isPrimary: boolean;
+  }>;
+  [key: string]: unknown; // Allow additional properties from CustomerWithRelations
+}
+
 interface CustomerFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  customer?: Customer;
+  customer?: CustomerWithContacts;
 }
 
 export default function CustomerForm({ open, onOpenChange, customer }: CustomerFormProps) {
@@ -80,6 +129,9 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
   const [pendingData, setPendingData] = useState<CustomerFormData | null>(null);
+
+  // Extract existing primary contact from customer if editing
+  const existingPrimaryContact = customer?.contacts?.find((c) => c.isPrimary) || customer?.contacts?.[0];
 
   const {
     register,
@@ -95,9 +147,9 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       customerType: customer.customerType as "business" | "individual",
       status: customer.status as "active" | "inactive" | "suspended",
       pricingTier: (customer.pricingTier as "default" | "wholesale" | "retail") || "default",
-      defaultDiscountPercent: customer.defaultDiscountPercent ? parseFloat(customer.defaultDiscountPercent) : undefined,
-      defaultMarkupPercent: customer.defaultMarkupPercent ? parseFloat(customer.defaultMarkupPercent) : undefined,
-      defaultMarginPercent: customer.defaultMarginPercent ? parseFloat(customer.defaultMarginPercent) : undefined,
+      defaultDiscountPercent: customer.defaultDiscountPercent ? parseFloat(String(customer.defaultDiscountPercent)) : undefined,
+      defaultMarkupPercent: customer.defaultMarkupPercent ? parseFloat(String(customer.defaultMarkupPercent)) : undefined,
+      defaultMarginPercent: customer.defaultMarginPercent ? parseFloat(String(customer.defaultMarginPercent)) : undefined,
       productVisibilityMode: (customer.productVisibilityMode as "default" | "linked-only") || "default",
       // Tax fields
       isTaxExempt: customer.isTaxExempt || false,
@@ -133,6 +185,16 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       ),
       creditLimit: customer.creditLimit ? Number(customer.creditLimit) : 0,
       notes: customer.notes || "",
+      // Pre-populate primary contact when editing (includes id for update)
+      primaryContact: existingPrimaryContact ? {
+        id: existingPrimaryContact.id,
+        firstName: existingPrimaryContact.firstName || "",
+        lastName: existingPrimaryContact.lastName || "",
+        email: existingPrimaryContact.email || "",
+        phone: existingPrimaryContact.phone || "",
+        title: existingPrimaryContact.title || "",
+        isPrimary: existingPrimaryContact.isPrimary ?? true,
+      } : undefined,
     } : {
       companyName: "",
       customerType: "business",
@@ -251,6 +313,8 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
 
       if (hasPrimaryContact) {
         payload.primaryContact = {
+          // Include id if updating existing contact, so backend can update instead of create
+          id: primaryContact.id || undefined,
           firstName: primaryContact.firstName,
           lastName: primaryContact.lastName,
           email: primaryContact.email,
@@ -272,6 +336,8 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
       queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer?.id}`] });
+      // Also invalidate contacts query so Contacts panel stays in sync
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
       toast({ title: "Success", description: "Customer updated successfully" });
       onOpenChange(false);
     },

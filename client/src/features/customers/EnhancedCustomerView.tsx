@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import CustomerForm from "@/components/customer-form";
 import {
   Building2,
@@ -30,9 +31,14 @@ import {
   ArrowUpDown,
   GripVertical,
   Settings2,
+  Plus,
+  UserCheck,
+  UserMinus,
+  Contact2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -44,6 +50,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -51,6 +58,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
 } from "@/components/ui/dialog";
 import {
   Popover,
@@ -59,6 +67,7 @@ import {
 } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
 import { useCustomer, type CustomerWithRelations } from "@/hooks/useCustomer";
 import { useOrders, type Order } from "@/hooks/useOrders";
 import { useInvoices } from "@/hooks/useInvoices";
@@ -178,59 +187,65 @@ function CustomerHeader({
   return (
     <div className={cn(
       "bg-titan-bg-card border border-titan-border-subtle shadow-titan-card",
-      isEmbedded ? "rounded-titan-lg p-4" : "rounded-titan-xl p-4"
+      isEmbedded ? "rounded-titan-lg px-3 py-2" : "rounded-titan-xl px-4 py-2.5"
     )}>
-      <div className="flex items-start justify-between gap-6">
+      <div className="flex items-center justify-between gap-4">
         {/* LEFT: Company & Contact Info */}
-        <div className="flex items-start gap-3 flex-1 min-w-0">
+        <div className="flex items-center gap-2.5 flex-1 min-w-0">
           {layoutMode === "full" && (
             <Button
               variant="ghost"
               size="icon"
-              className="flex-shrink-0 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+              className="flex-shrink-0 h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
               onClick={() => onBack ? onBack() : navigate(ROUTES.customers.list)}
               aria-label="Back to customers"
             >
-              <ArrowLeft className="w-5 h-5" />
+              <ArrowLeft className="w-4 h-4" />
             </Button>
           )}
           
           {!isEmbedded && (
-            <div className="flex-shrink-0 w-10 h-10 bg-titan-bg-card-elevated rounded-full flex items-center justify-center">
-              <Building2 className="w-5 h-5 text-titan-text-secondary" />
+            <div className="flex-shrink-0 w-8 h-8 bg-titan-bg-card-elevated rounded-full flex items-center justify-center">
+              <Building2 className="w-4 h-4 text-titan-text-secondary" />
             </div>
           )}
 
           <div className="flex-1 min-w-0">
-            {/* Company Name */}
-            <h2 className={cn(
-              "font-bold text-titan-text-primary leading-tight",
-              isEmbedded ? "text-titan-lg" : "text-2xl"
-            )}>
-              {customer.companyName}
-            </h2>
+            {/* Company Name + Primary Contact inline */}
+            <div className="flex items-baseline gap-2">
+              <h2 className={cn(
+                "font-bold text-titan-text-primary leading-tight truncate",
+                isEmbedded ? "text-base" : "text-lg"
+              )}>
+                {customer.companyName}
+              </h2>
+              {primaryContact && (
+                <span className="text-titan-xs text-titan-text-muted truncate hidden sm:inline">
+                  ({primaryContact.firstName} {primaryContact.lastName})
+                </span>
+              )}
+            </div>
             
-            {/* Primary Contact Name */}
-            {primaryContact && (
-              <p className="text-titan-sm font-medium text-titan-text-secondary mt-0.5">
-                {primaryContact.firstName} {primaryContact.lastName}
-              </p>
-            )}
-            
-            {/* Contact Details (email, phone, location) */}
+            {/* Contact Details (email, phone, location) - single row */}
             {!isEmbedded && (
-              <div className="flex items-center gap-3 mt-1.5 text-titan-xs text-titan-text-muted flex-wrap">
+              <div className="flex items-center gap-2.5 mt-0.5 text-[11px] text-titan-text-muted flex-wrap">
                 {(primaryContact?.email || customer.email) && (
-                  <span className="flex items-center gap-1">
+                  <a 
+                    href={`mailto:${primaryContact?.email || customer.email}`}
+                    className="flex items-center gap-1 hover:text-titan-accent transition-colors"
+                  >
                     <Mail className="w-3 h-3 flex-shrink-0" />
-                    <span className="truncate max-w-[200px]">{primaryContact?.email || customer.email}</span>
-                  </span>
+                    <span className="truncate max-w-[160px]">{primaryContact?.email || customer.email}</span>
+                  </a>
                 )}
                 {(primaryContact?.phone || customer.phone) && (
-                  <span className="flex items-center gap-1">
+                  <a 
+                    href={`tel:${(primaryContact?.phone || customer.phone || "").replace(/[^+\d]/g, "")}`}
+                    className="flex items-center gap-1 hover:text-titan-accent transition-colors"
+                  >
                     <Phone className="w-3 h-3 flex-shrink-0" />
                     {primaryContact?.phone || customer.phone}
-                  </span>
+                  </a>
                 )}
                 {cityState && (
                   <span className="flex items-center gap-1">
@@ -243,65 +258,365 @@ function CustomerHeader({
           </div>
         </div>
 
-        {/* RIGHT: Financial Tags + Edit Icon */}
-        <div className="flex items-start gap-4 flex-shrink-0">
-          {/* Financial Info Pills */}
-          <div className={cn(
-            "flex gap-4",
-            isEmbedded ? "flex-row" : "flex-col"
-          )}>
-            {/* Account Number - only show if exists */}
+        {/* RIGHT: Financial Tags + Actions - all inline */}
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {/* Financial Info Pills - horizontal */}
+          <div className="flex items-center gap-3">
+            {/* Account Number - only show if exists and not embedded */}
             {!isEmbedded && accountNumber && (
               <div className="text-right">
-                <div className="text-[10px] text-titan-text-muted uppercase tracking-wide mb-0.5">
-                  Account #
-                </div>
-                <div className="text-xs font-semibold text-titan-text-primary">
-                  {accountNumber}
-                </div>
+                <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Acct</div>
+                <div className="text-[11px] font-semibold text-titan-text-primary">{accountNumber}</div>
               </div>
             )}
             
             {/* Credit Limit */}
             <div className="text-right">
-              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide mb-0.5">
-                Credit Limit
-              </div>
-              <div className="text-xs font-semibold text-titan-text-primary">
-                {formatCurrency(customer.creditLimit)}
-              </div>
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Limit</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditLimit)}</div>
             </div>
             
             {/* Current Balance */}
             <div className="text-right">
-              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide mb-0.5">
-                Balance
-              </div>
-              <div className="text-xs font-semibold text-titan-success">
-                {formatCurrency(customer.currentBalance)}
-              </div>
+              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Balance</div>
+              <div className="text-[11px] font-semibold text-titan-success">{formatCurrency(customer.currentBalance)}</div>
             </div>
           </div>
 
-          {/* Edit Icon Button */}
-          <Button 
-            variant="ghost" 
-            size="icon"
-            onClick={() => setShowEditForm(true)}
-            className="h-8 w-8 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-md flex-shrink-0"
-            aria-label="Edit company"
-          >
-            <Edit className="w-4 h-4" />
-          </Button>
+          {/* Vertical divider */}
+          <div className="w-px h-6 bg-titan-border-subtle" />
+
+          {/* Quick Actions */}
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigate(`/quotes/new?customerId=${customer.id}`)}
+              disabled={!customer.id}
+              className="h-7 px-2 text-[11px] border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+            >
+              <FileText className="w-3 h-3 mr-1" />
+              Quote
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}
+              disabled={!customer.id}
+              className="h-7 px-2 text-[11px] border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+            >
+              <ShoppingCart className="w-3 h-3 mr-1" />
+              Order
+            </Button>
+            <Button 
+              variant="ghost" 
+              size="icon"
+              onClick={() => setShowEditForm(true)}
+              className="h-7 w-7 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-md flex-shrink-0"
+              aria-label="Edit company"
+            >
+              <Edit className="w-3.5 h-3.5" />
+            </Button>
+          </div>
         </div>
       </div>
       
       <CustomerForm 
         open={showEditForm} 
         onOpenChange={setShowEditForm}
-        customer={customer}
+        customer={customer as any}
       />
     </div>
+  );
+}
+
+// ============================================================
+// CONTACTS PANEL COMPONENT
+// ============================================================
+
+interface ContactsPanelProps {
+  customer: CustomerWithRelations;
+  layoutMode: LayoutMode;
+}
+
+function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [editingContact, setEditingContact] = useState<CustomerWithRelations["contacts"][0] | null>(null);
+  const [editForm, setEditForm] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    title: "",
+    isPrimary: false,
+  });
+
+  const isEmbedded = layoutMode === "embedded";
+  const contacts = customer.contacts || [];
+
+  // Set primary contact mutation
+  const setPrimaryMutation = useMutation({
+    mutationFn: async (contactId: string) => {
+      const response = await fetch(`/api/customer-contacts/${contactId}/set-primary`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to set primary contact");
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      toast({ title: "Success", description: "Primary contact updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Update contact mutation
+  const updateContactMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: typeof editForm }) => {
+      const response = await fetch(`/api/customer-contacts/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to update contact");
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      setShowEditDialog(false);
+      setEditingContact(null);
+      toast({ title: "Success", description: "Contact updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Unlink contact mutation (removes from company, doesn't delete)
+  const unlinkContactMutation = useMutation({
+    mutationFn: async (contactId: string) => {
+      const response = await fetch(`/api/customer-contacts/${contactId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to unlink contact");
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer.id}`] });
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      toast({ title: "Success", description: "Contact removed from company" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleEditClick = (contact: CustomerWithRelations["contacts"][0]) => {
+    setEditingContact(contact);
+    setEditForm({
+      firstName: contact.firstName || "",
+      lastName: contact.lastName || "",
+      email: contact.email || "",
+      phone: contact.phone || "",
+      title: contact.title || "",
+      isPrimary: contact.isPrimary || false,
+    });
+    setShowEditDialog(true);
+  };
+
+  const handleSaveContact = () => {
+    if (!editingContact) return;
+    updateContactMutation.mutate({ id: editingContact.id, data: editForm });
+  };
+
+  if (isEmbedded) return null; // Don't show in embedded mode
+
+  return (
+    <>
+      <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-4">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Contact2 className="w-5 h-5 text-titan-text-secondary" />
+            <h3 className="text-titan-base font-semibold text-titan-text-primary">Contacts</h3>
+            <span className="text-titan-xs text-titan-text-muted">({contacts.length})</span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-titan-xs border-titan-border-subtle text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated"
+            onClick={() => navigate(`/contacts?customerId=${customer.id}`)}
+          >
+            <Plus className="w-3.5 h-3.5 mr-1" />
+            Add Contact
+          </Button>
+        </div>
+
+        {/* Contacts List */}
+        {contacts.length === 0 ? (
+          <div className="py-6 text-center text-titan-text-muted text-titan-sm">
+            No contacts yet. Add a primary contact to get started.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {contacts.map((contact) => (
+              <div
+                key={contact.id}
+                className="flex items-center justify-between p-3 rounded-titan-lg bg-titan-bg-card-elevated hover:bg-titan-bg-table-row transition-colors"
+              >
+                {/* Contact Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-titan-sm font-medium text-titan-text-primary">
+                      {contact.firstName} {contact.lastName}
+                    </span>
+                    {contact.isPrimary && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-titan-accent/15 text-titan-accent">
+                        Primary
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5 text-titan-xs text-titan-text-muted">
+                    {contact.title && <span>{contact.title}</span>}
+                    {contact.email && (
+                      <a href={`mailto:${contact.email}`} className="hover:text-titan-accent">
+                        {contact.email}
+                      </a>
+                    )}
+                    {contact.phone && (
+                      <a href={`tel:${contact.phone}`} className="hover:text-titan-accent">
+                        {contact.phone}
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-titan-text-muted hover:text-titan-text-primary hover:bg-titan-bg-card"
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="bg-titan-bg-card border-titan-border">
+                    <DropdownMenuItem
+                      onClick={() => handleEditClick(contact)}
+                      className="text-titan-text-primary hover:bg-titan-bg-card-elevated cursor-pointer"
+                    >
+                      <Edit className="w-3.5 h-3.5 mr-2" />
+                      Edit Contact
+                    </DropdownMenuItem>
+                    {!contact.isPrimary && (
+                      <DropdownMenuItem
+                        onClick={() => setPrimaryMutation.mutate(contact.id)}
+                        disabled={setPrimaryMutation.isPending}
+                        className="text-titan-text-primary hover:bg-titan-bg-card-elevated cursor-pointer"
+                      >
+                        <UserCheck className="w-3.5 h-3.5 mr-2" />
+                        Make Primary
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator className="bg-titan-border-subtle" />
+                    <DropdownMenuItem
+                      onClick={() => unlinkContactMutation.mutate(contact.id)}
+                      disabled={unlinkContactMutation.isPending}
+                      className="text-titan-error hover:bg-titan-error/10 cursor-pointer"
+                    >
+                      <UserMinus className="w-3.5 h-3.5 mr-2" />
+                      Remove from Company
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Edit Contact Dialog */}
+      <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+        <DialogContent className="bg-titan-bg-card border-titan-border max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-titan-text-primary">Edit Contact</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-titan-text-secondary">First Name</Label>
+                <Input
+                  value={editForm.firstName}
+                  onChange={(e) => setEditForm({ ...editForm, firstName: e.target.value })}
+                  className="bg-titan-bg-input border-titan-border-subtle text-titan-text-primary"
+                />
+              </div>
+              <div>
+                <Label className="text-titan-text-secondary">Last Name</Label>
+                <Input
+                  value={editForm.lastName}
+                  onChange={(e) => setEditForm({ ...editForm, lastName: e.target.value })}
+                  className="bg-titan-bg-input border-titan-border-subtle text-titan-text-primary"
+                />
+              </div>
+            </div>
+            <div>
+              <Label className="text-titan-text-secondary">Email</Label>
+              <Input
+                type="email"
+                value={editForm.email}
+                onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                className="bg-titan-bg-input border-titan-border-subtle text-titan-text-primary"
+              />
+            </div>
+            <div>
+              <Label className="text-titan-text-secondary">Phone</Label>
+              <Input
+                value={editForm.phone}
+                onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                className="bg-titan-bg-input border-titan-border-subtle text-titan-text-primary"
+              />
+            </div>
+            <div>
+              <Label className="text-titan-text-secondary">Role / Title</Label>
+              <Input
+                value={editForm.title}
+                onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                className="bg-titan-bg-input border-titan-border-subtle text-titan-text-primary"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowEditDialog(false)}
+              className="border-titan-border-subtle text-titan-text-secondary"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveContact}
+              disabled={updateContactMutation.isPending}
+              className="bg-titan-accent hover:bg-titan-accent/90 text-white"
+            >
+              {updateContactMutation.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -312,51 +627,50 @@ function StatCard({ stat, compact }: { stat: StatCardConfig; compact?: boolean }
   return (
     <div
       className={cn(
-        "rounded-titan-lg border transition-all",
-        compact ? "p-2" : "p-3",
+        "rounded-titan-md border transition-all",
+        compact ? "px-2 py-1.5" : "px-2.5 py-2",
         stat.highlight
           ? "bg-titan-accent/10 border-titan-accent/20"
           : "bg-titan-bg-card border-titan-border-subtle"
       )}
     >
-      <div className="flex items-start justify-between mb-2">
-        <span className="text-[10px] font-medium text-titan-text-muted uppercase tracking-wider">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[9px] font-medium text-titan-text-muted uppercase tracking-wider truncate">
           {stat.label}
         </span>
         <div
           className={cn(
-            "rounded-titan-md flex items-center justify-center",
-            compact ? "w-5 h-5" : "w-6 h-6",
+            "rounded-titan-sm flex items-center justify-center flex-shrink-0",
+            compact ? "w-4 h-4" : "w-5 h-5",
             stat.iconBg
           )}
         >
-          <IconComponent className={cn("text-white", compact ? "w-2.5 h-2.5" : "w-3 h-3")} />
+          <IconComponent className={cn("text-white", compact ? "w-2 h-2" : "w-2.5 h-2.5")} />
         </div>
       </div>
       <div className={cn(
-        "font-bold text-titan-text-primary mb-0.5",
-        compact ? "text-titan-base" : "text-titan-xl"
+        "font-bold text-titan-text-primary leading-tight",
+        compact ? "text-sm" : "text-base"
       )}>
         {stat.value}
       </div>
       {stat.trend !== undefined && stat.trend !== null && (
         <div
           className={cn(
-            "flex items-center gap-1 text-[10px]",
+            "flex items-center gap-0.5 text-[9px] mt-0.5",
             isPositive ? "text-titan-success" : "text-titan-error"
           )}
         >
           {isPositive ? (
-            <TrendingUp className="w-2.5 h-2.5" />
+            <TrendingUp className="w-2 h-2" />
           ) : (
-            <TrendingDown className="w-2.5 h-2.5" />
+            <TrendingDown className="w-2 h-2" />
           )}
           {Math.abs(stat.trend).toFixed(1)}%
-          <span className="text-titan-text-muted ml-1">vs prev month</span>
         </div>
       )}
       {stat.subtext && (
-        <div className="text-[10px] text-titan-text-muted truncate">{stat.subtext}</div>
+        <div className="text-[9px] text-titan-text-muted truncate mt-0.5">{stat.subtext}</div>
       )}
     </div>
   );
@@ -512,23 +826,23 @@ function CustomerStatsGrid({
 
   return (
     <div className={cn(
-      "grid gap-2",
+      "grid gap-1.5",
       isEmbedded ? "grid-cols-4" : "grid-cols-7"
     )}>
       {/* First slot: Overview Controls Card (only in full mode) */}
       {!isEmbedded && (
         <div
-          className="rounded-titan-lg border bg-titan-bg-card border-titan-border-subtle p-3 flex flex-col justify-between"
+          className="rounded-titan-md border bg-titan-bg-card border-titan-border-subtle px-2.5 py-2 flex flex-col justify-between"
         >
           {/* Top row: Overview label + settings gear */}
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-medium text-titan-text-muted uppercase tracking-wider">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[9px] font-medium text-titan-text-muted uppercase tracking-wider">
               OVERVIEW
             </span>
             <Popover>
               <PopoverTrigger asChild>
-                <button className="w-6 h-6 rounded-titan-md bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition-colors">
-                  <Settings2 className="w-3 h-3 text-white" />
+                <button className="w-5 h-5 rounded-titan-sm bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition-colors">
+                  <Settings2 className="w-2.5 h-2.5 text-white" />
                 </button>
               </PopoverTrigger>
               <PopoverContent className="w-64 p-3 bg-titan-bg-card border-titan-border" align="start">
@@ -576,24 +890,20 @@ function CustomerStatsGrid({
             </Popover>
           </div>
 
-          {/* Time period selector pills */}
-          <div className="flex flex-col gap-1">
+          {/* Time period selector pills - horizontal compact */}
+          <div className="flex gap-1">
             {(["month", "year", "all"] as const).map((p) => (
               <button
                 key={p}
                 onClick={() => onPeriodChange(p)}
                 className={cn(
-                  "px-2 py-1.5 rounded-titan-sm text-[11px] font-medium transition-colors text-left",
+                  "px-2 py-1 rounded-titan-sm text-[10px] font-medium transition-colors",
                   period === p
                     ? "bg-titan-accent text-white shadow-titan-sm"
                     : "bg-titan-bg-card-elevated text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-highlight"
                 )}
               >
-                {p === "month"
-                  ? "This Month"
-                  : p === "year"
-                  ? "This Year"
-                  : "All Time"}
+                {p === "month" ? "Month" : p === "year" ? "Year" : "All"}
               </button>
             ))}
           </div>
@@ -625,6 +935,7 @@ function OrdersTable({
   // Column visibility configuration
   const allColumns = [
     { id: "orderNumber", label: "Order #", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
+    { id: "poNumber", label: "PO #", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
     { id: "date", label: "Date", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
     { id: "product", label: "Product", defaultVisible: true, sortable: true, resizable: true, minWidth: 150 },
     { id: "amount", label: "Amount", defaultVisible: true, sortable: true, resizable: true, minWidth: 100 },
@@ -835,10 +1146,11 @@ function OrdersTable({
   }, [resizingColumn, resizeStartX, resizeStartWidth, allColumns]);
 
   const filteredOrders = useMemo(() => {
-    let result = orders.filter((order) => {
+    let result = orders.filter((order: any) => {
       const matchesSearch =
         !searchQuery ||
-        order.orderNumber?.toLowerCase().includes(searchQuery.toLowerCase());
+        order.orderNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        order.poNumber?.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus =
         statusFilter === "all" || order.status === statusFilter;
       return matchesSearch && matchesStatus;
@@ -855,6 +1167,10 @@ function OrdersTable({
             case "orderNumber":
               aVal = a.orderNumber || "";
               bVal = b.orderNumber || "";
+              break;
+            case "poNumber":
+              aVal = a.poNumber || "";
+              bVal = b.poNumber || "";
               break;
             case "date":
               aVal = new Date(a.createdAt).getTime();
@@ -1007,6 +1323,15 @@ function OrdersTable({
                     <td key={columnId} className="px-4 py-3" style={{ width: `${width}px` }}>
                       <span className="text-titan-sm font-medium text-titan-accent">
                         {order.orderNumber}
+                      </span>
+                    </td>
+                  );
+                
+                case "poNumber":
+                  return (
+                    <td key={columnId} className="px-4 py-3" style={{ width: `${width}px` }}>
+                      <span className="text-titan-sm font-mono text-titan-text-secondary">
+                        {order.poNumber || "—"}
                       </span>
                     </td>
                   );
@@ -1603,6 +1928,9 @@ export default function EnhancedCustomerView({
         layoutMode={layoutMode}
         onPeriodChange={setPeriod}
       />
+
+      {/* Contacts Panel - Only in full mode */}
+      <ContactsPanel customer={customer} layoutMode={layoutMode} />
 
       {/* Activity Section */}
       <div className="mt-4">
