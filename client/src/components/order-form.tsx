@@ -77,6 +77,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
   const [promisedDate, setPromisedDate] = useState("");
   const [discount, setDiscount] = useState(0);
   const [notesInternal, setNotesInternal] = useState("");
+  const [poNumber, setPoNumber] = useState("");
 
   // Line items
   const [lineItems, setLineItems] = useState<OrderLineItemDraft[]>([]);
@@ -416,6 +417,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       promisedDate: promisedDate ? new Date(promisedDate) : null,
       discount: Number(discount),
       notesInternal: notesInternal || null,
+      poNumber: poNumber || null,
       lineItems: lineItems.map(item => ({
         productId: item.productId,
         productVariantId: item.productVariantId,
@@ -564,6 +566,17 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                       step="0.01"
                       value={discount}
                       onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
+                      className="h-9"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="poNumber" className="text-xs text-muted-foreground">Customer PO #</Label>
+                    <Input
+                      type="text"
+                      value={poNumber}
+                      onChange={(e) => setPoNumber(e.target.value)}
+                      placeholder="Enter PO number..."
                       className="h-9"
                     />
                   </div>

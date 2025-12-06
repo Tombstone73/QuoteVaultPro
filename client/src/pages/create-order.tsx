@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
+import { AttachmentsPanel } from "@/components/AttachmentsPanel";
 import { apiRequest } from "@/lib/queryClient";
 import type { Product, ProductVariant, ProductOptionItem, Organization } from "@shared/schema";
 import { profileRequiresDimensions, getProfile } from "@shared/pricingProfiles";
@@ -85,6 +86,7 @@ export default function CreateOrder() {
   const [productionDueDate, setProductionDueDate] = useState("");
   const [orderStatus, setOrderStatus] = useState("new");
   const [priority, setPriority] = useState("normal");
+  const [poNumber, setPoNumber] = useState("");
 
   // Line items state
   const [lineItems, setLineItems] = useState<OrderLineItemDraft[]>([]);
@@ -351,6 +353,7 @@ export default function CreateOrder() {
       contactId: selectedContactId,
       status: orderStatus,
       priority,
+      poNumber: poNumber || null,
       shippingMethod: deliveryMethod,
       shippingMode: 'single_shipment',
       shippingInstructions,
@@ -398,7 +401,7 @@ export default function CreateOrder() {
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)_minmax(280px,340px)]">
         
         {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* LEFT COLUMN: Customer & Fulfillment */}
+        {/* LEFT COLUMN: Customer & Order Details */}
         {/* ═══════════════════════════════════════════════════════════════ */}
         <div className="space-y-3 order-1 xl:order-1">
           {/* Customer Card */}
@@ -490,62 +493,91 @@ export default function CreateOrder() {
                   )}
                 </div>
               )}
+
+              {/* Customer PO # - immediately after customer selection */}
+              <div className="space-y-1.5 pt-2 border-t">
+                <Label className="text-xs text-muted-foreground">Customer PO #</Label>
+                <Input
+                  value={poNumber}
+                  onChange={(e) => setPoNumber(e.target.value)}
+                  placeholder="Enter PO number..."
+                  maxLength={64}
+                  className="h-9 text-sm"
+                />
+              </div>
             </CardContent>
           </Card>
 
-          {/* Fulfillment Card */}
+          {/* Order Details Card - moved from Column 3 */}
           <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
             <CardHeader className="pb-2 px-5 pt-4">
               <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Truck className="w-4 h-4" />
-                Fulfillment
+                <FileText className="w-4 h-4" />
+                Order Details
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 px-5 pb-4">
               <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Delivery Method</Label>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={deliveryMethod === 'pickup' ? 'default' : 'outline'}
-                    onClick={() => setDeliveryMethod('pickup')}
-                    className="flex-1"
-                  >
-                    <Store className="w-3.5 h-3.5 mr-1.5" />
-                    Pickup
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={deliveryMethod === 'ship' ? 'default' : 'outline'}
-                    onClick={() => setDeliveryMethod('ship')}
-                    className="flex-1"
-                  >
-                    <Truck className="w-3.5 h-3.5 mr-1.5" />
-                    Ship
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={deliveryMethod === 'deliver' ? 'default' : 'outline'}
-                    onClick={() => setDeliveryMethod('deliver')}
-                    className="flex-1"
-                  >
-                    <Building2 className="w-3.5 h-3.5 mr-1.5" />
-                    Deliver
-                  </Button>
+                <Label className="text-xs text-muted-foreground">Description / Job Name</Label>
+                <Input
+                  value={orderDescription}
+                  onChange={(e) => setOrderDescription(e.target.value)}
+                  placeholder="Order description..."
+                  className="h-9 text-sm"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Requested Due</Label>
+                  <Input
+                    type="date"
+                    value={requestedDueDate}
+                    onChange={(e) => setRequestedDueDate(e.target.value)}
+                    className="h-9 text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Production Due</Label>
+                  <Input
+                    type="date"
+                    value={productionDueDate}
+                    onChange={(e) => setProductionDueDate(e.target.value)}
+                    className="h-9 text-sm"
+                  />
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Special Instructions</Label>
-                <Textarea
-                  value={shippingInstructions}
-                  onChange={(e) => setShippingInstructions(e.target.value)}
-                  placeholder="Internal notes, special instructions..."
-                  className="min-h-[80px] text-sm"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Status</Label>
+                  <Select value={orderStatus} onValueChange={setOrderStatus}>
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="new">New</SelectItem>
+                      <SelectItem value="in_production">In Production</SelectItem>
+                      <SelectItem value="on_hold">On Hold</SelectItem>
+                      <SelectItem value="ready_for_shipment">Ready for Shipment</SelectItem>
+                      <SelectItem value="completed">Completed</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Priority</Label>
+                  <Select value={priority} onValueChange={setPriority}>
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="normal">Normal</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="rush">Rush</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -761,9 +793,66 @@ export default function CreateOrder() {
         </div>
 
         {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* RIGHT COLUMN: Summary & Actions */}
+        {/* RIGHT COLUMN: Fulfillment, Summary & Actions */}
         {/* ═══════════════════════════════════════════════════════════════ */}
         <div className="space-y-3 order-2 xl:order-3">
+          {/* Fulfillment Card - moved from Column 1 */}
+          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+            <CardHeader className="pb-2 px-5 pt-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Truck className="w-4 h-4" />
+                Fulfillment
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 px-5 pb-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Delivery Method</Label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={deliveryMethod === 'pickup' ? 'default' : 'outline'}
+                    onClick={() => setDeliveryMethod('pickup')}
+                    className="flex-1"
+                  >
+                    <Store className="w-3.5 h-3.5 mr-1.5" />
+                    Pickup
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={deliveryMethod === 'ship' ? 'default' : 'outline'}
+                    onClick={() => setDeliveryMethod('ship')}
+                    className="flex-1"
+                  >
+                    <Truck className="w-3.5 h-3.5 mr-1.5" />
+                    Ship
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={deliveryMethod === 'deliver' ? 'default' : 'outline'}
+                    onClick={() => setDeliveryMethod('deliver')}
+                    className="flex-1"
+                  >
+                    <Building2 className="w-3.5 h-3.5 mr-1.5" />
+                    Deliver
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Special Instructions</Label>
+                <Textarea
+                  value={shippingInstructions}
+                  onChange={(e) => setShippingInstructions(e.target.value)}
+                  placeholder="Shipping notes, delivery instructions..."
+                  className="min-h-[60px] text-sm"
+                />
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Order Summary Card */}
           <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
             <CardHeader className="pb-2 px-5 pt-4">
@@ -791,77 +880,13 @@ export default function CreateOrder() {
             </CardContent>
           </Card>
 
-          {/* Meta Card */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <FileText className="w-4 h-4" />
-                Order Details
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-4">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Description / Job Name</Label>
-                <Input
-                  value={orderDescription}
-                  onChange={(e) => setOrderDescription(e.target.value)}
-                  placeholder="Order description..."
-                  className="h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Requested Due Date</Label>
-                <Input
-                  type="date"
-                  value={requestedDueDate}
-                  onChange={(e) => setRequestedDueDate(e.target.value)}
-                  className="h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Production Due Date</Label>
-                <Input
-                  type="date"
-                  value={productionDueDate}
-                  onChange={(e) => setProductionDueDate(e.target.value)}
-                  className="h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Status</Label>
-                <Select value={orderStatus} onValueChange={setOrderStatus}>
-                  <SelectTrigger className="h-9 text-sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="new">New</SelectItem>
-                    <SelectItem value="in_production">In Production</SelectItem>
-                    <SelectItem value="on_hold">On Hold</SelectItem>
-                    <SelectItem value="ready_for_shipment">Ready for Shipment</SelectItem>
-                    <SelectItem value="completed">Completed</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Priority</Label>
-                <Select value={priority} onValueChange={setPriority}>
-                  <SelectTrigger className="h-9 text-sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="normal">Normal</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="rush">Rush</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Attachments Panel - disabled until order is saved */}
+          <AttachmentsPanel 
+            ownerType="order" 
+            ownerId={undefined} 
+            title="Attachments"
+            compact
+          />
 
           {/* Action Buttons */}
           <div className="space-y-2">

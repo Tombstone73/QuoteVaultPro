@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -24,11 +24,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { FileIcon, Edit2, Trash2, Upload, Image as ImageIcon, Star, FileText } from "lucide-react";
+import { FileIcon, Edit2, Trash2, Upload, Image as ImageIcon, Star, FileText, Loader2 } from "lucide-react";
 import { useOrderFiles, useAttachFileToOrder, useUpdateOrderFile, useDetachOrderFile } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
+
+// Max file size: 50MB
+const MAX_SIZE_BYTES = 50 * 1024 * 1024;
 
 const FILE_ROLES = [
   { value: 'artwork', label: 'Artwork', icon: ImageIcon },
@@ -62,11 +65,122 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   const [editingFile, setEditingFile] = useState<OrderFileWithUser | null>(null);
   const [fileToDelete, setFileToDelete] = useState<string | null>(null);
 
+  // Upload state
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Edit dialog form state
   const [editRole, setEditRole] = useState<string>('other');
   const [editSide, setEditSide] = useState<string>('na');
   const [editIsPrimary, setEditIsPrimary] = useState(false);
   const [editDescription, setEditDescription] = useState('');
+
+  // Handle file upload
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const filesToUpload = Array.from(e.target.files);
+
+    // Check file sizes
+    const oversizedFiles = filesToUpload.filter(f => f.size > MAX_SIZE_BYTES);
+    if (oversizedFiles.length > 0) {
+      toast({
+        title: "File Too Large",
+        description: "Files larger than 50MB cannot be uploaded. Please use WeTransfer or another file sharing service for large files.",
+        variant: "destructive",
+      });
+      const validFiles = filesToUpload.filter(f => f.size <= MAX_SIZE_BYTES);
+      if (validFiles.length === 0) {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        return;
+      }
+    }
+
+    setIsUploading(true);
+    let successCount = 0;
+    let errorCount = 0;
+
+    try {
+      for (const file of filesToUpload) {
+        if (file.size > MAX_SIZE_BYTES) continue;
+
+        try {
+          // Step 1: Get signed upload URL from backend
+          const urlResponse = await fetch("/api/objects/upload", {
+            method: "POST",
+            credentials: "include",
+          });
+
+          if (!urlResponse.ok) {
+            const errorData = await urlResponse.json().catch(() => ({}));
+            console.error("Failed to get upload URL:", errorData);
+            throw new Error(errorData.message || "Failed to get upload URL");
+          }
+
+          const { url, method } = await urlResponse.json();
+
+          // Step 2: Upload file to storage
+          const uploadResponse = await fetch(url, {
+            method: method || "PUT",
+            body: file,
+            headers: {
+              "Content-Type": file.type || "application/octet-stream",
+            },
+          });
+
+          if (!uploadResponse.ok) {
+            console.error("Upload failed:", uploadResponse.status, uploadResponse.statusText);
+            throw new Error(`Failed to upload ${file.name}`);
+          }
+
+          // Step 3: Extract the file URL (remove query params)
+          const fileUrl = url.split("?")[0];
+
+          // Step 4: Attach file to order
+          await attachFile.mutateAsync({
+            fileName: file.name,
+            fileUrl,
+            fileSize: file.size,
+            mimeType: file.type,
+            role: 'other',
+            side: 'na',
+          });
+
+          successCount++;
+        } catch (fileError: any) {
+          console.error(`Error uploading ${file.name}:`, fileError);
+          errorCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        toast({
+          title: "Files Uploaded",
+          description: `${successCount} file${successCount !== 1 ? "s" : ""} uploaded successfully.`,
+        });
+      }
+
+      if (errorCount > 0) {
+        toast({
+          title: "Some Uploads Failed",
+          description: `${errorCount} file${errorCount !== 1 ? "s" : ""} failed to upload.`,
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error("Upload error:", error);
+      toast({
+        title: "Upload Failed",
+        description: error.message || "Failed to upload files. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
 
   const handleEditFile = (file: OrderFileWithUser) => {
     setEditingFile(file);
@@ -156,7 +270,30 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                 {files.length} {files.length === 1 ? 'file' : 'files'} attached
               </CardDescription>
             </div>
-            {/* Future: Add "Attach File" button when upload UI is ready */}
+            {/* Upload button */}
+            <div>
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                multiple
+                accept="image/*,.pdf,.ai,.eps,.psd,.svg,.doc,.docx,.xls,.xlsx"
+                onChange={handleFileUpload}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+              >
+                {isUploading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Upload className="w-4 h-4 mr-2" />
+                )}
+                {isUploading ? "Uploading..." : "Upload Files"}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>

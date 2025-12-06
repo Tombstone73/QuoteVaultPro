@@ -40,6 +40,8 @@ import {
   ArrowLeft,
   ChevronUp,
   ChevronDown,
+  Check,
+  X,
 } from "lucide-react";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
@@ -59,11 +61,12 @@ import {
 } from "@/components/titan";
 import type { QuoteWithRelations, Product } from "@shared/schema";
 
-type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy";
+type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "label";
 
 // Column definitions for quotes table
 const QUOTE_COLUMNS: ColumnDefinition[] = [
   { key: "quoteNumber", label: "Quote #", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
+  { key: "label", label: "Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
   { key: "date", label: "Date", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "items", label: "Items", defaultVisible: true, defaultWidth: 80, minWidth: 60, maxWidth: 120, sortable: true },
@@ -96,6 +99,10 @@ export default function InternalQuotes() {
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  
+  // Inline editing state for label
+  const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
+  const [tempLabel, setTempLabel] = useState("");
 
   const convertToOrder = useConvertQuoteToOrder();
 
@@ -160,6 +167,9 @@ export default function InternalQuotes() {
         case "quoteNumber":
           comparison = (a.quoteNumber || "").toString().localeCompare((b.quoteNumber || "").toString(), undefined, { numeric: true });
           break;
+        case "label":
+          comparison = (a.label || "").localeCompare(b.label || "");
+          break;
         case "customer":
           const customerA = a.customerName || "";
           const customerB = b.customerName || "";
@@ -194,7 +204,7 @@ export default function InternalQuotes() {
     } else {
       setSortKey(key);
       // Default direction based on column type
-      setSortDirection(key === "customer" || key === "quoteNumber" || key === "source" || key === "createdBy" ? "asc" : "desc");
+      setSortDirection(key === "customer" || key === "quoteNumber" || key === "source" || key === "createdBy" || key === "label" ? "asc" : "desc");
     }
   };
 
@@ -203,6 +213,47 @@ export default function InternalQuotes() {
     return sortDirection === "asc" 
       ? <ChevronUp className="inline w-4 h-4 ml-1" />
       : <ChevronDown className="inline w-4 h-4 ml-1" />;
+  };
+
+  // Handle label edit
+  const handleStartLabelEdit = (quoteId: string, currentLabel: string) => {
+    setEditingQuoteId(quoteId);
+    setTempLabel(currentLabel || "");
+  };
+
+  const handleSaveLabel = async (quoteId: string) => {
+    try {
+      const response = await fetch(`/api/quotes/${quoteId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: tempLabel }),
+        credentials: 'include',
+      });
+
+      if (!response.ok) throw new Error('Failed to update quote');
+
+      toast({
+        title: "Success",
+        description: "Quote label updated",
+      });
+
+      // Refresh quotes list
+      window.location.reload();
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to update quote label",
+        variant: "destructive",
+      });
+    } finally {
+      setEditingQuoteId(null);
+      setTempLabel("");
+    }
+  };
+
+  const handleCancelLabelEdit = () => {
+    setEditingQuoteId(null);
+    setTempLabel("");
   };
 
   const handleClearFilters = () => {
@@ -395,6 +446,15 @@ export default function InternalQuotes() {
                         Quote #<SortIcon columnKey="quoteNumber" />
                       </TableHead>
                     )}
+                    {isVisible("label") && (
+                      <TableHead 
+                        className="cursor-pointer hover:bg-muted/50 select-none"
+                        style={getColStyle("label")}
+                        onClick={() => handleSort("label")}
+                      >
+                        Label<SortIcon columnKey="label" />
+                      </TableHead>
+                    )}
                     {isVisible("date") && (
                       <TableHead 
                         className="cursor-pointer hover:bg-muted/50 select-none"
@@ -466,6 +526,47 @@ export default function InternalQuotes() {
                           <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer">
                             {quote.quoteNumber || "N/A"}
                           </span>
+                        </TableCell>
+                      )}
+                      {isVisible("label") && (
+                        <TableCell 
+                          style={getColStyle("label")}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {editingQuoteId === quote.id ? (
+                            <div className="flex items-center gap-1">
+                              <Input
+                                value={tempLabel}
+                                onChange={(e) => setTempLabel(e.target.value)}
+                                className="h-8 w-[130px]"
+                                placeholder="Enter label..."
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveLabel(quote.id);
+                                  if (e.key === 'Escape') handleCancelLabelEdit();
+                                }}
+                              />
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveLabel(quote.id)}>
+                                <Check className="h-3 w-3" />
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelLabelEdit}>
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div 
+                              className="cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
+                              onClick={() => handleStartLabelEdit(quote.id, (quote as any).label || '')}
+                            >
+                              {(quote as any).label ? (
+                                <span className="text-sm">{(quote as any).label}</span>
+                              ) : (
+                                <span className="text-muted-foreground text-sm italic">
+                                  Click to add...
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </TableCell>
                       )}
                       {isVisible("date") && (

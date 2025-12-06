@@ -13,11 +13,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, FilterPanel, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, type ColumnDefinition } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 
-type SortKey = "date" | "orderNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items";
+type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label";
 
 // Column definitions for orders table
 const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "orderNumber", label: "Order #", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
+  { key: "poNumber", label: "PO #", defaultVisible: true, defaultWidth: 120, minWidth: 80, maxWidth: 180, sortable: true },
+  { key: "label", label: "Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 130, minWidth: 100, maxWidth: 180, sortable: true },
   { key: "priority", label: "Priority", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
@@ -45,7 +47,7 @@ export default function Orders() {
   
   // Inline editing state
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
-  const [editingField, setEditingField] = useState<'status' | 'priority' | 'dueDate' | null>(null);
+  const [editingField, setEditingField] = useState<'status' | 'priority' | 'dueDate' | 'label' | 'poNumber' | null>(null);
   const [tempValue, setTempValue] = useState("");
 
   const { data: orders, isLoading } = useOrders({
@@ -80,6 +82,12 @@ export default function Orders() {
           break;
         case "orderNumber":
           comparison = (a.orderNumber || "").localeCompare(b.orderNumber || "", undefined, { numeric: true });
+          break;
+        case "poNumber":
+          comparison = (a.poNumber || "").localeCompare(b.poNumber || "");
+          break;
+        case "label":
+          comparison = (a.label || "").localeCompare(b.label || "");
           break;
         case "customer":
           const customerA = a.customer?.companyName || "";
@@ -118,7 +126,7 @@ export default function Orders() {
     } else {
       setSortKey(key);
       // Default direction based on column type
-      setSortDirection(key === "customer" || key === "orderNumber" || key === "status" || key === "priority" ? "asc" : "desc");
+      setSortDirection(key === "customer" || key === "orderNumber" || key === "status" || key === "priority" || key === "label" ? "asc" : "desc");
     }
   };
 
@@ -129,7 +137,7 @@ export default function Orders() {
       : <ChevronDown className="inline w-4 h-4 ml-1" />;
   };
 
-  const handleStartEdit = (orderId: string, field: 'status' | 'priority' | 'dueDate', currentValue: string) => {
+  const handleStartEdit = (orderId: string, field: 'status' | 'priority' | 'dueDate' | 'label', currentValue: string) => {
     if (!isAdminOrOwner) return;
     setEditingOrderId(orderId);
     setEditingField(field);
@@ -295,6 +303,24 @@ export default function Orders() {
                     Order #<SortIcon columnKey="orderNumber" />
                   </TableHead>
                 )}
+                {isVisible("label") && (
+                  <TableHead 
+                    className="cursor-pointer hover:bg-muted/50 select-none"
+                    style={getColStyle("label")}
+                    onClick={() => handleSort("label")}
+                  >
+                    Label<SortIcon columnKey="label" />
+                  </TableHead>
+                )}
+                {isVisible("poNumber") && (
+                  <TableHead 
+                    className="cursor-pointer hover:bg-muted/50 select-none"
+                    style={getColStyle("poNumber")}
+                    onClick={() => handleSort("poNumber")}
+                  >
+                    PO #<SortIcon columnKey="poNumber" />
+                  </TableHead>
+                )}
                 {isVisible("customer") && (
                   <TableHead 
                     className="cursor-pointer hover:bg-muted/50 select-none"
@@ -396,6 +422,82 @@ export default function Orders() {
                         <Link to={ROUTES.orders.detail(order.id)}>
                           <span className="hover:underline text-primary">{order.orderNumber}</span>
                         </Link>
+                      </TableCell>
+                    )}
+                    {isVisible("label") && (
+                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("label")}>
+                        {isAdminOrOwner && editingOrderId === order.id && editingField === 'label' ? (
+                          <div className="flex items-center gap-1">
+                            <Input
+                              value={tempValue}
+                              onChange={(e) => setTempValue(e.target.value)}
+                              className="h-8 w-[130px]"
+                              placeholder="Enter label..."
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveEdit(order.id);
+                                if (e.key === 'Escape') handleCancelEdit();
+                              }}
+                            />
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveEdit(order.id)}>
+                              <Check className="h-3 w-3" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelEdit}>
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <div 
+                            className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded hover:bg-muted/30" : ""}
+                            onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'label', order.label || '')}
+                          >
+                            {order.label ? (
+                              <span className="text-sm">{order.label}</span>
+                            ) : (
+                              <span className="text-muted-foreground text-sm italic">
+                                {isAdminOrOwner ? "Click to add..." : "-"}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
+                    )}
+                    {isVisible("poNumber") && (
+                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("poNumber")}>
+                        {isAdminOrOwner && editingOrderId === order.id && editingField === 'poNumber' ? (
+                          <div className="flex items-center gap-1">
+                            <Input
+                              value={tempValue}
+                              onChange={(e) => setTempValue(e.target.value)}
+                              className="h-8 w-[110px]"
+                              placeholder="Enter PO #..."
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveEdit(order.id);
+                                if (e.key === 'Escape') handleCancelEdit();
+                              }}
+                            />
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveEdit(order.id)}>
+                              <Check className="h-3 w-3" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelEdit}>
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <div 
+                            className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded hover:bg-muted/30" : ""}
+                            onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'poNumber', order.poNumber || '')}
+                          >
+                            {order.poNumber ? (
+                              <span className="text-sm font-mono">{order.poNumber}</span>
+                            ) : (
+                              <span className="text-muted-foreground text-sm italic">
+                                {isAdminOrOwner ? "Click to add..." : "-"}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </TableCell>
                     )}
                     {isVisible("customer") && (

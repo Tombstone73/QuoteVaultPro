@@ -78,6 +78,8 @@ export class OrdersRepository {
             const pattern = `%${filters.search}%`;
             conditions.push(or(
                 ilike(orders.orderNumber, pattern),
+                ilike(orders.poNumber, pattern),
+                ilike(orders.label, pattern),
                 ilike(orders.notesInternal, pattern)
             ));
         }

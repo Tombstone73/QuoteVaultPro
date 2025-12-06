@@ -89,6 +89,7 @@ import {
   ObjectNotFoundError,
 } from "./objectStorage";
 import { ObjectPermission } from "./objectAcl";
+import { SupabaseStorageService, isSupabaseConfigured } from "./supabaseStorage";
 import { createInvoiceFromOrder, getInvoiceWithRelations, markInvoiceSent, applyPayment, refreshInvoiceStatus } from './invoicesService';
 import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
 
@@ -364,8 +365,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/objects/upload", isAuthenticated, isAdmin, async (req, res) => {
-    const objectStorageService = new ObjectStorageService();
     try {
+      // Use Supabase storage if configured, otherwise fall back to Replit ObjectStorage
+      if (isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService();
+        const result = await supabaseService.getSignedUploadUrl({
+          folder: 'uploads',
+        });
+        return res.json({ 
+          method: "PUT",
+          url: result.url,
+          path: result.path,
+          token: result.token,
+        });
+      }
+      
+      // Fall back to Replit ObjectStorage (only works on Replit platform)
+      const objectStorageService = new ObjectStorageService();
       const uploadURL = await objectStorageService.getObjectEntityUploadURL();
       res.json({ 
         method: "PUT",
@@ -2377,6 +2393,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         carrier,
         carrierAccountNumber,
         shippingInstructions,
+        label,
       } = req.body;
 
       console.log(`[PATCH /api/quotes/${id}] Received update data:`, {
@@ -2445,6 +2462,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         carrier,
         carrierAccountNumber,
         shippingInstructions,
+        label,
         ...snapshotData,
       });
 
@@ -2803,6 +2821,148 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting quote file:", error);
       res.status(500).json({ error: "Failed to delete quote file" });
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Quote Line Item Attachments (per-line-item artwork)
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // Get attachments for a specific quote line item
+  app.get("/api/quotes/:quoteId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, lineItemId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      console.log(`[LineItemFiles:GET] quoteId=${quoteId}, lineItemId=${lineItemId}, orgId=${organizationId}`);
+      
+      // Validate the line item exists and belongs to this quote
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.quoteId, quoteId)
+        ))
+        .limit(1);
+      
+      if (!lineItem) {
+        console.log(`[LineItemFiles:GET] Line item not found or doesn't belong to quote`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+      
+      const files = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.quoteId, quoteId),
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .orderBy(desc(quoteAttachments.createdAt));
+      
+      console.log(`[LineItemFiles:GET] Found ${files.length} files for line item ${lineItemId}`);
+      res.json({ success: true, data: files });
+    } catch (error) {
+      console.error("[LineItemFiles:GET] Error:", error);
+      res.status(500).json({ error: "Failed to fetch line item files" });
+    }
+  });
+
+  // Attach file to a quote line item
+  app.post("/api/quotes/:quoteId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, lineItemId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      
+      const { fileName, fileUrl, fileSize, mimeType, description } = req.body;
+      
+      console.log(`[LineItemFiles:POST] quoteId=${quoteId}, lineItemId=${lineItemId}, fileName=${fileName}`);
+      
+      if (!fileName) {
+        return res.status(400).json({ error: "fileName is required" });
+      }
+      if (!fileUrl) {
+        return res.status(400).json({ error: "fileUrl is required" });
+      }
+      
+      // Validate the line item exists and belongs to this quote
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.quoteId, quoteId)
+        ))
+        .limit(1);
+      
+      if (!lineItem) {
+        console.log(`[LineItemFiles:POST] Line item not found or doesn't belong to quote`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+      
+      const attachmentData = {
+        quoteId,
+        quoteLineItemId: lineItemId,
+        organizationId,
+        uploadedByUserId: userId,
+        uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        fileName,
+        originalFilename: fileName,
+        fileUrl,
+        fileSize: fileSize || null,
+        mimeType: mimeType || null,
+        description: description || null,
+      };
+      
+      console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
+      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+      
+      console.log(`[LineItemFiles:POST] Created attachment id=${attachment.id}, quoteLineItemId=${attachment.quoteLineItemId}`);
+      res.json({ success: true, data: attachment });
+    } catch (error) {
+      console.error("[LineItemFiles:POST] Error:", error);
+      res.status(500).json({ error: "Failed to attach file to line item" });
+    }
+  });
+
+  // Delete attachment from a quote line item
+  app.delete("/api/quotes/:quoteId/line-items/:lineItemId/files/:fileId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      console.log(`[LineItemFiles:DELETE] quoteId=${quoteId}, lineItemId=${lineItemId}, fileId=${fileId}`);
+      
+      // First get the attachment to verify it exists and get the fileUrl for storage cleanup
+      const [existingAttachment] = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, fileId),
+          eq(quoteAttachments.quoteId, quoteId),
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .limit(1);
+      
+      if (!existingAttachment) {
+        console.log(`[LineItemFiles:DELETE] Attachment not found or doesn't match params`);
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+      
+      // Delete from database
+      await db.delete(quoteAttachments)
+        .where(eq(quoteAttachments.id, fileId));
+      
+      console.log(`[LineItemFiles:DELETE] Deleted attachment id=${fileId}`);
+      
+      // TODO: Also delete from Supabase storage if needed
+      // const supabaseStorage = new SupabaseStorageService();
+      // if (supabaseStorage.isConfigured() && existingAttachment.fileUrl) {
+      //   await supabaseStorage.deleteFile(existingAttachment.fileUrl);
+      // }
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[LineItemFiles:DELETE] Error:", error);
+      res.status(500).json({ error: "Failed to delete line item file" });
     }
   });
 
