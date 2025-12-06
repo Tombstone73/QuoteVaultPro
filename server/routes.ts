@@ -2595,6 +2595,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Create a line item for an EXISTING quote (id in route)
   app.post("/api/quotes/:id/line-items", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -2611,30 +2612,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Quote not found" });
       }
 
-      // Validate line item
-      if (!lineItem.productId || !lineItem.productName || lineItem.width == null || lineItem.height == null || lineItem.quantity == null || lineItem.linePrice == null) {
+      // Allow placeholder line items (productId can be null for newly created items awaiting product selection)
+      // This enables the "create first, then edit" workflow where artwork can be attached immediately
+      const isPlaceholder = !lineItem.productId;
+      
+      // For non-placeholder items, validate required fields
+      if (!isPlaceholder && (!lineItem.productName || lineItem.width == null || lineItem.height == null || lineItem.quantity == null || lineItem.linePrice == null)) {
         return res.status(400).json({ message: "Missing required fields in line item" });
       }
 
       const validatedLineItem = {
-        productId: lineItem.productId,
-        productName: lineItem.productName,
+        productId: lineItem.productId || null,
+        productName: lineItem.productName || "New Item (Select Product)",
         variantId: lineItem.variantId || null,
         variantName: lineItem.variantName || null,
         productType: lineItem.productType || 'wide_roll',
-        width: parseFloat(lineItem.width),
-        height: parseFloat(lineItem.height),
-        quantity: parseInt(lineItem.quantity),
+        width: lineItem.width != null ? parseFloat(lineItem.width) : 0,
+        height: lineItem.height != null ? parseFloat(lineItem.height) : 0,
+        quantity: lineItem.quantity != null ? parseInt(lineItem.quantity) : 1,
         specsJson: lineItem.specsJson || null,
         selectedOptions: lineItem.selectedOptions || [],
-        linePrice: parseFloat(lineItem.linePrice),
+        linePrice: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
         priceBreakdown: lineItem.priceBreakdown || {
-          basePrice: parseFloat(lineItem.linePrice),
+          basePrice: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
           optionsPrice: 0,
-          total: parseFloat(lineItem.linePrice),
+          total: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
           formula: "",
         },
         displayOrder: lineItem.displayOrder || 0,
+        // Existing route always attaches to a concrete quote, so not temporary
+        isTemporary: false,
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
@@ -2642,6 +2649,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error adding line item:", error);
       res.status(500).json({ message: "Failed to add line item" });
+    }
+  });
+
+  // Create a TEMPORARY line item not yet tied to a saved quote
+  // Used by the quote editor when working on a new quote or when
+  // we want a lineItemId immediately for artwork uploads.
+  app.post("/api/line-items/temp", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const { productId } = req.body;
+      if (!productId) {
+        return res.status(400).json({ message: "productId is required for temporary line items" });
+      }
+
+      // Very minimal payload - rest can be patched later
+      const validatedLineItem: any = {
+        organizationId,
+        createdByUserId: userId,
+        quoteId: null,
+        productId,
+        productName: req.body.productName || "New Item (Select Product)",
+        variantId: req.body.variantId || null,
+        variantName: req.body.variantName || null,
+        productType: req.body.productType || "wide_roll",
+        width: req.body.width != null ? parseFloat(req.body.width) : 0,
+        height: req.body.height != null ? parseFloat(req.body.height) : 0,
+        quantity: req.body.quantity != null ? parseInt(req.body.quantity) : 1,
+        specsJson: req.body.specsJson || null,
+        selectedOptions: req.body.selectedOptions || [],
+        linePrice: req.body.linePrice != null ? parseFloat(req.body.linePrice) : 0,
+        priceBreakdown: req.body.priceBreakdown || {
+          basePrice: req.body.linePrice != null ? parseFloat(req.body.linePrice) : 0,
+          optionsPrice: 0,
+          total: req.body.linePrice != null ? parseFloat(req.body.linePrice) : 0,
+          formula: "",
+        },
+        displayOrder: req.body.displayOrder || 0,
+        isTemporary: true,
+      };
+
+      const createdLineItem = await storage.createTemporaryLineItem(validatedLineItem);
+      res.json({ success: true, data: createdLineItem });
+    } catch (error) {
+      console.error("Error creating temporary line item:", error);
+      res.status(500).json({ message: "Failed to create temporary line item" });
     }
   });
 
@@ -2662,7 +2717,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const updateData: any = {};
-      if (lineItem.productId) updateData.productId = lineItem.productId;
+      if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
       if (lineItem.productName) updateData.productName = lineItem.productName;
       if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
       if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
@@ -2673,6 +2728,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (lineItem.linePrice !== undefined) updateData.linePrice = parseFloat(lineItem.linePrice);
       if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
       if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+      if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
+      if (lineItem.quoteId !== undefined) updateData.quoteId = lineItem.quoteId;
 
       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
       res.json(updatedLineItem);
@@ -2862,6 +2919,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, data: files });
     } catch (error) {
       console.error("[LineItemFiles:GET] Error:", error);
+      res.status(500).json({ error: "Failed to fetch line item files" });
+    }
+  });
+
+  // Get attachments for a TEMPORARY line item (no quote yet)
+  app.get("/api/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { lineItemId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      console.log(`[LineItemFiles:GET:Temp] lineItemId=${lineItemId}, orgId=${organizationId}`);
+
+      // Validate the line item exists for this org
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        console.log(`[LineItemFiles:GET:Temp] Line item not found`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      const files = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .orderBy(desc(quoteAttachments.createdAt));
+
+      console.log(`[LineItemFiles:GET:Temp] Found ${files.length} files for temp line item ${lineItemId}`);
+      res.json({ success: true, data: files });
+    } catch (error) {
+      console.error("[LineItemFiles:GET:Temp] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });
     }
   });

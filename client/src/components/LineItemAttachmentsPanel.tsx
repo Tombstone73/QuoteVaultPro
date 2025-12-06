@@ -19,9 +19,9 @@ type LineItemAttachment = {
 };
 
 interface LineItemAttachmentsPanelProps {
-  /** The quote ID */
-  quoteId: string;
-  /** The line item ID - undefined means line item not saved yet */
+  /** The quote ID (may be null for temporary line items) */
+  quoteId: string | null;
+  /** The line item ID - required, artwork is keyed off this */
   lineItemId: string | undefined;
   /** Product name for display */
   productName?: string;
@@ -41,8 +41,11 @@ export function LineItemAttachmentsPanel({
   const [isUploading, setIsUploading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
-  // Build API path for this line item's files
-  const filesApiPath = `/api/quotes/${quoteId}/line-items/${lineItemId}/files`;
+  // Build API path for this line item's files. For temporary line items
+  // we still have a concrete lineItemId, so the quoteId may be null.
+  const filesApiPath = quoteId
+    ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
+    : `/api/line-items/${lineItemId}/files`;
 
   // Fetch attachments for this line item
   const { data: attachments = [], isLoading } = useQuery<LineItemAttachment[]>({
@@ -77,12 +80,9 @@ export function LineItemAttachmentsPanel({
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
 
+    // This should not happen since the upload button is hidden when lineItemId is undefined
     if (!lineItemId) {
-      toast({
-        title: "Save Line Item First",
-        description: "Add this item to the quote before attaching artwork.",
-        variant: "destructive",
-      });
+      console.warn("[LineItemAttachmentsPanel] Upload attempted without lineItemId");
       return;
     }
 
@@ -223,15 +223,19 @@ export function LineItemAttachmentsPanel({
     }
   };
 
-  const isDisabled = !lineItemId;
   const fileCount = attachments.length;
+
+  // If no lineItemId, don't render anything (this shouldn't happen with new flow)
+  if (!lineItemId) {
+    return null;
+  }
 
   return (
     <div className="border rounded-lg bg-muted/30">
       {/* Compact header - always visible */}
       <div 
         className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-muted/50 transition-colors"
-        onClick={() => !isDisabled && setIsExpanded(!isExpanded)}
+        onClick={() => setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center gap-2">
           <Paperclip className="w-4 h-4 text-muted-foreground" />
@@ -242,19 +246,17 @@ export function LineItemAttachmentsPanel({
             </span>
           )}
         </div>
-        {!isDisabled && (
-          <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-            {isExpanded ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-          </Button>
-        )}
+        <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+          {isExpanded ? (
+            <ChevronUp className="w-4 h-4" />
+          ) : (
+            <ChevronDown className="w-4 h-4" />
+          )}
+        </Button>
       </div>
 
       {/* Expanded content */}
-      {isExpanded && !isDisabled && (
+      {isExpanded && (
         <div className="px-3 pb-3 space-y-2 border-t">
           {/* Upload button */}
           <div className="pt-2">
@@ -340,15 +342,6 @@ export function LineItemAttachmentsPanel({
               No artwork attached
             </p>
           )}
-        </div>
-      )}
-
-      {/* Disabled state message */}
-      {isDisabled && (
-        <div className="px-3 pb-2">
-          <p className="text-xs text-muted-foreground">
-            Add this item first to attach artwork.
-          </p>
         </div>
       )}
     </div>

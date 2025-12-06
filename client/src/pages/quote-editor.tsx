@@ -18,7 +18,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { 
   ArrowLeft, Save, Plus, Trash2, Loader2, Copy, Pencil, 
   Truck, Store, Building2, DollarSign, Users, FileText, Shield, Send,
-  ChevronDown, Check, ChevronsUpDown, ListOrdered
+  ChevronDown, Check, ChevronsUpDown, ListOrdered, Paperclip
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -445,7 +445,12 @@ export default function QuoteEditor() {
         description: isNewQuote ? "Quote created successfully" : "Quote updated successfully",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      navigate(ROUTES.quotes.list);
+      // After creating a new quote, redirect to edit page so user can attach artwork immediately
+      if (isNewQuote && data?.id) {
+        navigate(ROUTES.quotes.edit(data.id));
+      } else {
+        navigate(ROUTES.quotes.list);
+      }
     },
     onError: (error: Error) => {
       toast({
@@ -457,7 +462,7 @@ export default function QuoteEditor() {
   });
 
   const handleAddLineItem = () => {
-    if (!calculatedPrice || !selectedProductId) return;
+    if (!selectedProductId) return;
 
     const product = products?.find(p => p.id === selectedProductId);
     const variant = productVariants?.find(v => v.id === selectedVariantId);
@@ -465,7 +470,7 @@ export default function QuoteEditor() {
     // For non-dimension products, use 1x1 as placeholder
     const widthVal = requiresDimensions ? parseFloat(width) : 1;
     const heightVal = requiresDimensions ? parseFloat(height) : 1;
-    const quantityVal = parseInt(quantity);
+    const quantityVal = parseInt(quantity || "1");
 
     // Build selectedOptions array from optionSelections state
     const selectedOptionsArray: Array<{
@@ -1534,9 +1539,39 @@ export default function QuoteEditor() {
             </CardContent>
           </Card>
 
-          {/* Note: Per-line-item artwork replaces the old quote-level Files & Artwork panel.
-              Artwork is now attached to individual line items using the Artwork column badges above.
-              To attach artwork, save the quote first, then click on a line item's artwork badge. */}
+          {/* Artwork Hint Card - shown when there are line items (edit mode only) */}
+          {lineItems.length > 0 && !isNewQuote && (
+            <Card className="rounded-xl bg-muted/30 border-border/40">
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  <Paperclip className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
+                  <div className="text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">Per-Line-Item Artwork</p>
+                    <p className="mt-1">
+                      Click the artwork badge on any line item to attach files.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* New Quote hint - artwork will be available after saving */}
+          {lineItems.length > 0 && isNewQuote && (
+            <Card className="rounded-xl bg-blue-500/5 border-blue-500/20">
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  <Paperclip className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
+                  <div className="text-sm">
+                    <p className="font-medium text-blue-700 dark:text-blue-400">Ready to Attach Artwork</p>
+                    <p className="mt-1 text-muted-foreground">
+                      After saving, you'll be taken to the quote editor where you can attach artwork to each line item.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* ═══════════════════════════════════════════════════════════════ */}
