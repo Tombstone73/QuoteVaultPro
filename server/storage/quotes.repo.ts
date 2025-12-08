@@ -115,7 +115,7 @@ export class QuotesRepository {
                 contactId: data.contactId || null,
                 customerName: data.customerName,
                 source: data.source || 'internal',
-                status: data.status || 'active',
+                status: data.status || 'draft',
                 subtotal: subtotal.toString(),
                 taxRate: data.taxRate ?? null,
                 taxAmount: data.taxAmount != null ? data.taxAmount.toString() : null,
@@ -225,26 +225,28 @@ export class QuotesRepository {
     }
 
     async getQuoteById(organizationId: string, id: string, userId?: string): Promise<QuoteWithRelations | undefined> {
-        const conditions = [eq(quotes.id, id), eq(quotes.organizationId, organizationId)];
-        if (userId) {
-            conditions.push(eq(quotes.userId, userId));
-        }
-
-        const [quote] = await this.dbInstance
+        const [quoteRow] = await this.dbInstance
             .select()
             .from(quotes)
-            .where(and(...conditions));
+            .where(
+                and(
+                    eq(quotes.organizationId, organizationId),
+                    eq(quotes.id, id)
+                )
+            )
+            .limit(1);
 
-        if (!quote) {
+        if (!quoteRow) {
             return undefined;
         }
 
+        // Fetch line items for this quote (no status filters)
         const lineItems = await this.dbInstance
             .select()
             .from(quoteLineItems)
-            .where(and(eq(quoteLineItems.quoteId, id), eq(quoteLineItems.status, "active")));
+            .where(eq(quoteLineItems.quoteId, id));
 
-        // Fetch product and variant details for line items
+        // Enrich line items with product/variant data
         const lineItemsWithRelations = await Promise.all(
             lineItems.map(async (lineItem) => {
                 const [product] = await this.dbInstance.select().from(products).where(eq(products.id, lineItem.productId));
@@ -260,10 +262,10 @@ export class QuotesRepository {
             })
         );
 
-        const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
+        const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quoteRow.userId));
 
         return {
-            ...quote,
+            ...quoteRow,
             user,
             lineItems: lineItemsWithRelations,
         };
@@ -392,7 +394,6 @@ export class QuotesRepository {
         }
 
         const lineItemData: typeof quoteLineItems.$inferInsert = {
-            organizationId,
             createdByUserId,
             quoteId: null,
             isTemporary: true,
@@ -426,14 +427,21 @@ export class QuotesRepository {
         userId: string,
         quoteId: string
     ): Promise<QuoteLineItem[]> {
-        // Migrate any temporary line items (created by this user, for this org) onto the saved quote.
+        // Migrate any temporary line items (created by this user) onto the saved quote.
         // Temporary line items are stored in the same table with isTemporary=true and quoteId=null.
+        // Note: We filter by userId and isTemporary only, as organizationId is not stored in quote_line_items.
+        // The organization context is validated through the quote's organizationId.
+        // IMPORTANT: Line items do NOT have a status column - do not reference it.
+        
+        if (process.env.NODE_ENV === 'development') {
+            console.log('[QuotesRepository.finalizeTemporaryLineItemsForUser] Query params:', { organizationId, userId, quoteId });
+        }
+
         const tempItems = await this.dbInstance
             .select()
             .from(quoteLineItems)
             .where(
                 and(
-                    eq(quoteLineItems.organizationId, organizationId),
                     eq(quoteLineItems.createdByUserId, userId),
                     eq(quoteLineItems.isTemporary, true),
                     isNull(quoteLineItems.quoteId)
@@ -450,16 +458,15 @@ export class QuotesRepository {
         }
 
         // Attach temp items to the new quote and mark as finalized
+        // Note: We only update quoteId and isTemporary. Line items do NOT have a status column.
         const updated = await this.dbInstance
             .update(quoteLineItems)
             .set({
                 quoteId,
                 isTemporary: false,
-                updatedAt: new Date(),
             })
             .where(
                 and(
-                    eq(quoteLineItems.organizationId, organizationId),
                     eq(quoteLineItems.createdByUserId, userId),
                     eq(quoteLineItems.isTemporary, true),
                     isNull(quoteLineItems.quoteId)
@@ -543,11 +550,11 @@ export class QuotesRepository {
                 userQuotes.map(async (quote) => {
                     const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
 
-                    // Fetch active line items
+                    // Fetch line items (no status column on line items)
                     const lineItems = await this.dbInstance
                         .select()
                         .from(quoteLineItems)
-                        .where(and(eq(quoteLineItems.quoteId, quote.id), eq(quoteLineItems.status, "active")));
+                        .where(eq(quoteLineItems.quoteId, quote.id));
 
                     // Apply product filter if specified
                     let filteredLineItems = lineItems;
@@ -632,11 +639,11 @@ export class QuotesRepository {
                     return null;
                 }
 
-                // Fetch active line items
+                // Fetch line items (no status column on line items)
                 const lineItems = await this.dbInstance
                     .select()
                     .from(quoteLineItems)
-                    .where(and(eq(quoteLineItems.quoteId, quote.id), eq(quoteLineItems.status, "active")));
+                    .where(eq(quoteLineItems.quoteId, quote.id));
 
                 // Apply product filter if specified
                 if (filters?.searchProduct) {
@@ -707,10 +714,11 @@ export class QuotesRepository {
         return await Promise.all(
             customerQuotes.map(async (quote) => {
                 const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
+                // Fetch line items (no status column on line items)
                 const lineItems = await this.dbInstance
                     .select()
                     .from(quoteLineItems)
-                    .where(and(eq(quoteLineItems.quoteId, quote.id), eq(quoteLineItems.status, "active")));
+                    .where(eq(quoteLineItems.quoteId, quote.id));
 
                 // Fetch product and variant details for line items
                 const lineItemsWithRelations = await Promise.all(

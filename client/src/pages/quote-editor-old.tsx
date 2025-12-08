@@ -97,12 +97,10 @@ export default function QuoteEditor() {
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
-  useEffect(() => {
-    if (!quoteId) {
-      // If there's no quoteId, push back to the quotes list.
-      navigate(ROUTES.quotes.list);
-    }
-  }, [quoteId, navigate]);
+  if (!quoteId) {
+    navigate(ROUTES.quotes.list);
+    return null;
+  }
 
   // Customer selection
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
@@ -168,24 +166,7 @@ export default function QuoteEditor() {
   // Derived values used in hook dependencies
   const selectedProductDetail =
     products?.find((p) => p.id === selectedProductId) ?? null;
-
-  // A product "requires dimensions" if either:
-  // - the backend explicitly flags it (future-proof),
-  // - OR its pricingMode is "area" (area-based pricing uses width/height).
-  const requiresDimensions = useMemo(() => {
-    if (!selectedProductDetail) return false;
-
-    const anyProduct = selectedProductDetail as any;
-
-    // If the backend ever adds a real boolean, honor it.
-    if (typeof anyProduct.requiresDimensions === "boolean") {
-      return anyProduct.requiresDimensions;
-    }
-
-    // Fallback / current behavior: infer from pricing mode.
-    return anyProduct.pricingMode === "area";
-  }, [selectedProductDetail]);
-
+  const requiresDimensions = !!selectedProductDetail?.requiresDimensions;
 
   // Filter products for combobox search
   const filteredProducts = useMemo(() => {
@@ -217,6 +198,61 @@ export default function QuoteEditor() {
     return payload;
   }, [optionSelections]);
 
+  useEffect(() => {
+    if (!draftLineItemId || !quoteId) return;
+    const product = selectedProductDetail || products?.find(p => p.id === selectedProductId);
+    const productOptions = (product?.optionsJson as ProductOptionItem[] | undefined) || [];
+    const selectedOptionsArray: Array<{
+      optionId: string;
+      optionName: string;
+      value: string | number | boolean;
+      setupCost: number;
+      calculatedCost: number;
+    }> = [];
+
+    const widthVal = requiresDimensions ? parseFloat(width || "0") : 1;
+    const heightVal = requiresDimensions ? parseFloat(height || "0") : 1;
+    const quantityVal = parseInt(quantity || "1", 10) || 1;
+
+    productOptions.forEach((option) => {
+      const selection = optionSelections[option.id];
+      if (!selection) return;
+
+      const optionAmount = option.amount || 0;
+      let setupCost = 0;
+      let calculatedCost = 0;
+
+      if (option.priceMode === "flat") {
+        setupCost = optionAmount;
+        calculatedCost = optionAmount;
+      } else if (option.priceMode === "per_qty") {
+        calculatedCost = optionAmount * quantityVal;
+      } else if (option.priceMode === "per_sqft") {
+        const sqft = widthVal * heightVal;
+        calculatedCost = optionAmount * sqft * quantityVal;
+      }
+
+      if (option.config?.kind === "grommets" && selection.grommetsLocation) {
+        if (
+          selection.grommetsLocation === "top_even" &&
+          selection.grommetsSpacingCount
+        ) {
+          calculatedCost *= selection.grommetsSpacingCount;
+        }
+      }
+
+      selectedOptionsArray.push({
+        optionId: option.id,
+        optionName: option.label,
+        value: selection.value,
+        setupCost,
+        calculatedCost,
+      });
+    });
+
+    patchDraftLineItem({ selectedOptions: selectedOptionsArray });
+  }, [draftLineItemId, quoteId, optionSelections, selectedProductDetail, products, selectedProductId, requiresDimensions, width, height, quantity, patchDraftLineItem]);
+
   // Query client for invalidation
   const queryClientInstance = useQueryClient();
 
@@ -242,10 +278,6 @@ export default function QuoteEditor() {
     enabled: !!quoteId,
   });
 
-  if (!quoteId) {
-    // While the redirect effect fires, render nothing.
-    return null;
-  }
   // Note: Quote-level file query removed. Artwork is now attached to individual line items.
 
   // Load data when editing existing quote
@@ -502,62 +534,6 @@ export default function QuoteEditor() {
     },
     [quoteId, draftLineItemId]
   );
-
-  // Sync selected options to draft line item when they change
-  useEffect(() => {
-    if (!draftLineItemId || !quoteId) return;
-    const product = selectedProductDetail || products?.find(p => p.id === selectedProductId);
-    const productOptions = (product?.optionsJson as ProductOptionItem[] | undefined) || [];
-    const selectedOptionsArray: Array<{
-      optionId: string;
-      optionName: string;
-      value: string | number | boolean;
-      setupCost: number;
-      calculatedCost: number;
-    }> = [];
-
-    const widthVal = requiresDimensions ? parseFloat(width || "0") : 1;
-    const heightVal = requiresDimensions ? parseFloat(height || "0") : 1;
-    const quantityVal = parseInt(quantity || "1", 10) || 1;
-
-    productOptions.forEach((option) => {
-      const selection = optionSelections[option.id];
-      if (!selection) return;
-
-      const optionAmount = option.amount || 0;
-      let setupCost = 0;
-      let calculatedCost = 0;
-
-      if (option.priceMode === "flat") {
-        setupCost = optionAmount;
-        calculatedCost = optionAmount;
-      } else if (option.priceMode === "per_qty") {
-        calculatedCost = optionAmount * quantityVal;
-      } else if (option.priceMode === "per_sqft") {
-        const sqft = widthVal * heightVal;
-        calculatedCost = optionAmount * sqft * quantityVal;
-      }
-
-      if (option.config?.kind === "grommets" && selection.grommetsLocation) {
-        if (
-          selection.grommetsLocation === "top_even" &&
-          selection.grommetsSpacingCount
-        ) {
-          calculatedCost *= selection.grommetsSpacingCount;
-        }
-      }
-
-      selectedOptionsArray.push({
-        optionId: option.id,
-        optionName: option.label,
-        value: selection.value,
-        setupCost,
-        calculatedCost,
-      });
-    });
-
-    patchDraftLineItem({ selectedOptions: selectedOptionsArray });
-  }, [draftLineItemId, quoteId, optionSelections, selectedProductDetail, products, selectedProductId, requiresDimensions, width, height, quantity, patchDraftLineItem]);
 
   const handleAddLineItem = async () => {
     if (!selectedProductId) return;

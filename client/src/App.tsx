@@ -74,7 +74,7 @@ function Router() {
 
         {/* Quote routes */}
         <Route path="/quotes/new" element={<QuoteEditor />} />
-        <Route path="/quotes/:id/edit" element={<EditQuote />} />
+        <Route path="/quotes/:id/edit" element={<QuoteEditor />} />
         <Route path="/quotes/:id" element={<QuoteDetail />} />
         <Route path="/quotes" element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />

@@ -2148,8 +2148,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             message: "Failed to create customer record for quote. Please contact support." 
           });
         }
-      } else if (source === 'internal' && !customerId && incomingQuoteStatus !== "draft") {
-        // For internal quotes, customerId should be provided by the form
+      } else if (source === 'internal' && !customerId && status !== "draft") {
+        // For internal quotes, customerId should be provided by the form (except for drafts)
         return res.status(400).json({ 
           message: "Customer ID is required for internal quotes. Please select a customer." 
         });
@@ -2182,11 +2182,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Load products for each line item to get isTaxable flag
-      const productIds = Array.from(new Set(lineItems.map((item: any) => item.productId)));
-      const loadedProducts = await db
-        .select()
-        .from(products)
-        .where(eq(products.id, productIds[0])); // Load all products we need
+      const rawLineItems = Array.isArray(lineItems) ? lineItems : [];
+      const productIds = Array.from(new Set(rawLineItems.map((item: any) => item.productId)));
+      const loadedProducts = productIds.length > 0
+        ? await db
+            .select()
+            .from(products)
+            .where(eq(products.id, productIds[0])) // Load all products we need
+        : [];
 
       const productMap = new Map<string, typeof products.$inferSelect>();
       for (const productId of productIds) {
@@ -2201,7 +2204,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Prepare line items with tax info (including tax category for SaaS tax)
-      const lineItemsForTaxCalc: LineItemInput[] = (lineItems || []).map((item: any) => {
+      const lineItemsForTaxCalc: LineItemInput[] = rawLineItems.map((item: any) => {
         const product = productMap.get(item.productId);
         return {
           productId: item.productId,
@@ -2232,7 +2235,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
 
       // Validate each line item and merge tax data
-      const validatedLineItems = (lineItems || []).map((item: any, index: number) => {
+      const validatedLineItems = rawLineItems.map((item: any, index: number) => {
         if (!item.productId || !item.productName || item.width == null || item.height == null || item.quantity == null || item.linePrice == null) {
           throw new Error("Missing required fields in line item");
         }
@@ -2283,7 +2286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const allowedQuoteStatus = ["draft", "active", "canceled"];
-      const incomingQuoteStatus = status && allowedQuoteStatus.includes(status) ? status : "active";
+      const incomingQuoteStatus = status && allowedQuoteStatus.includes(status) ? status : "draft";
 
       const quote = await storage.createQuote(organizationId, {
         userId,
@@ -2337,7 +2340,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      console.error("Error creating quote:", error);
+      console.error("Error creating quote:", { error, body: { status: req.body.status, hasLineItems: Array.isArray(req.body.lineItems), hasCustomerId: !!req.body.customerId } });
       res.status(500).json({ message: "Failed to create quote" });
     }
   });
