@@ -353,13 +353,16 @@ export function LineItemAttachmentsPanel({
  * Shows a paperclip icon with file count
  */
 interface LineItemArtworkBadgeProps {
-  quoteId: string;
-  lineItemId: string | undefined;
+  quoteId: string | null;
+  lineItemId: string;
   onClick?: () => void;
 }
 
 export function LineItemArtworkBadge({ quoteId, lineItemId, onClick }: LineItemArtworkBadgeProps) {
-  const filesApiPath = `/api/quotes/${quoteId}/line-items/${lineItemId}/files`;
+  // Choose correct API path based on whether a quote exists yet
+  const filesApiPath = quoteId
+    ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
+    : `/api/line-items/${lineItemId}/files`;
 
   const { data: attachments = [] } = useQuery<LineItemAttachment[]>({
     queryKey: [filesApiPath],

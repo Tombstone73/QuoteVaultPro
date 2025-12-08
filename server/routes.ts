@@ -2132,11 +2132,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
       }
-      const { customerId, contactId, customerName, source, lineItems } = req.body;
-
-      if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
-        return res.status(400).json({ message: "At least one line item is required" });
-      }
+      const { customerId, contactId, customerName, source, lineItems, status } = req.body;
 
       // Determine final customerId based on source
       let finalCustomerId = customerId;
@@ -2152,7 +2148,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             message: "Failed to create customer record for quote. Please contact support." 
           });
         }
-      } else if (source === 'internal' && !customerId) {
+      } else if (source === 'internal' && !customerId && incomingQuoteStatus !== "draft") {
         // For internal quotes, customerId should be provided by the form
         return res.status(400).json({ 
           message: "Customer ID is required for internal quotes. Please select a customer." 
@@ -2205,7 +2201,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Prepare line items with tax info (including tax category for SaaS tax)
-      const lineItemsForTaxCalc: LineItemInput[] = lineItems.map((item: any) => {
+      const lineItemsForTaxCalc: LineItemInput[] = (lineItems || []).map((item: any) => {
         const product = productMap.get(item.productId);
         return {
           productId: item.productId,
@@ -2236,7 +2232,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
 
       // Validate each line item and merge tax data
-      const validatedLineItems = lineItems.map((item: any, index: number) => {
+      const validatedLineItems = (lineItems || []).map((item: any, index: number) => {
         if (!item.productId || !item.productName || item.width == null || item.height == null || item.quantity == null || item.linePrice == null) {
           throw new Error("Missing required fields in line item");
         }
@@ -2286,19 +2282,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      const allowedQuoteStatus = ["draft", "active", "canceled"];
+      const incomingQuoteStatus = status && allowedQuoteStatus.includes(status) ? status : "active";
+
       const quote = await storage.createQuote(organizationId, {
         userId,
         customerId: finalCustomerId,
         contactId: contactId || undefined,
         customerName: customerName || undefined,
         source: source || 'internal',
+        status: incomingQuoteStatus,
         lineItems: validatedLineItems,
         // Tax totals
         taxRate: totalsResult.taxRate,
         taxAmount: totalsResult.taxAmount,
         taxableSubtotal: totalsResult.taxableSubtotal,
         // Snapshot fields
-        status: req.body.status || 'pending',
         ...snapshotData,
         requestedDueDate: req.body.requestedDueDate || undefined,
         validUntil: req.body.validUntil || undefined,
@@ -2307,7 +2306,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         shippingInstructions: req.body.shippingInstructions || undefined,
       });
       
-      res.json(quote);
+      let finalizedLineItems: any[] = [];
+      try {
+        finalizedLineItems = await storage.finalizeTemporaryLineItemsForUser(
+          organizationId,
+          userId,
+          quote.id
+        );
+        console.log(
+          `[Quotes:POST] Finalized ${finalizedLineItems.length} temporary line items for quote ${quote.id}`
+        );
+      } catch (err) {
+        console.error(
+          "[Quotes:POST] Failed to finalize temporary line items for user",
+          err
+        );
+        // Do not block quote creation if finalization fails
+      }
+
+      const allLineItems = [...(quote.lineItems || []), ...finalizedLineItems];
+
+      res.json({
+        success: true,
+        data: {
+          ...quote,
+          lineItems: allLineItems,
+        },
+      });
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
@@ -2621,12 +2646,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Missing required fields in line item" });
       }
 
+      const allowedStatus = ["draft", "active", "canceled"];
+      const incomingStatus = allowedStatus.includes(lineItem.status) ? lineItem.status : "active";
+
       const validatedLineItem = {
         productId: lineItem.productId || null,
         productName: lineItem.productName || "New Item (Select Product)",
         variantId: lineItem.variantId || null,
         variantName: lineItem.variantName || null,
         productType: lineItem.productType || 'wide_roll',
+        status: incomingStatus,
         width: lineItem.width != null ? parseFloat(lineItem.width) : 0,
         height: lineItem.height != null ? parseFloat(lineItem.height) : 0,
         quantity: lineItem.quantity != null ? parseInt(lineItem.quantity) : 1,
@@ -2660,39 +2689,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
 
-      const { productId } = req.body;
-      if (!productId) {
+      const {
+        productId,
+        productName,
+        variantId,
+        variantName,
+        productType,
+        width,
+        height,
+        quantity,
+        specsJson,
+        selectedOptions,
+        linePrice,
+        priceBreakdown,
+        displayOrder,
+      } = req.body;
+
+      if (!productId || typeof productId !== "string") {
         return res.status(400).json({ message: "productId is required for temporary line items" });
       }
 
-      // Very minimal payload - rest can be patched later
-      const validatedLineItem: any = {
-        organizationId,
-        createdByUserId: userId,
-        quoteId: null,
-        productId,
-        productName: req.body.productName || "New Item (Select Product)",
-        variantId: req.body.variantId || null,
-        variantName: req.body.variantName || null,
-        productType: req.body.productType || "wide_roll",
-        width: req.body.width != null ? parseFloat(req.body.width) : 0,
-        height: req.body.height != null ? parseFloat(req.body.height) : 0,
-        quantity: req.body.quantity != null ? parseInt(req.body.quantity) : 1,
-        specsJson: req.body.specsJson || null,
-        selectedOptions: req.body.selectedOptions || [],
-        linePrice: req.body.linePrice != null ? parseFloat(req.body.linePrice) : 0,
-        priceBreakdown: req.body.priceBreakdown || {
-          basePrice: req.body.linePrice != null ? parseFloat(req.body.linePrice) : 0,
-          optionsPrice: 0,
-          total: req.body.linePrice != null ? parseFloat(req.body.linePrice) : 0,
-          formula: "",
-        },
-        displayOrder: req.body.displayOrder || 0,
-        isTemporary: true,
+      const widthNum = width != null ? Number(width) : 1;
+      const heightNum = height != null ? Number(height) : 1;
+      const quantityNum = quantity != null ? Number(quantity) : 1;
+      const linePriceNum = linePrice != null ? Number(linePrice) : 0;
+
+      const effectivePriceBreakdown = priceBreakdown || {
+        basePrice: linePriceNum,
+        optionsPrice: 0,
+        total: linePriceNum,
+        formula: "",
       };
 
-      const createdLineItem = await storage.createTemporaryLineItem(validatedLineItem);
+      const validatedLineItem = {
+        productId,
+        productName: productName || "New Item (Select Product)",
+        variantId: variantId || null,
+        variantName: variantName || null,
+        productType: productType || "wide_roll",
+        width: Number.isFinite(widthNum) && widthNum > 0 ? widthNum : 1,
+        height: Number.isFinite(heightNum) && heightNum > 0 ? heightNum : 1,
+        quantity: Number.isFinite(quantityNum) && quantityNum > 0 ? quantityNum : 1,
+        specsJson: specsJson || null,
+        selectedOptions: Array.isArray(selectedOptions) ? selectedOptions : [],
+        linePrice: Number.isFinite(linePriceNum) && linePriceNum >= 0 ? linePriceNum : 0,
+        priceBreakdown: effectivePriceBreakdown,
+        displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
+      };
+
+      const createdLineItem = await storage.createTemporaryLineItem(
+        organizationId,
+        userId,
+        validatedLineItem
+      );
+
       res.json({ success: true, data: createdLineItem });
     } catch (error) {
       console.error("Error creating temporary line item:", error);
@@ -2717,10 +2771,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const updateData: any = {};
+      const allowedStatus = ["draft", "active", "canceled"];
       if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
       if (lineItem.productName) updateData.productName = lineItem.productName;
       if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
       if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
+      if (lineItem.productType !== undefined) updateData.productType = lineItem.productType;
+      if (lineItem.status !== undefined && allowedStatus.includes(lineItem.status)) updateData.status = lineItem.status;
       if (lineItem.width !== undefined) updateData.width = parseFloat(lineItem.width);
       if (lineItem.height !== undefined) updateData.height = parseFloat(lineItem.height);
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
@@ -2932,24 +2989,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[LineItemFiles:GET:Temp] lineItemId=${lineItemId}, orgId=${organizationId}`);
 
-      // Validate the line item exists for this org
-      const [lineItem] = await db.select().from(quoteLineItems)
-        .where(and(
-          eq(quoteLineItems.id, lineItemId),
-          eq(quoteLineItems.organizationId, organizationId)
-        ))
-        .limit(1);
-
-      if (!lineItem) {
-        console.log(`[LineItemFiles:GET:Temp] Line item not found`);
-        return res.status(404).json({ error: "Line item not found" });
-      }
-
-      const files = await db.select().from(quoteAttachments)
-        .where(and(
-          eq(quoteAttachments.quoteLineItemId, lineItemId),
-          eq(quoteAttachments.organizationId, organizationId)
-        ))
+      // Fetch files safely; empty result is acceptable
+      const files = await db
+        .select()
+        .from(quoteAttachments)
+        .where(
+          and(
+            eq(quoteAttachments.quoteLineItemId, lineItemId),
+            eq(quoteAttachments.organizationId, organizationId)
+          )
+        )
         .orderBy(desc(quoteAttachments.createdAt));
 
       console.log(`[LineItemFiles:GET:Temp] Found ${files.length} files for temp line item ${lineItemId}`);

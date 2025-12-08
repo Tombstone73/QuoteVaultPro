@@ -26,6 +26,8 @@ import { usePricingFormulas, type PricingFormula } from "@/hooks/usePricingFormu
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { PRICING_PROFILES, type PricingProfileKey, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
+import React from "react";
+
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -992,6 +994,30 @@ export default function ProductsPage() {
                         <Zap className="h-4 w-4 mr-2" />
                         + Pole Pockets
                       </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const current = addProductForm.getValues("optionsJson") || [];
+                      addProductForm.setValue("optionsJson", [
+                        ...current,
+                        { 
+                          id: generateOptionId(), 
+                          label: "Artwork Upload", 
+                          type: "attachment", 
+                          priceMode: "flat", 
+                          amount: 0,
+                          defaultSelected: false,
+                          config: { kind: "generic" },
+                          sortOrder: current.length + 1
+                        }
+                      ]);
+                    }}
+                  >
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    + Attachment (File Upload)
+                  </Button>
                     </div>
                   </div>
 
@@ -1689,6 +1715,31 @@ export default function ProductsPage() {
                         <Zap className="h-4 w-4 mr-2" />
                         + Pole Pockets
                       </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const current = editProductForm.getValues("optionsJson") || [];
+                      const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
+                      editProductForm.setValue("optionsJson", [
+                        ...current,
+                        { 
+                          id: generateOptionId(), 
+                          label: "Artwork Upload", 
+                          type: "attachment", 
+                          priceMode: "flat", 
+                          amount: 0,
+                          defaultSelected: false,
+                          config: { kind: "generic" },
+                          sortOrder: maxSortOrder + 1
+                        }
+                      ]);
+                    }}
+                  >
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    + Attachment (File Upload)
+                  </Button>
                     </div>
                   </div>
 
@@ -1913,7 +1964,7 @@ function ProductOptionsEditor({
       {options
         .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
         .map((opt, index) => (
-        <div key={opt.id} className="space-y-2">
+        <React.Fragment key={opt.id || index}>
           <div className="flex items-start gap-3 p-3 border rounded-lg bg-muted/20">
             {/* Reorder Controls */}
             <div className="flex flex-col gap-1 pt-6">
@@ -1937,9 +1988,12 @@ function ProductOptionsEditor({
               >
                 <ChevronDown className="h-4 w-4" />
               </Button>
-            </div>
-            
-            <div className="flex-1 space-y-3">
+          </div>
+          
+          <div className="flex-1 space-y-3">
+          </div>
+          
+          <div className="flex-1 space-y-3">
               {/* Main option fields */}
               <div className="grid grid-cols-5 gap-3">
                 <div className="col-span-2">
@@ -1965,48 +2019,54 @@ function ProductOptionsEditor({
                       <SelectItem value="quantity">Quantity</SelectItem>
                       <SelectItem value="toggle">Toggle</SelectItem>
                       <SelectItem value="select">Select</SelectItem>
+                      <SelectItem value="attachment">Attachment (File Upload)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <div>
-                  <Label className="text-xs">Price Mode</Label>
-                  <Select
-                    value={opt.priceMode}
-                    onValueChange={(val) => updateOption(index, { priceMode: val as any })}
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="flat">Flat</SelectItem>
-                      <SelectItem value="per_qty">Per Qty</SelectItem>
-                      <SelectItem value="per_sqft">Per SqFt</SelectItem>
-                      <SelectItem value="flat_per_item">Flat Per Item</SelectItem>
-                      <SelectItem value="percent_of_base">Percent of Base</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label className="text-xs">
-                    Amount {opt.priceMode === "percent_of_base" ? "(%)" : "($)"}
-                  </Label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    placeholder={opt.priceMode === "percent_of_base" ? "10 = 10%" : "0.00"}
-                    value={opt.amount || ""}
-                    onChange={(e) => updateOption(index, { amount: parseFloat(e.target.value) || 0 })}
-                    className="h-9"
-                  />
-                  {opt.priceMode === "percent_of_base" && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {opt.percentBase === "media" 
-                        ? "Percentage of media/printing cost only (excludes finishing add-ons)."
-                        : "Percentage of base line price (before other add-ons)."}
-                    </p>
-                  )}
-                </div>
-                {opt.priceMode === "percent_of_base" && (
+   
+                {opt.type !== "attachment" && (
+                  <div>
+                    <Label className="text-xs">Price Mode</Label>
+                    <Select
+                      value={opt.priceMode}
+                      onValueChange={(val) => updateOption(index, { priceMode: val as any })}
+                    >
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="flat">Flat</SelectItem>
+                        <SelectItem value="per_qty">Per Qty</SelectItem>
+                        <SelectItem value="per_sqft">Per SqFt</SelectItem>
+                        <SelectItem value="flat_per_item">Flat Per Item</SelectItem>
+                        <SelectItem value="percent_of_base">Percent of Base</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {opt.type !== "attachment" && (
+                  <div>
+                    <Label className="text-xs">
+                      Amount {opt.priceMode === "percent_of_base" ? "(%)" : "($)"}
+                    </Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder={opt.priceMode === "percent_of_base" ? "10 = 10%" : "0.00"}
+                      value={opt.amount || ""}
+                      onChange={(e) => updateOption(index, { amount: parseFloat(e.target.value) || 0 })}
+                      className="h-9"
+                    />
+                    {opt.priceMode === "percent_of_base" && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {opt.percentBase === "media" 
+                          ? "Percentage of media/printing cost only (excludes finishing add-ons)."
+                          : "Percentage of base line price (before other add-ons)."}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {opt.type !== "attachment" && opt.priceMode === "percent_of_base" && (
                   <div>
                     <Label className="text-xs">Percent of</Label>
                     <Select
@@ -2026,86 +2086,92 @@ function ProductOptionsEditor({
               </div>
 
               {/* Default selected & special config type */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    id={`default-${opt.id}`}
-                    checked={opt.defaultSelected || false}
-                    onChange={(e) => updateOption(index, { defaultSelected: e.target.checked })}
-                    className="h-4 w-4 rounded border-gray-300"
-                  />
-                  <label htmlFor={`default-${opt.id}`} className="text-xs font-medium cursor-pointer">
-                    Default On <span className="text-muted-foreground">(auto-selected on new quotes)</span>
-                  </label>
+              {opt.type === "attachment" ? (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  Files for this product will be uploaded via the line-item attachments panel. No additional option configuration is required here.
                 </div>
-                <div className="col-span-2">
-                  <Label className="text-xs">Special Config</Label>
-                  <Select
-                    value={opt.config?.kind || "generic"}
-                    onValueChange={(val) => {
-                      if (val === "generic") {
-                        updateConfig(index, { kind: "generic" });
-                      } else if (val === "grommets") {
-                        updateConfig(index, {
-                          kind: "grommets",
-                          defaultLocation: "all_corners",
-                          locations: ["all_corners", "top_corners", "top_even", "custom"],
-                          spacingOptions: [12, 24],
-                          defaultSpacingInches: 24,
-                        });
-                      } else if (val === "hems") {
-                        updateConfig(index, {
-                          kind: "hems",
-                          hemsChoices: ["none", "all_sides", "top_bottom", "left_right"],
-                          defaultHems: "none",
-                        });
-                      } else if (val === "pole_pockets") {
-                        updateConfig(index, {
-                          kind: "pole_pockets",
-                          polePocketChoices: ["none", "top", "bottom", "top_bottom"],
-                          defaultPolePocket: "none",
-                        });
-                      } else if (val === "sides") {
-                        updateConfig(index, {
-                          kind: "sides",
-                          singleLabel: "Single Sided",
-                          doubleLabel: "Double Sided",
-                          defaultSide: "single",
-                          pricingMode: "multiplier",
-                          doublePriceMultiplier: 1.6,
-                        });
-                      } else if (val === "thickness") {
-                        updateConfig(index, {
-                          kind: "thickness",
-                          defaultThicknessKey: "4mm",
-                          thicknessVariants: [
-                            {
-                              key: "4mm",
-                              label: "4mm",
-                              materialId: "",
-                              pricingMode: "multiplier",
-                              priceMultiplier: 1.0
-                            }
-                          ]
-                        });
-                      }
-                    }}
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="generic">None</SelectItem>
-                      <SelectItem value="grommets">Grommets</SelectItem>
-                      <SelectItem value="hems">Hems</SelectItem>
-                      <SelectItem value="pole_pockets">Pole Pockets</SelectItem>
-                      <SelectItem value="sides">Sides (Single/Double)</SelectItem>
-                      <SelectItem value="thickness">Thickness Selector</SelectItem>
-                    </SelectContent>
-                  </Select>
+              ) : (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id={`default-${opt.id}`}
+                      checked={opt.defaultSelected || false}
+                      onChange={(e) => updateOption(index, { defaultSelected: e.target.checked })}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor={`default-${opt.id}`} className="text-xs font-medium cursor-pointer">
+                      Default On <span className="text-muted-foreground">(auto-selected on new quotes)</span>
+                    </label>
+                  </div>
+                  <div className="col-span-2">
+                    <Label className="text-xs">Special Config</Label>
+                    <Select
+                      value={opt.config?.kind || "generic"}
+                      onValueChange={(val) => {
+                        if (val === "generic") {
+                          updateConfig(index, { kind: "generic" });
+                        } else if (val === "grommets") {
+                          updateConfig(index, {
+                            kind: "grommets",
+                            defaultLocation: "all_corners",
+                            locations: ["all_corners", "top_corners", "top_even", "custom"],
+                            spacingOptions: [12, 24],
+                            defaultSpacingInches: 24,
+                          });
+                        } else if (val === "hems") {
+                          updateConfig(index, {
+                            kind: "hems",
+                            hemsChoices: ["none", "all_sides", "top_bottom", "left_right"],
+                            defaultHems: "none",
+                          });
+                        } else if (val === "pole_pockets") {
+                          updateConfig(index, {
+                            kind: "pole_pockets",
+                            polePocketChoices: ["none", "top", "bottom", "top_bottom"],
+                            defaultPolePocket: "none",
+                          });
+                        } else if (val === "sides") {
+                          updateConfig(index, {
+                            kind: "sides",
+                            singleLabel: "Single Sided",
+                            doubleLabel: "Double Sided",
+                            defaultSide: "single",
+                            pricingMode: "multiplier",
+                            doublePriceMultiplier: 1.6,
+                          });
+                        } else if (val === "thickness") {
+                          updateConfig(index, {
+                            kind: "thickness",
+                            defaultThicknessKey: "4mm",
+                            thicknessVariants: [
+                              {
+                                key: "4mm",
+                                label: "4mm",
+                                materialId: "",
+                                pricingMode: "multiplier",
+                                priceMultiplier: 1.0,
+                              },
+                            ],
+                          });
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="generic">None</SelectItem>
+                        <SelectItem value="grommets">Grommets</SelectItem>
+                        <SelectItem value="hems">Hems</SelectItem>
+                        <SelectItem value="pole_pockets">Pole Pockets</SelectItem>
+                        <SelectItem value="sides">Sides (Single/Double)</SelectItem>
+                        <SelectItem value="thickness">Thickness Selector</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Grommets Sub-Config */}
               {opt.config?.kind === "grommets" && (
@@ -2897,7 +2963,7 @@ function ProductOptionsEditor({
               <X className="h-4 w-4" />
             </Button>
           </div>
-        </div>
+        </React.Fragment>
       ))}
       <p className="text-xs text-muted-foreground">
         Examples: "Grommets" (Checkbox + Grommets Config), "Printing" (Toggle + Sides Config), "Rush Fee" (Checkbox, Flat, $25)

@@ -24,7 +24,7 @@ import { format } from "date-fns";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { LineItemAttachmentsPanel, LineItemArtworkBadge } from "@/components/LineItemAttachmentsPanel";
-import type { QuoteWithRelations, Product, ProductVariant } from "@shared/schema";
+import type { QuoteWithRelations, Product, ProductVariant, ProductOptionItem } from "@shared/schema";
 
 type Customer = {
   id: string;
@@ -111,6 +111,16 @@ export default function EditQuote() {
     queryKey: ["/api/products", selectedProductId, "variants"],
     enabled: !!selectedProductId,
   });
+
+  const productForDialog = useMemo(
+    () => products?.find((p) => p.id === selectedProductId),
+    [products, selectedProductId]
+  );
+
+  const productHasAttachmentOption = useMemo(() => {
+    const opts = (productForDialog?.optionsJson as ProductOptionItem[] | undefined) || [];
+    return opts.some((opt) => opt.type === "attachment");
+  }, [productForDialog]);
 
   const { data: quote, isLoading } = useQuery<QuoteWithRelations>({
     queryKey: ["/api/quotes", quoteId],
@@ -348,28 +358,17 @@ export default function EditQuote() {
     setLineItemError(null);
   };
 
-  // Create a TEMPORARY line item as soon as a product is selected.
-  // This returns a real lineItemId so artwork can be attached immediately.
-  const createTemporaryLineItemMutation = useMutation({
-    mutationFn: async (payload: { productId: string; productName?: string }) => {
-      console.log("[Create Temp Line Item] Payload:", payload);
-      const response = await apiRequest("POST", "/api/line-items/temp", payload);
-      const json = await response.json();
-      return json.data as QuoteLineItem;
-    },
-    onSuccess: (createdLineItem: QuoteLineItem) => {
-      console.log("[Create Temp Line Item] Created:", createdLineItem);
-      setEditingLineItem(createdLineItem);
-    },
-    onError: (error: Error) => {
-      console.error("[Create Temp Line Item] Error:", error);
-      toast({
-        title: "Error",
-        description: "Failed to create line item. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
+  const handleOpenAddLineItem = () => {
+    // Reset form to defaults for a brand new line item
+    resetLineItemForm();
+    setEditingLineItem(null);
+    setSelectedProductId("");
+    setSelectedVariantId(null);
+    setLineItemWidth("");
+    setLineItemHeight("");
+    setLineItemQuantity("1");
+    setLineItemDialogOpen(true);
+  };
 
   // Handle closing the dialog - no special cleanup now that temporary items
   // are real records the user can always remove explicitly.
@@ -623,14 +622,9 @@ export default function EditQuote() {
               size="sm" 
               onClick={handleOpenAddLineItem}
               data-testid="button-add-line-item"
-              disabled={createPlaceholderLineItemMutation.isPending}
             >
-              {createPlaceholderLineItemMutation.isPending ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Plus className="w-4 h-4 mr-2" />
-              )}
-              {createPlaceholderLineItemMutation.isPending ? "Creating..." : "Add Item"}
+              <Plus className="w-4 h-4 mr-2" />
+              Add Item
             </Button>
           </div>
         </CardHeader>
@@ -642,14 +636,9 @@ export default function EditQuote() {
                 variant="outline" 
                 className="mt-4"
                 onClick={handleOpenAddLineItem}
-                disabled={createPlaceholderLineItemMutation.isPending}
               >
-                {createPlaceholderLineItemMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <Plus className="w-4 h-4 mr-2" />
-                )}
-                {createPlaceholderLineItemMutation.isPending ? "Creating..." : "Add First Item"}
+                <Plus className="w-4 h-4 mr-2" />
+                Add First Item
               </Button>
             </div>
           ) : (
@@ -688,7 +677,7 @@ export default function EditQuote() {
                       </TableCell>
                       <TableCell>
                         <LineItemArtworkBadge 
-                          quoteId={quoteId!} 
+                          quoteId={quote.id} 
                           lineItemId={item.id}
                         />
                       </TableCell>
@@ -979,14 +968,23 @@ export default function EditQuote() {
               )}
             </div>
 
-            {/* Artwork Attachments - always show, but functionality depends on whether line item exists */}
-            <div className="pt-2 border-t">
-              <LineItemAttachmentsPanel
-                quoteId={quoteId!}
-                lineItemId={editingLineItem?.id}
-                defaultExpanded={!!editingLineItem}
-              />
-            </div>
+            {/* Artwork Attachments - auto-show when product defines attachment option */}
+            {productHasAttachmentOption && (
+              <div className="pt-2 border-t">
+                <h4 className="text-sm font-medium mb-2">Attachments</h4>
+                {editingLineItem?.id ? (
+                  <LineItemAttachmentsPanel
+                    quoteId={quote.id}
+                    lineItemId={editingLineItem.id}
+                    defaultExpanded
+                  />
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Save this line item to upload artwork and other files.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Inline Error Display */}
             {lineItemError && (

@@ -410,6 +410,8 @@ export const storage = {
     addLineItem,
     updateLineItem,
     deleteLineItem,
+    createTemporaryLineItem: (...args: any[]) => quotesRepo.createTemporaryLineItem(...args),
+    finalizeTemporaryLineItemsForUser: (...args: any[]) => quotesRepo.finalizeTemporaryLineItemsForUser(...args),
     getUserQuotes,
     getAllQuotes,
     getQuotesForCustomer,

@@ -27,6 +27,9 @@ export const organizationTypeEnum = pgEnum('organization_type', ['internal', 'ex
 // Organization status enum
 export const organizationStatusEnum = pgEnum('organization_status', ['active', 'suspended', 'trial', 'canceled']);
 
+// Quote status enum
+export const quoteStatusEnum = pgEnum('quote_status', ['draft', 'active', 'canceled']);
+
 // Organizations table - top-level tenant container
 export const organizations = pgTable("organizations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -414,7 +417,7 @@ export const products = pgTable("products", {
 const productOptionItemSchema = z.object({
   id: z.string(),
   label: z.string(),
-  type: z.enum(["checkbox", "quantity", "toggle", "select"]),
+  type: z.enum(["checkbox", "quantity", "toggle", "select", "attachment"]),
   priceMode: z.enum(["flat", "per_qty", "per_sqft", "percent_of_base", "flat_per_item"]).default("flat"),
   amount: z.number().optional(),
   percentBase: z.enum(["media", "line"]).optional(),
@@ -816,11 +819,11 @@ export const quotes = pgTable("quotes", {
   quoteNumber: integer("quote_number"),
   label: text("label"), // Free-text label for categorization/notes
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  status: quoteStatusEnum("status").notNull().default("active"),
   customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'set null' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   customerName: varchar("customer_name", { length: 255 }),
   source: varchar("source", { length: 50 }).notNull().default('internal'),
-  status: varchar("status", { length: 50 }).default("pending"), // draft, pending, accepted, rejected, canceled, expired
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
   // Tax system fields (taxRate kept for backward compatibility but now represents effective snapshot)
   taxRate: decimal("tax_rate", { precision: 5, scale: 4 }),
@@ -878,9 +881,11 @@ export const quotes = pgTable("quotes", {
 ]);
 
 // Quote Line Items table
+export const quoteLineItemStatusEnum = pgEnum("quote_line_item_status", ["draft", "active", "canceled"]);
 export const quoteLineItems = pgTable("quote_line_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'cascade' }),
+  status: quoteLineItemStatusEnum("status").notNull().default("active"),
   productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
   productName: varchar("product_name", { length: 255 }).notNull(),
   variantId: varchar("variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
