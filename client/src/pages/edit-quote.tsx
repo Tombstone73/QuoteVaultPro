@@ -159,7 +159,9 @@ export default function EditQuote() {
   }, [quote]);
 
   // Calculate totals
-  const subtotal = quote?.lineItems.reduce((sum, item) => sum + parseFloat(item.linePrice), 0) || 0;
+  const lineItems = quote?.lineItems ?? [];
+  const subtotal =
+    lineItems.reduce((sum, item) => sum + parseFloat(item.linePrice), 0) || 0;
   const taxAmount = subtotal * (taxRate / 100);
   const marginAmount = subtotal * (marginPercentage / 100);
   const total = subtotal + taxAmount + marginAmount - discountAmount;
@@ -428,7 +430,7 @@ export default function EditQuote() {
         total: calculatedPrice,
         formula: "",
       },
-      displayOrder: editingLineItem?.displayOrder ?? (quote?.lineItems.length || 0),
+      displayOrder: editingLineItem?.displayOrder ?? (lineItems.length || 0),
     };
 
     console.log("[handleSaveLineItem] lineItemData:", lineItemData);
@@ -629,7 +631,7 @@ export default function EditQuote() {
           </div>
         </CardHeader>
         <CardContent>
-          {quote.lineItems.length === 0 ? (
+          {lineItems.length === 0 ? (
             <div className="py-16 text-center">
               <p className="text-muted-foreground">No line items</p>
               <Button 
@@ -656,7 +658,7 @@ export default function EditQuote() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {quote.lineItems.map((item) => (
+                  {lineItems.map((item) => (
                     <TableRow key={item.id} data-testid={`row-line-item-${item.id}`}>
                       <TableCell>
                         <div>

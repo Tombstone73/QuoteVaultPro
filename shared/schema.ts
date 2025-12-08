@@ -934,7 +934,7 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
 }).extend({
   customerId: z.string().optional().nullable(),
   contactId: z.string().optional().nullable(),
-  status: z.enum(['draft', 'pending', 'accepted', 'rejected', 'canceled', 'expired']).default('pending').optional(),
+  status: z.enum(['draft', 'active', 'canceled']).default('draft').optional(),
   source: z.enum(['internal', 'customer_quick_quote']).default('internal'),
   subtotal: z.coerce.number().min(0),
   taxRate: z.coerce.number().min(0).max(1).optional().nullable(),
