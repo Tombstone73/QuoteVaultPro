@@ -34,7 +34,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LineItemArtworkBadge } from "@/components/LineItemAttachmentsPanel";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { LineItemAttachmentsPanel, LineItemArtworkBadge } from "@/components/LineItemAttachmentsPanel";
 
 // Note: QuoteAttachment type removed - artwork is now handled per line item via LineItemAttachmentsPanel
 
@@ -81,19 +82,25 @@ type QuoteLineItemDraft = {
   priceBreakdown: any;
   displayOrder: number;
   notes?: string;
+  productOptions?: ProductOptionItem[];
+  status?: "draft" | "active" | "canceled";
 };
 
 export default function QuoteEditor() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const [match, params] = useRoute("/quotes/:mode");
+  const [matchEdit, paramsEdit] = useRoute("/quotes/:id/edit");
+  const [matchDetail, paramsDetail] = useRoute("/quotes/:id");
   const [, navigate] = useLocation();
   
-  const mode = params?.mode === 'new' ? 'new' : params?.mode; // ID or 'new'
-  const quoteId = mode !== 'new' ? mode : null;
-  const isNewQuote = mode === 'new';
+  const quoteId: string | null = paramsEdit?.id || paramsDetail?.id || null;
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
+
+  if (!quoteId) {
+    navigate(ROUTES.quotes.list);
+    return null;
+  }
 
   // Customer selection
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
@@ -132,6 +139,8 @@ export default function QuoteEditor() {
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [draftLineItemId, setDraftLineItemId] = useState<string | null>(null);
+  const [isCreatingDraft, setIsCreatingDraft] = useState(false);
 
   // Option selection state
   const [optionSelections, setOptionSelections] = useState<Record<string, {
@@ -147,6 +156,8 @@ export default function QuoteEditor() {
 
   // Line item notes
   const [lineItemNotes, setLineItemNotes] = useState<string>("");
+  const [attachmentsItem, setAttachmentsItem] = useState<QuoteLineItemDraft | null>(null);
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
 
   // Helper to build selectedOptions payload from optionSelections state
   const buildSelectedOptionsPayload = useCallback(() => {
@@ -165,6 +176,61 @@ export default function QuoteEditor() {
     });
     return payload;
   }, [optionSelections]);
+
+  useEffect(() => {
+    if (!draftLineItemId || !quoteId) return;
+    const product = selectedProductDetail || products?.find(p => p.id === selectedProductId);
+    const productOptions = (product?.optionsJson as ProductOptionItem[] | undefined) || [];
+    const selectedOptionsArray: Array<{
+      optionId: string;
+      optionName: string;
+      value: string | number | boolean;
+      setupCost: number;
+      calculatedCost: number;
+    }> = [];
+
+    const widthVal = requiresDimensions ? parseFloat(width || "0") : 1;
+    const heightVal = requiresDimensions ? parseFloat(height || "0") : 1;
+    const quantityVal = parseInt(quantity || "1", 10) || 1;
+
+    productOptions.forEach((option) => {
+      const selection = optionSelections[option.id];
+      if (!selection) return;
+
+      const optionAmount = option.amount || 0;
+      let setupCost = 0;
+      let calculatedCost = 0;
+
+      if (option.priceMode === "flat") {
+        setupCost = optionAmount;
+        calculatedCost = optionAmount;
+      } else if (option.priceMode === "per_qty") {
+        calculatedCost = optionAmount * quantityVal;
+      } else if (option.priceMode === "per_sqft") {
+        const sqft = widthVal * heightVal;
+        calculatedCost = optionAmount * sqft * quantityVal;
+      }
+
+      if (option.config?.kind === "grommets" && selection.grommetsLocation) {
+        if (
+          selection.grommetsLocation === "top_even" &&
+          selection.grommetsSpacingCount
+        ) {
+          calculatedCost *= selection.grommetsSpacingCount;
+        }
+      }
+
+      selectedOptionsArray.push({
+        optionId: option.id,
+        optionName: option.label,
+        value: selection.value,
+        setupCost,
+        calculatedCost,
+      });
+    });
+
+    patchDraftLineItem({ selectedOptions: selectedOptionsArray });
+  }, [draftLineItemId, quoteId, optionSelections, selectedProductDetail, products, selectedProductId, requiresDimensions, width, height, quantity, patchDraftLineItem]);
 
   // Query client for invalidation
   const queryClientInstance = useQueryClient();
@@ -188,14 +254,14 @@ export default function QuoteEditor() {
       if (!response.ok) throw new Error("Failed to load quote");
       return response.json();
     },
-    enabled: !isNewQuote && !!quoteId,
+    enabled: !!quoteId,
   });
 
   // Note: Quote-level file query removed. Artwork is now attached to individual line items.
 
   // Load data when editing existing quote
   useEffect(() => {
-    if (quote && !isNewQuote) {
+    if (quote) {
       setSelectedCustomerId(quote.customerId || null);
       setSelectedContactId(quote.contactId || null);
       setLineItems(quote.lineItems?.map((item, idx) => ({
@@ -205,6 +271,7 @@ export default function QuoteEditor() {
         variantId: item.variantId,
         variantName: item.variantName,
         productType: item.productType || 'wide_roll',
+        status: (item as any).status || 'active',
         width: parseFloat(item.width),
         height: parseFloat(item.height),
         quantity: item.quantity,
@@ -214,9 +281,10 @@ export default function QuoteEditor() {
         priceBreakdown: item.priceBreakdown,
         displayOrder: idx,
         notes: (item.specsJson as any)?.notes || undefined,
+        productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
       })) || []);
     }
-  }, [quote, isNewQuote]);
+  }, [quote]);
 
   const { data: products } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -256,6 +324,20 @@ export default function QuoteEditor() {
     if (selectedProductDetail) return selectedProductDetail;
     return products?.find(p => p.id === selectedProductId);
   }, [selectedProductDetail, products, selectedProductId]);
+
+  const productOptionsForAddForm = useMemo(() => {
+    return (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
+  }, [selectedProduct]);
+
+
+  const productOptions = useMemo(() => {
+    return (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
+  }, [selectedProduct]);
+
+  const hasAttachmentOption = useMemo(
+    () => productOptions.some((opt) => opt.type === "attachment"),
+    [productOptions]
+  );
   
   // Debug: Log product options when product changes
   useEffect(() => {
@@ -398,59 +480,27 @@ export default function QuoteEditor() {
 
   const saveQuoteMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedCustomerId) {
-        throw new Error("Please select a customer");
-      }
-      if (lineItems.length === 0) {
-        throw new Error("Please add at least one line item");
-      }
-
-      const quoteData = {
-        customerId: selectedCustomerId,
+      const quoteData: any = {
+        customerId: selectedCustomerId || null,
         contactId: selectedContactId || undefined,
         customerName: selectedCustomer?.companyName || undefined,
         source: 'internal',
-        lineItems: lineItems.map((item) => ({
-          productId: item.productId,
-          productName: item.productName,
-          variantId: item.variantId || undefined,
-          variantName: item.variantName || undefined,
-          productType: item.productType,
-          width: item.width,
-          height: item.height,
-          quantity: item.quantity,
-          specsJson: item.specsJson,
-          selectedOptions: item.selectedOptions,
-          linePrice: item.linePrice,
-          priceBreakdown: item.priceBreakdown,
-          displayOrder: item.displayOrder,
-          notes: item.notes || undefined,
-        })),
       };
 
-      if (isNewQuote) {
-        const response = await apiRequest("POST", "/api/quotes", quoteData);
-        return await response.json();
-      } else {
-        // For existing quotes, update header and handle line items separately
-        const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, {
-          customerName: selectedCustomer?.companyName,
-        });
-        return await response.json();
+      if (quote?.status === "draft") {
+        quoteData.status = "active";
       }
+
+      const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, quoteData);
+      return await response.json();
     },
-    onSuccess: (data) => {
+    onSuccess: () => {
       toast({
         title: "Success",
-        description: isNewQuote ? "Quote created successfully" : "Quote updated successfully",
+        description: "Quote saved",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      // After creating a new quote, redirect to edit page so user can attach artwork immediately
-      if (isNewQuote && data?.id) {
-        navigate(ROUTES.quotes.edit(data.id));
-      } else {
-        navigate(ROUTES.quotes.list);
-      }
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
     },
     onError: (error: Error) => {
       toast({
@@ -461,18 +511,55 @@ export default function QuoteEditor() {
     },
   });
 
-  const handleAddLineItem = () => {
+  const deleteQuoteMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/quotes/${quoteId}`);
+    },
+    onSuccess: () => {
+      toast({ title: "Draft discarded" });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      navigate(ROUTES.quotes.list);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error discarding draft",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDiscardDraft = () => {
+    if (!quote || quote.status !== "draft") return;
+    const confirmed = window.confirm("Discard this draft quote? This will remove the quote and its draft line items/attachments.");
+    if (!confirmed) return;
+    deleteQuoteMutation.mutate();
+  };
+
+  const patchDraftLineItem = useCallback(
+    async (updates: Record<string, any>) => {
+      if (!quoteId || !draftLineItemId) return;
+      try {
+        await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${draftLineItemId}`, updates);
+      } catch (err) {
+        console.error("Failed to patch draft line item", err);
+      }
+    },
+    [quoteId, draftLineItemId]
+  );
+
+  const handleAddLineItem = async () => {
     if (!selectedProductId) return;
 
-    const product = products?.find(p => p.id === selectedProductId);
-    const variant = productVariants?.find(v => v.id === selectedVariantId);
-    
-    // For non-dimension products, use 1x1 as placeholder
+    const product = products?.find((p) => p.id === selectedProductId);
+    const variant = productVariants?.find((v) => v.id === selectedVariantId);
+
+    // Dimensions
     const widthVal = requiresDimensions ? parseFloat(width) : 1;
     const heightVal = requiresDimensions ? parseFloat(height) : 1;
-    const quantityVal = parseInt(quantity || "1");
+    const quantityVal = parseInt(quantity || "1", 10);
 
-    // Build selectedOptions array from optionSelections state
+    // Build selectedOptions array from optionSelections
     const selectedOptionsArray: Array<{
       optionId: string;
       optionName: string;
@@ -482,16 +569,15 @@ export default function QuoteEditor() {
     }> = [];
 
     const productOptions = (product?.optionsJson as ProductOptionItem[]) || [];
-    
-    productOptions.forEach(option => {
+
+    productOptions.forEach((option) => {
       const selection = optionSelections[option.id];
-      if (!selection) return; // Option not selected
+      if (!selection) return;
 
       const optionAmount = option.amount || 0;
       let setupCost = 0;
       let calculatedCost = 0;
 
-      // Calculate costs based on priceMode
       if (option.priceMode === "flat") {
         setupCost = optionAmount;
         calculatedCost = optionAmount;
@@ -502,16 +588,15 @@ export default function QuoteEditor() {
         calculatedCost = optionAmount * sqft * quantityVal;
       }
 
-      // Handle grommets special pricing
       if (option.config?.kind === "grommets" && selection.grommetsLocation) {
-        if (selection.grommetsLocation === "top_even" && selection.grommetsSpacingCount) {
-          // Multiply by spacing count for top_even
+        if (
+          selection.grommetsLocation === "top_even" &&
+          selection.grommetsSpacingCount
+        ) {
           calculatedCost *= selection.grommetsSpacingCount;
         }
       }
 
-      // Handle sides multiplier (applied later in pricing engine)
-      // For now just record the selection
       selectedOptionsArray.push({
         optionId: option.id,
         optionName: option.label,
@@ -521,41 +606,151 @@ export default function QuoteEditor() {
       });
     });
 
-    const newItem: QuoteLineItemDraft = {
-      tempId: `temp-${Date.now()}`,
-      productId: selectedProductId,
-      productName: product?.name || "",
-      variantId: selectedVariantId,
-      variantName: variant?.name || null,
-      productType: 'wide_roll',
-      width: widthVal,
-      height: heightVal,
-      quantity: quantityVal,
-      specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
-      selectedOptions: selectedOptionsArray,
-      linePrice: calculatedPrice,
-      priceBreakdown: { basePrice: calculatedPrice, optionsPrice: 0, total: calculatedPrice, formula: "" },
-      displayOrder: lineItems.length,
-      notes: lineItemNotes || undefined,
-    };
+    const linePrice = calculatedPrice ?? 0;
 
-    setLineItems([...lineItems, newItem]);
-    
-    // Reset form
-    setSelectedProductId("");
-    setSelectedVariantId(null);
-    setWidth("");
-    setHeight("");
-    setQuantity("1");
-    setCalculatedPrice(null);
-    setCalcError(null);
-    setOptionSelections({});
-    setLineItemNotes("");
+    // If we have a draft line item and a quoteId, promote it to active
+    if (draftLineItemId && quoteId) {
+      const payload = {
+        productId: selectedProductId,
+        productName: product?.name || "",
+        variantId: selectedVariantId,
+        variantName: variant?.name || null,
+        productType: "wide_roll",
+        width: widthVal,
+        height: heightVal,
+        quantity: quantityVal,
+        specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
+        selectedOptions: selectedOptionsArray,
+        linePrice,
+        priceBreakdown: {
+          basePrice: linePrice,
+          optionsPrice: 0,
+          total: linePrice,
+          formula: "",
+        },
+        displayOrder: lineItems.length,
+        status: "active" as const,
+      };
 
-    toast({
-      title: "Line Item Added",
-      description: "Item added to quote",
-    });
+      try {
+        await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${draftLineItemId}`, payload);
+        const newItem: QuoteLineItemDraft = {
+          id: draftLineItemId,
+          productId: payload.productId,
+          productName: payload.productName,
+          variantId: payload.variantId || null,
+          variantName: payload.variantName || null,
+          productType: payload.productType,
+          width: payload.width,
+          height: payload.height,
+          quantity: payload.quantity,
+          specsJson: payload.specsJson,
+          selectedOptions: payload.selectedOptions,
+          linePrice: payload.linePrice,
+          priceBreakdown: payload.priceBreakdown,
+          displayOrder: payload.displayOrder,
+          notes: lineItemNotes || undefined,
+          productOptions: product?.optionsJson as ProductOptionItem[] | undefined,
+          status: "active",
+        };
+        setLineItems([...lineItems, newItem]);
+        setDraftLineItemId(null);
+        setSelectedProductId("");
+        setSelectedVariantId(null);
+        setWidth("");
+        setHeight("");
+        setQuantity("1");
+        setCalculatedPrice(null);
+        setCalcError(null);
+        setOptionSelections({});
+        setLineItemNotes("");
+      } catch (error: any) {
+        toast({
+          title: "Error",
+          description: error.message || "Failed to publish line item",
+          variant: "destructive",
+        });
+      }
+      return;
+    }
+
+    // Fallback to old behavior (no draft present or no quoteId)
+    try {
+      const response = await apiRequest("POST", "/api/line-items/temp", {
+        productId: selectedProductId,
+        productName: product?.name || "",
+        variantId: selectedVariantId,
+        variantName: variant?.name || null,
+        productType: "wide_roll",
+        width: widthVal,
+        height: heightVal,
+        quantity: quantityVal,
+        specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
+        selectedOptions: selectedOptionsArray,
+        linePrice,
+        priceBreakdown: {
+          basePrice: linePrice,
+          optionsPrice: 0,
+          total: linePrice,
+          formula: "",
+        },
+        displayOrder: lineItems.length,
+      });
+      if (!response.ok) {
+        throw new Error("Failed to create temporary line item");
+      }
+
+      const json = await response.json();
+      const createdLineItem = json.data;
+
+      if (!createdLineItem || !createdLineItem.id) {
+        throw new Error("Server did not return a valid line item id");
+      }
+
+      const newItem: QuoteLineItemDraft = {
+        id: createdLineItem.id,
+        productId: selectedProductId,
+        productName: product?.name || "",
+        variantId: selectedVariantId || null,
+        variantName: variant?.name || null,
+        productType: "wide_roll",
+        width: widthVal,
+        height: heightVal,
+        quantity: quantityVal,
+        specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
+        selectedOptions: selectedOptionsArray,
+        linePrice,
+        priceBreakdown: {
+          basePrice: linePrice,
+          optionsPrice: 0,
+          total: linePrice,
+          formula: "",
+        },
+        displayOrder: lineItems.length,
+        notes: lineItemNotes || undefined,
+        productOptions: product?.optionsJson as ProductOptionItem[] | undefined,
+        status: (createdLineItem as any).status || "active",
+      };
+
+      setLineItems([...lineItems, newItem]);
+
+      setSelectedProductId("");
+      setSelectedVariantId(null);
+      setWidth("");
+      setHeight("");
+      setQuantity("1");
+      setCalculatedPrice(null);
+      setCalcError(null);
+      setOptionSelections({});
+      setLineItemNotes("");
+    } catch (error: any) {
+      console.error("Error creating temporary line item:", error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to add line item",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleDuplicateLineItem = (itemId: string) => {
@@ -578,6 +773,17 @@ export default function QuoteEditor() {
 
   const handleRemoveLineItem = (tempId: string) => {
     setLineItems(lineItems.filter(item => item.tempId !== tempId && item.id !== tempId));
+  };
+
+  const handleOpenAttachments = (item: QuoteLineItemDraft) => {
+    if (!item.id) return;
+    setAttachmentsItem(item);
+    setAttachmentsOpen(true);
+  };
+
+  const handleCloseAttachments = () => {
+    setAttachmentsOpen(false);
+    setAttachmentsItem(null);
   };
 
   // Copy customer address to shipping address
@@ -616,7 +822,7 @@ export default function QuoteEditor() {
     );
   }
 
-  if (quoteLoading && !isNewQuote) {
+  if (quoteLoading) {
     return (
       <div className="container mx-auto p-6 space-y-4">
         <Skeleton className="h-32 w-full" />
@@ -626,7 +832,9 @@ export default function QuoteEditor() {
   }
 
   // Calculate pricing summary
-  const subtotal = lineItems.reduce((sum, item) => sum + item.linePrice, 0);
+  const subtotal = lineItems
+    .filter((li) => li.status !== "draft")
+    .reduce((sum, item) => sum + item.linePrice, 0);
   
   // Get effective tax rate - customer override > org default
   const effectiveTaxRate = selectedCustomer?.isTaxExempt 
@@ -652,9 +860,16 @@ export default function QuoteEditor() {
           <ArrowLeft className="w-4 h-4" />
           Back to Quotes
         </Button>
-        <h1 className="text-xl font-semibold">
-          {isNewQuote ? "New Quote" : `Edit Quote #${quote?.quoteNumber || ''}`}
-        </h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold">
+            {quote ? `Quote #${quote.quoteNumber || ""}` : "Quote"}
+          </h1>
+          {quote?.status === "draft" && (
+            <Badge variant="outline" className="text-xs">
+              Draft
+            </Badge>
+          )}
+        </div>
         <div className="w-32" /> {/* Spacer for centering */}
       </div>
 
@@ -693,7 +908,7 @@ export default function QuoteEditor() {
                       });
                     }
                   }}
-                  autoFocus={isNewQuote}
+                  autoFocus={false}
                   label=""
                   placeholder="Search customers..."
                 />
@@ -990,10 +1205,52 @@ export default function QuoteEditor() {
                               <CommandItem
                                 key={product.id}
                                 value={product.id}
-                                onSelect={() => {
+                                onSelect={async () => {
                                   setSelectedProductId(product.id);
                                   setProductSearchOpen(false);
                                   setProductSearchQuery("");
+                                  // Auto-create draft line item when a product is selected (only when quoteId exists)
+                                  if (quoteId) {
+                                    if (!draftLineItemId) {
+                                      try {
+                                        setIsCreatingDraft(true);
+                                        const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, {
+                                          productId: product.id,
+                                          productName: product.name,
+                                          status: "draft",
+                                          productType: "wide_roll",
+                                          width: requiresDimensions ? parseFloat(width || "0") : 1,
+                                          height: requiresDimensions ? parseFloat(height || "0") : 1,
+                                          quantity: parseInt(quantity || "1", 10) || 1,
+                                          linePrice: 0,
+                                          priceBreakdown: {
+                                            basePrice: 0,
+                                            optionsPrice: 0,
+                                            total: 0,
+                                            formula: "",
+                                          },
+                                          displayOrder: lineItems.length,
+                                        });
+                                        const json = await response.json();
+                                        const created = json.data || json;
+                                        if (created?.id) {
+                                          setDraftLineItemId(created.id);
+                                        }
+                                      } catch (err) {
+                                        console.error("Failed to create draft line item", err);
+                                      } finally {
+                                        setIsCreatingDraft(false);
+                                      }
+                                    } else {
+                                      // Update existing draft with new product
+                                      patchDraftLineItem({
+                                        productId: product.id,
+                                        productName: product.name,
+                                        selectedOptions: [],
+                                      });
+                                      setOptionSelections({});
+                                    }
+                                  }
                                 }}
                               >
                                 <Check
@@ -1048,7 +1305,13 @@ export default function QuoteEditor() {
                         type="number"
                         step="0.01"
                         value={width}
-                        onChange={(e) => setWidth(e.target.value)}
+                    onChange={(e) => setWidth(e.target.value)}
+                    onBlur={() => {
+                      if (draftLineItemId && quoteId) {
+                        const widthVal = requiresDimensions ? parseFloat(width || "0") : 1;
+                        patchDraftLineItem({ width: widthVal });
+                      }
+                    }}
                         className="h-9"
                       />
                     </div>
@@ -1058,7 +1321,13 @@ export default function QuoteEditor() {
                         type="number"
                         step="0.01"
                         value={height}
-                        onChange={(e) => setHeight(e.target.value)}
+                    onChange={(e) => setHeight(e.target.value)}
+                    onBlur={() => {
+                      if (draftLineItemId && quoteId) {
+                        const heightVal = requiresDimensions ? parseFloat(height || "0") : 1;
+                        patchDraftLineItem({ height: heightVal });
+                      }
+                    }}
                         className="h-9"
                       />
                     </div>
@@ -1077,17 +1346,25 @@ export default function QuoteEditor() {
                     min="1"
                     value={quantity}
                     onChange={(e) => setQuantity(e.target.value)}
+                    onBlur={() => {
+                      if (draftLineItemId && quoteId) {
+                        const quantityVal = parseInt(quantity || "1", 10) || 1;
+                        patchDraftLineItem({ quantity: quantityVal });
+                      }
+                    }}
                     className="h-9"
                   />
                 </div>
               </div>
 
               {/* Product Options */}
-              {selectedProduct && (selectedProduct.optionsJson as ProductOptionItem[])?.length > 0 && (
+              {selectedProduct && productOptions.length > 0 && (
                 <div className="space-y-3 border-t pt-4">
                   <Label className="text-sm font-medium">Product Options</Label>
                   <div className="grid gap-2">
-                    {((selectedProduct.optionsJson as ProductOptionItem[]) || []).map((option) => {
+                    {productOptions
+                      .filter((option) => option.type !== "attachment")
+                      .map((option) => {
                       const selection = optionSelections[option.id];
                       const isSelected = !!selection;
 
@@ -1395,6 +1672,23 @@ export default function QuoteEditor() {
                 </div>
               )}
 
+              {hasAttachmentOption && (
+                <div className="space-y-2 border-t pt-4">
+                  <Label className="text-sm font-medium">Attachments</Label>
+                  {draftLineItemId && quoteId ? (
+                    <LineItemAttachmentsPanel
+                      quoteId={quoteId}
+                      lineItemId={draftLineItemId}
+                      defaultExpanded
+                    />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Select a product to create a line item and enable attachments.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Line Item Notes */}
               <div className="space-y-1.5">
                 <Label className="text-xs">Line Item Notes</Label>
@@ -1465,7 +1759,13 @@ export default function QuoteEditor() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {lineItems.map((item) => (
+                    {lineItems
+                      .filter((item) => item.status !== "draft")
+                      .map((item) => {
+                      const hasAttachmentOption = Array.isArray(item.productOptions)
+                        ? item.productOptions.some((opt) => opt.type === "attachment")
+                        : false;
+                      return (
                       <TableRow key={item.tempId || item.id}>
                         <TableCell>
                           <div className="font-medium text-sm">{item.productName}</div>
@@ -1499,14 +1799,16 @@ export default function QuoteEditor() {
                           ${item.linePrice.toFixed(2)}
                         </TableCell>
                         <TableCell className="text-center">
-                          {/* Only show artwork badge for saved line items (has real id, not tempId) */}
-                          {item.id && quoteId ? (
-                            <LineItemArtworkBadge 
-                              quoteId={quoteId} 
+                          {hasAttachmentOption && item.id ? (
+                            <LineItemArtworkBadge
+                              quoteId={quoteId}
                               lineItemId={item.id}
+                              onClick={() => handleOpenAttachments(item)}
                             />
+                          ) : hasAttachmentOption ? (
+                            <span className="text-xs text-muted-foreground">Pending…</span>
                           ) : (
-                            <span className="text-xs text-muted-foreground">Save first</span>
+                            <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </TableCell>
                         <TableCell>
@@ -1532,15 +1834,15 @@ export default function QuoteEditor() {
                           </DropdownMenu>
                         </TableCell>
                       </TableRow>
-                    ))}
+                    )})}
                   </TableBody>
                 </Table>
               )}
             </CardContent>
           </Card>
 
-          {/* Artwork Hint Card - shown when there are line items (edit mode only) */}
-          {lineItems.length > 0 && !isNewQuote && (
+          {/* Artwork Hint Card - shown when there are line items */}
+          {lineItems.length > 0 && (
             <Card className="rounded-xl bg-muted/30 border-border/40">
               <CardContent className="p-4">
                 <div className="flex items-start gap-3">
@@ -1556,22 +1858,6 @@ export default function QuoteEditor() {
             </Card>
           )}
 
-          {/* New Quote hint - artwork will be available after saving */}
-          {lineItems.length > 0 && isNewQuote && (
-            <Card className="rounded-xl bg-blue-500/5 border-blue-500/20">
-              <CardContent className="p-4">
-                <div className="flex items-start gap-3">
-                  <Paperclip className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
-                  <div className="text-sm">
-                    <p className="font-medium text-blue-700 dark:text-blue-400">Ready to Attach Artwork</p>
-                    <p className="mt-1 text-muted-foreground">
-                      After saving, you'll be taken to the quote editor where you can attach artwork to each line item.
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </div>
 
         {/* ═══════════════════════════════════════════════════════════════ */}
@@ -1673,23 +1959,30 @@ export default function QuoteEditor() {
               <Button
                 className="w-full h-10"
                 onClick={() => saveQuoteMutation.mutate()}
-                disabled={saveQuoteMutation.isPending || lineItems.length === 0 || !selectedCustomerId}
+                disabled={saveQuoteMutation.isPending || lineItems.length === 0}
               >
                 <Save className="w-4 h-4 mr-2" />
-                {saveQuoteMutation.isPending ? "Saving..." : isNewQuote ? "Save Quote" : "Update Quote"}
+                {saveQuoteMutation.isPending ? "Saving..." : quote?.status === "draft" ? "Finalize Quote" : "Save Quote"}
               </Button>
-              
-              {!isNewQuote && (
-                <div className="grid grid-cols-2 gap-2 w-full">
-                  <Button variant="outline" disabled size="sm">
-                    <Send className="w-4 h-4 mr-2" />
-                    Email
-                  </Button>
-                  <Button variant="secondary" disabled size="sm">
-                    Convert to Order
-                  </Button>
-                </div>
+              {quote?.status === "draft" && (
+                <Button
+                  variant="outline"
+                  className="w-full h-9"
+                  disabled={deleteQuoteMutation.isPending}
+                  onClick={handleDiscardDraft}
+                >
+                  {deleteQuoteMutation.isPending ? "Discarding..." : "Discard Draft"}
+                </Button>
               )}
+              <div className="grid grid-cols-2 gap-2 w-full">
+                <Button variant="outline" disabled size="sm">
+                  <Send className="w-4 h-4 mr-2" />
+                  Email
+                </Button>
+                <Button variant="secondary" disabled size="sm">
+                  Convert to Order
+                </Button>
+              </div>
             </CardFooter>
           </Card>
 
@@ -1712,6 +2005,34 @@ export default function QuoteEditor() {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={attachmentsOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            handleCloseAttachments();
+          } else {
+            setAttachmentsOpen(true);
+          }
+        }}
+      >
+          <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Artwork Attachments</DialogTitle>
+            {attachmentsItem?.productName && (
+              <DialogDescription>
+                {attachmentsItem.productName}
+              </DialogDescription>
+            )}
+          </DialogHeader>
+          <LineItemAttachmentsPanel
+            quoteId={quoteId}
+            lineItemId={attachmentsItem?.id}
+            productName={attachmentsItem?.productName}
+            defaultExpanded
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

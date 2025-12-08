@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
+import { apiRequest } from "@/lib/queryClient";
 import {
   Page,
   PageHeader,
@@ -75,6 +76,55 @@ const QUOTE_COLUMNS: ColumnDefinition[] = [
   { key: "total", label: "Total", defaultVisible: true, defaultWidth: 110, minWidth: 80, maxWidth: 150, sortable: true, align: "right" },
   { key: "actions", label: "Actions", defaultVisible: true, defaultWidth: 200, minWidth: 150, maxWidth: 280 },
 ];
+
+function NewQuoteButton() {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const createDraftQuote = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/quotes", { status: "draft" });
+      return res.json();
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Failed to create draft quote",
+        description: err?.message || "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  return (
+    <Button
+      size="sm"
+      disabled={createDraftQuote.isPending}
+      onClick={async () => {
+        try {
+          const result = await createDraftQuote.mutateAsync();
+          const id = result?.id || result?.data?.id;
+          if (!id) throw new Error("Draft quote creation did not return an id");
+          navigate(ROUTES.quotes.edit(id));
+        } catch (err) {
+          console.error("Create draft quote failed", err);
+          // toast handled in onError
+        }
+      }}
+    >
+      {createDraftQuote.isPending ? (
+        <span className="flex items-center gap-2">
+          <Plus className="mr-2 h-4 w-4 animate-spin" />
+          Creating...
+        </span>
+      ) : (
+        <>
+          <Plus className="mr-2 h-4 w-4" />
+          New Quote
+        </>
+      )}
+    </Button>
+  );
+}
 
 export default function InternalQuotes() {
   const { toast } = useToast();
@@ -105,6 +155,20 @@ export default function InternalQuotes() {
   const [tempLabel, setTempLabel] = useState("");
 
   const convertToOrder = useConvertQuoteToOrder();
+
+  const createDraftQuote = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/quotes", { status: "draft" });
+      return res.json();
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Failed to create draft quote",
+        description: err?.message || "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
 
   // Check if user is internal staff
   const isInternalUser =
@@ -357,10 +421,7 @@ export default function InternalQuotes() {
           </Button>
         }
         actions={
-          <Button size="sm" onClick={() => navigate(ROUTES.quotes.new)}>
-            <Plus className="mr-2 h-4 w-4" />
-            New Quote
-          </Button>
+          <NewQuoteButton />
         }
       />
 
@@ -427,10 +488,7 @@ export default function InternalQuotes() {
                   ? "Try adjusting your filters"
                   : "Create your first internal quote"}
               </p>
-              <Button onClick={() => navigate(ROUTES.quotes.new)}>
-                <Plus className="mr-2 h-4 w-4" />
-                New Quote
-              </Button>
+              <NewQuoteButton />
             </div>
           ) : (
             <div className="overflow-x-auto">

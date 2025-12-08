@@ -17,24 +17,53 @@ import {
     type InsertQuoteWorkflowState,
     type InsertGlobalVariable,
 } from "@shared/schema";
-import { eq, and, like, gte, lte, desc, sql } from "drizzle-orm";
+import { and, eq, isNull, like, gte, lte, desc, sql } from "drizzle-orm";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
 
     async createQuote(organizationId: string, data: {
         userId: string;
-        customerId?: string;
-        contactId?: string;
+        customerId?: string | null;
+        contactId?: string | null;
         customerName?: string;
         source?: string;
+        status?: "draft" | "active" | "canceled";
         taxRate?: number | null;
         taxAmount?: number | null;
         taxableSubtotal?: number | null;
+        shippingMethod?: string | null;
+        shippingMode?: string | null;
+        billToName?: string | null;
+        billToCompany?: string | null;
+        billToAddress1?: string | null;
+        billToAddress2?: string | null;
+        billToCity?: string | null;
+        billToState?: string | null;
+        billToPostalCode?: string | null;
+        billToCountry?: string | null;
+        billToPhone?: string | null;
+        billToEmail?: string | null;
+        shipToName?: string | null;
+        shipToCompany?: string | null;
+        shipToAddress1?: string | null;
+        shipToAddress2?: string | null;
+        shipToCity?: string | null;
+        shipToState?: string | null;
+        shipToPostalCode?: string | null;
+        shipToCountry?: string | null;
+        shipToPhone?: string | null;
+        shipToEmail?: string | null;
+        carrier?: string | null;
+        carrierAccountNumber?: string | null;
+        shippingInstructions?: string | null;
+        requestedDueDate?: string | Date | null;
+        validUntil?: string | Date | null;
         lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
     }): Promise<QuoteWithRelations> {
         // Calculate totals from line items
-        const subtotal = data.lineItems.reduce((sum, item) => sum + parseFloat(item.linePrice.toString()), 0);
+        const lineItemsInput = data.lineItems ?? [];
+        const subtotal = lineItemsInput.reduce((sum, item) => sum + parseFloat(item.linePrice.toString()), 0);
         const totalPrice = subtotal; // Will be updated if tax is applied
 
         // Create quote in a transaction to handle quote numbering
@@ -86,11 +115,39 @@ export class QuotesRepository {
                 contactId: data.contactId || null,
                 customerName: data.customerName,
                 source: data.source || 'internal',
+                status: data.status || 'active',
                 subtotal: subtotal.toString(),
                 taxRate: data.taxRate ?? null,
                 taxAmount: data.taxAmount != null ? data.taxAmount.toString() : null,
                 taxableSubtotal: data.taxableSubtotal != null ? data.taxableSubtotal.toString() : null,
                 totalPrice: totalPrice.toString(),
+                shippingMethod: data.shippingMethod ?? null,
+                shippingMode: data.shippingMode ?? null,
+                billToName: data.billToName ?? null,
+                billToCompany: data.billToCompany ?? null,
+                billToAddress1: data.billToAddress1 ?? null,
+                billToAddress2: data.billToAddress2 ?? null,
+                billToCity: data.billToCity ?? null,
+                billToState: data.billToState ?? null,
+                billToPostalCode: data.billToPostalCode ?? null,
+                billToCountry: data.billToCountry ?? null,
+                billToPhone: data.billToPhone ?? null,
+                billToEmail: data.billToEmail ?? null,
+                shipToName: data.shipToName ?? null,
+                shipToCompany: data.shipToCompany ?? null,
+                shipToAddress1: data.shipToAddress1 ?? null,
+                shipToAddress2: data.shipToAddress2 ?? null,
+                shipToCity: data.shipToCity ?? null,
+                shipToState: data.shipToState ?? null,
+                shipToPostalCode: data.shipToPostalCode ?? null,
+                shipToCountry: data.shipToCountry ?? null,
+                shipToPhone: data.shipToPhone ?? null,
+                shipToEmail: data.shipToEmail ?? null,
+                carrier: data.carrier ?? null,
+                carrierAccountNumber: data.carrierAccountNumber ?? null,
+                shippingInstructions: data.shippingInstructions ?? null,
+                requestedDueDate: data.requestedDueDate ?? null,
+                validUntil: data.validUntil ?? null,
             } as typeof quotes.$inferInsert;
 
             const [quote] = await tx.insert(quotes).values(quoteData).returning();
@@ -108,13 +165,14 @@ export class QuotesRepository {
         });
 
         // Create line items
-        const lineItemsData = data.lineItems.map((item, index) => ({
+        const lineItemsData = lineItemsInput.map((item, index) => ({
             quoteId: newQuote.id,
             productId: item.productId,
             productName: item.productName,
             variantId: item.variantId,
             variantName: item.variantName,
             productType: (item as any).productType || 'wide_roll',
+        status: (item as any).status || 'active',
             width: item.width.toString(),
             height: item.height.toString(),
             quantity: item.quantity,
@@ -137,7 +195,9 @@ export class QuotesRepository {
             isTaxableSnapshot: (item as any).isTaxableSnapshot ?? null,
         }));
 
-        const createdLineItems = await this.dbInstance.insert(quoteLineItems).values(lineItemsData).returning();
+        const createdLineItems = lineItemsData.length
+            ? await this.dbInstance.insert(quoteLineItems).values(lineItemsData).returning()
+            : [];
 
         // Fetch user and product details for line items
         const lineItemsWithRelations = await Promise.all(
@@ -182,7 +242,7 @@ export class QuotesRepository {
         const lineItems = await this.dbInstance
             .select()
             .from(quoteLineItems)
-            .where(eq(quoteLineItems.quoteId, id));
+            .where(and(eq(quoteLineItems.quoteId, id), eq(quoteLineItems.status, "active")));
 
         // Fetch product and variant details for line items
         const lineItemsWithRelations = await Promise.all(
@@ -269,6 +329,7 @@ export class QuotesRepository {
             variantId: lineItem.variantId,
             variantName: lineItem.variantName,
             productType: (lineItem as any).productType || 'wide_roll',
+        status: (lineItem as any).status || 'active',
             width: lineItem.width.toString(),
             height: lineItem.height.toString(),
             quantity: lineItem.quantity,
@@ -294,10 +355,12 @@ export class QuotesRepository {
 
     async updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>): Promise<QuoteLineItem> {
         const updateData: any = {};
+        const allowedStatus = ["draft", "active", "canceled"];
         if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
         if (lineItem.productName !== undefined) updateData.productName = lineItem.productName;
         if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
         if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
+        if (lineItem.status !== undefined && allowedStatus.includes(lineItem.status as any)) updateData.status = lineItem.status;
         if (lineItem.width !== undefined) updateData.width = lineItem.width.toString();
         if (lineItem.height !== undefined) updateData.height = lineItem.height.toString();
         if (lineItem.quantity !== undefined) updateData.quantity = lineItem.quantity;
@@ -319,6 +382,94 @@ export class QuotesRepository {
         return updated;
     }
 
+    async createTemporaryLineItem(
+        organizationId: string,
+        createdByUserId: string,
+        lineItem: Omit<InsertQuoteLineItem, "quoteId">
+    ): Promise<QuoteLineItem> {
+        if (!lineItem.productId) {
+            throw new Error("createTemporaryLineItem called without productId");
+        }
+
+        const lineItemData: typeof quoteLineItems.$inferInsert = {
+            organizationId,
+            createdByUserId,
+            quoteId: null,
+            isTemporary: true,
+            productId: lineItem.productId,
+            productName: lineItem.productName,
+            variantId: lineItem.variantId ?? null,
+            variantName: lineItem.variantName ?? null,
+            productType: (lineItem as any).productType ?? "wide_roll",
+        status: (lineItem as any).status ?? "active",
+            width: lineItem.width.toString(),
+            height: lineItem.height.toString(),
+            quantity: lineItem.quantity,
+            specsJson: (lineItem as any).specsJson ?? null,
+            selectedOptions: lineItem.selectedOptions ?? [],
+            linePrice: lineItem.linePrice.toString(),
+            priceBreakdown: lineItem.priceBreakdown as any,
+            materialUsages: (lineItem as any).materialUsages ?? [],
+            displayOrder: lineItem.displayOrder ?? 0,
+        } as any;
+
+        const [created] = await this.dbInstance
+            .insert(quoteLineItems)
+            .values(lineItemData)
+            .returning();
+
+        return created;
+    }
+
+    async finalizeTemporaryLineItemsForUser(
+        organizationId: string,
+        userId: string,
+        quoteId: string
+    ): Promise<QuoteLineItem[]> {
+        // Migrate any temporary line items (created by this user, for this org) onto the saved quote.
+        // Temporary line items are stored in the same table with isTemporary=true and quoteId=null.
+        const tempItems = await this.dbInstance
+            .select()
+            .from(quoteLineItems)
+            .where(
+                and(
+                    eq(quoteLineItems.organizationId, organizationId),
+                    eq(quoteLineItems.createdByUserId, userId),
+                    eq(quoteLineItems.isTemporary, true),
+                    isNull(quoteLineItems.quoteId)
+                )
+            );
+
+        if (!tempItems.length) {
+            console.log("[QuotesRepository] finalizeTemporaryLineItemsForUser: no temp items", {
+                organizationId,
+                userId,
+                quoteId,
+            });
+            return [];
+        }
+
+        // Attach temp items to the new quote and mark as finalized
+        const updated = await this.dbInstance
+            .update(quoteLineItems)
+            .set({
+                quoteId,
+                isTemporary: false,
+                updatedAt: new Date(),
+            })
+            .where(
+                and(
+                    eq(quoteLineItems.organizationId, organizationId),
+                    eq(quoteLineItems.createdByUserId, userId),
+                    eq(quoteLineItems.isTemporary, true),
+                    isNull(quoteLineItems.quoteId)
+                )
+            )
+            .returning();
+
+        return updated;
+    }
+
     async deleteLineItem(id: string): Promise<void> {
         await this.dbInstance.delete(quoteLineItems).where(eq(quoteLineItems.id, id));
     }
@@ -333,7 +484,8 @@ export class QuotesRepository {
         userRole?: string;
         source?: string;
     }): Promise<QuoteWithRelations[]> {
-        const conditions = [eq(quotes.organizationId, organizationId)];
+        try {
+            const conditions = [eq(quotes.organizationId, organizationId), eq(quotes.status, "active")];
 
         // Role-based filtering:
         // - owner/admin: can see all quotes (no userId filter)
@@ -380,53 +532,61 @@ export class QuotesRepository {
             conditions.push(sql`${quotes.totalPrice}::numeric <= ${filters.maxPrice}::numeric`);
         }
 
-        const userQuotes = await this.dbInstance
-            .select()
-            .from(quotes)
-            .where(and(...conditions))
-            .orderBy(desc(quotes.createdAt));
+            const userQuotes = await this.dbInstance
+                .select()
+                .from(quotes)
+                .where(and(...conditions))
+                .orderBy(desc(quotes.createdAt));
 
-        // Fetch user and line items for each quote
-        return await Promise.all(
-            userQuotes.map(async (quote) => {
-                const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
+            // Fetch user and line items for each quote
+            return await Promise.all(
+                userQuotes.map(async (quote) => {
+                    const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
 
-                // Fetch line items
-                const lineItems = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quote.id));
+                    // Fetch active line items
+                    const lineItems = await this.dbInstance
+                        .select()
+                        .from(quoteLineItems)
+                        .where(and(eq(quoteLineItems.quoteId, quote.id), eq(quoteLineItems.status, "active")));
 
-                // Apply product filter if specified
-                let filteredLineItems = lineItems;
-                if (filters?.searchProduct) {
-                    filteredLineItems = lineItems.filter(item => item.productId === filters.searchProduct);
-                    // If no line items match the product filter, skip this quote
-                    if (filteredLineItems.length === 0) {
-                        return null;
-                    }
-                }
-
-                // Fetch product and variant details for line items
-                const lineItemsWithRelations = await Promise.all(
-                    lineItems.map(async (lineItem) => {
-                        const [product] = await this.dbInstance.select().from(products).where(eq(products.id, lineItem.productId));
-                        let variant = null;
-                        if (lineItem.variantId) {
-                            [variant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+                    // Apply product filter if specified
+                    let filteredLineItems = lineItems;
+                    if (filters?.searchProduct) {
+                        filteredLineItems = lineItems.filter(item => item.productId === filters.searchProduct);
+                        // If no line items match the product filter, skip this quote
+                        if (filteredLineItems.length === 0) {
+                            return null;
                         }
-                        return {
-                            ...lineItem,
-                            product,
-                            variant,
-                        };
-                    })
-                );
+                    }
 
-                return {
-                    ...quote,
-                    user,
-                    lineItems: lineItemsWithRelations,
-                };
-            })
-        ).then(results => results.filter(r => r !== null) as QuoteWithRelations[]);
+                    // Fetch product and variant details for line items
+                    const lineItemsWithRelations = await Promise.all(
+                        lineItems.map(async (lineItem) => {
+                            const [product] = await this.dbInstance.select().from(products).where(eq(products.id, lineItem.productId));
+                            let variant = null;
+                            if (lineItem.variantId) {
+                                [variant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, lineItem.variantId));
+                            }
+                            return {
+                                ...lineItem,
+                                product,
+                                variant,
+                            };
+                        })
+                    );
+
+                    return {
+                        ...quote,
+                        user,
+                        lineItems: lineItemsWithRelations,
+                    };
+                })
+            ).then(results => results.filter(r => r !== null) as QuoteWithRelations[]);
+        } catch (error: any) {
+            console.error("[getUserQuotes] PG error message:", error?.message);
+            console.error("[getUserQuotes] PG full error:", error);
+            throw error;
+        }
     }
 
     async getAllQuotes(organizationId: string, filters?: {
@@ -438,7 +598,7 @@ export class QuotesRepository {
         minQuantity?: string;
         maxQuantity?: string;
     }): Promise<QuoteWithRelations[]> {
-        const conditions = [eq(quotes.organizationId, organizationId)];
+        const conditions = [eq(quotes.organizationId, organizationId), eq(quotes.status, "active")];
 
         if (filters?.searchCustomer) {
             conditions.push(like(quotes.customerName, `%${filters.searchCustomer}%`));
@@ -472,8 +632,11 @@ export class QuotesRepository {
                     return null;
                 }
 
-                // Fetch line items
-                const lineItems = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quote.id));
+                // Fetch active line items
+                const lineItems = await this.dbInstance
+                    .select()
+                    .from(quoteLineItems)
+                    .where(and(eq(quoteLineItems.quoteId, quote.id), eq(quoteLineItems.status, "active")));
 
                 // Apply product filter if specified
                 if (filters?.searchProduct) {
@@ -523,9 +686,10 @@ export class QuotesRepository {
     async getQuotesForCustomer(organizationId: string, customerId: string, filters?: {
         source?: string;
     }): Promise<QuoteWithRelations[]> {
-        const conditions = [
+            const conditions = [
             eq(quotes.organizationId, organizationId),
             eq(quotes.customerId, customerId),
+            eq(quotes.status, "active"),
         ];
 
         // Filter by source if specified (e.g., 'customer_quick_quote' for portal)
@@ -543,7 +707,10 @@ export class QuotesRepository {
         return await Promise.all(
             customerQuotes.map(async (quote) => {
                 const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
-                const lineItems = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quote.id));
+                const lineItems = await this.dbInstance
+                    .select()
+                    .from(quoteLineItems)
+                    .where(and(eq(quoteLineItems.quoteId, quote.id), eq(quoteLineItems.status, "active")));
 
                 // Fetch product and variant details for line items
                 const lineItemsWithRelations = await Promise.all(
