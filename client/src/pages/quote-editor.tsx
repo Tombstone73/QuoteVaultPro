@@ -166,8 +166,10 @@ export default function QuoteEditor() {
   });
 
   // Derived values used in hook dependencies
-  const selectedProductDetail =
-    products?.find((p) => p.id === selectedProductId) ?? null;
+  const selectedProductDetail = useMemo(() =>
+    products?.find((p) => p.id === selectedProductId) ?? null,
+    [products, selectedProductId]
+  );
 
   // A product "requires dimensions" if either:
   // - the backend explicitly flags it (future-proof),
