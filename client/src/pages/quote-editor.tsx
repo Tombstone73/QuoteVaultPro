@@ -97,13 +97,6 @@ export default function QuoteEditor() {
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
-  useEffect(() => {
-    if (!quoteId) {
-      // If there's no quoteId, push back to the quotes list.
-      navigate(ROUTES.quotes.list);
-    }
-  }, [quoteId, navigate]);
-
   // Customer selection
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
@@ -233,7 +226,7 @@ export default function QuoteEditor() {
   });
 
   // Load existing quote if editing
-  const { data: quote, isLoading: quoteLoading } = useQuery<QuoteWithRelations>({
+  const { data: quote, isLoading: quoteLoading, error: quoteError } = useQuery<QuoteWithRelations>({
     queryKey: ["/api/quotes", quoteId],
     queryFn: async () => {
       if (!quoteId) throw new Error("Quote ID is required");
@@ -243,6 +236,21 @@ export default function QuoteEditor() {
     },
     enabled: !!quoteId,
   });
+
+  // Defensive redirect: if quote cannot be loaded, navigate back to quotes list
+  useEffect(() => {
+    // If there is no quoteId at all, we should not be on this page.
+    if (!quoteId) {
+      navigate(ROUTES.quotes.list);
+      return;
+    }
+
+    // If loading finished and we still have no quote, or an error occurred,
+    // redirect to the quotes list instead of leaving the user on a dead skeleton.
+    if (!quoteLoading && (!quote || quoteError)) {
+      navigate(ROUTES.quotes.list);
+    }
+  }, [quoteId, quoteLoading, quote, quoteError, navigate]);
 
   // Note: Quote-level file query removed. Artwork is now attached to individual line items.
 
@@ -830,17 +838,7 @@ export default function QuoteEditor() {
     );
   }
 
-  if (quoteLoading) {
-    return (
-      <div className="container mx-auto p-6 space-y-4">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-96 w-full" />
-      </div>
-    );
-  }
-
-  // If no quoteId, show loading while redirect happens
-  if (!quoteId) {
+  if (quoteLoading || !quoteId) {
     return (
       <div className="container mx-auto p-6 space-y-4">
         <Skeleton className="h-32 w-full" />
@@ -874,9 +872,9 @@ export default function QuoteEditor() {
     <div className="max-w-7xl mx-auto space-y-3 px-4">
       {/* Header with navigation and actions */}
       <div className="flex items-center justify-between py-2">
-        <Button variant="ghost" onClick={() => navigate(ROUTES.quotes.list)} className="gap-2 h-9">
-          <ArrowLeft className="w-4 h-4" />
-          Back to Quotes
+        <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.quotes.list)} className="gap-2">
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to quotes
         </Button>
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-semibold">
@@ -1738,12 +1736,15 @@ export default function QuoteEditor() {
                   )}
                 </div>
                 <Button
+                  type="button"
                   onClick={handleAddLineItem}
                   disabled={!calculatedPrice || isCalculating}
                   className="gap-2"
                 >
                   <Plus className="w-4 h-4" />
-                  Add Item
+                  {draftLineItemId && lineItems.some(item => item.id === draftLineItemId)
+                    ? "Save changes"
+                    : "Add Item"}
                 </Button>
               </div>
             </CardContent>
