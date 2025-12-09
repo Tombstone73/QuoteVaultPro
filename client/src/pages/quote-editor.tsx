@@ -505,9 +505,8 @@ export default function QuoteEditor() {
 
   // Sync selected options to draft line item when they change
   useEffect(() => {
-    if (!draftLineItemId || !quoteId) return;
-    const product = selectedProductDetail || products?.find(p => p.id === selectedProductId);
-    const productOptions = (product?.optionsJson as ProductOptionItem[] | undefined) || [];
+    if (!draftLineItemId || !quoteId || !selectedProduct) return;
+    const productOptionsForSync = (selectedProduct.optionsJson as ProductOptionItem[] | undefined) || [];
     const selectedOptionsArray: Array<{
       optionId: string;
       optionName: string;
@@ -520,7 +519,7 @@ export default function QuoteEditor() {
     const heightVal = requiresDimensions ? parseFloat(height || "0") : 1;
     const quantityVal = parseInt(quantity || "1", 10) || 1;
 
-    productOptions.forEach((option) => {
+    productOptionsForSync.forEach((option) => {
       const selection = optionSelections[option.id];
       if (!selection) return;
 
@@ -557,7 +556,7 @@ export default function QuoteEditor() {
     });
 
     patchDraftLineItem({ selectedOptions: selectedOptionsArray });
-  }, [draftLineItemId, quoteId, optionSelections, selectedProductDetail, products, selectedProductId, requiresDimensions, width, height, quantity, patchDraftLineItem]);
+  }, [draftLineItemId, quoteId, optionSelections, selectedProduct, requiresDimensions, width, height, quantity, patchDraftLineItem]);
 
   const handleAddLineItem = async () => {
     if (!selectedProductId) return;
