@@ -165,8 +165,9 @@ export default function QuoteEditor() {
     queryKey: ["/api/products"],
   });
 
-  // Derived values used in hook dependencies
-  const selectedProductDetail = useMemo(() =>
+  // Canonical product reference used by all effects and pricing logic.
+  // This is the single source of truth for the currently selected product.
+  const selectedProduct = useMemo(() =>
     products?.find((p) => p.id === selectedProductId) ?? null,
     [products, selectedProductId]
   );
@@ -175,9 +176,9 @@ export default function QuoteEditor() {
   // - the backend explicitly flags it (future-proof),
   // - OR its pricingMode is "area" (area-based pricing uses width/height).
   const requiresDimensions = useMemo(() => {
-    if (!selectedProductDetail) return false;
+    if (!selectedProduct) return false;
 
-    const anyProduct = selectedProductDetail as any;
+    const anyProduct = selectedProduct as any;
 
     // If the backend ever adds a real boolean, honor it.
     if (typeof anyProduct.requiresDimensions === "boolean") {
@@ -186,7 +187,7 @@ export default function QuoteEditor() {
 
     // Fallback / current behavior: infer from pricing mode.
     return anyProduct.pricingMode === "area";
-  }, [selectedProductDetail]);
+  }, [selectedProduct]);
 
 
   // Filter products for combobox search
@@ -277,18 +278,6 @@ export default function QuoteEditor() {
     queryKey: ["/api/products", selectedProductId, "variants"],
     enabled: !!selectedProductId,
   });
-
-  // Get selected product and determine if dimensions are required
-  // Prefer detailed product data (which includes options) over list data
-  const selectedProduct = useMemo(() => {
-    if (selectedProductDetail) return selectedProductDetail;
-    return products?.find(p => p.id === selectedProductId);
-  }, [selectedProductDetail, products, selectedProductId]);
-
-  const productOptionsForAddForm = useMemo(() => {
-    return (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
-  }, [selectedProduct]);
-
 
   const productOptions = useMemo(() => {
     return (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
@@ -830,17 +819,8 @@ export default function QuoteEditor() {
     );
   }
 
-  if (quoteLoading) {
-    return (
-      <div className="container mx-auto p-6 space-y-4">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-96 w-full" />
-      </div>
-    );
-  }
-
-  // If no quoteId, show loading while redirect happens
-  if (!quoteId) {
+  // Show loading skeleton while quote loads or if no quoteId (redirect in progress)
+  if (quoteLoading || !quoteId) {
     return (
       <div className="container mx-auto p-6 space-y-4">
         <Skeleton className="h-32 w-full" />
