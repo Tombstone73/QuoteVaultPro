@@ -166,8 +166,10 @@ export default function QuoteEditor() {
   });
 
   // Derived values used in hook dependencies
-  const selectedProductDetail =
-    products?.find((p) => p.id === selectedProductId) ?? null;
+  const selectedProductDetail = useMemo(() =>
+    products?.find((p) => p.id === selectedProductId) ?? null,
+    [products, selectedProductId]
+  );
 
   // A product "requires dimensions" if either:
   // - the backend explicitly flags it (future-proof),
@@ -242,10 +244,6 @@ export default function QuoteEditor() {
     enabled: !!quoteId,
   });
 
-  if (!quoteId) {
-    // While the redirect effect fires, render nothing.
-    return null;
-  }
   // Note: Quote-level file query removed. Artwork is now attached to individual line items.
 
   // Load data when editing existing quote
@@ -505,9 +503,8 @@ export default function QuoteEditor() {
 
   // Sync selected options to draft line item when they change
   useEffect(() => {
-    if (!draftLineItemId || !quoteId) return;
-    const product = selectedProductDetail || products?.find(p => p.id === selectedProductId);
-    const productOptions = (product?.optionsJson as ProductOptionItem[] | undefined) || [];
+    if (!draftLineItemId || !quoteId || !selectedProduct) return;
+    const productOptionsForSync = (selectedProduct.optionsJson as ProductOptionItem[] | undefined) || [];
     const selectedOptionsArray: Array<{
       optionId: string;
       optionName: string;
@@ -520,7 +517,7 @@ export default function QuoteEditor() {
     const heightVal = requiresDimensions ? parseFloat(height || "0") : 1;
     const quantityVal = parseInt(quantity || "1", 10) || 1;
 
-    productOptions.forEach((option) => {
+    productOptionsForSync.forEach((option) => {
       const selection = optionSelections[option.id];
       if (!selection) return;
 
@@ -557,7 +554,7 @@ export default function QuoteEditor() {
     });
 
     patchDraftLineItem({ selectedOptions: selectedOptionsArray });
-  }, [draftLineItemId, quoteId, optionSelections, selectedProductDetail, products, selectedProductId, requiresDimensions, width, height, quantity, patchDraftLineItem]);
+  }, [draftLineItemId, quoteId, optionSelections, selectedProduct, requiresDimensions, width, height, quantity, patchDraftLineItem]);
 
   const handleAddLineItem = async () => {
     if (!selectedProductId) return;
@@ -834,6 +831,16 @@ export default function QuoteEditor() {
   }
 
   if (quoteLoading) {
+    return (
+      <div className="container mx-auto p-6 space-y-4">
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-96 w-full" />
+      </div>
+    );
+  }
+
+  // If no quoteId, show loading while redirect happens
+  if (!quoteId) {
     return (
       <div className="container mx-auto p-6 space-y-4">
         <Skeleton className="h-32 w-full" />

@@ -492,7 +492,8 @@ export class QuotesRepository {
         source?: string;
     }): Promise<QuoteWithRelations[]> {
         try {
-            const conditions = [eq(quotes.organizationId, organizationId), eq(quotes.status, "active")];
+            // Include both active and draft quotes (don't filter out drafts)
+            const conditions = [eq(quotes.organizationId, organizationId)];
 
         // Role-based filtering:
         // - owner/admin: can see all quotes (no userId filter)
