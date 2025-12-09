@@ -1,4 +1,4 @@
-# Git Workflow Guide for TitanOS
+# Git Workflow Guide for QuoteVaultPro (TitanOS)
 
 This document provides detailed git workflows for contributing to QuoteVaultPro.
 
