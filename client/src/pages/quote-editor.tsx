@@ -97,13 +97,6 @@ export default function QuoteEditor() {
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
-  useEffect(() => {
-    if (!quoteId) {
-      // If there's no quoteId, push back to the quotes list.
-      navigate(ROUTES.quotes.list);
-    }
-  }, [quoteId, navigate]);
-
   // Customer selection
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
@@ -165,8 +158,9 @@ export default function QuoteEditor() {
     queryKey: ["/api/products"],
   });
 
-  // Derived values used in hook dependencies
-  const selectedProductDetail = useMemo(() =>
+  // Canonical product reference used by all effects and pricing logic.
+  // This is the single source of truth for the currently selected product.
+  const selectedProduct = useMemo(() =>
     products?.find((p) => p.id === selectedProductId) ?? null,
     [products, selectedProductId]
   );
@@ -174,19 +168,30 @@ export default function QuoteEditor() {
   // A product "requires dimensions" if either:
   // - the backend explicitly flags it (future-proof),
   // - OR its pricingMode is "area" (area-based pricing uses width/height).
+  // Fee/addon products NEVER require dimensions.
   const requiresDimensions = useMemo(() => {
-    if (!selectedProductDetail) return false;
+    if (!selectedProduct) return false;
 
-    const anyProduct = selectedProductDetail as any;
+    const anyProduct = selectedProduct as any;
 
     // If the backend ever adds a real boolean, honor it.
     if (typeof anyProduct.requiresDimensions === "boolean") {
       return anyProduct.requiresDimensions;
     }
 
-    // Fallback / current behavior: infer from pricing mode.
-    return anyProduct.pricingMode === "area";
-  }, [selectedProductDetail]);
+    // Fee/addon products don't need dimensions
+    if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") {
+      return false;
+    }
+
+    // Area-based pricing requires dimensions
+    if (anyProduct.pricingMode === "area") {
+      return true;
+    }
+
+    // For other modes (unit, perQty, etc.), dimensions not required
+    return false;
+  }, [selectedProduct]);
 
 
   // Filter products for combobox search
@@ -249,8 +254,19 @@ export default function QuoteEditor() {
   // Load data when editing existing quote
   useEffect(() => {
     if (quote) {
-      setSelectedCustomerId(quote.customerId || null);
-      setSelectedContactId(quote.contactId || null);
+      // Sync customer ID and contact ID
+      if (quote.customerId && !selectedCustomerId) {
+        setSelectedCustomerId(quote.customerId);
+      }
+      if (quote.contactId && !selectedContactId) {
+        setSelectedContactId(quote.contactId);
+      }
+
+      // If quote includes customer data, populate selectedCustomer
+      if ((quote as any).customer && !selectedCustomer) {
+        setSelectedCustomer((quote as any).customer as CustomerWithContacts);
+      }
+
       setLineItems(quote.lineItems?.map((item, idx) => ({
         id: item.id,
         productId: item.productId,
@@ -271,24 +287,12 @@ export default function QuoteEditor() {
         productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
       })) || []);
     }
-  }, [quote]);
+  }, [quote, selectedCustomerId, selectedContactId, selectedCustomer]);
 
   const { data: productVariants } = useQuery<ProductVariant[]>({
     queryKey: ["/api/products", selectedProductId, "variants"],
     enabled: !!selectedProductId,
   });
-
-  // Get selected product and determine if dimensions are required
-  // Prefer detailed product data (which includes options) over list data
-  const selectedProduct = useMemo(() => {
-    if (selectedProductDetail) return selectedProductDetail;
-    return products?.find(p => p.id === selectedProductId);
-  }, [selectedProductDetail, products, selectedProductId]);
-
-  const productOptionsForAddForm = useMemo(() => {
-    return (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
-  }, [selectedProduct]);
-
 
   const productOptions = useMemo(() => {
     return (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
@@ -331,6 +335,39 @@ export default function QuoteEditor() {
       setSelectedCustomer(customerData);
     }
   }, [customerData, selectedCustomer]);
+
+  // Populate form fields when editing a line item
+  useEffect(() => {
+    if (draftLineItemId && lineItems.length > 0) {
+      const itemToEdit = lineItems.find(item => item.id === draftLineItemId);
+      if (itemToEdit) {
+        setSelectedProductId(itemToEdit.productId);
+        setSelectedVariantId(itemToEdit.variantId);
+        setWidth(String(itemToEdit.width));
+        setHeight(String(itemToEdit.height));
+        setQuantity(String(itemToEdit.quantity));
+        setLineItemNotes(itemToEdit.notes || '');
+
+        // Populate option selections if available
+        if (itemToEdit.selectedOptions && Array.isArray(itemToEdit.selectedOptions)) {
+          const selections: Record<string, any> = {};
+          itemToEdit.selectedOptions.forEach((opt: any) => {
+            selections[opt.optionId] = {
+              value: opt.value,
+              grommetsLocation: opt.grommetsLocation,
+              grommetsSpacingCount: opt.grommetsSpacingCount,
+              grommetsPerSign: opt.grommetsPerSign,
+              grommetsSpacingInches: opt.grommetsSpacingInches,
+              customPlacementNote: opt.customPlacementNote,
+              hemsType: opt.hemsType,
+              polePocket: opt.polePocket,
+            };
+          });
+          setOptionSelections(selections);
+        }
+      }
+    }
+  }, [draftLineItemId, lineItems]);
 
   // Auto-calculate price with debounce
   const triggerAutoCalculate = useCallback(async () => {
@@ -830,17 +867,8 @@ export default function QuoteEditor() {
     );
   }
 
-  if (quoteLoading) {
-    return (
-      <div className="container mx-auto p-6 space-y-4">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-96 w-full" />
-      </div>
-    );
-  }
-
-  // If no quoteId, show loading while redirect happens
-  if (!quoteId) {
+  // Show loading skeleton while quote loads or if no quoteId (redirect in progress)
+  if (quoteLoading || !quoteId) {
     return (
       <div className="container mx-auto p-6 space-y-4">
         <Skeleton className="h-32 w-full" />
@@ -1743,7 +1771,7 @@ export default function QuoteEditor() {
                   className="gap-2"
                 >
                   <Plus className="w-4 h-4" />
-                  Add Item
+                  {draftLineItemId && lineItems.some(item => item.id === draftLineItemId) ? "Save changes" : "Add Item"}
                 </Button>
               </div>
             </CardContent>
@@ -1837,11 +1865,19 @@ export default function QuoteEditor() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => {
+                                if (item.id) {
+                                  setDraftLineItemId(item.id);
+                                }
+                              }}>
+                                <Pencil className="w-4 h-4 mr-2" />
+                                Edit
+                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleDuplicateLineItem(item.tempId || item.id || '')}>
                                 <Copy className="w-4 h-4 mr-2" />
                                 Duplicate
                               </DropdownMenuItem>
-                              <DropdownMenuItem 
+                              <DropdownMenuItem
                                 onClick={() => handleRemoveLineItem(item.tempId || item.id || '')}
                                 className="text-destructive"
                               >
@@ -1982,16 +2018,6 @@ export default function QuoteEditor() {
                 <Save className="w-4 h-4 mr-2" />
                 {saveQuoteMutation.isPending ? "Saving..." : quote?.status === "draft" ? "Finalize Quote" : "Save Quote"}
               </Button>
-              {quote?.status === "draft" && (
-                <Button
-                  variant="outline"
-                  className="w-full h-9"
-                  disabled={deleteQuoteMutation.isPending}
-                  onClick={handleDiscardDraft}
-                >
-                  {deleteQuoteMutation.isPending ? "Discarding..." : "Discard Draft"}
-                </Button>
-              )}
               <div className="grid grid-cols-2 gap-2 w-full">
                 <Button variant="outline" disabled size="sm">
                   <Send className="w-4 h-4 mr-2" />
