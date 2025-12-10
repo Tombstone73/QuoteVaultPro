@@ -65,9 +65,9 @@ export default function Home() {
     if (value === "quotes") {
       // Navigate to appropriate quotes page instead of showing tab content
       if (viewMode === "admin" && isAdmin) {
-        navigate("/quotes");
+        navigate(ROUTES.quotes.list);
       } else {
-        navigate("/my-quotes");
+        navigate(ROUTES.myQuotes);
       }
     } else if (value === "contacts") {
       navigate("/contacts");
