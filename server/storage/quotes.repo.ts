@@ -281,20 +281,47 @@ export class QuotesRepository {
     }
 
     async updateQuote(organizationId: string, id: string, data: {
-        customerName?: string;
-        subtotal?: number;
-        taxRate?: number;
-        marginPercentage?: number;
-        discountAmount?: number;
-        totalPrice?: number;
+        customerId?: string | null;
+        contactId?: string | null;
+        customerName?: string | null;
+        status?: "draft" | "active" | "canceled";
+        subtotal?: number | null;
+        taxRate?: number | null;
+        taxAmount?: number | null;
+        marginPercentage?: number | null;
+        discountAmount?: number | null;
+        totalPrice?: number | null;
+        requestedDueDate?: string | Date | null;
+        validUntil?: string | Date | null;
+        carrier?: string | null;
+        carrierAccountNumber?: string | null;
+        shippingInstructions?: string | null;
+        label?: string | null;
+        shippingMethod?: string | null;
+        shippingMode?: string | null;
     }): Promise<QuoteWithRelations> {
-        const updateData: any = {};
-        if (data.customerName !== undefined) updateData.customerName = data.customerName;
-        if (data.subtotal !== undefined) updateData.subtotal = data.subtotal.toString();
-        if (data.taxRate !== undefined) updateData.taxRate = data.taxRate.toString();
+        const updateData: any = {
+            customerId: data.customerId ?? null,
+            contactId: data.contactId ?? null,
+            customerName: data.customerName ?? null,
+            status: data.status ?? sql`status`,
+            subtotal: data.subtotal != null ? data.subtotal.toString() : sql`subtotal`,
+            taxRate: data.taxRate != null ? data.taxRate.toString() : sql`tax_rate`,
+            taxAmount: data.taxAmount != null ? data.taxAmount.toString() : sql`tax_amount`,
+            totalPrice: data.totalPrice != null ? data.totalPrice.toString() : sql`total_price`,
+            updatedAt: new Date(),
+        };
+
         if (data.marginPercentage !== undefined) updateData.marginPercentage = data.marginPercentage.toString();
         if (data.discountAmount !== undefined) updateData.discountAmount = data.discountAmount.toString();
-        if (data.totalPrice !== undefined) updateData.totalPrice = data.totalPrice.toString();
+        if (data.requestedDueDate !== undefined) updateData.requestedDueDate = data.requestedDueDate;
+        if (data.validUntil !== undefined) updateData.validUntil = data.validUntil;
+        if (data.carrier !== undefined) updateData.carrier = data.carrier;
+        if (data.carrierAccountNumber !== undefined) updateData.carrierAccountNumber = data.carrierAccountNumber;
+        if (data.shippingInstructions !== undefined) updateData.shippingInstructions = data.shippingInstructions;
+        if (data.label !== undefined) updateData.label = data.label;
+        if (data.shippingMethod !== undefined) updateData.shippingMethod = data.shippingMethod;
+        if (data.shippingMode !== undefined) updateData.shippingMode = data.shippingMode;
 
         console.log(`[updateQuote] ID: ${id}, updateData:`, updateData);
 

@@ -431,20 +431,50 @@ export default function QuoteEditor() {
     },
   });
 
+  // Pricing summary derived values
+  const activeLineItems = lineItems.filter((li) => li.status !== "draft");
+
+  const subtotal = activeLineItems.reduce((sum, item) => sum + item.linePrice, 0);
+
+  const effectiveTaxRate = selectedCustomer?.isTaxExempt
+    ? 0
+    : selectedCustomer?.taxRateOverride != null
+      ? Number(selectedCustomer.taxRateOverride)
+      : Number(organization?.defaultTaxRate || 0);
+
+  const taxAmount = subtotal * effectiveTaxRate;
+  const grandTotal = subtotal + taxAmount;
+
   const saveQuoteMutation = useMutation({
     mutationFn: async () => {
-      const quoteData: any = {
-        customerId: selectedCustomerId || null,
-        contactId: selectedContactId || undefined,
-        customerName: selectedCustomer?.companyName || undefined,
+      if (!quoteId) {
+        throw new Error("Missing quote id");
+      }
+
+      if (!selectedCustomerId) {
+        throw new Error("Please select a customer before saving the quote");
+      }
+
+      const activeItems = lineItems.filter((li) => li.status !== "draft");
+      if (activeItems.length === 0) {
+        throw new Error("Please add at least one line item");
+      }
+
+      const isDraft = quote?.status === "draft";
+
+      const body = {
+        customerId: selectedCustomerId,
+        contactId: selectedContactId ?? null,
+        customerName: selectedCustomer?.companyName ?? quote?.customerName ?? null,
+        status: isDraft ? "active" : quote?.status,
+        subtotal,
+        taxRate: effectiveTaxRate,
+        taxAmount,
+        totalPrice: grandTotal,
         source: 'internal',
       };
 
-      if (quote?.status === "draft") {
-        quoteData.status = "active";
-      }
-
-      const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, quoteData);
+      const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, body);
       return await response.json();
     },
     onSuccess: () => {
@@ -848,21 +878,6 @@ export default function QuoteEditor() {
       </div>
     );
   }
-
-  // Calculate pricing summary
-  const subtotal = lineItems
-    .filter((li) => li.status !== "draft")
-    .reduce((sum, item) => sum + item.linePrice, 0);
-  
-  // Get effective tax rate - customer override > org default
-  const effectiveTaxRate = selectedCustomer?.isTaxExempt 
-    ? 0 
-    : selectedCustomer?.taxRateOverride != null 
-      ? Number(selectedCustomer.taxRateOverride)
-      : Number(organization?.defaultTaxRate || 0);
-  
-  const taxAmount = subtotal * effectiveTaxRate;
-  const grandTotal = subtotal + taxAmount;
 
   // Customer info computed values
   const pricingTier = selectedCustomer?.pricingTier || 'default';
@@ -1977,7 +1992,7 @@ export default function QuoteEditor() {
               <Button
                 className="w-full h-10"
                 onClick={() => saveQuoteMutation.mutate()}
-                disabled={saveQuoteMutation.isPending || lineItems.length === 0}
+                disabled={saveQuoteMutation.isPending || activeLineItems.length === 0}
               >
                 <Save className="w-4 h-4 mr-2" />
                 {saveQuoteMutation.isPending ? "Saving..." : quote?.status === "draft" ? "Finalize Quote" : "Save Quote"}
