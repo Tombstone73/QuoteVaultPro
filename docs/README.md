@@ -80,6 +80,11 @@ Official workflow for Batman → ChatGPT → Copilot development loop.
 
 ---
 
+### 🔀 **GIT_WORKFLOW.md**
+Comprehensive guide for git operations, branching strategy, and merging changes into the default branch via Pull Requests.
+
+---
+
 # 🔷 Module-Level Documentation
 
 Documents live in `/docs/modules` and include data models, service logic, API routes, workflows, RBAC, gaps, and test plans.
@@ -106,6 +111,8 @@ Documents live in `/docs/modules` and include data models, service logic, API ro
 
 # 🔷 Contribution Notes
 
+- See **[CONTRIBUTING.md](../CONTRIBUTING.md)** for how to merge changes and create Pull Requests
+- See **[GIT_WORKFLOW.md](GIT_WORKFLOW.md)** for detailed git workflow and branch management
 - Update all relevant docs when adding features  
 - Enforce organizationId  
 - Use Zod validation  

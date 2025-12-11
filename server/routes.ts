@@ -2408,6 +2408,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         customerName, 
         subtotal, 
         taxRate, 
+        taxAmount,
         marginPercentage, 
         discountAmount, 
         totalPrice,
@@ -2432,9 +2433,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         discountAmount,
         totalPrice,
         customerId,
+        contactId,
         shippingMethod,
         shippingMode,
         status,
+        taxAmount,
       });
 
       // Internal users can update any quote, customers only their own
@@ -2475,24 +2478,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      const updatedQuote = await storage.updateQuote(organizationId, id, {
+      const updateData = {
+        customerId: customerId ?? null,
+        contactId: contactId ?? null,
         customerName,
+        status,
         subtotal,
         taxRate,
+        taxAmount,
+        totalPrice,
         marginPercentage,
         discountAmount,
-        totalPrice,
-        customerId,
-        contactId,
-        status,
         requestedDueDate,
         validUntil,
         carrier,
         carrierAccountNumber,
         shippingInstructions,
         label,
+        shippingMethod,
+        shippingMode,
         ...snapshotData,
-      });
+      };
+
+      const updatedQuote = await storage.updateQuote(organizationId, id, updateData);
 
       console.log(`[PATCH /api/quotes/${id}] Updated customerName:`, updatedQuote.customerName);
 
