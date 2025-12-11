@@ -535,17 +535,12 @@ export default function QuoteEditor() {
       throw new Error("Missing quote id");
     }
 
-    if (!selectedCustomerId) {
-      throw new Error("Please select a customer before saving the quote");
-    }
-
-    const activeItems = lineItems.filter((li) => li.status !== "draft");
-    if (activeItems.length === 0) {
-      throw new Error("Please add at least one line item");
-    }
+    const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? quote?.customerId ?? null;
+    const payloadHasCustomerId = !!payloadCustomerId;
+    const payloadHasLineItems = lineItems.length > 0;
 
     return {
-      customerId: selectedCustomerId,
+      customerId: payloadCustomerId,
       contactId: selectedContactId ?? null,
       customerName: selectedCustomer?.companyName ?? quote?.customerName ?? null,
       subtotal,
@@ -553,6 +548,8 @@ export default function QuoteEditor() {
       taxAmount,
       totalPrice: grandTotal,
       source: "internal",
+      hasCustomerId: payloadHasCustomerId,
+      hasLineItems: payloadHasLineItems,
     };
   };
 
@@ -873,19 +870,12 @@ export default function QuoteEditor() {
   };
 
   const handleSaveQuote = async () => {
-    if (!hasCustomer || !hasLineItems) {
-      toast({
-        title: "Cannot save quote",
-        description: !hasCustomer
-          ? "Select a customer before saving."
-          : "Add at least one line item before saving.",
-        variant: "destructive",
-      });
-      return;
-    }
+    const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? quote?.customerId ?? null;
+    const payloadHasCustomerId = !!payloadCustomerId;
+    const payloadHasLineItems = lineItems.length > 0;
 
     const workingQuote = {
-      customerId: selectedCustomerId,
+      customerId: payloadCustomerId,
       contactId: selectedContactId ?? null,
       customerName: selectedCustomer?.companyName ?? quote?.customerName ?? null,
       lineItems,
@@ -894,6 +884,8 @@ export default function QuoteEditor() {
       taxAmount,
       totalPrice: grandTotal,
       source: "internal",
+      hasCustomerId: payloadHasCustomerId,
+      hasLineItems: payloadHasLineItems,
     };
 
     const error = validateQuote(workingQuote);
