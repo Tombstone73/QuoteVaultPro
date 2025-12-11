@@ -16,6 +16,7 @@ type CustomerCardProps = {
     markupPercent: number | null;
     marginPercent: number | null;
     deliveryMethod: 'pickup' | 'ship' | 'deliver';
+    readOnly?: boolean;
     onCustomerChange: (customerId: string | null, customer?: CustomerWithContacts | undefined, contactId?: string | null | undefined) => void;
     onContactChange: (contactId: string | null) => void;
 };
@@ -30,6 +31,7 @@ export function CustomerCard({
     discountPercent,
     markupPercent,
     marginPercent,
+    readOnly = false,
     onCustomerChange,
     onContactChange,
 }: CustomerCardProps) {
@@ -49,6 +51,7 @@ export function CustomerCard({
                         autoFocus={false}
                         label=""
                         placeholder="Search customers..."
+                        disabled={readOnly}
                     />
                     {selectedCustomer && (
                         <div className="text-xs text-muted-foreground space-y-0.5">
@@ -101,7 +104,7 @@ export function CustomerCard({
                         {contacts && contacts.length > 0 && (
                             <div className="space-y-1.5">
                                 <Label className="text-xs text-muted-foreground">Contact</Label>
-                                <Select value={selectedContactId || ""} onValueChange={onContactChange}>
+                                <Select value={selectedContactId || ""} onValueChange={onContactChange} disabled={readOnly}>
                                     <SelectTrigger className="h-8 text-sm">
                                         <SelectValue placeholder="Select contact" />
                                     </SelectTrigger>

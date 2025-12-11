@@ -19,6 +19,7 @@ type SummaryCardProps = {
     selectedCustomer: CustomerWithContacts | undefined;
     canSaveQuote: boolean;
     isSaving: boolean;
+    readOnly?: boolean;
     onSave: () => void;
     onConvertToOrder: () => void;
 };
@@ -35,6 +36,7 @@ export function SummaryCard({
     selectedCustomer,
     canSaveQuote,
     isSaving,
+    readOnly = false,
     onSave,
     onConvertToOrder,
 }: SummaryCardProps) {
@@ -132,28 +134,41 @@ export function SummaryCard({
                     </div>
                 </CardContent>
                 <CardFooter className="flex-col gap-2 pt-0 px-5 pb-4">
-                    <Button
-                        className="w-full h-10"
-                        onClick={onSave}
-                        disabled={!canSaveQuote}
-                    >
-                        <Save className="w-4 h-4 mr-2" />
-                        {isSaving ? "Saving…" : "Save Quote"}
-                    </Button>
-                    <div className="grid grid-cols-2 gap-2 w-full">
-                        <Button variant="outline" disabled size="sm">
-                            <Send className="w-4 h-4 mr-2" />
-                            Email
-                        </Button>
+                    {readOnly ? (
+                        // View mode: only show Convert to Order
                         <Button
-                            variant="secondary"
-                            size="sm"
+                            className="w-full h-10"
                             onClick={onConvertToOrder}
-                            disabled={isSaving}
                         >
                             Convert to Order
                         </Button>
-                    </div>
+                    ) : (
+                        // Edit mode: show Save, Email, and Convert
+                        <>
+                            <Button
+                                className="w-full h-10"
+                                onClick={onSave}
+                                disabled={!canSaveQuote}
+                            >
+                                <Save className="w-4 h-4 mr-2" />
+                                {isSaving ? "Saving…" : "Save Quote"}
+                            </Button>
+                            <div className="grid grid-cols-2 gap-2 w-full">
+                                <Button variant="outline" disabled size="sm">
+                                    <Send className="w-4 h-4 mr-2" />
+                                    Email
+                                </Button>
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={onConvertToOrder}
+                                    disabled={isSaving}
+                                >
+                                    Convert to Order
+                                </Button>
+                            </div>
+                        </>
+                    )}
                 </CardFooter>
             </Card>
 
