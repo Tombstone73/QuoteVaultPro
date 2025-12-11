@@ -2132,7 +2132,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
       }
-      const { customerId, contactId, customerName, source, lineItems } = req.body;
+
+      const {
+        hasLineItems,
+        hasCustomerId,
+        status: _statusFromClient,
+        ...quotePayload
+      } = req.body as any;
+
+      const finalStatus: "active" = "active";
+
+      if (!hasCustomerId) {
+        console.error("[QUOTE CREATE] missing customerId", { body: req.body });
+        return res.status(400).json({ message: "Customer is required to save a quote" });
+      }
+
+      if (!hasLineItems) {
+        console.error("[QUOTE CREATE] missing line items", { body: req.body });
+        return res.status(400).json({ message: "At least one line item is required" });
+      }
+
+      const { customerId, contactId, customerName, source, lineItems } = quotePayload;
 
       // Basic validation: require customerId (or quick quote fallback) and at least one line item
       if (source !== "customer_quick_quote" && !customerId) {
@@ -2286,8 +2306,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             organizationId,
             finalCustomerId,
             contactId || null,
-            req.body.shippingMethod || null,
-            req.body.shippingMode || null
+            quotePayload.shippingMethod || null,
+            quotePayload.shippingMode || null
           );
         } catch (error) {
           console.error('[QuoteCreation] Snapshot failed:', error);
@@ -2295,16 +2315,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      const allowedQuoteStatus = ["draft", "active", "canceled"];
-      const incomingQuoteStatus = status && allowedQuoteStatus.includes(status) ? status : "draft";
-
       const quote = await storage.createQuote(organizationId, {
+        ...quotePayload,
         userId,
         customerId: finalCustomerId,
         contactId: contactId || undefined,
         customerName: customerName || undefined,
         source: source || 'internal',
-        status: incomingQuoteStatus,
+        status: finalStatus,
         lineItems: validatedLineItems,
         // Tax totals
         taxRate: totalsResult.taxRate,
@@ -2312,11 +2330,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         taxableSubtotal: totalsResult.taxableSubtotal,
         // Snapshot fields
         ...snapshotData,
-        requestedDueDate: req.body.requestedDueDate || undefined,
-        validUntil: req.body.validUntil || undefined,
-        carrier: req.body.carrier || undefined,
-        carrierAccountNumber: req.body.carrierAccountNumber || undefined,
-        shippingInstructions: req.body.shippingInstructions || undefined,
+        requestedDueDate: quotePayload.requestedDueDate || undefined,
+        validUntil: quotePayload.validUntil || undefined,
+        carrier: quotePayload.carrier || undefined,
+        carrierAccountNumber: quotePayload.carrierAccountNumber || undefined,
+        shippingInstructions: quotePayload.shippingInstructions || undefined,
       });
       
       let finalizedLineItems: any[] = [];
@@ -2350,7 +2368,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      console.error("Error creating quote:", { error, body: { status: req.body.status, hasLineItems: Array.isArray(req.body.lineItems), hasCustomerId: !!req.body.customerId } });
+      console.error("[QUOTE CREATE] failed to create quote", {
+        error,
+        body: {
+          status: req.body?.status,
+          hasLineItems: Array.isArray(req.body?.lineItems),
+          hasCustomerId: !!req.body?.customerId,
+        },
+      });
       res.status(500).json({ message: "Failed to create quote" });
     }
   });
