@@ -2132,7 +2132,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!userId) {
         return res.status(401).json({ message: "Unauthorized" });
       }
-      const { customerId, contactId, customerName, source, lineItems, status } = req.body;
+      const { customerId, contactId, customerName, source, lineItems } = req.body;
+
+      // Basic validation: require customerId (or quick quote fallback) and at least one line item
+      if (source !== "customer_quick_quote" && !customerId) {
+        return res.status(400).json({
+          success: false,
+          message: "Customer is required to create a quote.",
+        });
+      }
+
+      if (!Array.isArray(lineItems) || lineItems.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "At least one line item is required to create a quote.",
+        });
+      }
 
       // Determine final customerId based on source
       let finalCustomerId = customerId;
@@ -2148,11 +2163,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             message: "Failed to create customer record for quote. Please contact support." 
           });
         }
-      } else if (source === 'internal' && !customerId && status !== "draft") {
-        // For internal quotes, customerId should be provided by the form (except for drafts)
-        return res.status(400).json({ 
-          message: "Customer ID is required for internal quotes. Please select a customer." 
-        });
       }
 
       // Load organization for tax settings
@@ -2444,6 +2454,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const existing = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
       if (!existing) {
         return res.status(404).json({ message: "Quote not found" });
+      }
+
+      // Prevent clearing customerId or saving without line items
+      if (customerId === null || customerId === undefined && !existing.customerId) {
+        return res.status(400).json({ message: "Customer is required to save a quote." });
+      }
+
+      // Check existing line items to ensure the quote has at least one
+      const existingLineItems = await db
+        .select()
+        .from(quoteLineItems as any)
+        .where(eq((quoteLineItems as any).quoteId, id));
+      if (!existingLineItems || existingLineItems.length === 0) {
+        return res.status(400).json({ message: "At least one line item is required to save a quote." });
       }
 
       console.log(`[PATCH /api/quotes/${id}] Existing customerName:`, existing.customerName);
@@ -4481,215 +4505,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // NEW: Convert quote to order (Phase 2 - with snapshot copying)
-  // This endpoint copies customer/shipping snapshots from the quote
+  // Convert quote to order - uses storage repo (no raw SQL)
   app.post("/api/quotes/:id/convert-to-order", isAuthenticated, tenantContext, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+    const userId = getUserId(req.user);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "User not authenticated" });
+    }
+
+    const { id: quoteId } = req.params;
+    const { dueDate, promisedDate, priority, notesInternal } = req.body || {};
+
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const userId = getUserId(req.user);
-      if (!userId) {
-        return res.status(401).json({ message: "User not authenticated" });
-      }
-
-      const { id: quoteId } = req.params;
-
-      console.log('[QUOTE TO ORDER CONVERSION] Starting:', { quoteId, userId });
-
-      // Fetch quote with line items
-      const [quote] = await db
-        .select()
-        .from(quotes)
-        .where(and(
-          eq(quotes.id, quoteId),
-          eq(quotes.organizationId, organizationId)
-        ))
-        .limit(1);
-
-      if (!quote) {
-        return res.status(404).json({ message: "Quote not found" });
-      }
-
-      // Guard rails
-      if (quote.convertedToOrderId) {
-        return res.status(400).json({ 
-          message: "Quote has already been converted to an order",
-          existingOrderId: quote.convertedToOrderId
-        });
-      }
-
-      if (quote.status === 'canceled') {
-        return res.status(400).json({ message: "Cannot convert a canceled quote to an order" });
-      }
-
-      // Fetch quote line items
-      const lineItems = await db
-        .select()
-        .from(quoteLineItems as any)
-        .where(eq((quoteLineItems as any).quoteId, quoteId))
-        .orderBy((quoteLineItems as any).displayOrder);
-
-      if (!lineItems || lineItems.length === 0) {
-        return res.status(400).json({ message: "Quote has no line items" });
-      }
-
-      // Generate order number
-      const [globalVar] = await db
-        .select()
-        .from(globalVariables as any)
-        .where(and(
-          eq((globalVariables as any).key, 'orderNumber'),
-          eq((globalVariables as any).organizationId, organizationId)
-        ))
-        .limit(1);
-
-      if (!globalVar) {
-        return res.status(500).json({ message: "Order numbering not configured" });
-      }
-
-      const nextOrderNum = (parseInt(globalVar.value as string) || 0) + 1;
-      const orderNumber = `ORD-${String(nextOrderNum).padStart(5, '0')}`;
-
-      console.log('[QUOTE TO ORDER CONVERSION] Generated order number:', orderNumber);
-
-      // Create order - copy ALL snapshot fields from quote
-      const [newOrder] = await db
-        .insert(orders)
-        .values({
-          organizationId,
-          quoteId: quote.id,
-          customerId: quote.customerId!,
-          contactId: quote.contactId,
-          orderNumber,
-          status: 'new',
-          priority: req.body.priority || 'normal',
-          fulfillmentStatus: 'pending',
-          
-          // Copy financial data
-          subtotal: quote.subtotal,
-          tax: quote.taxRate || '0',
-          taxRate: quote.taxRate,
-          taxAmount: quote.taxAmount,
-          taxableSubtotal: quote.taxableSubtotal,
-          total: quote.totalPrice,
-          discount: quote.discountAmount || '0',
-          
-          // Copy ALL customer snapshot fields from quote
-          billToName: quote.billToName,
-          billToCompany: quote.billToCompany,
-          billToAddress1: quote.billToAddress1,
-          billToAddress2: quote.billToAddress2,
-          billToCity: quote.billToCity,
-          billToState: quote.billToState,
-          billToPostalCode: quote.billToPostalCode,
-          billToCountry: quote.billToCountry,
-          billToPhone: quote.billToPhone,
-          billToEmail: quote.billToEmail,
-          
-          // Copy ALL shipping snapshot fields from quote
-          shippingMethod: quote.shippingMethod,
-          shippingMode: quote.shippingMode,
-          shipToName: quote.shipToName,
-          shipToCompany: quote.shipToCompany,
-          shipToAddress1: quote.shipToAddress1,
-          shipToAddress2: quote.shipToAddress2,
-          shipToCity: quote.shipToCity,
-          shipToState: quote.shipToState,
-          shipToPostalCode: quote.shipToPostalCode,
-          shipToCountry: quote.shipToCountry,
-          shipToPhone: quote.shipToPhone,
-          shipToEmail: quote.shipToEmail,
-          carrier: quote.carrier,
-          carrierAccountNumber: quote.carrierAccountNumber,
-          shippingInstructions: quote.shippingInstructions,
-          
-          // Copy dates
-          requestedDueDate: quote.requestedDueDate,
-          dueDate: req.body.dueDate || quote.requestedDueDate,
-          promisedDate: req.body.promisedDate || null,
-          
-          // Audit
-          createdByUserId: userId,
-          notesInternal: req.body.notesInternal || null,
-        })
-        .returning();
-
-      console.log('[QUOTE TO ORDER CONVERSION] Order created:', {
-        orderId: newOrder.id,
-        orderNumber: newOrder.orderNumber
+      const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
+        dueDate: dueDate ? new Date(dueDate) : undefined,
+        promisedDate: promisedDate ? new Date(promisedDate) : undefined,
+        priority: priority || "normal",
+        notesInternal: notesInternal ?? undefined,
       });
 
-      // Clone line items
-      for (const lineItem of lineItems) {
-        await db
-          .insert(orderLineItems as any)
-          .values({
-            orderId: newOrder.id,
-            quoteLineItemId: lineItem.id,
-            productId: lineItem.productId,
-            variantId: lineItem.variantId,
-            description: lineItem.description,
-            quantity: lineItem.quantity,
-            unitPrice: lineItem.unitPrice,
-            linePrice: lineItem.linePrice,
-            productType: lineItem.productType,
-            width: lineItem.width,
-            height: lineItem.height,
-            specsJson: lineItem.specsJson,
-            selectedOptions: lineItem.selectedOptions,
-            priceBreakdown: lineItem.priceBreakdown,
-            materialUsages: lineItem.materialUsages,
-            displayOrder: lineItem.displayOrder,
-            taxAmount: lineItem.taxAmount,
-            isTaxableSnapshot: lineItem.isTaxableSnapshot,
-          });
-      }
-
-      console.log('[QUOTE TO ORDER CONVERSION] Cloned', lineItems.length, 'line items');
-
-      // Update quote - link to order and set status to accepted
-      await db
-        .update(quotes)
-        .set({
-          convertedToOrderId: newOrder.id,
-          status: 'accepted',
-        })
-        .where(eq(quotes.id, quote.id));
-
-      // Increment order number
-      await db
-        .update(globalVariables as any)
-        .set({ value: String(nextOrderNum) })
-        .where(and(
-          eq((globalVariables as any).key, 'orderNumber'),
-          eq((globalVariables as any).organizationId, organizationId)
-        ));
-
-      // Create audit log
-      await storage.createAuditLog(organizationId, {
-        userId,
-        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-        actionType: 'CREATE',
-        entityType: 'order',
-        entityId: newOrder.id,
-        entityName: newOrder.orderNumber,
-        description: `Converted quote ${quote.quoteNumber} to order ${newOrder.orderNumber}`,
-        newValues: newOrder,
+      res.status(201).json({
+        success: true,
+        data: { order },
       });
-
-      console.log('[QUOTE TO ORDER CONVERSION] Complete:', {
-        quoteId: quote.id,
-        orderId: newOrder.id,
-        orderNumber: newOrder.orderNumber
-      });
-
-      res.json({ success: true, order: newOrder });
-    } catch (error) {
-      console.error("[QUOTE TO ORDER CONVERSION] Error:", error);
-      console.error("[QUOTE TO ORDER CONVERSION] Stack:", (error as Error).stack);
-      res.status(500).json({ 
-        message: "Failed to convert quote to order",
-        error: (error as Error).message
+    } catch (error: any) {
+      console.error("[QUOTE TO ORDER CONVERSION] failed", { quoteId, organizationId, error });
+      res.status(500).json({
+        success: false,
+        message: error?.message || "Failed to convert quote to order",
       });
     }
   });

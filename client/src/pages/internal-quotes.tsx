@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useMemo, useEffect } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
@@ -21,14 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import {
   FileText,
   Plus,
@@ -47,7 +41,6 @@ import { useToast } from "@/hooks/use-toast";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
-import { apiRequest } from "@/lib/queryClient";
 import {
   Page,
   PageHeader,
@@ -78,49 +71,16 @@ const QUOTE_COLUMNS: ColumnDefinition[] = [
 
 function NewQuoteButton() {
   const navigate = useNavigate();
-  const { toast } = useToast();
-
-  const createDraftQuote = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/quotes", { status: "draft" });
-      return res.json();
-    },
-    onError: (err: any) => {
-      toast({
-        title: "Failed to create draft quote",
-        description: err?.message || "Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
 
   return (
     <Button
       size="sm"
-      disabled={createDraftQuote.isPending}
-      onClick={async () => {
-        try {
-          const result = await createDraftQuote.mutateAsync();
-          const id = result?.id || result?.data?.id;
-          if (!id) throw new Error("Draft quote creation did not return an id");
-          navigate(ROUTES.quotes.edit(id));
-        } catch (err) {
-          console.error("Create draft quote failed", err);
-          // toast handled in onError
-        }
+      onClick={() => {
+        navigate(ROUTES.quotes.new);
       }}
     >
-      {createDraftQuote.isPending ? (
-        <span className="flex items-center gap-2">
-          <Plus className="mr-2 h-4 w-4 animate-spin" />
-          Creating...
-        </span>
-      ) : (
-        <>
-          <Plus className="mr-2 h-4 w-4" />
-          New Quote
-        </>
-      )}
+      <Plus className="mr-2 h-4 w-4" />
+      New Quote
     </Button>
   );
 }
@@ -138,8 +98,7 @@ export default function InternalQuotes() {
   const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
   const [orderDueDate, setOrderDueDate] = useState("");
   const [orderPromisedDate, setOrderPromisedDate] = useState("");
-  const [orderPriority, setOrderPriority] =
-    useState<"normal" | "rush" | "low">("normal");
+  const [orderPriority, setOrderPriority] = useState<"normal" | "rush" | "low">("normal");
   const [orderNotes, setOrderNotes] = useState("");
   
   // Column settings
@@ -154,20 +113,6 @@ export default function InternalQuotes() {
   const [tempLabel, setTempLabel] = useState("");
 
   const convertToOrder = useConvertQuoteToOrder();
-
-  const createDraftQuote = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/quotes", { status: "draft" });
-      return res.json();
-    },
-    onError: (err: any) => {
-      toast({
-        title: "Failed to create draft quote",
-        description: err?.message || "Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
 
   // Check if user is internal staff
   const isInternalUser =
@@ -186,7 +131,12 @@ export default function InternalQuotes() {
   // Count visible columns for colspan
   const visibleColumnCount = QUOTE_COLUMNS.filter(col => isVisible(col.key)).length;
 
-  const { data: quotes, isLoading } = useQuery<QuoteWithRelations[]>({
+  const {
+    data: quotes,
+    isLoading,
+    isFetching,
+    error,
+  } = useQuery<QuoteWithRelations[], Error>({
     queryKey: [
       "/api/quotes",
       { source: "internal", searchCustomer, searchProduct, startDate, endDate },
@@ -212,16 +162,45 @@ export default function InternalQuotes() {
       return response.json();
     },
     enabled: !!user,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+    retry: false,
+    // @ts-expect-error onError is supported at runtime but not in this type version
+    onError: (err: Error) => {
+      console.error("[InternalQuotes] failed to load quotes", err);
+    },
   });
 
+  const [hasEverLoaded, setHasEverLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!hasEverLoaded && quotes !== undefined) {
+      setHasEverLoaded(true);
+    }
+  }, [quotes, hasEverLoaded]);
+
+  const quotesList = (quotes ?? []) as QuoteWithRelations[];
   const { data: products } = useQuery<Product[]>({
     queryKey: ["/api/products"],
   });
 
+  const hasQuotes = quotesList.length > 0;
+  const isInitialLoading = isLoading && !hasQuotes;
+  const isRefreshing = isFetching && hasQuotes;
+
+  console.log("[InternalQuotes] state", {
+    isLoading,
+    isFetching,
+    hasQuotes,
+    isInitialLoading,
+    isRefreshing,
+    hasError: !!error,
+  });
+
   // Sorted quotes
   const sortedQuotes = useMemo(() => {
-    if (!quotes) return [];
-    return [...quotes].sort((a: any, b: any) => {
+    if (!quotesList.length) return [];
+    return [...quotesList].sort((a: any, b: any) => {
       let comparison = 0;
       switch (sortKey) {
         case "date":
@@ -331,10 +310,10 @@ export default function InternalQuotes() {
     setConvertDialogOpen(true);
   };
 
-  const handleConfirmConvert = async () => {
+  const handleConfirmConvert = async (values: { dueDate: string; promisedDate: string; priority: string; notes: string }) => {
     if (!selectedQuoteId) return;
 
-    const quote = quotes?.find((q) => q.id === selectedQuoteId);
+    const quote = quotesList.find((q) => q.id === selectedQuoteId);
     console.log("[INTERNAL QUOTES] Converting quote to order:", {
       quoteId: selectedQuoteId,
       quoteNumber: quote?.quoteNumber,
@@ -346,10 +325,10 @@ export default function InternalQuotes() {
     try {
       const result = await convertToOrder.mutateAsync({
         quoteId: selectedQuoteId,
-        dueDate: orderDueDate || undefined,
-        promisedDate: orderPromisedDate || undefined,
-        priority: orderPriority,
-        notesInternal: orderNotes || undefined,
+        dueDate: values.dueDate || undefined,
+        promisedDate: values.promisedDate || undefined,
+        priority: values.priority,
+        notesInternal: values.notes || undefined,
       });
 
       console.log("[INTERNAL QUOTES] Quote converted successfully:", result);
@@ -363,11 +342,14 @@ export default function InternalQuotes() {
 
       toast({
         title: "Success",
-        description: `Quote ${quote?.quoteNumber} converted to order ${result?.orderNumber}`,
+        description: result?.data?.order?.orderNumber
+          ? `Quote ${quote?.quoteNumber} converted to order ${result.data.order.orderNumber}`
+          : `Quote ${quote?.quoteNumber} converted to order.`,
       });
 
-      if (result?.id) {
-        navigate(ROUTES.orders.detail(result.id));
+      const orderId = result?.data?.order?.id;
+      if (orderId) {
+        navigate(ROUTES.orders.detail(orderId));
       }
     } catch (error) {
       console.error("[INTERNAL QUOTES] Conversion error:", error);
@@ -392,6 +374,76 @@ export default function InternalQuotes() {
             </p>
           </div>
         </DataCard>
+      </Page>
+    );
+  }
+
+  if (error) {
+    return (
+      <Page>
+        <PageHeader
+          title="Internal Quotes"
+          subtitle="Manage internal quotes and convert them to orders"
+          className="pb-3"
+          backButton={
+            <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.dashboard)}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+          }
+          actions={<NewQuoteButton />}
+        />
+        <ContentLayout className="space-y-3">
+          <DataCard
+            title="Internal Quotes"
+            description="There was a problem loading quotes."
+            className="mt-0"
+          >
+            <div className="text-sm text-destructive">
+              Failed to load quotes. Please refresh the page or try again later.
+            </div>
+          </DataCard>
+        </ContentLayout>
+      </Page>
+    );
+  }
+
+  if (!hasEverLoaded && isInitialLoading) {
+    return (
+      <Page>
+        <PageHeader
+          title="Quotes"
+          subtitle="Loading internal quotes..."
+          className="pb-3"
+          backButton={
+            <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.dashboard)}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+          }
+          actions={<NewQuoteButton />}
+        />
+        <ContentLayout className="space-y-3">
+          <div className="flex flex-row items-center gap-3 flex-wrap mb-4">
+            <Skeleton className="flex-1 min-w-[200px] h-9" />
+            <Skeleton className="w-[180px] h-9" />
+            <Skeleton className="w-[140px] h-9" />
+            <Skeleton className="w-[140px] h-9" />
+          </div>
+
+          <DataCard
+            title="Internal Quotes"
+            description="Loading quotes…"
+            className="mt-0"
+            headerActions={<Skeleton className="h-8 w-24" />}
+          >
+            <div className="space-y-2">
+              {[...Array(6)].map((_, idx) => (
+                <Skeleton key={idx} className="h-12 w-full" />
+              ))}
+            </div>
+          </DataCard>
+        </ContentLayout>
       </Page>
     );
   }
@@ -454,25 +506,30 @@ export default function InternalQuotes() {
         {/* Quotes List */}
         <DataCard
           title="Internal Quotes"
-          description={`${quotes?.length ?? 0} quote${
-            quotes?.length !== 1 ? "s" : ""
+          description={`${quotesList.length ?? 0} quote${
+            quotesList.length !== 1 ? "s" : ""
           } found`}
           className="mt-0"
           headerActions={
-            <ColumnConfig
-              columns={QUOTE_COLUMNS}
-              storageKey="quotes_column_settings"
-              settings={columnSettings}
-              onSettingsChange={setColumnSettings}
-            />
+            <div className="flex items-center gap-2">
+              {isRefreshing && (
+                <span className="text-xs text-muted-foreground">Refreshing…</span>
+              )}
+              <ColumnConfig
+                columns={QUOTE_COLUMNS}
+                storageKey="quotes_column_settings"
+                settings={columnSettings}
+                onSettingsChange={setColumnSettings}
+              />
+            </div>
           }
         >
-          {!quotes || quotes.length === 0 ? (
+          {quotesList.length === 0 ? (
             <div className="py-8 text-center">
               <FileText className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
               <p className="mb-2 text-muted-foreground">No quotes found</p>
               <p className="mb-4 text-sm text-muted-foreground">
-                {searchCustomer || searchProduct || startDate || endDate
+              {searchCustomer || searchProduct || startDate || endDate
                   ? "Try adjusting your filters"
                   : "Create your first internal quote"}
               </p>
@@ -695,9 +752,7 @@ export default function InternalQuotes() {
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() =>
-                                navigate(ROUTES.quotes.edit(quote.id))
-                              }
+                              onClick={() => navigate(ROUTES.quotes.edit(quote.id))}
                               title="Edit quote"
                             >
                               <Edit className="h-4 w-4" />
@@ -722,83 +777,29 @@ export default function InternalQuotes() {
         </DataCard>
       </ContentLayout>
 
-      {/* Convert to Order Dialog */}
-      <Dialog open={convertDialogOpen} onOpenChange={setConvertDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Convert Quote to Order</DialogTitle>
-            <DialogDescription>
-              This will create a new order from the selected quote.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="dueDate">Due Date (Optional)</Label>
-              <Input
-                id="dueDate"
-                type="date"
-                value={orderDueDate}
-                onChange={(e) => setOrderDueDate(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="promisedDate">Promised Date (Optional)</Label>
-              <Input
-                id="promisedDate"
-                type="date"
-                value={orderPromisedDate}
-                onChange={(e) => setOrderPromisedDate(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="priority">Priority</Label>
-              <Select
-                value={orderPriority}
-                onValueChange={(value: any) => setOrderPriority(value)}
-              >
-                <SelectTrigger id="priority">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="normal">Normal</SelectItem>
-                  <SelectItem value="rush">Rush</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="notes">Internal Notes (Optional)</Label>
-              <Input
-                id="notes"
-                placeholder="Production notes, special instructions..."
-                value={orderNotes}
-                onChange={(e) => setOrderNotes(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setConvertDialogOpen(false);
-                setSelectedQuoteId(null);
-                setOrderDueDate("");
-                setOrderPromisedDate("");
-                setOrderPriority("normal");
-                setOrderNotes("");
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirmConvert}
-              disabled={convertToOrder.isPending}
-            >
-              {convertToOrder.isPending ? "Creating..." : "Create Order"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConvertQuoteToOrderDialog
+        open={convertDialogOpen}
+        onOpenChange={(open) => {
+          setConvertDialogOpen(open);
+          if (!open) {
+            setSelectedQuoteId(null);
+            setOrderDueDate("");
+            setOrderPromisedDate("");
+            setOrderPriority("normal");
+            setOrderNotes("");
+          }
+        }}
+        isLoading={convertToOrder.isPending}
+        onSubmit={(values) => {
+          handleConfirmConvert(values);
+        }}
+        defaultValues={{
+          dueDate: orderDueDate,
+          promisedDate: orderPromisedDate,
+          priority: orderPriority,
+          notes: orderNotes,
+        }}
+      />
     </Page>
   );
 }

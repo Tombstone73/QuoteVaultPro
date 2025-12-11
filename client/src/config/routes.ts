@@ -105,9 +105,9 @@ export const ROUTES = {
   // Quotes
   quotes: {
     list: "/quotes",
-    new: "/quotes/new",
     detail: (id: string) => `/quotes/${id}`,
     edit: (id: string) => `/quotes/${id}/edit`,
+    new: "/quotes/new",
   },
   
   // Legacy customer quotes
