@@ -12,6 +12,7 @@ type LineItemsTableProps = {
     lineItems: QuoteLineItemDraft[];
     products: Product[];
     quoteId: string | null;
+    readOnly?: boolean;
     onEdit: (id: string) => void;
     onDuplicate: (id: string) => void;
     onRemove: (id: string) => void;
@@ -22,6 +23,7 @@ export function LineItemsTable({
     lineItems,
     products,
     quoteId,
+    readOnly = false,
     onEdit,
     onDuplicate,
     onRemove,
@@ -52,7 +54,7 @@ export function LineItemsTable({
                                     <TableHead className="text-center">Qty</TableHead>
                                     <TableHead className="text-right">Price</TableHead>
                                     <TableHead className="text-center">Artwork</TableHead>
-                                    <TableHead className="w-[80px]"></TableHead>
+                                    {!readOnly && <TableHead className="w-[80px]"></TableHead>}
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -108,36 +110,38 @@ export function LineItemsTable({
                                                         <span className="text-xs text-muted-foreground">—</span>
                                                     )}
                                                 </TableCell>
-                                                <TableCell>
-                                                    <DropdownMenu>
-                                                        <DropdownMenuTrigger asChild>
-                                                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                                                                <ChevronDown className="w-4 h-4" />
-                                                            </Button>
-                                                        </DropdownMenuTrigger>
-                                                        <DropdownMenuContent align="end">
-                                                            <DropdownMenuItem onClick={() => {
-                                                                if (item.id) {
-                                                                    onEdit(item.id);
-                                                                }
-                                                            }}>
-                                                                <Pencil className="w-4 h-4 mr-2" />
-                                                                Edit
-                                                            </DropdownMenuItem>
-                                                            <DropdownMenuItem onClick={() => onDuplicate(item.tempId || item.id || '')}>
-                                                                <Copy className="w-4 h-4 mr-2" />
-                                                                Duplicate
-                                                            </DropdownMenuItem>
-                                                            <DropdownMenuItem
-                                                                onClick={() => onRemove(item.tempId || item.id || '')}
-                                                                className="text-destructive"
-                                                            >
-                                                                <Trash2 className="w-4 h-4 mr-2" />
-                                                                Remove
-                                                            </DropdownMenuItem>
-                                                        </DropdownMenuContent>
-                                                    </DropdownMenu>
-                                                </TableCell>
+                                                {!readOnly && (
+                                                    <TableCell>
+                                                        <DropdownMenu>
+                                                            <DropdownMenuTrigger asChild>
+                                                                <Button variant="ghost" size="icon" className="h-8 w-8">
+                                                                    <ChevronDown className="w-4 h-4" />
+                                                                </Button>
+                                                            </DropdownMenuTrigger>
+                                                            <DropdownMenuContent align="end">
+                                                                <DropdownMenuItem onClick={() => {
+                                                                    if (item.id) {
+                                                                        onEdit(item.id);
+                                                                    }
+                                                                }}>
+                                                                    <Pencil className="w-4 h-4 mr-2" />
+                                                                    Edit
+                                                                </DropdownMenuItem>
+                                                                <DropdownMenuItem onClick={() => onDuplicate(item.tempId || item.id || '')}>
+                                                                    <Copy className="w-4 h-4 mr-2" />
+                                                                    Duplicate
+                                                                </DropdownMenuItem>
+                                                                <DropdownMenuItem
+                                                                    onClick={() => onRemove(item.tempId || item.id || '')}
+                                                                    className="text-destructive"
+                                                                >
+                                                                    <Trash2 className="w-4 h-4 mr-2" />
+                                                                    Remove
+                                                                </DropdownMenuItem>
+                                                            </DropdownMenuContent>
+                                                        </DropdownMenu>
+                                                    </TableCell>
+                                                )}
                                             </TableRow>
                                         )
                                     })

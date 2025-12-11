@@ -10,7 +10,6 @@ import { ThemeProvider } from "@/hooks/useTheme";
 import { ROUTES } from "@/config/routes";
 import Landing from "@/pages/landing";
 import Home from "@/pages/home";
-import QuoteDetail from "@/pages/quote-detail";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
 import InternalQuotes from "@/pages/internal-quotes";
@@ -73,9 +72,9 @@ function Router() {
         <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
 
         {/* Quote routes */}
-        <Route path={ROUTES.quotes.new} element={<QuoteEditorPage />} />
-        <Route path={ROUTES.quotes.edit(":id")} element={<QuoteEditorPage />} />
-        <Route path={ROUTES.quotes.detail(":id")} element={<QuoteDetail />} />
+        <Route path={ROUTES.quotes.new} element={<QuoteEditorPage mode="edit" />} />
+        <Route path={ROUTES.quotes.edit(":id")} element={<QuoteEditorPage mode="edit" />} />
+        <Route path={ROUTES.quotes.detail(":id")} element={<QuoteEditorPage mode="view" />} />
         <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />
 

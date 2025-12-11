@@ -15,9 +15,16 @@ import { LineItemsTable } from "./components/LineItemsTable";
 import { SummaryCard } from "./components/SummaryCard";
 import type { QuoteLineItemDraft } from "./types";
 
-export function QuoteEditorPage() {
+type QuoteEditorPageProps = {
+    mode?: "view" | "edit";
+};
+
+export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const navigate = useNavigate();
     const state = useQuoteEditorState();
+
+    // Derive read-only flag from mode
+    const readOnly = mode === "view";
 
     // Dialog state
     const [showConvertDialog, setShowConvertDialog] = useState(false);
@@ -92,9 +99,11 @@ export function QuoteEditorPage() {
             {/* Header with navigation and actions */}
             <QuoteHeader
                 quoteNumber={(state.quote as any)?.quoteNumber || ""}
+                quoteId={state.quoteId}
                 canSaveQuote={state.canSaveQuote}
                 canConvertToOrder={state.canConvertToOrder}
                 isSaving={state.isSaving}
+                readOnly={readOnly}
                 onBack={state.handlers.handleBack}
                 onSave={handleSave}
                 onConvertToOrder={() => setShowConvertDialog(true)}
@@ -119,6 +128,7 @@ export function QuoteEditorPage() {
                         markupPercent={state.markupPercent}
                         marginPercent={state.marginPercent}
                         deliveryMethod={state.deliveryMethod}
+                        readOnly={readOnly}
                         onCustomerChange={state.handlers.setCustomer}
                         onContactChange={state.handlers.setContactId}
                     />
@@ -130,6 +140,7 @@ export function QuoteEditorPage() {
                         selectedCustomer={state.selectedCustomer}
                         useCustomerAddress={state.useCustomerAddress}
                         customerHasAddress={!!state.customerHasAddress}
+                        readOnly={readOnly}
                         onDeliveryMethodChange={state.handlers.setDeliveryMethod}
                         onShippingAddressChange={state.handlers.updateShippingAddress}
                         onQuoteNotesChange={state.handlers.setQuoteNotes}
@@ -141,42 +152,46 @@ export function QuoteEditorPage() {
                 {/* CENTER COLUMN: Line Item Builder + Item List */}
                 {/* ═══════════════════════════════════════════════════════════════ */}
                 <div className="space-y-3 order-3 xl:order-2">
-                    <LineItemBuilder
-                        products={state.products}
-                        selectedProductId={state.selectedProductId}
-                        selectedProduct={state.selectedProduct}
-                        selectedVariantId={state.selectedVariantId}
-                        productVariants={state.productVariants}
-                        width={state.width}
-                        height={state.height}
-                        quantity={state.quantity}
-                        calculatedPrice={state.calculatedPrice}
-                        isCalculating={state.isCalculating}
-                        calcError={state.calcError}
-                        optionSelections={state.optionSelections}
-                        lineItemNotes={state.lineItemNotes}
-                        requiresDimensions={state.requiresDimensions}
-                        productOptions={state.productOptions}
-                        hasAttachmentOption={state.hasAttachmentOption}
-                        productSearchOpen={state.productSearchOpen}
-                        productSearchQuery={state.productSearchQuery}
-                        filteredProducts={state.filteredProducts}
-                        onProductSelect={state.handlers.setSelectedProductId}
-                        onVariantSelect={state.handlers.setSelectedVariantId}
-                        onWidthChange={state.handlers.setWidth}
-                        onHeightChange={state.handlers.setHeight}
-                        onQuantityChange={state.handlers.setQuantity}
-                        onOptionSelectionsChange={state.handlers.setOptionSelections}
-                        onLineItemNotesChange={state.handlers.setLineItemNotes}
-                        onAddLineItem={state.handlers.addLineItem}
-                        onProductSearchOpenChange={state.handlers.setProductSearchOpen}
-                        onProductSearchQueryChange={state.handlers.setProductSearchQuery}
-                    />
+                    {/* Hide LineItemBuilder in view mode */}
+                    {!readOnly && (
+                        <LineItemBuilder
+                            products={state.products}
+                            selectedProductId={state.selectedProductId}
+                            selectedProduct={state.selectedProduct}
+                            selectedVariantId={state.selectedVariantId}
+                            productVariants={state.productVariants}
+                            width={state.width}
+                            height={state.height}
+                            quantity={state.quantity}
+                            calculatedPrice={state.calculatedPrice}
+                            isCalculating={state.isCalculating}
+                            calcError={state.calcError}
+                            optionSelections={state.optionSelections}
+                            lineItemNotes={state.lineItemNotes}
+                            requiresDimensions={state.requiresDimensions}
+                            productOptions={state.productOptions}
+                            hasAttachmentOption={state.hasAttachmentOption}
+                            productSearchOpen={state.productSearchOpen}
+                            productSearchQuery={state.productSearchQuery}
+                            filteredProducts={state.filteredProducts}
+                            onProductSelect={state.handlers.setSelectedProductId}
+                            onVariantSelect={state.handlers.setSelectedVariantId}
+                            onWidthChange={state.handlers.setWidth}
+                            onHeightChange={state.handlers.setHeight}
+                            onQuantityChange={state.handlers.setQuantity}
+                            onOptionSelectionsChange={state.handlers.setOptionSelections}
+                            onLineItemNotesChange={state.handlers.setLineItemNotes}
+                            onAddLineItem={state.handlers.addLineItem}
+                            onProductSearchOpenChange={state.handlers.setProductSearchOpen}
+                            onProductSearchQueryChange={state.handlers.setProductSearchQuery}
+                        />
+                    )}
 
                     <LineItemsTable
                         lineItems={state.lineItems}
                         products={state.products}
                         quoteId={state.quoteId}
+                        readOnly={readOnly}
                         onEdit={state.handlers.editLineItem}
                         onDuplicate={state.handlers.duplicateLineItem}
                         onRemove={state.handlers.removeLineItem}
@@ -200,6 +215,7 @@ export function QuoteEditorPage() {
                         selectedCustomer={state.selectedCustomer}
                         canSaveQuote={state.canSaveQuote}
                         isSaving={state.isSaving}
+                        readOnly={readOnly}
                         onSave={handleSave}
                         onConvertToOrder={() => setShowConvertDialog(true)}
                     />

@@ -16,6 +16,7 @@ type FulfillmentCardProps = {
     selectedCustomer: CustomerWithContacts | undefined;
     useCustomerAddress: boolean;
     customerHasAddress: boolean;
+    readOnly?: boolean;
     onDeliveryMethodChange: (method: 'pickup' | 'ship' | 'deliver') => void;
     onShippingAddressChange: (updates: Partial<Address>) => void;
     onQuoteNotesChange: (notes: string) => void;
@@ -29,6 +30,7 @@ export function FulfillmentCard({
     selectedCustomer,
     useCustomerAddress,
     customerHasAddress,
+    readOnly = false,
     onDeliveryMethodChange,
     onShippingAddressChange,
     onQuoteNotesChange,
@@ -51,6 +53,7 @@ export function FulfillmentCard({
                         size="sm"
                         className="gap-1.5"
                         onClick={() => onDeliveryMethodChange('pickup')}
+                        disabled={readOnly}
                     >
                         <Store className="w-3.5 h-3.5" />
                         Pickup
@@ -61,6 +64,7 @@ export function FulfillmentCard({
                         size="sm"
                         className="gap-1.5"
                         onClick={() => onDeliveryMethodChange('ship')}
+                        disabled={readOnly}
                     >
                         <Truck className="w-3.5 h-3.5" />
                         Ship
@@ -71,6 +75,7 @@ export function FulfillmentCard({
                         size="sm"
                         className="gap-1.5"
                         onClick={() => onDeliveryMethodChange('deliver')}
+                        disabled={readOnly}
                     >
                         <Building2 className="w-3.5 h-3.5" />
                         Deliver
@@ -86,13 +91,13 @@ export function FulfillmentCard({
                                 id="use-customer-address"
                                 checked={useCustomerAddress}
                                 onCheckedChange={onCopyCustomerAddress}
-                                disabled={!customerHasAddress}
+                                disabled={!customerHasAddress || readOnly}
                             />
                             <Label
                                 htmlFor="use-customer-address"
                                 className={cn(
                                     "text-sm cursor-pointer",
-                                    !customerHasAddress && "text-muted-foreground"
+                                    (!customerHasAddress || readOnly) && "text-muted-foreground"
                                 )}
                             >
                                 Use customer address
@@ -109,6 +114,7 @@ export function FulfillmentCard({
                                 onChange={(e) => onShippingAddressChange({ street1: e.target.value })}
                                 placeholder="123 Main St"
                                 className="h-8 text-sm"
+                                disabled={readOnly}
                             />
                         </div>
                         <Input
@@ -116,6 +122,7 @@ export function FulfillmentCard({
                             onChange={(e) => onShippingAddressChange({ street2: e.target.value })}
                             placeholder="Suite / Apt (optional)"
                             className="h-8 text-sm"
+                            disabled={readOnly}
                         />
                         <div className="grid grid-cols-2 gap-2">
                             <div className="space-y-1.5">
@@ -124,6 +131,7 @@ export function FulfillmentCard({
                                     value={shippingAddress.city}
                                     onChange={(e) => onShippingAddressChange({ city: e.target.value })}
                                     className="h-8 text-sm"
+                                    disabled={readOnly}
                                 />
                             </div>
                             <div className="space-y-1.5">
@@ -132,6 +140,7 @@ export function FulfillmentCard({
                                     value={shippingAddress.state}
                                     onChange={(e) => onShippingAddressChange({ state: e.target.value })}
                                     className="h-8 text-sm"
+                                    disabled={readOnly}
                                 />
                             </div>
                         </div>
@@ -142,6 +151,7 @@ export function FulfillmentCard({
                                     value={shippingAddress.postalCode}
                                     onChange={(e) => onShippingAddressChange({ postalCode: e.target.value })}
                                     className="h-8 text-sm"
+                                    disabled={readOnly}
                                 />
                             </div>
                             <div className="space-y-1.5">
@@ -150,6 +160,7 @@ export function FulfillmentCard({
                                     value={shippingAddress.country}
                                     onChange={(e) => onShippingAddressChange({ country: e.target.value })}
                                     className="h-8 text-sm"
+                                    disabled={readOnly}
                                 />
                             </div>
                         </div>
@@ -165,6 +176,8 @@ export function FulfillmentCard({
                         placeholder="Internal notes, special instructions..."
                         rows={4}
                         className="text-sm resize-none min-h-[80px]"
+                        readOnly={readOnly}
+                        disabled={readOnly}
                     />
                 </div>
             </CardContent>
