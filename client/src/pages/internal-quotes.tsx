@@ -20,7 +20,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -212,7 +211,7 @@ export default function InternalQuotes() {
 
       return response.json();
     },
-    enabled: isInternalUser,
+    enabled: !!user,
   });
 
   const { data: products } = useQuery<Product[]>({
@@ -393,17 +392,6 @@ export default function InternalQuotes() {
             </p>
           </div>
         </DataCard>
-      </Page>
-    );
-  }
-
-  if (isLoading) {
-    return (
-      <Page>
-        <ContentLayout>
-          <Skeleton className="h-32 w-full" />
-          <Skeleton className="h-96 w-full" />
-        </ContentLayout>
       </Page>
     );
   }

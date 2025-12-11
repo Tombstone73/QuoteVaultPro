@@ -7,9 +7,9 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/useAuth";
 import { ThemeProvider } from "@/hooks/useTheme";
+import { ROUTES } from "@/config/routes";
 import Landing from "@/pages/landing";
 import Home from "@/pages/home";
-import EditQuote from "@/pages/edit-quote";
 import QuoteDetail from "@/pages/quote-detail";
 import QuoteEditor from "@/pages/quote-editor";
 import CustomerQuotes from "@/pages/customer-quotes";
@@ -73,10 +73,10 @@ function Router() {
         <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
 
         {/* Quote routes */}
-        <Route path="/quotes/new" element={<QuoteEditor />} />
-        <Route path="/quotes/:id/edit" element={<QuoteEditor />} />
-        <Route path="/quotes/:id" element={<QuoteDetail />} />
-        <Route path="/quotes" element={<InternalQuotes />} />
+        <Route path={ROUTES.quotes.new} element={<QuoteEditor />} />
+        <Route path={ROUTES.quotes.edit(":id")} element={<QuoteEditor />} />
+        <Route path={ROUTES.quotes.detail(":id")} element={<QuoteDetail />} />
+        <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />
 
         {/* Admin routes */}
