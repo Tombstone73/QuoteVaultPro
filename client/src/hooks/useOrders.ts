@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 
 export type Order = {
@@ -199,31 +200,53 @@ export function useDeleteOrder() {
   });
 }
 
-export function useConvertQuoteToOrder() {
+export function useConvertQuoteToOrder(quoteId?: string | null) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   return useMutation({
-    mutationFn: async ({ quoteId, ...data }: { quoteId: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string }) => {
-      const response = await fetch(`/api/orders/from-quote/${quoteId}`, {
+    mutationFn: async (data: { quoteId?: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string }) => {
+      const targetQuoteId = data.quoteId ?? quoteId;
+      if (!targetQuoteId) throw new Error("Missing quote id");
+      const { quoteId: _omit, ...rest } = data;
+      const response = await fetch(`/api/quotes/${targetQuoteId}/convert-to-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify(rest),
         credentials: "include",
       });
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.message || "Failed to convert quote to order");
       }
-      return response.json();
+      const result: {
+        success: boolean;
+        data?: { order?: { id: string; orderNumber?: string | null } };
+        message?: string;
+      } = await response.json();
+      if (!result.success || !result.data?.order) {
+        throw new Error(result?.message || "Failed to convert quote to order");
+      }
+      return result;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const order = result?.data?.order;
+      const orderId = order?.id;
+      const orderNumber = order?.orderNumber;
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       toast({
-        title: "Success",
-        description: "Quote converted to order successfully",
+        title: "Order created",
+        description: orderNumber
+          ? `Order ${orderNumber} was created from this quote.`
+          : "Order was created from this quote.",
       });
+      if (orderId) {
+        navigate(`/orders/${orderId}`);
+      } else {
+        navigate("/orders");
+      }
     },
     onError: (error: Error) => {
       toast({

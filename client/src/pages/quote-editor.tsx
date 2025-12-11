@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRoute, useLocation } from "wouter";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,7 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { 
-  ArrowLeft, Save, Plus, Trash2, Loader2, Copy, Pencil, 
+  ArrowLeft, Save, Plus, Loader2, Copy, Pencil, Trash2,
   Truck, Store, Building2, DollarSign, Users, FileText, Shield, Send,
   ChevronDown, Check, ChevronsUpDown, ListOrdered, Paperclip
 } from "lucide-react";
@@ -28,6 +28,8 @@ import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem, Or
 import { profileRequiresDimensions, getProfile } from "@shared/pricingProfiles";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { useConvertQuoteToOrder } from "@/hooks/useOrders";
+import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -86,14 +88,27 @@ type QuoteLineItemDraft = {
   status?: "draft" | "active" | "canceled";
 };
 
+type QuoteEditorRouteParams = {
+  id?: string;
+  quoteId?: string;
+};
+
 export default function QuoteEditor() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const [matchEdit, paramsEdit] = useRoute("/quotes/:id/edit");
-  const [matchDetail, paramsDetail] = useRoute("/quotes/:id");
-  const [, navigate] = useLocation();
-  
-  const quoteId: string | null = paramsEdit?.id || paramsDetail?.id || null;
+  const params = useParams<QuoteEditorRouteParams>();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // Accept either /quotes/:id or /quotes/:quoteId
+  const routeQuoteId = params.quoteId ?? params.id ?? null;
+
+  // Are we on the "new quote" route?
+  const isNewQuoteRoute = location.pathname === ROUTES.quotes.new;
+
+  // Canonical quoteId for querying (null on /quotes/new)
+  const quoteId: string | null = isNewQuoteRoute ? null : routeQuoteId;
+  const isNewQuote = !quoteId;
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
@@ -238,7 +253,12 @@ export default function QuoteEditor() {
   });
 
   // Load existing quote if editing
-  const { data: quote, isLoading: quoteLoading, error: quoteError } = useQuery<QuoteWithRelations>({
+  const {
+    data: quote,
+    isLoading: quoteLoading,
+    isFetching: quoteFetching,
+    error: quoteError,
+  } = useQuery<QuoteWithRelations, Error>({
     queryKey: ["/api/quotes", quoteId],
     queryFn: async () => {
       if (!quoteId) throw new Error("Quote ID is required");
@@ -247,19 +267,32 @@ export default function QuoteEditor() {
       return response.json();
     },
     enabled: !!quoteId,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+    retry: false,
+    // @ts-expect-error onError is supported at runtime but not in this type version
+    onError: (err: Error) => {
+      console.error("[QuoteEditor] failed to load quote", { quoteId, err });
+    },
   });
 
-  // Defensive redirect: if quote cannot be loaded, navigate back to quotes list
-  useEffect(() => {
-    // If there is no quoteId at all, we should not be on this page.
-    if (!quoteId) {
-      navigate(ROUTES.quotes.list);
-      return;
-    }
+  const hasQuote = !!quote;
+  const isInitialQuoteLoading = !!quoteId && quoteLoading && !hasQuote;
+  const isQuoteRefreshing = !!quoteId && quoteFetching && hasQuote;
 
-    // If loading finished and we still have no quote, or an error occurred,
-    // redirect to the quotes list instead of leaving the user on a dead skeleton.
-    if (!quoteLoading && (!quote || quoteError)) {
+  console.log("[QuoteEditor] state", {
+    quoteId,
+    quoteLoading,
+    quoteFetching,
+    hasQuote,
+    isInitialQuoteLoading,
+    isQuoteRefreshing,
+    hasError: !!quoteError,
+  });
+
+  // Defensive redirect: only when an existing quote fails to load
+  useEffect(() => {
+    if (quoteId && !quoteLoading && (!quote || quoteError)) {
       navigate(ROUTES.quotes.list);
     }
   }, [quoteId, quoteLoading, quote, quoteError, navigate]);
@@ -497,36 +530,39 @@ export default function QuoteEditor() {
   const taxAmount = subtotal * effectiveTaxRate;
   const grandTotal = subtotal + taxAmount;
 
+  const buildQuotePayload = () => {
+    if (!quoteId) {
+      throw new Error("Missing quote id");
+    }
+
+    if (!selectedCustomerId) {
+      throw new Error("Please select a customer before saving the quote");
+    }
+
+    const activeItems = lineItems.filter((li) => li.status !== "draft");
+    if (activeItems.length === 0) {
+      throw new Error("Please add at least one line item");
+    }
+
+    return {
+      customerId: selectedCustomerId,
+      contactId: selectedContactId ?? null,
+      customerName: selectedCustomer?.companyName ?? quote?.customerName ?? null,
+      subtotal,
+      taxRate: effectiveTaxRate,
+      taxAmount,
+      totalPrice: grandTotal,
+      source: "internal",
+    };
+  };
+
   const saveQuoteMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (payload: any) => {
       if (!quoteId) {
         throw new Error("Missing quote id");
       }
 
-      if (!selectedCustomerId) {
-        throw new Error("Please select a customer before saving the quote");
-      }
-
-      const activeItems = lineItems.filter((li) => li.status !== "draft");
-      if (activeItems.length === 0) {
-        throw new Error("Please add at least one line item");
-      }
-
-      const isDraft = quote?.status === "draft";
-
-      const body = {
-        customerId: selectedCustomerId,
-        contactId: selectedContactId ?? null,
-        customerName: selectedCustomer?.companyName ?? quote?.customerName ?? null,
-        status: isDraft ? "active" : quote?.status,
-        subtotal,
-        taxRate: effectiveTaxRate,
-        taxAmount,
-        totalPrice: grandTotal,
-        source: 'internal',
-      };
-
-      const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, body);
+      const response = await apiRequest("PATCH", `/api/quotes/${quoteId}`, payload);
       return await response.json();
     },
     onSuccess: () => {
@@ -545,31 +581,6 @@ export default function QuoteEditor() {
       });
     },
   });
-
-  const deleteQuoteMutation = useMutation({
-    mutationFn: async () => {
-      await apiRequest("DELETE", `/api/quotes/${quoteId}`);
-    },
-    onSuccess: () => {
-      toast({ title: "Draft discarded" });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      navigate(ROUTES.quotes.list);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error discarding draft",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const handleDiscardDraft = () => {
-    if (!quote || quote.status !== "draft") return;
-    const confirmed = window.confirm("Discard this draft quote? This will remove the quote and its draft line items/attachments.");
-    if (!confirmed) return;
-    deleteQuoteMutation.mutate();
-  };
 
   const patchDraftLineItem = useCallback(
     async (updates: Record<string, any>) => {
@@ -843,6 +854,110 @@ export default function QuoteEditor() {
     }
   };
 
+  const convertToOrder = useConvertQuoteToOrder(quoteId);
+  const [showConvertDialog, setShowConvertDialog] = useState(false);
+
+  const hasCustomer = !!selectedCustomer;
+  const hasLineItems = lineItems.length > 0;
+  const isExistingQuote = !!quoteId;
+  const isSaving = saveQuoteMutation.isPending;
+  const canSaveNewQuote = isNewQuote && hasCustomer && hasLineItems;
+  const canSaveExistingQuote = isExistingQuote && hasCustomer && hasLineItems;
+  const canSaveQuote = (canSaveNewQuote || canSaveExistingQuote) && !isSaving;
+  const canConvertToOrder = isExistingQuote && hasCustomer && hasLineItems;
+
+  const validateQuote = (q: any): string | null => {
+    if (!q?.customerId) return "Please select a customer.";
+    if (!q?.lineItems || q.lineItems.length === 0) return "Please add at least one line item.";
+    return null;
+  };
+
+  const handleSaveQuote = async () => {
+    if (!hasCustomer || !hasLineItems) {
+      toast({
+        title: "Cannot save quote",
+        description: !hasCustomer
+          ? "Select a customer before saving."
+          : "Add at least one line item before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const workingQuote = {
+      customerId: selectedCustomerId,
+      contactId: selectedContactId ?? null,
+      customerName: selectedCustomer?.companyName ?? quote?.customerName ?? null,
+      lineItems,
+      subtotal,
+      taxRate: effectiveTaxRate,
+      taxAmount,
+      totalPrice: grandTotal,
+      source: "internal",
+    };
+
+    const error = validateQuote(workingQuote);
+    if (error) {
+      toast({
+        title: "Cannot save quote",
+        description: error,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      if (isNewQuote) {
+        const response = await apiRequest("POST", "/api/quotes", workingQuote);
+        if (!response.ok) {
+          const errorBody = await response.json().catch(() => ({}));
+          throw new Error(errorBody?.message || "Failed to create quote");
+        }
+        const created = await response.json();
+        const newId =
+          created?.id ||
+          created?.quote?.id ||
+          created?.data?.id ||
+          created?.data?.quote?.id;
+        if (!newId) throw new Error("Quote creation did not return an id");
+        toast({ title: "Quote saved", description: "Your new quote has been created." });
+        queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
+        navigate(ROUTES.quotes.edit(newId), { replace: true });
+      } else {
+        const payload = buildQuotePayload();
+        await saveQuoteMutation.mutateAsync(payload);
+        toast({
+          title: "Quote saved",
+          description: "Your changes to this quote have been saved.",
+        });
+        queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
+        queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+      }
+    } catch (error: any) {
+      console.error("Save quote failed", error);
+      toast({
+        title: "Failed to save quote",
+        description: error?.message || "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleConvertToOrder = async (values: { dueDate: string; promisedDate: string; priority: string; notes: string }) => {
+    if (!convertToOrder || !quoteId) return;
+    await convertToOrder.mutateAsync({
+      dueDate: values.dueDate || undefined,
+      promisedDate: values.promisedDate || undefined,
+      priority: values.priority || undefined,
+      notesInternal: values.notes || undefined,
+    });
+    setShowConvertDialog(false);
+  };
+
+  const handleBack = () => {
+    navigate(ROUTES.quotes.list);
+  };
+
   const handleDuplicateLineItem = (itemId: string) => {
     const item = lineItems.find(i => (i.tempId || i.id) === itemId);
     if (!item) return;
@@ -912,12 +1027,37 @@ export default function QuoteEditor() {
     );
   }
 
-  // Show loading skeleton while quote loads or if no quoteId (redirect in progress)
-  if (quoteLoading || !quoteId) {
+  // Show loading placeholder only for initial load of a valid quoteId
+  if (isInitialQuoteLoading && !isQuoteRefreshing) {
     return (
       <div className="container mx-auto p-6 space-y-4">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-96 w-full" />
+        <Skeleton className="h-10 w-64" />
+        <div className="grid gap-4 md:grid-cols-[2fr,1fr]">
+          <div className="space-y-3">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-40 w-full" />
+          </div>
+          <div className="space-y-3">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!quoteId && !isNewQuoteRoute) {
+    console.error("[QuoteEditor] Missing quoteId on non-new route", {
+      pathname: location.pathname,
+      params,
+    });
+    return (
+      <div className="container mx-auto p-6">
+        <p className="text-destructive">
+          Unable to load quote: invalid or missing quote ID.
+        </p>
       </div>
     );
   }
@@ -932,7 +1072,7 @@ export default function QuoteEditor() {
     <div className="max-w-7xl mx-auto space-y-3 px-4">
       {/* Header with navigation and actions */}
       <div className="flex items-center justify-between py-2">
-        <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.quotes.list)} className="gap-2">
+        <Button variant="ghost" size="sm" onClick={handleBack} className="gap-2">
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back to quotes
         </Button>
@@ -940,13 +1080,27 @@ export default function QuoteEditor() {
           <h1 className="text-xl font-semibold">
             {quote ? `Quote #${quote.quoteNumber || ""}` : "Quote"}
           </h1>
-          {quote?.status === "draft" && (
-            <Badge variant="outline" className="text-xs">
-              Draft
-            </Badge>
-          )}
         </div>
-        <div className="w-32" /> {/* Spacer for centering */}
+        <div className="flex items-center gap-2">
+          {canConvertToOrder && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowConvertDialog(true)}
+              disabled={convertToOrder?.isPending}
+            >
+              Convert to Order
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="default"
+            onClick={handleSaveQuote}
+            disabled={!canSaveQuote}
+          >
+            {saveQuoteMutation.isPending ? "Saving…" : "Save Quote"}
+          </Button>
+        </div>
       </div>
 
       {/* 3-Column Cockpit Layout */}
@@ -2045,18 +2199,23 @@ export default function QuoteEditor() {
             <CardFooter className="flex-col gap-2 pt-0 px-5 pb-4">
               <Button
                 className="w-full h-10"
-                onClick={() => saveQuoteMutation.mutate()}
-                disabled={saveQuoteMutation.isPending || activeLineItems.length === 0}
+                onClick={handleSaveQuote}
+                disabled={!canSaveQuote}
               >
                 <Save className="w-4 h-4 mr-2" />
-                {saveQuoteMutation.isPending ? "Saving..." : quote?.status === "draft" ? "Finalize Quote" : "Save Quote"}
+                {saveQuoteMutation.isPending ? "Saving…" : "Save Quote"}
               </Button>
               <div className="grid grid-cols-2 gap-2 w-full">
                 <Button variant="outline" disabled size="sm">
                   <Send className="w-4 h-4 mr-2" />
                   Email
                 </Button>
-                <Button variant="secondary" disabled size="sm">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowConvertDialog(true)}
+                  disabled={saveQuoteMutation.isPending || convertToOrder?.isPending}
+                >
                   Convert to Order
                 </Button>
               </div>
@@ -2110,6 +2269,13 @@ export default function QuoteEditor() {
           />
         </DialogContent>
       </Dialog>
+
+      <ConvertQuoteToOrderDialog
+        open={showConvertDialog}
+        onOpenChange={setShowConvertDialog}
+        isLoading={convertToOrder?.isPending}
+        onSubmit={handleConvertToOrder}
+      />
     </div>
   );
 }

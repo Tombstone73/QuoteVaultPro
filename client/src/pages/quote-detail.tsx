@@ -1,4 +1,5 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import React, { useState, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
@@ -11,17 +12,35 @@ import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { useToast } from "@/hooks/use-toast";
+import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
+import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import type { QuoteWithRelations } from "@shared/schema";
 
+type QuoteDetailRouteParams = {
+  id?: string;
+  quoteId?: string;
+};
+
 export default function QuoteDetail() {
-  const params = useParams();
+  const params = useParams<QuoteDetailRouteParams>();
   const navigate = useNavigate();
+  const quoteId = params.quoteId ?? params.id ?? null;
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const quoteId = params?.id;
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
+
+  if (!quoteId) {
+    console.error("[QuoteDetail] Missing quoteId in route params", { params });
+    return (
+      <div className="container mx-auto p-6">
+        <p className="text-destructive">
+          Unable to load quote: invalid or missing quote ID.
+        </p>
+      </div>
+    );
+  }
 
   const { data: quote, isLoading } = useQuery<QuoteWithRelations>({
     queryKey: ["/api/quotes", quoteId],
@@ -37,38 +56,16 @@ export default function QuoteDetail() {
     enabled: !!quoteId,
   });
 
-  const convertToOrderMutation = useMutation({
-    mutationFn: async () => {
-      const response = await fetch(`/api/quotes/${quoteId}/convert-to-order`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Conversion failed');
-      }
-      return response.json();
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Success",
-        description: `Quote converted to order ${data.order.orderNumber}`,
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
-      navigate(ROUTES.orders.detail(data.order.id));
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Conversion Failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+  const convertToOrder = useConvertQuoteToOrder(quoteId);
+  const [showConvertDialog, setShowConvertDialog] = useState(false);
 
-  const handleConvertToOrder = () => {
-    convertToOrderMutation.mutate();
+  const handleConvertToOrder = (values: { dueDate: string; promisedDate: string; priority: string; notes: string }) => {
+    convertToOrder.mutate({
+      dueDate: values.dueDate || undefined,
+      promisedDate: values.promisedDate || undefined,
+      priority: values.priority || undefined,
+      notesInternal: values.notes || undefined,
+    });
   };
 
   const handleBack = () => {
@@ -147,12 +144,12 @@ export default function QuoteDetail() {
             {quote.status !== 'canceled' && !quote.convertedToOrderId && (
               <Button 
                 size="sm"
-                onClick={handleConvertToOrder}
-                disabled={convertToOrderMutation.isPending}
+                onClick={() => setShowConvertDialog(true)}
+                disabled={convertToOrder.isPending}
                 className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md"
               >
                 <Package className="w-4 h-4 mr-2" />
-                {convertToOrderMutation.isPending ? 'Converting...' : 'Convert to Order'}
+                {convertToOrder.isPending ? 'Converting...' : 'Convert to Order'}
               </Button>
             )}
             {quote.convertedToOrderId && (
@@ -358,6 +355,12 @@ export default function QuoteDetail() {
           </DataCard>
         </div>
       </ContentLayout>
+      <ConvertQuoteToOrderDialog
+        open={showConvertDialog}
+        onOpenChange={setShowConvertDialog}
+        isLoading={convertToOrder.isPending}
+        onSubmit={handleConvertToOrder}
+      />
     </Page>
   );
 }
