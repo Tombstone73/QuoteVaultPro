@@ -912,10 +912,7 @@ export default function QuoteEditor() {
     );
   }
 
-<<<<<<< HEAD
-=======
   // Show loading skeleton while quote loads or if no quoteId (redirect in progress)
->>>>>>> c5cee4c75716b854a3a13298c5b68a5dce96c607
   if (quoteLoading || !quoteId) {
     return (
       <div className="container mx-auto p-6 space-y-4">
@@ -1805,13 +1802,9 @@ export default function QuoteEditor() {
                   className="gap-2"
                 >
                   <Plus className="w-4 h-4" />
-<<<<<<< HEAD
                   {draftLineItemId && lineItems.some(item => item.id === draftLineItemId)
                     ? "Save changes"
                     : "Add Item"}
-=======
-                  {draftLineItemId && lineItems.some(item => item.id === draftLineItemId) ? "Save changes" : "Add Item"}
->>>>>>> c5cee4c75716b854a3a13298c5b68a5dce96c607
                 </Button>
               </div>
             </CardContent>
