@@ -11,7 +11,7 @@ import { ROUTES } from "@/config/routes";
 import Landing from "@/pages/landing";
 import Home from "@/pages/home";
 import QuoteDetail from "@/pages/quote-detail";
-import QuoteEditor from "@/pages/quote-editor";
+import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
 import InternalQuotes from "@/pages/internal-quotes";
 import Admin from "@/pages/admin";
@@ -73,8 +73,8 @@ function Router() {
         <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
 
         {/* Quote routes */}
-        <Route path={ROUTES.quotes.new} element={<QuoteEditor />} />
-        <Route path={ROUTES.quotes.edit(":id")} element={<QuoteEditor />} />
+        <Route path={ROUTES.quotes.new} element={<QuoteEditorPage />} />
+        <Route path={ROUTES.quotes.edit(":id")} element={<QuoteEditorPage />} />
         <Route path={ROUTES.quotes.detail(":id")} element={<QuoteDetail />} />
         <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />
