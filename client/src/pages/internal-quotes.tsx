@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,7 @@ import {
   ChevronDown,
   Check,
   X,
+  Loader2,
 } from "lucide-react";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
@@ -89,6 +90,7 @@ export default function InternalQuotes() {
   const { toast } = useToast();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const [searchCustomer, setSearchCustomer] = useState("");
   const [searchProduct, setSearchProduct] = useState("all");
@@ -263,34 +265,43 @@ export default function InternalQuotes() {
     setTempLabel(currentLabel || "");
   };
 
-  const handleSaveLabel = async (quoteId: string) => {
-    try {
+  const updateLabelMutation = useMutation({
+    mutationFn: async ({ quoteId, label }: { quoteId: string; label: string }) => {
       const response = await fetch(`/api/quotes/${quoteId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: tempLabel }),
-        credentials: 'include',
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+        credentials: "include",
       });
 
-      if (!response.ok) throw new Error('Failed to update quote');
-
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Failed to update quote");
+      }
+      return response.json();
+    },
+    onSuccess: async (_data, variables) => {
+      // Update list without a full reload
+      await queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       toast({
         title: "Success",
         description: "Quote label updated",
       });
-
-      // Refresh quotes list
-      window.location.reload();
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to update quote label",
-        variant: "destructive",
-      });
-    } finally {
       setEditingQuoteId(null);
       setTempLabel("");
-    }
+    },
+    onError: (error: any) => {
+      console.error("[InternalQuotes] label update failed", error);
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to update quote label",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSaveLabel = async (quoteId: string) => {
+    await updateLabelMutation.mutateAsync({ quoteId, label: tempLabel });
   };
 
   const handleCancelLabelEdit = () => {
@@ -649,8 +660,18 @@ export default function InternalQuotes() {
                                   if (e.key === 'Escape') handleCancelLabelEdit();
                                 }}
                               />
-                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveLabel(quote.id)}>
-                                <Check className="h-3 w-3" />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                disabled={updateLabelMutation.isPending && editingQuoteId === quote.id}
+                                onClick={() => handleSaveLabel(quote.id)}
+                              >
+                                {updateLabelMutation.isPending && editingQuoteId === quote.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Check className="h-3 w-3" />
+                                )}
                               </Button>
                               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelLabelEdit}>
                                 <X className="h-3 w-3" />
