@@ -108,10 +108,13 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                 canSaveQuote={state.canSaveQuote}
                 canConvertToOrder={state.canConvertToOrder}
                 isSaving={state.isSaving}
+                canDuplicateQuote={state.canDuplicateQuote}
+                isDuplicatingQuote={state.isDuplicatingQuote}
                 readOnly={readOnly}
                 onBack={state.handlers.handleBack}
                 onSave={handleSave}
                 onConvertToOrder={() => setShowConvertDialog(true)}
+                onDuplicateQuote={state.handlers.duplicateQuote}
                 convertToOrderPending={state.convertToOrderHook?.isPending}
             />
 
