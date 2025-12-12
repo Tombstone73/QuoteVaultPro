@@ -287,14 +287,14 @@ export type LineItemMaterialUsage = {
 export type ProductOptionItem = {
   id: string;
   label: string;
-  type: "checkbox" | "quantity" | "toggle" | "select";
+  type: "checkbox" | "quantity" | "toggle" | "select" | "attachment";
   priceMode: "flat" | "per_qty" | "per_sqft" | "percent_of_base" | "flat_per_item";
   amount?: number;
   percentBase?: "media" | "line"; // For percent_of_base mode: "media" = percent of media cost only, "line" = percent of full line (default)
   defaultSelected?: boolean; // Controls whether this option is selected by default on new line items
   sortOrder?: number; // Controls display order in calculator/quote UI
   config?: {
-    kind?: "grommets" | "sides" | "thickness" | "hems" | "pole_pockets" | "generic";
+    kind: "grommets" | "sides" | "thickness" | "hems" | "pole_pockets" | "generic";
     // For grommets
     locations?: Array<"all_corners" | "top_corners" | "top_even" | "custom">;
     defaultLocation?: "all_corners" | "top_corners" | "top_even" | "custom";
