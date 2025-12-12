@@ -16,6 +16,14 @@ export type QuoteLineItemDraft = {
   specsJson: Record<string, any>;
   selectedOptions: any[];
   linePrice: number;
+  /**
+   * Price override support (client-side for now).
+   * - linePrice is the ACTIVE line price (formula by default, overridden when set)
+   * - formulaLinePrice tracks the last known formula price for easy reset
+   */
+  priceOverridden?: boolean;
+  overriddenPrice?: number | null;
+  formulaLinePrice?: number;
   priceBreakdown: any;
   displayOrder: number;
   notes?: string;

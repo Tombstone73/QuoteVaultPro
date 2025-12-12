@@ -91,43 +91,66 @@ export function SummaryCard({
             </CardContent>
 
             <CardFooter className="flex flex-col gap-3 pt-0 px-5 pb-4">
-                {/* Row 1: Save (edit mode only) */}
-                {!readOnly && (
-                    <Button
-                        className="w-full h-10"
-                        onClick={onSave}
-                        disabled={!canSaveQuote || isSaving}
-                    >
-                        <Save className="w-4 h-4 mr-2" />
-                        {isSaving ? "Saving…" : "Save Changes"}
-                    </Button>
-                )}
+                {!readOnly ? (
+                    <>
+                        {/* Row 1: Save (edit mode only) */}
+                        {!readOnly && (
+                            <Button
+                                className="w-full h-10"
+                                onClick={onSave}
+                                disabled={!canSaveQuote || isSaving}
+                            >
+                                <Save className="w-4 h-4 mr-2" />
+                                {isSaving ? "Saving…" : "Save Changes"}
+                            </Button>
+                        )}
 
-                {/* Row 2: Email + Preview (Preview full-width in view mode) */}
-                <div className="grid grid-cols-2 gap-2 w-full">
-                    {!readOnly && (
-                        <Button variant="outline" className="w-full" disabled>
+                        {/* Row 2: Email + Preview (Preview full-width in view mode) */}
+                        <div className="grid grid-cols-2 gap-2 w-full">
+                            {!readOnly && (
+                                <Button variant="outline" className="w-full" disabled>
+                                    Email Quote
+                                </Button>
+                            )}
+                            <Button
+                                variant="outline"
+                                className={`${readOnly ? "col-span-2" : ""} w-full`}
+                                disabled
+                            >
+                                Preview
+                            </Button>
+                        </div>
+
+                        {/* Row 3: Convert (both modes) */}
+                        <Button
+                            variant={readOnly ? "default" : "secondary"}
+                            className="w-full h-10"
+                            onClick={onConvertToOrder}
+                            disabled={!canConvertToOrder || !!convertToOrderPending || isSaving}
+                        >
+                            {convertToOrderPending ? "Converting…" : "Convert to Order"}
+                        </Button>
+                    </>
+                ) : (
+                    <>
+                        <Button variant="outline" className="w-full h-10" disabled>
                             Email Quote
                         </Button>
-                    )}
-                    <Button
-                        variant="outline"
-                        className={`${readOnly ? "col-span-2" : ""} w-full`}
-                        disabled
-                    >
-                        Preview
-                    </Button>
-                </div>
 
-                {/* Row 3: Convert (both modes) */}
-                <Button
-                    variant={readOnly ? "default" : "secondary"}
-                    className="w-full h-10"
-                    onClick={onConvertToOrder}
-                    disabled={!canConvertToOrder || !!convertToOrderPending || isSaving}
-                >
-                    {convertToOrderPending ? "Converting…" : "Convert to Order"}
-                </Button>
+                        <Button variant="outline" className="w-full h-10" disabled>
+                            Preview
+                        </Button>
+
+                        <Button
+                            variant="default"
+                            className="w-full h-10"
+                            onClick={onConvertToOrder}
+                            disabled={!canConvertToOrder || !!convertToOrderPending || isSaving}
+                        >
+                            {convertToOrderPending ? "Converting…" : "Convert to Order"}
+                        </Button>
+                    </>
+                )}
             </CardFooter>
         </Card>
     );

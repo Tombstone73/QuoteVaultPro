@@ -161,6 +161,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                         onDuplicate={state.handlers.duplicateLineItem}
                         onRemove={state.handlers.removeLineItem}
                         onOpenAttachments={handleOpenAttachments}
+                        onSetLineItemPriceOverride={state.handlers.setLineItemPriceOverride}
                     />
 
                     {/* Builder sits below the list; hidden in view mode */}

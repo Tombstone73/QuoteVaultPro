@@ -372,6 +372,10 @@ export function useQuoteEditorState() {
                 specsJson: item.specsJson || {},
                 selectedOptions: item.selectedOptions || [],
                 linePrice: parseFloat(item.linePrice),
+                // Price override fields are client-side for now; default to formula pricing on load.
+                priceOverridden: false,
+                overriddenPrice: null,
+                formulaLinePrice: parseFloat(item.linePrice),
                 priceBreakdown: item.priceBreakdown,
                 displayOrder: idx,
                 notes: (item.specsJson as any)?.notes || undefined,
@@ -379,6 +383,55 @@ export function useQuoteEditorState() {
             })) || []);
         }
     }, [quote, selectedCustomerId, selectedContactId, selectedCustomer]);
+
+    // ============================================================================
+    // HANDLER: Inline price override (client-side only for now)
+    // ============================================================================
+
+    const setLineItemPriceOverride = useCallback((itemKey: string, nextPrice: number | null) => {
+        if (!itemKey) return;
+
+        setLineItems((prev) =>
+            prev.map((item) => {
+                const keyMatches = item.tempId === itemKey || item.id === itemKey;
+                if (!keyMatches) return item;
+
+                const formulaLinePrice = typeof item.formulaLinePrice === "number" ? item.formulaLinePrice : item.linePrice;
+
+                if (nextPrice == null) {
+                    // TODO: log price override to audit log
+                    const restored = formulaLinePrice;
+                    return {
+                        ...item,
+                        priceOverridden: false,
+                        overriddenPrice: null,
+                        linePrice: restored,
+                        priceBreakdown: {
+                            ...(item.priceBreakdown || {}),
+                            basePrice: restored,
+                            total: restored,
+                        },
+                    };
+                }
+
+                const sanitized = Number.isFinite(nextPrice) ? Math.max(0, nextPrice) : 0;
+
+                // TODO: log price override to audit log
+                return {
+                    ...item,
+                    formulaLinePrice,
+                    priceOverridden: true,
+                    overriddenPrice: sanitized,
+                    linePrice: sanitized,
+                    priceBreakdown: {
+                        ...(item.priceBreakdown || {}),
+                        basePrice: sanitized,
+                        total: sanitized,
+                    },
+                };
+            })
+        );
+    }, []);
 
     // ============================================================================
     // EFFECT: Update selectedCustomer when customerData is fetched
@@ -811,6 +864,9 @@ export function useQuoteEditorState() {
                     specsJson: payload.specsJson,
                     selectedOptions: payload.selectedOptions,
                     linePrice: payload.linePrice,
+                    priceOverridden: false,
+                    overriddenPrice: null,
+                    formulaLinePrice: payload.linePrice,
                     priceBreakdown: payload.priceBreakdown,
                     displayOrder: payload.displayOrder,
                     notes: lineItemNotes || undefined,
@@ -916,6 +972,9 @@ export function useQuoteEditorState() {
                 specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
                 selectedOptions: selectedOptionsArray,
                 linePrice,
+                priceOverridden: false,
+                overriddenPrice: null,
+                formulaLinePrice: linePrice,
                 priceBreakdown: {
                     basePrice: linePrice,
                     optionsPrice: 0,
@@ -1332,6 +1391,7 @@ export function useQuoteEditorState() {
             editLineItem: (id: string) => {
                 setDraftLineItemId(id);
             },
+            setLineItemPriceOverride,
 
             // Quote operations
             saveQuote: handleSaveQuote,
