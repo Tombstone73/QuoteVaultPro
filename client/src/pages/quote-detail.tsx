@@ -97,8 +97,8 @@ export default function QuoteDetail() {
             <div className="py-16 text-center">
               <FileText className="w-12 h-12 mx-auto mb-4 text-titan-text-muted" />
               <p className="text-titan-text-secondary">Quote not found</p>
-              <Button 
-                onClick={handleBack} 
+              <Button
+                onClick={handleBack}
                 className="mt-4 bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md"
               >
                 Go Back
@@ -117,9 +117,9 @@ export default function QuoteDetail() {
         subtitle={`Created ${format(new Date(quote.createdAt), 'MMMM d, yyyy')}`}
         className="pb-3"
         backButton={
-          <Button 
-            variant="ghost" 
-            size="sm" 
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={handleBack}
             className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
           >
@@ -131,8 +131,8 @@ export default function QuoteDetail() {
           <div className="flex items-center gap-2">
             <QuoteSourceBadge source={quote.source} />
             {isInternalUser && quote.source === 'internal' && (
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 size="sm"
                 onClick={() => navigate(ROUTES.quotes.edit(quote.id))}
                 className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
@@ -142,7 +142,7 @@ export default function QuoteDetail() {
               </Button>
             )}
             {quote.status !== 'canceled' && !quote.convertedToOrderId && (
-              <Button 
+              <Button
                 size="sm"
                 onClick={() => setShowConvertDialog(true)}
                 disabled={convertToOrder.isPending}
@@ -153,7 +153,7 @@ export default function QuoteDetail() {
               </Button>
             )}
             {quote.convertedToOrderId && (
-              <Button 
+              <Button
                 size="sm"
                 variant="outline"
                 onClick={() => navigate(ROUTES.orders.detail(quote.convertedToOrderId!))}
@@ -170,7 +170,7 @@ export default function QuoteDetail() {
       <ContentLayout className="space-y-4">
         {/* Quote Info Cards */}
         <div className="grid md:grid-cols-3 gap-4">
-          <DataCard 
+          <DataCard
             title="Bill To"
             className="bg-titan-bg-card border-titan-border-subtle"
           >
@@ -209,7 +209,7 @@ export default function QuoteDetail() {
             </div>
           </DataCard>
 
-          <DataCard 
+          <DataCard
             title="Ship To"
             className="bg-titan-bg-card border-titan-border-subtle"
           >
@@ -247,7 +247,7 @@ export default function QuoteDetail() {
             </div>
           </DataCard>
 
-          <DataCard 
+          <DataCard
             title="Quote Information"
             className="bg-titan-bg-card border-titan-border-subtle"
           >
@@ -267,7 +267,7 @@ export default function QuoteDetail() {
         </div>
 
         {/* Line Items */}
-        <DataCard 
+        <DataCard
           title="Line Items"
           className="bg-titan-bg-card border-titan-border-subtle"
         >
@@ -283,7 +283,7 @@ export default function QuoteDetail() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {quote.lineItems?.map((item, idx) => (
+                {quote.lineItems?.map((item: any, idx: number) => (
                   <TableRow key={item.id} className="border-b border-titan-border-subtle hover:bg-titan-bg-card-elevated/50">
                     <TableCell>
                       <div className="font-medium text-titan-text-primary">{item.productName}</div>
