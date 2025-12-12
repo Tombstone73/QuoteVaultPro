@@ -40,7 +40,7 @@ export function CustomerCard({
             <CardHeader className="pb-2 px-5 pt-4">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
                     <Users className="w-4 h-4" />
-                    Customer
+                    Customer Details
                 </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 px-5 pb-4">

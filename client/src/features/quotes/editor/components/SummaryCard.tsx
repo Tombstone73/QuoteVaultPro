@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/componen
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { DollarSign, Save, Send, ListOrdered } from "lucide-react";
+import { DollarSign, Save } from "lucide-react";
 import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
@@ -19,14 +19,14 @@ type SummaryCardProps = {
     selectedCustomer: CustomerWithContacts | undefined;
     canSaveQuote: boolean;
     isSaving: boolean;
+    canConvertToOrder?: boolean;
+    convertToOrderPending?: boolean;
     readOnly?: boolean;
     onSave: () => void;
     onConvertToOrder: () => void;
 };
 
 export function SummaryCard({
-    lineItems,
-    products,
     subtotal,
     taxAmount,
     grandTotal,
@@ -36,159 +36,99 @@ export function SummaryCard({
     selectedCustomer,
     canSaveQuote,
     isSaving,
+    canConvertToOrder = true,
+    convertToOrderPending,
     readOnly = false,
     onSave,
     onConvertToOrder,
 }: SummaryCardProps) {
     return (
-        <div className="space-y-3">
-            {/* Finished Line Items Card - compact view */}
-            {lineItems.length > 0 && (
-                <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-                    <CardHeader className="pb-2 px-5 pt-4">
-                        <CardTitle className="text-sm font-medium flex items-center gap-2">
-                            <ListOrdered className="w-4 h-4" />
-                            Line Items ({lineItems.length})
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="p-0">
-                        <div className="divide-y max-h-[300px] overflow-y-auto">
-                            {lineItems.map((item, index) => (
-                                <div key={index} className="px-4 py-2 hover:bg-muted/50 transition-colors">
-                                    <div className="flex justify-between items-start gap-2">
-                                        <div className="flex-1 min-w-0">
-                                            <p className="font-medium text-sm truncate">
-                                                {products?.find((p: any) => p.id === item.productId)?.name || 'Unknown Product'}
-                                            </p>
-                                            {(item as any).description && (
-                                                <p className="text-xs text-muted-foreground truncate">{(item as any).description}</p>
-                                            )}
-                                            {(item.width || item.height) && (
-                                                <p className="text-xs text-muted-foreground">
-                                                    {item.width}" × {item.height}"
-                                                </p>
-                                            )}
-                                        </div>
-                                        <div className="text-right shrink-0">
-                                            <p className="font-mono text-sm font-medium">${Number((item as any).lineTotal || 0).toFixed(2)}</p>
-                                            <p className="text-xs text-muted-foreground">Qty: {item.quantity}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </CardContent>
-                </Card>
-            )}
+        <Card className="rounded-xl bg-card/70 border-border/60 shadow-lg">
+            <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <DollarSign className="w-4 h-4" />
+                    Quote Summary
+                </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 px-5 pb-4">
+                <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Subtotal</span>
+                    <span className="font-mono">${subtotal.toFixed(2)}</span>
+                </div>
 
-            {/* Quote Summary Card */}
-            <Card className="rounded-xl bg-card/70 border-border/60 shadow-lg">
-                <CardHeader className="pb-2 px-5 pt-4">
-                    <CardTitle className="text-sm font-medium flex items-center gap-2">
-                        <DollarSign className="w-4 h-4" />
-                        Quote Summary
-                    </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 px-5 pb-4">
-                    {/* Subtotal */}
+                {discountPercent && discountPercent > 0 && (
+                    <div className="flex justify-between text-sm text-green-600">
+                        <span>Discount ({discountPercent}%)</span>
+                        <span className="font-mono">-${(subtotal * discountPercent / 100).toFixed(2)}</span>
+                    </div>
+                )}
+
+                <Separator />
+
+                <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">
+                        Tax ({(effectiveTaxRate * 100).toFixed(2)}%)
+                        {selectedCustomer?.isTaxExempt && (
+                            <Badge variant="outline" className="ml-2 text-xs">Exempt</Badge>
+                        )}
+                    </span>
+                    <span className="font-mono">${taxAmount.toFixed(2)}</span>
+                </div>
+
+                {deliveryMethod === 'ship' && (
                     <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Subtotal</span>
-                        <span className="font-mono">${subtotal.toFixed(2)}</span>
+                        <span className="text-muted-foreground">Shipping</span>
+                        <span className="font-mono text-muted-foreground">TBD</span>
                     </div>
+                )}
 
-                    {/* Discounts - show if customer has discount */}
-                    {discountPercent && discountPercent > 0 && (
-                        <div className="flex justify-between text-sm text-green-600">
-                            <span>Discount ({discountPercent}%)</span>
-                            <span className="font-mono">-${(subtotal * discountPercent / 100).toFixed(2)}</span>
-                        </div>
-                    )}
+                <Separator />
 
-                    <Separator />
+                <div className="flex justify-between items-baseline pt-1">
+                    <span className="font-semibold">Grand Total</span>
+                    <span className="text-2xl font-bold font-mono">${grandTotal.toFixed(2)}</span>
+                </div>
+            </CardContent>
 
-                    {/* Tax breakdown */}
-                    <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">
-                            Tax ({(effectiveTaxRate * 100).toFixed(2)}%)
-                            {selectedCustomer?.isTaxExempt && (
-                                <Badge variant="outline" className="ml-2 text-xs">Exempt</Badge>
-                            )}
-                        </span>
-                        <span className="font-mono">${taxAmount.toFixed(2)}</span>
-                    </div>
+            <CardFooter className="flex flex-col gap-3 pt-0 px-5 pb-4">
+                {/* Row 1: Save (edit mode only) */}
+                {!readOnly && (
+                    <Button
+                        className="w-full h-10"
+                        onClick={onSave}
+                        disabled={!canSaveQuote || isSaving}
+                    >
+                        <Save className="w-4 h-4 mr-2" />
+                        {isSaving ? "Saving…" : "Save Changes"}
+                    </Button>
+                )}
 
-                    {/* Shipping placeholder - to be implemented */}
-                    {deliveryMethod === 'ship' && (
-                        <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Shipping</span>
-                            <span className="font-mono text-muted-foreground">TBD</span>
-                        </div>
-                    )}
-
-                    <Separator />
-
-                    {/* Grand Total */}
-                    <div className="flex justify-between items-baseline pt-1">
-                        <span className="font-semibold">Grand Total</span>
-                        <span className="text-2xl font-bold font-mono">${grandTotal.toFixed(2)}</span>
-                    </div>
-                </CardContent>
-                <CardFooter className="flex-col gap-2 pt-0 px-5 pb-4">
-                    {readOnly ? (
-                        // View mode: only show Convert to Order
-                        <Button
-                            className="w-full h-10"
-                            onClick={onConvertToOrder}
-                        >
-                            Convert to Order
+                {/* Row 2: Email + Preview (Preview full-width in view mode) */}
+                <div className="grid grid-cols-2 gap-2 w-full">
+                    {!readOnly && (
+                        <Button variant="outline" className="w-full" disabled>
+                            Email Quote
                         </Button>
-                    ) : (
-                        // Edit mode: show Save, Email, and Convert
-                        <>
-                            <Button
-                                className="w-full h-10"
-                                onClick={onSave}
-                                disabled={!canSaveQuote}
-                            >
-                                <Save className="w-4 h-4 mr-2" />
-                                {isSaving ? "Saving…" : "Save Quote"}
-                            </Button>
-                            <div className="grid grid-cols-2 gap-2 w-full">
-                                <Button variant="outline" disabled size="sm">
-                                    <Send className="w-4 h-4 mr-2" />
-                                    Email
-                                </Button>
-                                <Button
-                                    variant="secondary"
-                                    size="sm"
-                                    onClick={onConvertToOrder}
-                                    disabled={isSaving}
-                                >
-                                    Convert to Order
-                                </Button>
-                            </div>
-                        </>
                     )}
-                </CardFooter>
-            </Card>
+                    <Button
+                        variant="outline"
+                        className={`${readOnly ? "col-span-2" : ""} w-full`}
+                        disabled
+                    >
+                        Preview
+                    </Button>
+                </div>
 
-            {/* Quick Info Card - only when customer selected */}
-            {selectedCustomer && (
-                <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-                    <CardHeader className="pb-2 px-5 pt-4">
-                        <CardTitle className="text-xs font-medium text-muted-foreground">Customer Info</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-sm space-y-1 px-5 pb-4">
-                        <p className="font-medium">{selectedCustomer.companyName}</p>
-                        {selectedCustomer.email && (
-                            <p className="text-muted-foreground text-xs">{selectedCustomer.email}</p>
-                        )}
-                        {selectedCustomer.phone && (
-                            <p className="text-muted-foreground text-xs">{selectedCustomer.phone}</p>
-                        )}
-                    </CardContent>
-                </Card>
-            )}
-        </div>
+                {/* Row 3: Convert (both modes) */}
+                <Button
+                    variant={readOnly ? "default" : "secondary"}
+                    className="w-full h-10"
+                    onClick={onConvertToOrder}
+                    disabled={!canConvertToOrder || !!convertToOrderPending || isSaving}
+                >
+                    {convertToOrderPending ? "Converting…" : "Convert to Order"}
+                </Button>
+            </CardFooter>
+        </Card>
     );
 }

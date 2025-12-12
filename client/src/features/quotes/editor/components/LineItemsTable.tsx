@@ -1,6 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { FileText, ChevronDown, Pencil, Copy, Trash2, Paperclip } from "lucide-react";
@@ -46,108 +45,138 @@ export function LineItemsTable({
                             <p className="text-xs">Configure a product above to add items</p>
                         </div>
                     ) : (
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Product</TableHead>
-                                    <TableHead className="text-center">Size</TableHead>
-                                    <TableHead className="text-center">Qty</TableHead>
-                                    <TableHead className="text-right">Price</TableHead>
-                                    <TableHead className="text-center">Artwork</TableHead>
-                                    {!readOnly && <TableHead className="w-[80px]"></TableHead>}
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {lineItems
-                                    .filter((item) => item.status !== "draft")
-                                    .map((item) => {
-                                        const hasAttachmentOption = Array.isArray(item.productOptions)
-                                            ? item.productOptions.some((opt) => opt.type === "attachment")
-                                            : false;
-                                        return (
-                                            <TableRow key={item.tempId || item.id}>
-                                                <TableCell>
-                                                    <div className="font-medium text-sm">{item.productName}</div>
-                                                    {item.variantName && (
-                                                        <div className="text-xs text-muted-foreground">{item.variantName}</div>
-                                                    )}
-                                                    {item.selectedOptions && item.selectedOptions.length > 0 && (
-                                                        <div className="flex flex-wrap gap-1 mt-1">
-                                                            {item.selectedOptions.map((opt: any, idx: number) => (
-                                                                <Badge key={idx} variant="outline" className="text-xs py-0">
-                                                                    {opt.optionName}
-                                                                </Badge>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                    {item.notes && (
-                                                        <div className="text-xs italic text-muted-foreground mt-1 truncate max-w-[200px]">
-                                                            {item.notes}
-                                                        </div>
-                                                    )}
-                                                </TableCell>
-                                                <TableCell className="text-center text-sm">
-                                                    {item.width > 1 || item.height > 1 ? (
-                                                        `${item.width}" × ${item.height}"`
-                                                    ) : (
-                                                        <span className="text-muted-foreground">—</span>
-                                                    )}
-                                                </TableCell>
-                                                <TableCell className="text-center text-sm">{item.quantity}</TableCell>
-                                                <TableCell className="text-right font-mono text-sm">
-                                                    ${item.linePrice.toFixed(2)}
-                                                </TableCell>
-                                                <TableCell className="text-center">
-                                                    {hasAttachmentOption && item.id ? (
-                                                        <LineItemArtworkBadge
-                                                            quoteId={quoteId}
-                                                            lineItemId={item.id}
-                                                            onClick={() => onOpenAttachments(item)}
-                                                        />
-                                                    ) : hasAttachmentOption ? (
-                                                        <span className="text-xs text-muted-foreground">Pending…</span>
-                                                    ) : (
-                                                        <span className="text-xs text-muted-foreground">—</span>
-                                                    )}
-                                                </TableCell>
-                                                {!readOnly && (
-                                                    <TableCell>
-                                                        <DropdownMenu>
-                                                            <DropdownMenuTrigger asChild>
-                                                                <Button variant="ghost" size="icon" className="h-8 w-8">
-                                                                    <ChevronDown className="w-4 h-4" />
-                                                                </Button>
-                                                            </DropdownMenuTrigger>
-                                                            <DropdownMenuContent align="end">
-                                                                <DropdownMenuItem onClick={() => {
-                                                                    if (item.id) {
-                                                                        onEdit(item.id);
-                                                                    }
-                                                                }}>
-                                                                    <Pencil className="w-4 h-4 mr-2" />
-                                                                    Edit
-                                                                </DropdownMenuItem>
-                                                                <DropdownMenuItem onClick={() => onDuplicate(item.tempId || item.id || '')}>
-                                                                    <Copy className="w-4 h-4 mr-2" />
-                                                                    Duplicate
-                                                                </DropdownMenuItem>
-                                                                <DropdownMenuItem
-                                                                    onClick={() => onRemove(item.tempId || item.id || '')}
-                                                                    className="text-destructive"
-                                                                >
-                                                                    <Trash2 className="w-4 h-4 mr-2" />
-                                                                    Remove
-                                                                </DropdownMenuItem>
-                                                            </DropdownMenuContent>
-                                                        </DropdownMenu>
-                                                    </TableCell>
+                        <div className="space-y-2">
+                            {lineItems
+                                .filter((item) => item.status !== "draft")
+                                .map((item) => {
+                                    // products is intentionally kept in props to preserve existing API and future use
+                                    void products;
+
+                                    const hasAttachmentOption = Array.isArray(item.productOptions)
+                                        ? item.productOptions.some((opt) => opt.type === "attachment")
+                                        : false;
+
+                                    const showDimensions = item.width > 1 || item.height > 1;
+
+                                    return (
+                                        <div
+                                            key={item.tempId || item.id}
+                                            className="group flex gap-3 rounded-lg border border-border/60 bg-background/40 p-3 hover:bg-muted/30 transition-colors"
+                                        >
+                                            {/* Thumbnail / icon */}
+                                            <div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center shrink-0">
+                                                <FileText className="h-5 w-5 text-muted-foreground" />
+                                            </div>
+
+                                            {/* Main content */}
+                                            <div className="min-w-0 flex-1 space-y-1">
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="font-medium text-sm truncate">{item.productName}</div>
+                                                        {item.variantName && (
+                                                            <div className="text-xs text-muted-foreground truncate">{item.variantName}</div>
+                                                        )}
+                                                    </div>
+
+                                                    <div className="text-right shrink-0">
+                                                        <div className="font-mono text-sm font-medium">${item.linePrice.toFixed(2)}</div>
+                                                    </div>
+                                                </div>
+
+                                                {item.selectedOptions && item.selectedOptions.length > 0 && (
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {item.selectedOptions.slice(0, 6).map((opt: any, idx: number) => (
+                                                            <Badge key={idx} variant="outline" className="text-[11px] py-0">
+                                                                {opt.optionName}
+                                                            </Badge>
+                                                        ))}
+                                                        {item.selectedOptions.length > 6 && (
+                                                            <Badge variant="outline" className="text-[11px] py-0">
+                                                                +{item.selectedOptions.length - 6}
+                                                            </Badge>
+                                                        )}
+                                                    </div>
                                                 )}
-                                            </TableRow>
-                                        )
-                                    })
-                                }
-                            </TableBody>
-                        </Table>
+
+                                                {item.notes && (
+                                                    <div className="text-xs italic text-muted-foreground truncate">
+                                                        {item.notes}
+                                                    </div>
+                                                )}
+
+                                                {/* Inline metrics row */}
+                                                <div className="grid grid-cols-3 gap-2 pt-1 text-xs">
+                                                    <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
+                                                        <span className="text-muted-foreground">Size</span>
+                                                        <span className="font-mono">
+                                                            {showDimensions ? `${item.width}"×${item.height}"` : "—"}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
+                                                        <span className="text-muted-foreground">Qty</span>
+                                                        <span className="font-mono">{item.quantity}</span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
+                                                        <span className="text-muted-foreground">Artwork</span>
+                                                        <span>
+                                                            {hasAttachmentOption && item.id ? (
+                                                                <LineItemArtworkBadge
+                                                                    quoteId={quoteId}
+                                                                    lineItemId={item.id}
+                                                                    onClick={() => onOpenAttachments(item)}
+                                                                />
+                                                            ) : hasAttachmentOption ? (
+                                                                <span className="text-xs text-muted-foreground">Pending…</span>
+                                                            ) : (
+                                                                <span className="text-xs text-muted-foreground">—</span>
+                                                            )}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Row actions */}
+                                            {!readOnly && (
+                                                <div className="shrink-0 flex items-start">
+                                                    <DropdownMenu>
+                                                        <DropdownMenuTrigger asChild>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="h-8 w-8 opacity-90 group-hover:opacity-100"
+                                                                aria-label="Line item actions"
+                                                            >
+                                                                <ChevronDown className="w-4 h-4" />
+                                                            </Button>
+                                                        </DropdownMenuTrigger>
+                                                        <DropdownMenuContent align="end">
+                                                            <DropdownMenuItem
+                                                                onClick={() => {
+                                                                    if (item.id) onEdit(item.id);
+                                                                }}
+                                                            >
+                                                                <Pencil className="w-4 h-4 mr-2" />
+                                                                Edit
+                                                            </DropdownMenuItem>
+                                                            <DropdownMenuItem onClick={() => onDuplicate(item.tempId || item.id || "")}>
+                                                                <Copy className="w-4 h-4 mr-2" />
+                                                                Duplicate
+                                                            </DropdownMenuItem>
+                                                            <DropdownMenuItem
+                                                                onClick={() => onRemove(item.tempId || item.id || "")}
+                                                                className="text-destructive"
+                                                            >
+                                                                <Trash2 className="w-4 h-4 mr-2" />
+                                                                Remove
+                                                            </DropdownMenuItem>
+                                                        </DropdownMenuContent>
+                                                    </DropdownMenu>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                        </div>
                     )}
                 </CardContent>
             </Card>
