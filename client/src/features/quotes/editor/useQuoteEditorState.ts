@@ -88,6 +88,7 @@ export function useQuoteEditorState() {
     const [lineItems, setLineItems] = useState<QuoteLineItemDraft[]>([]);
     const [draftLineItemId, setDraftLineItemId] = useState<string | null>(null);
     const [isCreatingDraft, setIsCreatingDraft] = useState(false);
+    const [isDuplicatingQuote, setIsDuplicatingQuote] = useState(false);
 
     // ============================================================================
     // PRODUCT BUILDER STATE
@@ -314,6 +315,7 @@ export function useQuoteEditorState() {
     const canSaveExistingQuote = isExistingQuote && hasCustomer && hasLineItems;
     const canSaveQuote = (canSaveNewQuote || canSaveExistingQuote) && !isSaving;
     const canConvertToOrder = isExistingQuote && hasCustomer && hasLineItems;
+    const canDuplicateQuote = isExistingQuote && hasLineItems;
 
     // ============================================================================
     // COMPUTED VALUES: Customer Info
@@ -1176,6 +1178,232 @@ export function useQuoteEditorState() {
     };
 
     // ============================================================================
+    // HANDLER: Duplicate Quote (v1 - normal duplicate only)
+    // ============================================================================
+
+    /**
+     * Duplicate Quote v1 (normal duplicate only).
+     *
+     * Non-negotiables / v1 scope:
+     * - No backend/schema/migration changes
+     * - We intentionally do NOT copy attachments/files (stored separately from line items)
+     * - We intentionally do NOT copy any "variant quote" metadata (not part of v1)
+     *
+     * Backend constraint: POST /api/quotes requires at least 1 line item.
+     * So we create the new quote with the first line item, then sequentially POST the remaining
+     * line items to /api/quotes/:id/line-items, and finally PATCH totals (existing mechanism).
+     */
+    const duplicateQuote = useCallback(async () => {
+        if (!quoteId || !quote) {
+            toast({
+                title: "Cannot duplicate",
+                description: "This quote is not fully loaded yet.",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        const sourceQuote: any = quote as any;
+
+        const itemsToCopy = lineItems
+            .filter((li) => li.status !== "draft")
+            .map((li) => ({
+                productId: li.productId,
+                productName: li.productName,
+                variantId: li.variantId || null,
+                variantName: li.variantName || null,
+                productType: li.productType || "wide_roll",
+                status: li.status || "active",
+                width: li.width,
+                height: li.height,
+                quantity: li.quantity,
+                specsJson: li.specsJson || {},
+                selectedOptions: Array.isArray(li.selectedOptions) ? li.selectedOptions : [],
+                linePrice: li.linePrice ?? 0,
+                priceBreakdown: li.priceBreakdown || {
+                    basePrice: li.linePrice ?? 0,
+                    optionsPrice: 0,
+                    total: li.linePrice ?? 0,
+                    formula: "",
+                },
+                displayOrder: li.displayOrder ?? 0,
+            }));
+
+        if (itemsToCopy.length === 0) {
+            toast({
+                title: "Cannot duplicate",
+                description: "This quote has no line items to copy.",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? sourceQuote.customerId ?? null;
+        const payloadHasCustomerId = !!payloadCustomerId;
+        if (!payloadHasCustomerId) {
+            toast({
+                title: "Cannot duplicate",
+                description: "This quote has no customer selected.",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        setIsDuplicatingQuote(true);
+        toast({ title: "Duplicating…", description: "Creating a new quote copy." });
+
+        let newQuoteId: string | null = null;
+        let createdCount = 0;
+
+        try {
+            const firstLineItem = itemsToCopy[0];
+
+            // Quote-level fields we attempt to copy in v1 (safe set):
+            // - customerId/contactId
+            // - shippingMethod/shippingMode/carrier fields (if present)
+            // - billTo*/shipTo* snapshot fields (if present)
+            //
+            // Note: server currently re-snapshots billTo*/shipTo* on create; we pass through
+            // customerId/contactId + shippingMethod/shippingMode so the snapshot should align.
+            const snapshotFields = {
+                billToName: sourceQuote.billToName ?? null,
+                billToCompany: sourceQuote.billToCompany ?? null,
+                billToAddress1: sourceQuote.billToAddress1 ?? null,
+                billToAddress2: sourceQuote.billToAddress2 ?? null,
+                billToCity: sourceQuote.billToCity ?? null,
+                billToState: sourceQuote.billToState ?? null,
+                billToPostalCode: sourceQuote.billToPostalCode ?? null,
+                billToCountry: sourceQuote.billToCountry ?? null,
+                billToPhone: sourceQuote.billToPhone ?? null,
+                billToEmail: sourceQuote.billToEmail ?? null,
+                shipToName: sourceQuote.shipToName ?? null,
+                shipToCompany: sourceQuote.shipToCompany ?? null,
+                shipToAddress1: sourceQuote.shipToAddress1 ?? null,
+                shipToAddress2: sourceQuote.shipToAddress2 ?? null,
+                shipToCity: sourceQuote.shipToCity ?? null,
+                shipToState: sourceQuote.shipToState ?? null,
+                shipToPostalCode: sourceQuote.shipToPostalCode ?? null,
+                shipToCountry: sourceQuote.shipToCountry ?? null,
+                shipToPhone: sourceQuote.shipToPhone ?? null,
+                shipToEmail: sourceQuote.shipToEmail ?? null,
+            };
+
+            // Safest label behavior: clear it to avoid confusing "tags" carrying forward unintentionally.
+            const createPayload: any = {
+                customerId: payloadCustomerId,
+                contactId: selectedContactId ?? sourceQuote.contactId ?? null,
+                customerName: selectedCustomer?.companyName ?? sourceQuote.customerName ?? null,
+                source: sourceQuote.source || "internal",
+                shippingMethod: sourceQuote.shippingMethod ?? null,
+                shippingMode: sourceQuote.shippingMode ?? null,
+                carrier: sourceQuote.carrier ?? null,
+                carrierAccountNumber: sourceQuote.carrierAccountNumber ?? null,
+                shippingInstructions: sourceQuote.shippingInstructions ?? null,
+                requestedDueDate: sourceQuote.requestedDueDate ?? null,
+                validUntil: sourceQuote.validUntil ?? null,
+                label: undefined,
+                ...snapshotFields,
+                lineItems: [firstLineItem],
+                // Required by backend validations
+                hasCustomerId: true,
+                hasLineItems: true,
+                // Totals are patched after all line items are copied to avoid partial totals.
+                subtotal: 0,
+                taxRate: 0,
+                taxAmount: 0,
+                totalPrice: 0,
+            };
+
+            const createResponse = await apiRequest("POST", "/api/quotes", createPayload);
+            if (!createResponse.ok) {
+                const errorBody = await createResponse.json().catch(() => ({}));
+                throw new Error(errorBody?.message || "Failed to create duplicate quote");
+            }
+
+            const created = await createResponse.json();
+            newQuoteId =
+                created?.id ||
+                created?.quote?.id ||
+                created?.data?.id ||
+                created?.data?.quote?.id ||
+                created?.data?.data?.id;
+
+            if (!newQuoteId) {
+                throw new Error("Duplicate quote creation did not return an id");
+            }
+
+            createdCount = 1;
+
+            // Copy remaining line items sequentially (failure-safe, with clear error handling)
+            for (let i = 1; i < itemsToCopy.length; i++) {
+                const li = itemsToCopy[i];
+                try {
+                    const resp = await apiRequest("POST", `/api/quotes/${newQuoteId}/line-items`, li);
+                    if (!resp.ok) {
+                        const body = await resp.json().catch(() => ({}));
+                        throw new Error(body?.message || `Failed to copy line item ${i + 1}`);
+                    }
+                    createdCount++;
+                } catch (err: any) {
+                    // Stop on first failure so we can message partial duplication clearly.
+                    throw new Error(err?.message || "Failed to copy line items");
+                }
+            }
+
+            // Patch totals using existing quote update mechanism (no new APIs)
+            const copiedSubtotal = itemsToCopy.reduce((sum, li) => sum + Number(li.linePrice || 0), 0);
+            const copiedTaxAmount = copiedSubtotal * effectiveTaxRate;
+            const copiedGrandTotal = copiedSubtotal + copiedTaxAmount;
+            await apiRequest("PATCH", `/api/quotes/${newQuoteId}`, {
+                subtotal: copiedSubtotal,
+                taxRate: effectiveTaxRate,
+                taxAmount: copiedTaxAmount,
+                totalPrice: copiedGrandTotal,
+                customerId: payloadCustomerId,
+                contactId: createPayload.contactId,
+                shippingMethod: createPayload.shippingMethod,
+                shippingMode: createPayload.shippingMode,
+                carrier: createPayload.carrier,
+                carrierAccountNumber: createPayload.carrierAccountNumber,
+                shippingInstructions: createPayload.shippingInstructions,
+                label: createPayload.label,
+            });
+
+            toast({ title: "Duplicate created", description: "A new quote copy is ready." });
+            navigate(ROUTES.quotes.edit(newQuoteId), { replace: false });
+        } catch (err: any) {
+            const message = err?.message || "Failed to duplicate quote";
+            if (newQuoteId) {
+                toast({
+                    title: "Duplicate created with issues",
+                    description: `${message}. The quote was created but line items may be partial (${createdCount}/${itemsToCopy.length}).`,
+                    variant: "destructive",
+                });
+                navigate(ROUTES.quotes.edit(newQuoteId), { replace: false });
+            } else {
+                toast({
+                    title: "Duplicate failed",
+                    description: message,
+                    variant: "destructive",
+                });
+            }
+            console.error("[duplicateQuote] failed", { err, newQuoteId, createdCount });
+        } finally {
+            setIsDuplicatingQuote(false);
+        }
+    }, [
+        quoteId,
+        quote,
+        lineItems,
+        selectedCustomer,
+        selectedCustomerId,
+        selectedContactId,
+        effectiveTaxRate,
+        toast,
+        navigate,
+    ]);
+
+    // ============================================================================
     // HANDLER: Convert to Order
     // ============================================================================
 
@@ -1324,6 +1552,8 @@ export function useQuoteEditorState() {
         canSaveQuote,
         canConvertToOrder,
         isSaving,
+        isDuplicatingQuote,
+        canDuplicateQuote,
 
         // Handlers
         handlers: {
@@ -1395,6 +1625,7 @@ export function useQuoteEditorState() {
 
             // Quote operations
             saveQuote: handleSaveQuote,
+            duplicateQuote,
             convertToOrder: handleConvertToOrder,
             handleBack,
         },
