@@ -31,52 +31,44 @@ export function QuoteHeader({
     const navigate = useNavigate();
 
     return (
-        <div className="flex items-center justify-between py-2">
-            <Button variant="ghost" size="sm" onClick={onBack} className="gap-2">
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                Back to quotes
-            </Button>
-            <div className="flex items-center gap-2">
-                <h1 className="text-xl font-semibold">
-                    {quoteNumber ? `Quote #${quoteNumber}` : "Quote"}
-                </h1>
-            </div>
-            <div className="flex items-center gap-2">
-                {readOnly ? (
-                    // View mode: show Edit Quote button
-                    quoteId && (
-                        <Button
-                            size="sm"
-                            variant="default"
-                            onClick={() => navigate(ROUTES.quotes.edit(quoteId))}
-                        >
-                            <Edit className="w-4 h-4 mr-2" />
-                            Edit Quote
+        <div className="space-y-3">
+            <div className="flex items-center justify-between">
+                <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 -ml-2">
+                    <ArrowLeft className="h-4 w-4" />
+                    Back to quotes
+                </Button>
+
+                {/* View mode: show Edit Quote button in header */}
+                {readOnly && quoteId && (
+                    <Button
+                        size="sm"
+                        variant="default"
+                        onClick={() => navigate(ROUTES.quotes.edit(quoteId))}
+                    >
+                        <Edit className="w-4 h-4 mr-2" />
+                        Edit Quote
+                    </Button>
+                )}
+
+                {/* Edit mode actions are intentionally moved into SummaryCard (right column). */}
+                {!readOnly && (
+                    <div className="hidden">
+                        <Button size="sm" onClick={onSave} disabled={!canSaveQuote}>
+                            {isSaving ? "Saving…" : "Save Quote"}
                         </Button>
-                    )
-                ) : (
-                    // Edit mode: show Save and Convert buttons
-                    <>
                         {canConvertToOrder && (
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={onConvertToOrder}
-                                disabled={convertToOrderPending}
-                            >
+                            <Button size="sm" onClick={onConvertToOrder} disabled={convertToOrderPending}>
                                 Convert to Order
                             </Button>
                         )}
-                        <Button
-                            size="sm"
-                            variant="default"
-                            onClick={onSave}
-                            disabled={!canSaveQuote}
-                        >
-                            {isSaving ? "Saving…" : "Save Quote"}
-                        </Button>
-                    </>
+                    </div>
                 )}
+            </div>
+
+            <div className="flex items-end justify-between gap-4">
+                <h1 className="text-2xl font-semibold tracking-tight">
+                    {quoteNumber ? `Quote #${quoteNumber}` : "Quote"}
+                </h1>
             </div>
         </div>
     );

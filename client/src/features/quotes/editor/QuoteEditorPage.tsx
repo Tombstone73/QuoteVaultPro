@@ -47,18 +47,23 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     // Show loading placeholder only for initial load of a valid quoteId
     if (state.isInitialQuoteLoading && !state.isQuoteRefreshing) {
         return (
-            <div className="container mx-auto p-6 space-y-4">
-                <Skeleton className="h-10 w-64" />
-                <div className="grid gap-4 md:grid-cols-[2fr,1fr]">
-                    <div className="space-y-3">
-                        <Skeleton className="h-9 w-full" />
-                        <Skeleton className="h-9 w-full" />
+            <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+                <div className="space-y-3">
+                    <Skeleton className="h-8 w-40" />
+                    <Skeleton className="h-10 w-64" />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                    <Skeleton className="h-44 w-full" />
+                    <Skeleton className="h-44 w-full" />
+                </div>
+                <div className="grid gap-6 md:grid-cols-[2fr_1fr]">
+                    <div className="space-y-4">
+                        <Skeleton className="h-10 w-48" />
+                        <Skeleton className="h-56 w-full" />
                         <Skeleton className="h-40 w-full" />
                     </div>
-                    <div className="space-y-3">
-                        <Skeleton className="h-9 w-full" />
-                        <Skeleton className="h-9 w-full" />
-                        <Skeleton className="h-9 w-full" />
+                    <div className="space-y-4">
+                        <Skeleton className="h-72 w-full" />
                     </div>
                 </div>
             </div>
@@ -95,8 +100,8 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     };
 
     return (
-        <div className="max-w-7xl mx-auto space-y-3 px-4">
-            {/* Header with navigation and actions */}
+        <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+            {/* Top header (full width): back link + quote header */}
             <QuoteHeader
                 quoteNumber={(state.quote as any)?.quoteNumber || ""}
                 quoteId={state.quoteId}
@@ -110,49 +115,55 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                 convertToOrderPending={state.convertToOrderHook?.isPending}
             />
 
-            {/* 3-Column Cockpit Layout */}
-            <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)_minmax(280px,340px)]">
+            {/* Customer / job meta (full width) */}
+            <div className="grid gap-6 md:grid-cols-2">
+                <CustomerCard
+                    selectedCustomerId={state.selectedCustomerId}
+                    selectedCustomer={state.selectedCustomer}
+                    selectedContactId={state.selectedContactId}
+                    contacts={state.contacts}
+                    effectiveTaxRate={state.effectiveTaxRate}
+                    pricingTier={state.pricingTier}
+                    discountPercent={state.discountPercent}
+                    markupPercent={state.markupPercent}
+                    marginPercent={state.marginPercent}
+                    deliveryMethod={state.deliveryMethod}
+                    readOnly={readOnly}
+                    onCustomerChange={state.handlers.setCustomer}
+                    onContactChange={state.handlers.setContactId}
+                />
 
-                {/* ═══════════════════════════════════════════════════════════════ */}
-                {/* LEFT COLUMN: Customer & Logistics */}
-                {/* ═══════════════════════════════════════════════════════════════ */}
-                <div className="space-y-3 order-1 xl:order-1">
-                    <CustomerCard
-                        selectedCustomerId={state.selectedCustomerId}
-                        selectedCustomer={state.selectedCustomer}
-                        selectedContactId={state.selectedContactId}
-                        contacts={state.contacts}
-                        effectiveTaxRate={state.effectiveTaxRate}
-                        pricingTier={state.pricingTier}
-                        discountPercent={state.discountPercent}
-                        markupPercent={state.markupPercent}
-                        marginPercent={state.marginPercent}
-                        deliveryMethod={state.deliveryMethod}
+                <FulfillmentCard
+                    deliveryMethod={state.deliveryMethod}
+                    shippingAddress={state.shippingAddress}
+                    quoteNotes={state.quoteNotes}
+                    selectedCustomer={state.selectedCustomer}
+                    useCustomerAddress={state.useCustomerAddress}
+                    customerHasAddress={!!state.customerHasAddress}
+                    readOnly={readOnly}
+                    onDeliveryMethodChange={state.handlers.setDeliveryMethod}
+                    onShippingAddressChange={state.handlers.updateShippingAddress}
+                    onQuoteNotesChange={state.handlers.setQuoteNotes}
+                    onCopyCustomerAddress={state.handlers.handleCopyCustomerAddress}
+                />
+            </div>
+
+            {/* Main content area (2-column on desktop, stacked on mobile) */}
+            <div className="grid gap-6 md:grid-cols-[2fr_1fr]">
+                {/* Left: Line Items */}
+                <div className="space-y-6">
+                    <LineItemsTable
+                        lineItems={state.lineItems}
+                        products={state.products}
+                        quoteId={state.quoteId}
                         readOnly={readOnly}
-                        onCustomerChange={state.handlers.setCustomer}
-                        onContactChange={state.handlers.setContactId}
+                        onEdit={state.handlers.editLineItem}
+                        onDuplicate={state.handlers.duplicateLineItem}
+                        onRemove={state.handlers.removeLineItem}
+                        onOpenAttachments={handleOpenAttachments}
                     />
 
-                    <FulfillmentCard
-                        deliveryMethod={state.deliveryMethod}
-                        shippingAddress={state.shippingAddress}
-                        quoteNotes={state.quoteNotes}
-                        selectedCustomer={state.selectedCustomer}
-                        useCustomerAddress={state.useCustomerAddress}
-                        customerHasAddress={!!state.customerHasAddress}
-                        readOnly={readOnly}
-                        onDeliveryMethodChange={state.handlers.setDeliveryMethod}
-                        onShippingAddressChange={state.handlers.updateShippingAddress}
-                        onQuoteNotesChange={state.handlers.setQuoteNotes}
-                        onCopyCustomerAddress={state.handlers.handleCopyCustomerAddress}
-                    />
-                </div>
-
-                {/* ═══════════════════════════════════════════════════════════════ */}
-                {/* CENTER COLUMN: Line Item Builder + Item List */}
-                {/* ═══════════════════════════════════════════════════════════════ */}
-                <div className="space-y-3 order-3 xl:order-2">
-                    {/* Hide LineItemBuilder in view mode */}
+                    {/* Builder sits below the list; hidden in view mode */}
                     {!readOnly && (
                         <LineItemBuilder
                             products={state.products}
@@ -186,23 +197,10 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             onProductSearchQueryChange={state.handlers.setProductSearchQuery}
                         />
                     )}
-
-                    <LineItemsTable
-                        lineItems={state.lineItems}
-                        products={state.products}
-                        quoteId={state.quoteId}
-                        readOnly={readOnly}
-                        onEdit={state.handlers.editLineItem}
-                        onDuplicate={state.handlers.duplicateLineItem}
-                        onRemove={state.handlers.removeLineItem}
-                        onOpenAttachments={handleOpenAttachments}
-                    />
                 </div>
 
-                {/* ═══════════════════════════════════════════════════════════════ */}
-                {/* RIGHT COLUMN: Summary & Totals */}
-                {/* ═══════════════════════════════════════════════════════════════ */}
-                <div className="space-y-3 order-2 xl:order-3">
+                {/* Right: Summary */}
+                <div className="md:sticky md:top-6 h-fit">
                     <SummaryCard
                         lineItems={state.lineItems}
                         products={state.products}
@@ -218,6 +216,8 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                         readOnly={readOnly}
                         onSave={handleSave}
                         onConvertToOrder={() => setShowConvertDialog(true)}
+                        canConvertToOrder={state.canConvertToOrder}
+                        convertToOrderPending={state.convertToOrderHook?.isPending}
                     />
                 </div>
             </div>
