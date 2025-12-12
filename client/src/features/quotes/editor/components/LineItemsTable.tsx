@@ -1,11 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { FileText, ChevronDown, Pencil, Copy, Trash2, Paperclip } from "lucide-react";
+import { FileText, ChevronDown, Pencil, Copy, Trash2, Paperclip, RotateCcw } from "lucide-react";
 import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import { LineItemArtworkBadge } from "@/components/LineItemAttachmentsPanel";
+import { useMemo, useState } from "react";
 
 type LineItemsTableProps = {
     lineItems: QuoteLineItemDraft[];
@@ -16,6 +18,7 @@ type LineItemsTableProps = {
     onDuplicate: (id: string) => void;
     onRemove: (id: string) => void;
     onOpenAttachments: (item: QuoteLineItemDraft) => void;
+    onSetLineItemPriceOverride?: (itemKey: string, nextPrice: number | null) => void;
 };
 
 export function LineItemsTable({
@@ -27,7 +30,50 @@ export function LineItemsTable({
     onDuplicate,
     onRemove,
     onOpenAttachments,
+    onSetLineItemPriceOverride,
 }: LineItemsTableProps) {
+    const [editingPriceKey, setEditingPriceKey] = useState<string | null>(null);
+    const [editingPriceText, setEditingPriceText] = useState<string>("");
+
+    const setPriceOverride = useMemo(() => {
+        return onSetLineItemPriceOverride ?? (() => undefined);
+    }, [onSetLineItemPriceOverride]);
+
+    const parsePriceInput = (raw: string): number | null => {
+        const trimmed = raw.trim();
+        if (!trimmed) return null;
+        const normalized = trimmed.replace(/[$,]/g, "");
+        const n = Number.parseFloat(normalized);
+        if (!Number.isFinite(n)) return null;
+        return n;
+    };
+
+    const startEditingPrice = (itemKey: string, current: number) => {
+        setEditingPriceKey(itemKey);
+        setEditingPriceText(current.toFixed(2));
+    };
+
+    const commitEditingPrice = (itemKey: string) => {
+        const parsed = parsePriceInput(editingPriceText);
+
+        // Empty input = reset
+        if (parsed == null && editingPriceText.trim() === "") {
+            // TODO: log price override to audit log
+            setPriceOverride(itemKey, null);
+            setEditingPriceKey(null);
+            return;
+        }
+
+        if (parsed == null) {
+            // Invalid: keep editing but don't commit
+            return;
+        }
+
+        // TODO: log price override to audit log
+        setPriceOverride(itemKey, parsed);
+        setEditingPriceKey(null);
+    };
+
     return (
         <>
             <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
@@ -51,6 +97,10 @@ export function LineItemsTable({
                                 .map((item) => {
                                     // products is intentionally kept in props to preserve existing API and future use
                                     void products;
+
+                                    const itemKey = item.tempId || item.id || "";
+                                    const isPriceOverridden = !!item.priceOverridden && item.overriddenPrice != null;
+                                    const isEditingPrice = !!itemKey && editingPriceKey === itemKey;
 
                                     const hasAttachmentOption = Array.isArray(item.productOptions)
                                         ? item.productOptions.some((opt) => opt.type === "attachment")
@@ -79,7 +129,98 @@ export function LineItemsTable({
                                                     </div>
 
                                                     <div className="text-right shrink-0">
-                                                        <div className="font-mono text-sm font-medium">${item.linePrice.toFixed(2)}</div>
+                                                        {readOnly || !itemKey ? (
+                                                            <div className="space-y-1">
+                                                                <div className="font-mono text-sm font-medium">${item.linePrice.toFixed(2)}</div>
+                                                                {isPriceOverridden && (
+                                                                    <div className="flex justify-end">
+                                                                        <Badge
+                                                                            variant="outline"
+                                                                            className="text-[10px] py-0 border-amber-300 text-amber-700"
+                                                                        >
+                                                                            Overridden
+                                                                        </Badge>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        ) : isEditingPrice ? (
+                                                            <div className="space-y-1">
+                                                                <Input
+                                                                    value={editingPriceText}
+                                                                    onChange={(e) => setEditingPriceText(e.target.value)}
+                                                                    onBlur={() => commitEditingPrice(itemKey)}
+                                                                    onKeyDown={(e) => {
+                                                                        if (e.key === "Enter") {
+                                                                            e.preventDefault();
+                                                                            commitEditingPrice(itemKey);
+                                                                        }
+                                                                        if (e.key === "Escape") {
+                                                                            e.preventDefault();
+                                                                            setEditingPriceKey(null);
+                                                                        }
+                                                                    }}
+                                                                    className={`h-8 w-28 text-right font-mono px-2 pr-7 ${isPriceOverridden ? "border-amber-300 focus-visible:ring-amber-400/40" : ""
+                                                                        }`}
+                                                                    inputMode="decimal"
+                                                                    autoFocus
+                                                                />
+                                                                {isPriceOverridden && (
+                                                                    <div className="flex justify-end">
+                                                                        <Badge
+                                                                            variant="outline"
+                                                                            className="text-[10px] py-0 border-amber-300 text-amber-700"
+                                                                        >
+                                                                            Overridden
+                                                                        </Badge>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="space-y-1">
+                                                                <div className="group/price flex justify-end">
+                                                                    <button
+                                                                        type="button"
+                                                                        className={`relative h-8 w-28 rounded-md border px-2 pr-7 text-right font-mono text-sm font-medium bg-muted/20 transition-colors cursor-text
+                                                                            hover:bg-muted/30 hover:border-border
+                                                                            ${isPriceOverridden ? "border-amber-300 bg-amber-50/40 text-amber-800 hover:border-amber-400" : "border-border/60"}`}
+                                                                        onClick={() => startEditingPrice(itemKey, item.linePrice)}
+                                                                    >
+                                                                        ${item.linePrice.toFixed(2)}
+
+                                                                        {/* Hover affordance */}
+                                                                        <Pencil className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 opacity-0 transition-opacity group-hover/price:opacity-60" />
+
+                                                                        {/* Overridden: inline reset */}
+                                                                        {isPriceOverridden && (
+                                                                            <button
+                                                                                type="button"
+                                                                                aria-label="Reset overridden price"
+                                                                                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm p-0.5 opacity-80 hover:opacity-100"
+                                                                                onClick={(e) => {
+                                                                                    e.preventDefault();
+                                                                                    e.stopPropagation();
+                                                                                    // TODO: log price override to audit log
+                                                                                    setPriceOverride(itemKey, null);
+                                                                                }}
+                                                                            >
+                                                                                <RotateCcw className="h-3.5 w-3.5" />
+                                                                            </button>
+                                                                        )}
+                                                                    </button>
+                                                                </div>
+
+                                                                {isPriceOverridden && (
+                                                                    <div className="flex justify-end">
+                                                                        <Badge
+                                                                            variant="outline"
+                                                                            className="text-[10px] py-0 border-amber-300 text-amber-700"
+                                                                        >
+                                                                            Overridden
+                                                                        </Badge>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 </div>
 
