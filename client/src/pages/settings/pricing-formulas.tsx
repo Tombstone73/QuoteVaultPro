@@ -175,8 +175,15 @@ export default function PricingFormulasSettings() {
   const selectedProfile = PRICING_PROFILES.find((p) => p.key === formData.pricingProfileKey);
   const showFlatGoodsConfig = formData.pricingProfileKey === "flat_goods";
 
+  type TestValues = {
+    width: number;
+    height: number;
+    quantity: number;
+    MACHINE_RATE: number;
+  };
+
   // Formula tester state
-  const [testValues, setTestValues] = useState({
+  const [testValues, setTestValues] = useState<TestValues>({
     width: 12,
     height: 18,
     quantity: 100,
@@ -213,6 +220,17 @@ export default function PricingFormulasSettings() {
       setTestError(error.message || "Invalid formula");
       setTestResult("");
     }
+  };
+
+  // `FormulaEditorFields` expects a setter-like function accepting Record<string, number>.
+  // Adapt it to our strongly-typed `TestValues` without changing behavior.
+  const setTestValuesFromRecord = (values: Record<string, number>) => {
+    setTestValues(prev => ({
+      width: values.width ?? prev.width,
+      height: values.height ?? prev.height,
+      quantity: values.quantity ?? prev.quantity,
+      MACHINE_RATE: values.MACHINE_RATE ?? prev.MACHINE_RATE,
+    }));
   };
 
   const insertVariable = (variableKey: string) => {
@@ -279,7 +297,7 @@ export default function PricingFormulasSettings() {
               expressionInputRef={expressionInputRef}
               insertVariable={insertVariable}
               testValues={testValues}
-              setTestValues={setTestValues}
+              setTestValues={setTestValuesFromRecord}
               testResult={testResult}
               testError={testError}
               handleRunTest={handleRunTest}
@@ -387,7 +405,7 @@ export default function PricingFormulasSettings() {
             expressionInputRef={expressionInputRef}
             insertVariable={insertVariable}
             testValues={testValues}
-            setTestValues={setTestValues}
+            setTestValues={setTestValuesFromRecord}
             testResult={testResult}
             testError={testError}
             handleRunTest={handleRunTest}

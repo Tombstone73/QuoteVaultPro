@@ -28,7 +28,9 @@ export interface ColumnState {
 }
 
 export interface ColumnSettings {
-  [key: string]: ColumnState;
+  // Stored settings include per-column state plus a special `_columnOrder` list.
+  // Keep runtime shape identical, but widen the index signature so `_columnOrder` doesn't violate it.
+  [key: string]: ColumnState | string[] | undefined;
   _columnOrder?: string[]; // Special key to store column order
 }
 
@@ -71,8 +73,8 @@ export function useColumnSettings(
           // Add any new columns not in the saved order
           const savedOrder = merged._columnOrder;
           const allKeys = columns.map(col => col.key);
-          const missingKeys = allKeys.filter(key => !savedOrder.includes(key));
-          merged._columnOrder = [...savedOrder.filter(key => allKeys.includes(key)), ...missingKeys];
+          const missingKeys = allKeys.filter((key: string) => !savedOrder.includes(key));
+          merged._columnOrder = [...savedOrder.filter((key: string) => allKeys.includes(key)), ...missingKeys];
         }
         return merged;
       }
@@ -111,17 +113,28 @@ export function ColumnConfig({
       .filter(Boolean) as ColumnDefinition[];
   }, [columns, settings._columnOrder]);
 
+  const getColumnState = (key: string, fallback?: ColumnDefinition): ColumnState => {
+    const raw = settings[key];
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      return raw as ColumnState;
+    }
+    return {
+      visible: fallback?.defaultVisible !== false,
+      width: fallback?.defaultWidth || 150,
+    };
+  };
+
   const handleVisibilityChange = (key: string, visible: boolean) => {
     onSettingsChange({
       ...settings,
-      [key]: { ...settings[key], visible },
+      [key]: { ...getColumnState(key, columns.find(c => c.key === key)), visible },
     });
   };
 
   const handleWidthChange = (key: string, width: number) => {
     onSettingsChange({
       ...settings,
-      [key]: { ...settings[key], width },
+      [key]: { ...getColumnState(key, columns.find(c => c.key === key)), width },
     });
   };
 
@@ -168,7 +181,7 @@ export function ColumnConfig({
     onSettingsChange({
       ...settings,
       _columnOrder: newOrder.map(col => col.key),
-    });
+    } as ColumnSettings);
 
     setDraggedIndex(null);
     setDragOverIndex(null);
@@ -220,10 +233,7 @@ export function ColumnConfig({
 
           <div className="space-y-1 max-h-[400px] overflow-y-auto pr-2">
             {orderedColumns.map((col, index) => {
-              const colSettings = settings[col.key] || {
-                visible: true,
-                width: col.defaultWidth || 150,
-              };
+              const colSettings = getColumnState(col.key, col);
               const isDragging = draggedIndex === index;
               const isDragOver = dragOverIndex === index && draggedIndex !== index;
               
@@ -295,7 +305,9 @@ export function getColumnStyle(
   key: string,
   defaultWidth: number = 150
 ): React.CSSProperties {
-  const colSettings = settings[key];
+  const raw = settings[key];
+  const colSettings =
+    raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ColumnState) : undefined;
   if (!colSettings?.visible) return { display: "none" };
   return {
     width: colSettings.width || defaultWidth,
@@ -305,7 +317,10 @@ export function getColumnStyle(
 }
 
 export function isColumnVisible(settings: ColumnSettings, key: string): boolean {
-  return settings[key]?.visible !== false;
+  const raw = settings[key];
+  const colSettings =
+    raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ColumnState) : undefined;
+  return colSettings?.visible !== false;
 }
 
 export function getColumnOrder(

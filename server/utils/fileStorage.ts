@@ -1,4 +1,5 @@
-import fs from 'fs/promises';
+import { Stats } from "fs";
+import * as fsPromises from "fs/promises";
 import path from 'path';
 import crypto from 'crypto';
 
@@ -129,7 +130,7 @@ export function getAbsolutePath(relativePath: string): string {
  */
 export async function ensureDirectory(dirPath: string): Promise<void> {
   try {
-    await fs.mkdir(dirPath, { recursive: true });
+    await fsPromises.mkdir(dirPath, { recursive: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
       throw error;
@@ -150,7 +151,7 @@ export async function saveFile(relativePath: string, buffer: Buffer): Promise<st
   const directory = path.dirname(absolutePath);
   
   await ensureDirectory(directory);
-  await fs.writeFile(absolutePath, buffer);
+  await fsPromises.writeFile(absolutePath, buffer);
   
   return absolutePath;
 }
@@ -172,7 +173,7 @@ export function computeChecksum(buffer: Buffer): string {
 export async function deleteFile(relativePath: string): Promise<boolean> {
   try {
     const absolutePath = getAbsolutePath(relativePath);
-    await fs.unlink(absolutePath);
+    await fsPromises.unlink(absolutePath);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -190,7 +191,7 @@ export async function deleteFile(relativePath: string): Promise<boolean> {
 export async function fileExists(relativePath: string): Promise<boolean> {
   try {
     const absolutePath = getAbsolutePath(relativePath);
-    await fs.access(absolutePath);
+    await fsPromises.access(absolutePath);
     return true;
   } catch {
     return false;
@@ -202,10 +203,11 @@ export async function fileExists(relativePath: string): Promise<boolean> {
  * @param relativePath Relative path from storage root
  * @returns File stats or null if file doesn't exist
  */
-export async function getFileStats(relativePath: string): Promise<fs.Stats | null> {
+export async function getFileStats(relativePath: string): Promise<Stats | null> {
   try {
     const absolutePath = getAbsolutePath(relativePath);
-    return await fs.stat(absolutePath);
+    const stats = await fsPromises.stat(absolutePath);
+    return stats;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -222,7 +224,7 @@ export async function getFileStats(relativePath: string): Promise<fs.Stats | nul
 export async function readFile(relativePath: string): Promise<Buffer | null> {
   try {
     const absolutePath = getAbsolutePath(relativePath);
-    return await fs.readFile(absolutePath);
+    return await fsPromises.readFile(absolutePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;

@@ -66,21 +66,22 @@ export default function CustomerQuotes() {
         priority: orderPriority,
         notesInternal: orderNotes || undefined,
       });
-      
+      const order = result?.data?.order;
+
       console.log('[CUSTOMER QUOTES] Quote converted successfully:', result);
-      
+
       setConvertDialogOpen(false);
       setSelectedQuoteId(null);
       setOrderNotes("");
       setOrderPriority("normal");
-      
+
       toast({
-        title: "Success",
-        description: `Quote ${quote?.quoteNumber} converted to order ${result?.orderNumber}`,
+        title: "Quote converted",
+        description: `Quote ${quote?.quoteNumber} converted to order ${order?.orderNumber}`,
       });
-      
-      if (result?.id) {
-        navigate(`/orders/${result.id}`);
+
+      if (order?.id) {
+        navigate(`/orders/${order.id}`);
       }
     } catch (error) {
       console.error('[CUSTOMER QUOTES] Conversion error:', error);

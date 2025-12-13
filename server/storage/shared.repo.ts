@@ -47,7 +47,7 @@ import {
     type InsertCompanySettings,
     type UpdateCompanySettings,
 } from "@shared/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, desc } from "drizzle-orm";
 
 export class SharedRepository {
     constructor(private readonly dbInstance = db) { }
@@ -70,7 +70,7 @@ export class SharedRepository {
     async updateUser(id: string, updates: Partial<User>): Promise<User> {
         const updateData: any = {
             ...updates,
-            updatedAt: new Date(),
+                updatedAt: new Date(),
         };
 
         const [user] = await this.dbInstance
@@ -179,8 +179,6 @@ export class SharedRepository {
             .values({
                 ...data,
                 organizationId,
-                createdAt: new Date(),
-                updatedAt: new Date(),
             })
             .returning();
         return newType;
@@ -189,10 +187,7 @@ export class SharedRepository {
     async updateProductType(organizationId: string, id: string, data: Partial<Omit<InsertProductType, 'organizationId'>>): Promise<SelectProductType> {
         const [updated] = await this.dbInstance
             .update(productTypes)
-            .set({
-                ...data,
-                updatedAt: new Date(),
-            })
+            .set(data)
             .where(and(eq(productTypes.id, id), eq(productTypes.organizationId, organizationId)))
             .returning();
 
@@ -233,7 +228,7 @@ export class SharedRepository {
     }
 
     async updateProduct(organizationId: string, id: string, productData: Omit<UpdateProduct, 'organizationId'>): Promise<Product> {
-        const cleanProductData: any = { updatedAt: new Date() };
+        const cleanProductData: any = { updatedAt: new Date().toISOString() };
         Object.entries(productData).forEach(([k, v]) => {
             if (k === 'variantLabel' && v === null) {
                 // Reset to default value when null
@@ -270,7 +265,7 @@ export class SharedRepository {
             isService: originalProduct.isService,
             primaryMaterialId: originalProduct.primaryMaterialId,
             optionsJson: originalProduct.optionsJson,
-            pricingProfileKey: originalProduct.pricingProfileKey,
+            pricingProfileKey: originalProduct.pricingProfileKey ?? "default",
             pricingProfileConfig: originalProduct.pricingProfileConfig,
             variantLabel: originalProduct.variantLabel,
             category: originalProduct.category,
@@ -362,7 +357,7 @@ export class SharedRepository {
     async updateProductOption(id: string, optionData: Partial<InsertProductOption>): Promise<ProductOption> {
         const updateData: Record<string, any> = {
             ...optionData,
-            updatedAt: new Date(),
+                updatedAt: new Date(),
         };
 
         if (optionData.setupCost !== undefined) {
@@ -403,7 +398,7 @@ export class SharedRepository {
     async updateProductVariant(id: string, variantData: Partial<InsertProductVariant>): Promise<ProductVariant> {
         const updateData: Record<string, any> = {
             ...variantData,
-            updatedAt: new Date(),
+                updatedAt: new Date(),
         };
 
         if (variantData.basePricePerSqft !== undefined) {
@@ -461,7 +456,7 @@ export class SharedRepository {
     async updateGlobalVariable(organizationId: string, id: string, variableData: Partial<Omit<InsertGlobalVariable, 'organizationId'>>): Promise<GlobalVariable> {
         const updateData: Record<string, any> = {
             ...variableData,
-            updatedAt: new Date(),
+                updatedAt: new Date(),
         };
 
         if (variableData.value !== undefined) {
@@ -618,7 +613,7 @@ export class SharedRepository {
     async updateFormulaTemplate(organizationId: string, id: string, updates: Partial<Omit<FormulaTemplate, 'organizationId'>>): Promise<FormulaTemplate> {
         const updateData: any = {
             ...updates,
-            updatedAt: new Date(),
+                updatedAt: new Date(),
         };
 
         const [template] = await this.dbInstance
@@ -701,10 +696,7 @@ export class SharedRepository {
                 .where(and(eq(emailSettings.isDefault, true), eq(emailSettings.organizationId, organizationId), sql`${emailSettings.id} != ${id}`));
         }
 
-        const updateData = {
-            ...settingsData,
-            updatedAt: new Date(),
-        };
+        const updateData = settingsData;
 
         const [updated] = await this.dbInstance
             .update(emailSettings)
@@ -735,7 +727,7 @@ export class SharedRepository {
     async updateCompanySettings(organizationId: string, id: string, settingsData: Partial<Omit<InsertCompanySettings, 'organizationId'>>): Promise<CompanySettings> {
         const [updated] = await this.dbInstance
             .update(companySettings)
-            .set({ ...settingsData, updatedAt: new Date() })
+            .set(settingsData)
             .where(and(eq(companySettings.id, id), eq(companySettings.organizationId, organizationId)))
             .returning();
 

@@ -18,6 +18,24 @@ import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import type { Quote, Product, QuoteWithRelations } from "@shared/schema";
 
+function extractOrderIdFromConvertResult(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+
+  if ("id" in result) {
+    const id = (result as { id?: unknown }).id;
+    return typeof id === "string" ? id : null;
+  }
+
+  const data = (result as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return null;
+
+  const order = (data as { order?: unknown }).order;
+  if (!order || typeof order !== "object") return null;
+
+  const id = (order as { id?: unknown }).id;
+  return typeof id === "string" ? id : null;
+}
+
 export default function QuoteHistory() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
@@ -122,9 +140,8 @@ export default function QuoteHistory() {
       setOrderDueDate("");
       setOrderPriority("normal");
       
-      if (result?.id) {
-        navigate(`/orders/${result.id}`);
-      }
+      const orderId = extractOrderIdFromConvertResult(result);
+      if (orderId) navigate(`/orders/${orderId}`);
     } catch (error) {
       // Error toast handled by mutation
     }

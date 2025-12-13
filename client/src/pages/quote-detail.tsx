@@ -56,6 +56,10 @@ export default function QuoteDetail() {
     enabled: !!quoteId,
   });
 
+  // Some deployments return a `convertedToOrderId` field; keep this optional in the UI without changing backend types.
+  const convertedToOrderId =
+    (quote as (QuoteWithRelations & { convertedToOrderId?: string | null }) | undefined)?.convertedToOrderId ?? null;
+
   const convertToOrder = useConvertQuoteToOrder(quoteId);
   const [showConvertDialog, setShowConvertDialog] = useState(false);
 
@@ -141,7 +145,7 @@ export default function QuoteDetail() {
                 Edit Quote
               </Button>
             )}
-            {quote.status !== 'canceled' && !quote.convertedToOrderId && (
+            {quote.status !== 'canceled' && !convertedToOrderId && (
               <Button
                 size="sm"
                 onClick={() => setShowConvertDialog(true)}
@@ -152,11 +156,11 @@ export default function QuoteDetail() {
                 {convertToOrder.isPending ? 'Converting...' : 'Convert to Order'}
               </Button>
             )}
-            {quote.convertedToOrderId && (
+            {convertedToOrderId && (
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => navigate(ROUTES.orders.detail(quote.convertedToOrderId!))}
+                onClick={() => navigate(ROUTES.orders.detail(convertedToOrderId))}
                 className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
               >
                 <Package className="w-4 h-4 mr-2" />
@@ -337,13 +341,13 @@ export default function QuoteDetail() {
                   </span>
                 </div>
               )}
-              {parseFloat(quote.taxRate) > 0 && (
+              {parseFloat(quote.taxRate ?? "0") > 0 && (
                 <div className="flex justify-between text-titan-sm">
                   <span className="text-titan-text-muted">
-                    Tax ({(parseFloat(quote.taxRate) * 100).toFixed(2)}%):
+                    Tax ({(parseFloat(quote.taxRate ?? "0") * 100).toFixed(2)}%):
                   </span>
                   <span className="font-mono text-titan-text-secondary">
-                    ${(parseFloat(quote.subtotal) * parseFloat(quote.taxRate)).toFixed(2)}
+                    ${(parseFloat(quote.subtotal) * parseFloat(quote.taxRate ?? "0")).toFixed(2)}
                   </span>
                 </div>
               )}

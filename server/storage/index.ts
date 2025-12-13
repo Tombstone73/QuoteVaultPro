@@ -8,6 +8,7 @@
  */
 
 import { db } from "../db";
+import { type InsertQuoteLineItem } from "@shared/schema";
 import { AuditRepository } from "./audit.repo";
 import { AccountingRepository } from "./accounting.repo";
 import { InventoryRepository } from "./inventory.repo";
@@ -411,8 +412,16 @@ export const storage = {
     addLineItem,
     updateLineItem,
     deleteLineItem,
-    createTemporaryLineItem: (...args: any[]) => quotesRepo.createTemporaryLineItem(...args),
-    finalizeTemporaryLineItemsForUser: (...args: any[]) => quotesRepo.finalizeTemporaryLineItemsForUser(...args),
+    createTemporaryLineItem: (
+        organizationId: string,
+        createdByUserId: string,
+        lineItem: Omit<InsertQuoteLineItem, "quoteId">
+    ) => quotesRepo.createTemporaryLineItem(organizationId, createdByUserId, lineItem),
+    finalizeTemporaryLineItemsForUser: (
+        organizationId: string,
+        userId: string,
+        quoteId: string
+    ) => quotesRepo.finalizeTemporaryLineItemsForUser(organizationId, userId, quoteId),
     getUserQuotes,
     getAllQuotes,
     getQuotesForCustomer,

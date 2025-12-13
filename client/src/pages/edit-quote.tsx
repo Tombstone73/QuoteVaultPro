@@ -140,10 +140,14 @@ export default function EditQuote() {
     const activeProducts = products.filter(p => p.isActive);
     if (!productSearchQuery) return activeProducts;
     const query = productSearchQuery.toLowerCase();
-    return activeProducts.filter(p => 
-      p.name.toLowerCase().includes(query) ||
-      (p.sku && p.sku.toLowerCase().includes(query))
-    );
+    return activeProducts.filter(p => {
+      const sku = (p as any).sku as string | undefined;
+      const q = query.toLowerCase();
+      return (
+        (sku && sku.toLowerCase().includes(q)) ||
+        p.name.toLowerCase().includes(q)
+      );
+    });
   }, [products, productSearchQuery]);
 
   // Initialize form values when quote loads
@@ -160,8 +164,11 @@ export default function EditQuote() {
 
   // Calculate totals
   const lineItems = quote?.lineItems ?? [];
-  const subtotal =
-    lineItems.reduce((sum, item) => sum + parseFloat(item.linePrice), 0) || 0;
+  const subtotal = lineItems.reduce(
+    (sum: number, item: (typeof lineItems)[number]) =>
+      sum + parseFloat(item.linePrice),
+    0
+  ) || 0;
   const taxAmount = subtotal * (taxRate / 100);
   const marginAmount = subtotal * (marginPercentage / 100);
   const total = subtotal + taxAmount + marginAmount - discountAmount;
@@ -658,7 +665,7 @@ export default function EditQuote() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {lineItems.map((item) => (
+                  {lineItems.map((item: (typeof lineItems)[number]) => (
                     <TableRow key={item.id} data-testid={`row-line-item-${item.id}`}>
                       <TableCell>
                         <div>
@@ -876,10 +883,10 @@ export default function EditQuote() {
                               )}
                             />
                             <span className="truncate">{product.name}</span>
-                            {product.sku && (
-                              <span className="ml-2 text-xs text-muted-foreground">
-                                {product.sku}
-                              </span>
+                            {(product as any).sku && (
+                              <div className="text-xs text-muted-foreground">
+                                {(product as any).sku}
+                              </div>
                             )}
                           </CommandItem>
                         ))}

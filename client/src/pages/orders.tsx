@@ -10,7 +10,7 @@ import { useOrders, useUpdateOrder } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { Page, PageHeader, ContentLayout, FilterPanel, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, type ColumnDefinition } from "@/components/titan";
+import { Page, PageHeader, ContentLayout, FilterPanel, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnStyle, type ColumnDefinition } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label";
@@ -60,9 +60,8 @@ export default function Orders() {
   
   // Helper to get column width style
   const getColStyle = (key: string) => {
-    const settings = columnSettings[key];
-    if (!settings?.visible) return { display: "none" as const };
-    return { width: settings.width, minWidth: settings.width };
+    const def = ORDER_COLUMNS.find(c => c.key === key);
+    return getColumnStyle(columnSettings, key, def?.defaultWidth || 150);
   };
   
   // Helper to check column visibility
@@ -137,7 +136,7 @@ export default function Orders() {
       : <ChevronDown className="inline w-4 h-4 ml-1" />;
   };
 
-  const handleStartEdit = (orderId: string, field: 'status' | 'priority' | 'dueDate' | 'label', currentValue: string) => {
+  const handleStartEdit = (orderId: string, field: 'status' | 'priority' | 'dueDate' | 'label' | 'poNumber', currentValue: string) => {
     if (!isAdminOrOwner) return;
     setEditingOrderId(orderId);
     setEditingField(field);

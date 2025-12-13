@@ -208,7 +208,16 @@ export class CustomersRepository {
     }
 
     async createCustomer(organizationId: string, customerData: Omit<InsertCustomer, 'organizationId'>): Promise<Customer> {
-        const [customer] = await this.dbInstance.insert(customers).values({ ...customerData, organizationId }).returning();
+        const customerInsert: typeof customers.$inferInsert = {
+            ...customerData,
+            organizationId,
+            defaultDiscountPercent: customerData.defaultDiscountPercent != null ? customerData.defaultDiscountPercent.toString() : null,
+            defaultMarkupPercent: customerData.defaultMarkupPercent != null ? customerData.defaultMarkupPercent.toString() : null,
+            defaultMarginPercent: customerData.defaultMarginPercent != null ? customerData.defaultMarginPercent.toString() : null,
+            // Schema expects string|null (numeric stored as string)
+            taxRateOverride: customerData.taxRateOverride != null ? customerData.taxRateOverride.toString() : null,
+        };
+        const [customer] = await this.dbInstance.insert(customers).values(customerInsert).returning();
         if (!customer) {
             throw new Error("Failed to create customer");
         }
@@ -230,9 +239,18 @@ export class CustomersRepository {
         }
     ): Promise<{ customer: Customer; contact?: CustomerContact | null }> {
         return await this.dbInstance.transaction(async (tx) => {
+            const customerInsert: typeof customers.$inferInsert = {
+                ...data.customer,
+                organizationId,
+                defaultDiscountPercent: data.customer.defaultDiscountPercent != null ? data.customer.defaultDiscountPercent.toString() : null,
+                defaultMarkupPercent: data.customer.defaultMarkupPercent != null ? data.customer.defaultMarkupPercent.toString() : null,
+                defaultMarginPercent: data.customer.defaultMarginPercent != null ? data.customer.defaultMarginPercent.toString() : null,
+                // Schema expects string|null (numeric stored as string)
+                taxRateOverride: data.customer.taxRateOverride != null ? data.customer.taxRateOverride.toString() : null,
+            };
             const [customer] = await tx
                 .insert(customers)
-                .values({ ...data.customer, organizationId })
+                .values(customerInsert)
                 .returning();
 
             if (!customer) {
@@ -430,8 +448,8 @@ export class CustomersRepository {
             const [updatedCustomer] = await tx
                 .update(customers)
                 .set({
-                    creditBalance: sql`${customers.creditBalance} + ${balanceChange}`,
-                    updatedAt: new Date(),
+                    currentBalance: sql`${customers.currentBalance} + ${balanceChange}`,
+                    updatedAt: new Date().toISOString(),
                 } as any)
                 .where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId)))
                 .returning();
@@ -445,7 +463,7 @@ export class CustomersRepository {
     }
 
     // Contacts (required by routes) - tenant-scoped
-    async getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number }): Promise<Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: Date | null }>> {
+    async getAllContacts(organizationId: string, params: { search?: string; page?: number; pageSize?: number }): Promise<Array<CustomerContact & { companyName: string; ordersCount: number; quotesCount: number; lastActivityAt: string | null }>> {
         const { search, page = 1, pageSize = 50 } = params;
 
         // Get all customers for this organization
@@ -502,15 +520,18 @@ export class CustomersRepository {
                 .orderBy(desc(quotes.createdAt))
                 .limit(1);
 
-            let lastActivityAt: Date | null = null;
-            if (recentOrders[0] && recentQuotes[0]) {
-                lastActivityAt = recentOrders[0].createdAt > recentQuotes[0].createdAt
-                    ? recentOrders[0].createdAt
-                    : recentQuotes[0].createdAt;
-            } else if (recentOrders[0]) {
-                lastActivityAt = recentOrders[0].createdAt;
-            } else if (recentQuotes[0]) {
-                lastActivityAt = recentQuotes[0].createdAt;
+            let lastActivityAt: string | null = null;
+            const lastOrderDate = recentOrders[0]?.createdAt;
+            const lastQuoteDate = recentQuotes[0]?.createdAt;
+
+            if (lastOrderDate && lastQuoteDate) {
+                const orderDateObj = new Date(lastOrderDate);
+                const quoteDateObj = new Date(lastQuoteDate);
+                lastActivityAt = (orderDateObj > quoteDateObj ? lastOrderDate : lastQuoteDate.toISOString());
+            } else if (lastOrderDate) {
+                lastActivityAt = lastOrderDate;
+            } else if (lastQuoteDate) {
+                lastActivityAt = lastQuoteDate.toISOString();
             }
 
             return {
