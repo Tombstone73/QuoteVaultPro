@@ -100,12 +100,13 @@ export async function generatePackingSlipHTML(orderId: string): Promise<string> 
   `.trim();
 
   // Save packing slip HTML to order for later retrieval
-  await db.update(orders).set({ packingSlipHtml: html, updatedAt: new Date() }).where(eq(orders.id, orderId));
+  await db.update(orders).set({ packingSlipHtml: html, updatedAt: new Date().toISOString() }).where(eq(orders.id, orderId));
 
   return html;
 }
 
 export async function sendShipmentEmail(
+  organizationId: string,
   orderId: string,
   shipmentId: string,
   subject?: string,
@@ -189,7 +190,7 @@ export async function sendShipmentEmail(
 </html>
   `.trim();
 
-  await emailService.sendEmail({
+  await emailService.sendEmail(organizationId, {
     to: customer.email,
     subject: `Your Order #${order.orderNumber} Has Shipped!`,
     html,
@@ -213,5 +214,5 @@ function generateTrackingLink(carrier: string, trackingNumber: string): string |
 }
 
 export async function updateOrderFulfillmentStatus(orderId: string, status: 'pending' | 'packed' | 'shipped' | 'delivered'): Promise<void> {
-  await db.update(orders).set({ fulfillmentStatus: status, updatedAt: new Date() }).where(eq(orders.id, orderId));
+  await db.update(orders).set({ fulfillmentStatus: status, updatedAt: new Date().toISOString() }).where(eq(orders.id, orderId));
 }

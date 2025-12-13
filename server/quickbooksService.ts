@@ -6,7 +6,7 @@ import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 
 // Initialize QuickBooks OAuth client
-const getOAuthClient = (): OAuthClient | null => {
+const getOAuthClient = (): any => {
   const clientId = process.env.QUICKBOOKS_CLIENT_ID;
   const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET;
   const redirectUri = process.env.QUICKBOOKS_REDIRECT_URI;
@@ -146,10 +146,10 @@ export async function getValidAccessToken(): Promise<string | null> {
 
   // Check if token is expired or about to expire (within 5 minutes)
   const now = new Date();
-  const expiresAt = new Date(connection.expiresAt);
+  const expiresAt = connection.expiresAt ? new Date(connection.expiresAt) : null;
   const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
 
-  if (expiresAt <= fiveMinutesFromNow) {
+  if (!expiresAt || expiresAt <= fiveMinutesFromNow) {
     console.log('[QuickBooks] Token expired or expiring soon, refreshing...');
     const refreshed = await refreshAccessToken();
     if (!refreshed) {
@@ -575,7 +575,18 @@ export async function processPullInvoices(jobId: string): Promise<void> {
     for (const qbInvoice of qbInvoices) {
       try {
         // Map QB invoice to local format
-        const localData = {
+        const localData: {
+          invoiceNumber: number;
+          customerId: string | null;
+          status: string;
+          issueDate: Date;
+          dueDate: Date | null;
+          subtotal: string;
+          tax: string;
+          total: string;
+          balanceDue: string;
+          externalAccountingId: string;
+        } = {
           invoiceNumber: parseInt(qbInvoice.DocNumber) || 0,
           customerId: null, // Need to match QB customer to local
           status: mapQBInvoiceStatus(qbInvoice.Balance > 0 ? 'unpaid' : 'paid'),
@@ -586,8 +597,6 @@ export async function processPullInvoices(jobId: string): Promise<void> {
           total: qbInvoice.TotalAmt?.toString() || '0',
           balanceDue: qbInvoice.Balance?.toString() || '0',
           externalAccountingId: qbInvoice.Id,
-          syncStatus: 'synced',
-          syncedAt: new Date(),
         };
 
         // Try to find matching local customer by QB customer ID
@@ -619,7 +628,18 @@ export async function processPullInvoices(jobId: string): Promise<void> {
         if (existing) {
           await db
             .update(invoices)
-            .set({ ...localData, updatedAt: new Date() })
+            .set({
+              invoiceNumber: localData.invoiceNumber,
+              customerId: localData.customerId,
+              status: localData.status,
+              issueDate: localData.issueDate,
+              dueDate: localData.dueDate,
+              subtotal: localData.subtotal,
+              tax: localData.tax,
+              total: localData.total,
+              balanceDue: localData.balanceDue,
+              externalAccountingId: localData.externalAccountingId,
+            })
             .where(eq(invoices.id, existing.id));
           console.log(`[QB Pull Invoices] Updated invoice: ${qbInvoice.DocNumber}`);
         } else {
@@ -648,7 +668,7 @@ export async function processPullInvoices(jobId: string): Promise<void> {
     console.error(`[QB Pull Invoices] Job failed:`, error);
     await db
       .update(accountingSyncJobs)
-      .set({ status: 'error', error: error.message, updatedAt: new Date() })
+            .set({ status: 'error', error: error.message, updatedAt: new Date() })
       .where(eq(accountingSyncJobs.id, jobId));
     throw error;
   }
@@ -752,7 +772,7 @@ export async function processPushInvoices(jobId: string): Promise<void> {
     console.error(`[QB Push Invoices] Job failed:`, error);
     await db
       .update(accountingSyncJobs)
-      .set({ status: 'error', error: error.message, updatedAt: new Date() })
+            .set({ status: 'error', error: error.message, updatedAt: new Date() })
       .where(eq(accountingSyncJobs.id, jobId));
     throw error;
   }
@@ -795,7 +815,17 @@ export async function processPullOrders(jobId: string): Promise<void> {
     for (const qbReceipt of qbSalesReceipts) {
       try {
         // Map QB sales receipt to local order format
-        const localData = {
+        const localData: {
+          orderNumber: string;
+          customerId: string | null;
+          status: string;
+          priority: string;
+          fulfillmentStatus: string;
+          subtotal: string;
+          tax: string;
+          total: string;
+          externalAccountingId: string;
+        } = {
           orderNumber: qbReceipt.DocNumber || `QB-${qbReceipt.Id}`,
           customerId: null,
           status: 'completed',
@@ -805,8 +835,6 @@ export async function processPullOrders(jobId: string): Promise<void> {
           tax: qbReceipt.TxnTaxDetail?.TotalTax?.toString() || '0',
           total: qbReceipt.TotalAmt?.toString() || '0',
           externalAccountingId: qbReceipt.Id,
-          syncStatus: 'synced',
-          syncedAt: new Date(),
         };
 
         // Find matching customer
@@ -835,9 +863,25 @@ export async function processPullOrders(jobId: string): Promise<void> {
           .limit(1);
 
         if (existing) {
+          const updateData: any = {
+            orderNumber: localData.orderNumber,
+            status: localData.status,
+            priority: localData.priority,
+            fulfillmentStatus: localData.fulfillmentStatus,
+            subtotal: localData.subtotal,
+            tax: localData.tax,
+            total: localData.total,
+            externalAccountingId: localData.externalAccountingId,
+            updatedAt: new Date().toISOString()
+          };
+
+          if (localData.customerId) {
+            updateData.customerId = localData.customerId;
+          }
+
           await db
             .update(orders)
-            .set({ ...localData, updatedAt: new Date() })
+            .set(updateData)
             .where(eq(orders.id, existing.id));
           console.log(`[QB Pull Orders] Updated order: ${qbReceipt.DocNumber}`);
         } else {
@@ -865,7 +909,7 @@ export async function processPullOrders(jobId: string): Promise<void> {
     console.error(`[QB Pull Orders] Job failed:`, error);
     await db
       .update(accountingSyncJobs)
-      .set({ status: 'error', error: error.message, updatedAt: new Date() })
+            .set({ status: 'error', error: error.message, updatedAt: new Date() })
       .where(eq(accountingSyncJobs.id, jobId));
     throw error;
   }
@@ -917,7 +961,7 @@ export async function processPushOrders(jobId: string): Promise<void> {
         // Build QB sales receipt
         const qbReceiptData: any = {
           CustomerRef: { value: customer.externalAccountingId },
-          TxnDate: order.createdAt.toISOString().split('T')[0],
+          TxnDate: new Date(order.createdAt).toISOString().split('T')[0],
           Line: [], // Would need line items
         };
 
@@ -930,8 +974,8 @@ export async function processPushOrders(jobId: string): Promise<void> {
             externalAccountingId: qbReceipt.Id,
             syncStatus: 'synced',
             syncError: null,
-            syncedAt: new Date(),
-            updatedAt: new Date(),
+            syncedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
           })
           .where(eq(orders.id, order.id));
 
@@ -940,7 +984,7 @@ export async function processPushOrders(jobId: string): Promise<void> {
         console.error(`[QB Push Orders] Error syncing order ${order.orderNumber}:`, error);
         await db
           .update(orders)
-          .set({ syncStatus: 'error', syncError: error.message, updatedAt: new Date() })
+          .set({ syncStatus: 'error', syncError: error.message, updatedAt: new Date().toISOString() })
           .where(eq(orders.id, order.id));
         errorCount++;
       }
@@ -960,7 +1004,7 @@ export async function processPushOrders(jobId: string): Promise<void> {
     console.error(`[QB Push Orders] Job failed:`, error);
     await db
       .update(accountingSyncJobs)
-      .set({ status: 'error', error: error.message, updatedAt: new Date() })
+            .set({ status: 'error', error: error.message, updatedAt: new Date() })
       .where(eq(accountingSyncJobs.id, jobId));
     throw error;
   }

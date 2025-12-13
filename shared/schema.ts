@@ -865,10 +865,7 @@ export const quotes = pgTable("quotes", {
   // Dates
   requestedDueDate: timestamp("requested_due_date", { withTimezone: true, mode: "string" }),
   validUntil: timestamp("valid_until", { withTimezone: true, mode: "string" }),
-  
-  // Quote ⇄ Order linking
-  convertedToOrderId: varchar("converted_to_order_id").references(() => orders.id, { onDelete: 'set null' }),
-  
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("quotes_organization_id_idx").on(table.organizationId),
@@ -930,7 +927,6 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   quoteNumber: true,
   createdAt: true,
   organizationId: true,
-  convertedToOrderId: true,
 }).extend({
   customerId: z.string().optional().nullable(),
   contactId: z.string().optional().nullable(),

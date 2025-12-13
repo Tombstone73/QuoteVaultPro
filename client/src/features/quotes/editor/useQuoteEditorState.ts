@@ -151,7 +151,7 @@ export function useQuoteEditorState() {
         },
         enabled: !!quoteId,
         staleTime: 60_000,
-        placeholderData: (prev) => prev,
+        placeholderData: (prev: any) => prev,
         retry: false,
         // @ts-expect-error onError is supported at runtime but not in this type version
         onError: (err: Error) => {

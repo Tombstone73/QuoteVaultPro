@@ -312,8 +312,8 @@ export class QuotesRepository {
             updatedAt: new Date(),
         };
 
-        if (data.marginPercentage !== undefined) updateData.marginPercentage = data.marginPercentage.toString();
-        if (data.discountAmount !== undefined) updateData.discountAmount = data.discountAmount.toString();
+        if (data.marginPercentage != null) updateData.marginPercentage = data.marginPercentage.toString();
+        if (data.discountAmount != null) updateData.discountAmount = data.discountAmount.toString();
         if (data.requestedDueDate !== undefined) updateData.requestedDueDate = data.requestedDueDate;
         if (data.validUntil !== undefined) updateData.validUntil = data.validUntil;
         if (data.carrier !== undefined) updateData.carrier = data.carrier;

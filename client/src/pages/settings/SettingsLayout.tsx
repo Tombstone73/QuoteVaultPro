@@ -318,7 +318,8 @@ export function AppearanceSettings() {
           {availableThemes.map((t) => {
             const active = t === theme;
             const meta = getMeta(t)!;
-            const disabled = !meta.implemented;
+            // Theme metadata currently tracks only basic info (id/label/isDark). Treat all themes as implemented.
+            const disabled = false;
             return (
               <button
                 key={t}
