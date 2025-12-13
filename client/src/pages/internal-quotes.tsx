@@ -722,15 +722,12 @@ export default function InternalQuotes() {
                         >
                           {quote.customerId ? (
                             <Link to={ROUTES.customers.detail(quote.customerId)}>
-                              <Button
-                                variant="link"
-                                className="h-auto p-0 font-normal"
-                              >
-                                {quote.customerName || "View Customer"}
+                              <Button variant="link" className="h-auto p-0 font-normal">
+                                {quote.customerName?.trim()
+                                  ? quote.customerName
+                                  : "View Customer"}
                               </Button>
                             </Link>
-                          ) : quote.customerName ? (
-                            <span>{quote.customerName}</span>
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}
