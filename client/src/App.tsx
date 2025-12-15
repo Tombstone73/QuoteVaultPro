@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SettingsLayout, CompanySettings, UsersSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
 import { queryClient } from "./lib/queryClient";
@@ -99,7 +99,7 @@ function Router() {
         <Route path="/orders" element={<Orders />} />
 
         {/* Inventory / Materials routes */}
-        <Route path="/materials/:id" element={<MaterialDetailPage />} />
+        <Route path="/materials/:id" element={<MaterialDetailRoute />} />
         <Route path="/materials" element={<MaterialsListPage />} />
 
         {/* Procurement routes */}
@@ -145,6 +145,12 @@ function Router() {
       <Route path="*" element={<NotFound />} />
     </Routes>
   );
+}
+
+function MaterialDetailRoute() {
+  const { id } = useParams<{ id: string }>();
+  // `MaterialDetailPage` expects a `{ params }` prop; adapt React Router params here.
+  return <MaterialDetailPage params={{ id: id ?? "" }} />;
 }
 
 function App() {

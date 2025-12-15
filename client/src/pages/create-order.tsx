@@ -57,7 +57,7 @@ type OrderLineItemDraft = {
   height: number;
   quantity: number;
   specsJson: Record<string, any>;
-  selectedOptions: any[];
+  selectedOptions: Record<string, any>;
   unitPrice: number;
   linePrice: number;
   priceBreakdown: any;
@@ -242,7 +242,7 @@ export default function CreateOrder() {
       productName: product?.name || "",
       variantId: currentVariantId,
       variantName: variant?.name || null,
-      productType: product?.productType || "wide_roll",
+      productType: product?.productTypeId || "wide_roll",
       width: widthNum,
       height: heightNum,
       quantity: quantityNum,
@@ -417,7 +417,7 @@ export default function CreateOrder() {
                 <CustomerSelect
                   value={selectedCustomerId}
                   onChange={(customerId, customer, contactId) => {
-                    setSelectedCustomerId(customerId);
+                    setSelectedCustomerId(customerId ?? "");
                     setSelectedCustomer(customer);
                     setSelectedContactId(contactId || null);
                   }}

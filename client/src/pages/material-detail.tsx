@@ -39,7 +39,10 @@ export default function MaterialDetailPage({ params }: Props) {
   async function handleDelete() {
     if (!confirm("Delete this material?")) return;
     try {
-      await deleteMutation.mutateAsync(material.id);
+      // `material` is guarded above, but keep this safe for TS and future refactors.
+      const materialId = material?.id;
+      if (!materialId) return;
+      await deleteMutation.mutateAsync(materialId);
       navigate('/materials');
     } catch (e:any) {
       // toast via hook already inside mutation

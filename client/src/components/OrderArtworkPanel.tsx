@@ -350,7 +350,9 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                       <div className="flex items-center gap-1">
                         <Badge variant="outline">{getRoleLabel(file.role || 'other')}</Badge>
                         {file.isPrimary && (
-                          <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" title="Primary" />
+                          <span title="Primary">
+                            <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                          </span>
                         )}
                       </div>
                     </TableCell>

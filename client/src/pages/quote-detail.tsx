@@ -56,6 +56,10 @@ export default function QuoteDetail() {
     enabled: !!quoteId,
   });
 
+  // Some deployments return a `convertedToOrderId` field; keep this optional in the UI without changing backend types.
+  const convertedToOrderId =
+    (quote as (QuoteWithRelations & { convertedToOrderId?: string | null }) | undefined)?.convertedToOrderId ?? null;
+
   const convertToOrder = useConvertQuoteToOrder(quoteId);
   const [showConvertDialog, setShowConvertDialog] = useState(false);
 
@@ -97,8 +101,8 @@ export default function QuoteDetail() {
             <div className="py-16 text-center">
               <FileText className="w-12 h-12 mx-auto mb-4 text-titan-text-muted" />
               <p className="text-titan-text-secondary">Quote not found</p>
-              <Button 
-                onClick={handleBack} 
+              <Button
+                onClick={handleBack}
                 className="mt-4 bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md"
               >
                 Go Back
@@ -117,9 +121,9 @@ export default function QuoteDetail() {
         subtitle={`Created ${format(new Date(quote.createdAt), 'MMMM d, yyyy')}`}
         className="pb-3"
         backButton={
-          <Button 
-            variant="ghost" 
-            size="sm" 
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={handleBack}
             className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
           >
@@ -131,8 +135,8 @@ export default function QuoteDetail() {
           <div className="flex items-center gap-2">
             <QuoteSourceBadge source={quote.source} />
             {isInternalUser && quote.source === 'internal' && (
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 size="sm"
                 onClick={() => navigate(ROUTES.quotes.edit(quote.id))}
                 className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
@@ -141,8 +145,8 @@ export default function QuoteDetail() {
                 Edit Quote
               </Button>
             )}
-            {quote.status !== 'canceled' && !quote.convertedToOrderId && (
-              <Button 
+            {quote.status !== 'canceled' && !convertedToOrderId && (
+              <Button
                 size="sm"
                 onClick={() => setShowConvertDialog(true)}
                 disabled={convertToOrder.isPending}
@@ -152,11 +156,11 @@ export default function QuoteDetail() {
                 {convertToOrder.isPending ? 'Converting...' : 'Convert to Order'}
               </Button>
             )}
-            {quote.convertedToOrderId && (
-              <Button 
+            {convertedToOrderId && (
+              <Button
                 size="sm"
                 variant="outline"
-                onClick={() => navigate(ROUTES.orders.detail(quote.convertedToOrderId!))}
+                onClick={() => navigate(ROUTES.orders.detail(convertedToOrderId))}
                 className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
               >
                 <Package className="w-4 h-4 mr-2" />
@@ -170,7 +174,7 @@ export default function QuoteDetail() {
       <ContentLayout className="space-y-4">
         {/* Quote Info Cards */}
         <div className="grid md:grid-cols-3 gap-4">
-          <DataCard 
+          <DataCard
             title="Bill To"
             className="bg-titan-bg-card border-titan-border-subtle"
           >
@@ -209,7 +213,7 @@ export default function QuoteDetail() {
             </div>
           </DataCard>
 
-          <DataCard 
+          <DataCard
             title="Ship To"
             className="bg-titan-bg-card border-titan-border-subtle"
           >
@@ -247,7 +251,7 @@ export default function QuoteDetail() {
             </div>
           </DataCard>
 
-          <DataCard 
+          <DataCard
             title="Quote Information"
             className="bg-titan-bg-card border-titan-border-subtle"
           >
@@ -267,7 +271,7 @@ export default function QuoteDetail() {
         </div>
 
         {/* Line Items */}
-        <DataCard 
+        <DataCard
           title="Line Items"
           className="bg-titan-bg-card border-titan-border-subtle"
         >
@@ -283,7 +287,7 @@ export default function QuoteDetail() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {quote.lineItems?.map((item, idx) => (
+                {quote.lineItems?.map((item: any, idx: number) => (
                   <TableRow key={item.id} className="border-b border-titan-border-subtle hover:bg-titan-bg-card-elevated/50">
                     <TableCell>
                       <div className="font-medium text-titan-text-primary">{item.productName}</div>
@@ -337,13 +341,13 @@ export default function QuoteDetail() {
                   </span>
                 </div>
               )}
-              {parseFloat(quote.taxRate) > 0 && (
+              {parseFloat(quote.taxRate ?? "0") > 0 && (
                 <div className="flex justify-between text-titan-sm">
                   <span className="text-titan-text-muted">
-                    Tax ({(parseFloat(quote.taxRate) * 100).toFixed(2)}%):
+                    Tax ({(parseFloat(quote.taxRate ?? "0") * 100).toFixed(2)}%):
                   </span>
                   <span className="font-mono text-titan-text-secondary">
-                    ${(parseFloat(quote.subtotal) * parseFloat(quote.taxRate)).toFixed(2)}
+                    ${(parseFloat(quote.subtotal) * parseFloat(quote.taxRate ?? "0")).toFixed(2)}
                   </span>
                 </div>
               )}

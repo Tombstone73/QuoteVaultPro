@@ -4,7 +4,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables } from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -97,6 +97,117 @@ import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatu
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
+}
+
+// ---------------------------------------------------------------------------
+// Local JSON typing helpers (do NOT touch shared/schema.ts)
+// ---------------------------------------------------------------------------
+
+type FileRole = 'artwork' | 'proof' | 'reference' | 'customer_po' | 'setup' | 'output' | 'other';
+type FileSide = 'front' | 'back' | 'na';
+
+type BannerOptionKind =
+  | "grommets"
+  | "sides"
+  | "generic"
+  | "hems"
+  | "pole_pockets"
+  | "thickness";
+
+type PriceMode =
+  | "flat"
+  | "per_qty"
+  | "per_sqft"
+  | "flat_per_item"
+  | "percent_of_base";
+
+type PercentBase = "media" | "line";
+
+interface BaseOptionConfig {
+  locations?: Array<"custom" | "all_corners" | "top_corners" | "top_even">;
+  defaultLocation?: "custom" | "all_corners" | "top_corners" | "top_even";
+  defaultSpacingCount?: number;
+  customNotes?: string;
+  singleLabel?: string;
+  doubleLabel?: string;
+  doublePriceMultiplier?: number;
+}
+
+type NoKindConfig = BaseOptionConfig & { kind?: undefined };
+
+interface GrommetsConfig extends BaseOptionConfig {
+  kind: "grommets";
+}
+
+interface GenericConfig extends BaseOptionConfig {
+  kind: "generic";
+}
+
+interface HemsConfig extends BaseOptionConfig {
+  kind: "hems";
+  defaultHems?: string;
+}
+
+interface PolePocketsConfig extends BaseOptionConfig {
+  kind: "pole_pockets";
+  defaultPolePocket?: string;
+}
+
+interface ThicknessConfig extends BaseOptionConfig {
+  kind: "thickness";
+  pricingMode?: "multiplier" | "volume";
+  thicknessVariants?: Array<{
+    key: string;
+    label?: string;
+    materialId?: string;
+    pricingMode?: "multiplier" | "volume";
+    priceMultiplier?: number;
+    volumeTiers?: Array<{
+      minSheets: number;
+      maxSheets?: number | null;
+      pricePerSheet: string | number;
+    }>;
+  }>;
+}
+
+interface SidesConfig extends BaseOptionConfig {
+  kind: "sides";
+  pricingMode?: "multiplier" | "volume";
+  volumeTiers?: Array<{
+    minSheets: number;
+    maxSheets?: number | null;
+    singlePricePerSheet: string | number;
+    doublePricePerSheet: string | number;
+  }>;
+}
+
+type OptionConfig =
+  | NoKindConfig
+  | GenericConfig
+  | GrommetsConfig
+  | HemsConfig
+  | PolePocketsConfig
+  | ThicknessConfig
+  | SidesConfig;
+
+interface MaterialAddonConfig {
+  materialId: string;
+  unitType: "sheet" | "sqft" | "linear_ft";
+  usageBasis: "same_area" | "same_sheets";
+  wasteFactor?: number;
+  percentBase?: PercentBase;
+}
+
+interface PricingOptionJson {
+  id: string;
+  label: string;
+  type: "select" | "quantity" | "checkbox" | "toggle";
+  priceMode: PriceMode;
+  amount?: number;
+  defaultSelected?: boolean;
+  config?: OptionConfig;
+  materialAddonConfig?: MaterialAddonConfig;
+  percentBase?: PercentBase;
 }
 
 /**
@@ -611,9 +722,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ? thumbnailUrlsRaw.split('|').map(url => url.trim()).filter(url => url.length > 0)
             : [];
 
-          const newProduct = await storage.createProduct(organizationId, {
+        type InsertProductWithoutOrgId = Omit<InsertProduct, "organizationId">;
+        const insertPayload: InsertProductWithoutOrgId = {
             name: productName,
             description: row['Product Description']?.trim() || '',
+          pricingProfileKey: "default",
+          pricingMode: "area",
+          isService: false,
             requiresProductionJob: true,
             pricingFormula: row['Pricing Formula']?.trim() || 'basePrice * quantity',
             variantLabel: row['Variant Label']?.trim(),
@@ -622,7 +737,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             showStoreLink: row['Show Store Link']?.trim().toLowerCase() === 'true',
             thumbnailUrls,
             isActive: row['Is Active']?.trim().toLowerCase() !== 'false',
-          });
+        };
+
+        const newProduct = await storage.createProduct(organizationId, insertPayload);
           productMap[productName] = newProduct.id;
           importedProducts++;
         } else if (type === 'VARIANT') {
@@ -1252,7 +1369,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let variantName = null;
       if (variantId) {
         const variants = await storage.getProductVariants(productId);
-        variant = variants.find(v => v.id === variantId);
+        variant = variants.find(v => v.id === variantId) ?? null;
         if (variant) {
           variantName = variant.name;
         }
@@ -1345,7 +1462,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const profileConfig = effectivePricingProfileConfig as FlatGoodsConfig | null;
           
           // PRE-PROCESSING: Check for thickness selector to override material
-          const productOptionsJson = (product.optionsJson as Array<any>) || [];
+          const productOptionsJson = ((product.optionsJson as unknown) as PricingOptionJson[]) || [];
           let thicknessMultiplier = 1.0;
           let thicknessVolumePricing: any = null;
           
@@ -1384,7 +1501,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const flatGoodsInput = buildFlatGoodsInput(
             profileConfig,
             product,
-            variant,
+            variant ?? null,
             widthNum,
             heightNum,
             quantityNum
@@ -1557,24 +1674,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Fetch product options and calculate option costs
       // SUPPORT BOTH: old productOptions table AND new optionsJson field
       const productOptions = await storage.getProductOptions(productId);
-      const productOptionsJson = (product.optionsJson as Array<{
-        id: string;
-        label: string;
-        type: "checkbox" | "quantity" | "toggle" | "select";
-        priceMode: "flat" | "per_qty" | "per_sqft";
-        amount?: number;
-        defaultSelected?: boolean;
-        config?: {
-          kind?: "grommets" | "sides" | "generic";
-          locations?: Array<"all_corners" | "top_corners" | "top_even" | "custom">;
-          defaultLocation?: "all_corners" | "top_corners" | "top_even" | "custom";
-          defaultSpacingCount?: number;
-          customNotes?: string;
-          singleLabel?: string;
-          doubleLabel?: string;
-          doublePriceMultiplier?: number;
-        };
-      }>) || [];
+      const productOptionsJson = ((product.optionsJson as unknown) as PricingOptionJson[]) || [];
 
       let optionsPrice = 0;
       const selectedOptionsArray: Array<{
@@ -3375,7 +3475,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settingsData = insertEmailSettingsSchema.parse(req.body);
-      const { organizationId: _, ...settingsWithoutOrgId } = settingsData;
+      const { organizationId: _orgId, ...settingsWithoutOrgId } =
+        settingsData as typeof settingsData & { organizationId?: string };
       const settings = await storage.createEmailSettings(organizationId, settingsWithoutOrgId);
       res.json(settings);
     } catch (error) {
@@ -3395,7 +3496,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...req.body,
         id: req.params.id,
       });
-      const { id, organizationId: _, ...updateData } = settingsData;
+      const { id, organizationId: _orgId, ...updateData } =
+        settingsData as typeof settingsData & { organizationId?: string };
       const settings = await storage.updateEmailSettings(organizationId, req.params.id, updateData);
       res.json(settings);
     } catch (error) {
@@ -3429,8 +3531,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Recipient email is required" });
       }
 
-      // TODO: Update emailService to accept organizationId for tenant-scoped email settings
-      await emailService.sendTestEmail(recipientEmail);
+      await emailService.sendTestEmail(organizationId, recipientEmail);
       res.json({ message: "Test email sent successfully" });
     } catch (error) {
       console.error("Error sending test email:", error);
@@ -3461,8 +3562,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Quote not found" });
       }
 
-      // TODO: Update emailService to accept organizationId for tenant-scoped email settings
-      await emailService.sendQuoteEmail(id, recipientEmail);
+      await emailService.sendQuoteEmail(organizationId, id, recipientEmail, isInternalUser ? undefined : userId);
       res.json({ message: "Quote email sent successfully" });
     } catch (error) {
       console.error("Error sending quote email:", error);
@@ -3493,7 +3593,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settingsData = insertCompanySettingsSchema.parse(req.body);
-      const { organizationId: _, ...settingsWithoutOrgId } = settingsData;
+      const { organizationId: _orgId, ...settingsWithoutOrgId } =
+        settingsData as typeof settingsData & { organizationId?: string };
       const settings = await storage.createCompanySettings(organizationId, settingsWithoutOrgId);
       res.json(settings);
     } catch (error) {
@@ -3510,7 +3611,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const settingsData = updateCompanySettingsSchema.parse(req.body);
-      const { organizationId: _, ...updateData } = settingsData;
+      const { organizationId: _orgId, ...updateData } =
+        settingsData as typeof settingsData & { organizationId?: string };
       const settings = await storage.updateCompanySettings(organizationId, req.params.id, updateData);
       res.json(settings);
     } catch (error) {
@@ -4376,7 +4478,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log('[MATERIAL CREATE] Request body:', JSON.stringify(req.body, null, 2));
       const parsed = insertMaterialSchema.parse(req.body);
       console.log('[MATERIAL CREATE] Parsed data:', JSON.stringify(parsed, null, 2));
-      const { organizationId: _, ...materialData } = parsed;
+      const { organizationId: _orgId, ...materialData } =
+        parsed as typeof parsed & { organizationId?: string };
       const created = await storage.createMaterial(organizationId, materialData);
       res.json({ success: true, data: created });
     } catch (err) {
@@ -4395,7 +4498,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const parsed = updateMaterialSchema.parse(req.body);
-      const { organizationId: _, ...materialData } = parsed;
+      const { organizationId: _orgId, ...materialData } =
+        parsed as typeof parsed & { organizationId?: string };
       const updated = await storage.updateMaterial(organizationId, req.params.id, materialData);
       res.json({ success: true, data: updated });
     } catch (err) {
@@ -4660,9 +4764,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         contactId: finalContactId,
       });
 
+      // Ensure quote has correct customer linkage before conversion (conversion reads customerId/contactId from quote)
+      if (quote.customerId !== finalCustomerId || quote.contactId !== finalContactId) {
+        await storage.updateQuote(organizationId, quoteId, {
+          customerId: finalCustomerId,
+          contactId: finalContactId,
+        });
+      }
+
       const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
-        customerId: finalCustomerId,
-        contactId: finalContactId || undefined,
         dueDate: dueDate || undefined,
         promisedDate: promisedDate || undefined,
         priority,
@@ -4768,8 +4878,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         dueDate: req.body?.dueDate || undefined,
         promisedDate: req.body?.promisedDate || undefined,
         notesInternal: req.body?.internalNotes,
-        customerId: customerId,
-        contactId: quote.contactId || undefined,
       });
       await storage.createOrderAuditLog({
         orderId: order.id,
@@ -4796,7 +4904,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!portalCustomer) {
         return res.status(403).json({ error: 'No customer account linked to this user' });
       }
-      const { organizationId, id: customerId, productVisibilityMode } = portalCustomer;
+      const { organizationId, id: customerId, productVisibilityMode } =
+        portalCustomer as typeof portalCustomer & { productVisibilityMode?: 'default' | 'linked-only' };
 
       // Get all active products for this organization
       const allProducts = await storage.getAllProducts(organizationId);
@@ -4918,14 +5027,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       let attachmentData: any = {
         orderId: req.params.id,
-        organizationId,
         orderLineItemId: orderLineItemId || null,
         quoteId: quoteId || null,
         uploadedByUserId: userId,
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         description: description || null,
-        role: role || 'other',
-        side: side || 'na',
+        role: (role || 'other') as FileRole,
+        side: (side || 'na') as FileSide,
         isPrimary: isPrimary || false,
       };
 
@@ -4966,9 +5074,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!fileUrl) {
           return res.status(400).json({ error: 'fileUrl is required for legacy uploads' });
         }
+        const resolvedFileName = (fileName || originalFilename) as string;
         attachmentData = {
           ...attachmentData,
-          fileName,
+          fileName: resolvedFileName,
           fileUrl,
           fileSize: fileSize || null,
           mimeType: mimeType || null,
@@ -4976,7 +5085,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       }
 
-      const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+      const [attachment] = await db
+        .insert(orderAttachments)
+        .values(attachmentData as typeof orderAttachments.$inferInsert)
+        .returning();
 
       await storage.createOrderAuditLog({
         orderId: req.params.id,
@@ -5540,7 +5652,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const toEmail = customer?.email || req.body.toEmail;
       if (!toEmail) return res.status(400).json({ error: 'No recipient email' });
       const html = `<!DOCTYPE html><html><body><h2>Invoice #${invoice.invoiceNumber}</h2><p>Status: ${invoice.status}</p><p>Issue Date: ${new Date(invoice.issueDate).toLocaleDateString()}</p><p>Due Date: ${invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : 'N/A'}</p><h3>Line Items</h3><table cellpadding="4" border="1" style="border-collapse:collapse"><thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>${lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${li.unitPrice}</td><td>${li.totalPrice}</td></tr>`).join('')}</tbody></table><p>Subtotal: ${invoice.subtotal}</p><p>Tax: ${invoice.tax}</p><p>Total: ${invoice.total}</p><p>Paid: ${invoice.amountPaid}</p><p>Balance Due: ${invoice.balanceDue}</p><h4>Payments</h4>${paymentRows.length ? paymentRows.map(p => `<div>${p.method}: ${p.amount} on ${new Date(p.appliedAt).toLocaleDateString()}</div>`).join('') : '<p>No payments recorded.</p>'}</body></html>`;
-      await emailService.sendEmail({ to: toEmail, subject: `Invoice #${invoice.invoiceNumber}`, html });
+      await emailService.sendEmail(organizationId, { to: toEmail, subject: `Invoice #${invoice.invoiceNumber}`, html });
       await markInvoiceSent(invoice.id);
       res.json({ success: true });
     } catch (error) {
@@ -5758,7 +5870,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const parsed = insertVendorSchema.parse(req.body);
-      const { organizationId: _, ...vendorData } = parsed;
+      const { organizationId: _orgId, ...vendorData } =
+        parsed as typeof parsed & { organizationId?: string };
       const created = await storage.createVendor(organizationId, vendorData);
       const userId = getUserId(req.user);
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
@@ -5886,7 +5999,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
       const parsed = insertPurchaseOrderSchema.parse(req.body);
-      const { organizationId: _, ...poData } = parsed;
+      const { organizationId: _orgId, ...poData } =
+        parsed as typeof parsed & { organizationId?: string };
       const userId = getUserId(req.user);
       const created = await storage.createPurchaseOrder(organizationId, { ...poData, createdByUserId: userId! });
       const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;

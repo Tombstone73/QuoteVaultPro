@@ -717,11 +717,16 @@ export function OrderLineItemDialog({
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
-                                    {option.config.spacingOptions.map((opt: { value: number; label: string }) => (
-                                      <SelectItem key={opt.value} value={String(opt.value)}>
-                                        {opt.label}
-                                      </SelectItem>
-                                    ))}
+                                    {(option.config.spacingOptions as Array<number | { value: number; label: string }>)
+                                      .map((opt) => {
+                                        const value = typeof opt === "number" ? opt : opt.value;
+                                        const label = typeof opt === "number" ? `${opt}"` : opt.label;
+                                        return (
+                                          <SelectItem key={value} value={String(value)}>
+                                            {label}
+                                          </SelectItem>
+                                        );
+                                      })}
                                   </SelectContent>
                                 </Select>
                               </div>
@@ -829,11 +834,16 @@ export function OrderLineItemDialog({
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {option.config.hemsChoices?.map((choice: { value: string; label: string }) => (
-                                  <SelectItem key={choice.value} value={choice.value}>
-                                    {choice.label}
-                                  </SelectItem>
-                                )) || (
+                                {(option.config.hemsChoices as Array<string | { value: string; label: string }> | undefined)
+                                  ?.map((choice) => {
+                                    const value = typeof choice === "string" ? choice : choice.value;
+                                    const label = typeof choice === "string" ? choice : choice.label;
+                                    return (
+                                      <SelectItem key={value} value={value}>
+                                        {label}
+                                      </SelectItem>
+                                    );
+                                  }) || (
                                   <>
                                     <SelectItem value="none">None</SelectItem>
                                     <SelectItem value="all_sides">All Sides</SelectItem>
@@ -874,11 +884,16 @@ export function OrderLineItemDialog({
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {option.config.polePocketChoices?.map((choice: { value: string; label: string }) => (
-                                  <SelectItem key={choice.value} value={choice.value}>
-                                    {choice.label}
-                                  </SelectItem>
-                                )) || (
+                                {(option.config.polePocketChoices as Array<string | { value: string; label: string }> | undefined)
+                                  ?.map((choice) => {
+                                    const value = typeof choice === "string" ? choice : choice.value;
+                                    const label = typeof choice === "string" ? choice : choice.label;
+                                    return (
+                                      <SelectItem key={value} value={value}>
+                                        {label}
+                                      </SelectItem>
+                                    );
+                                  }) || (
                                   <>
                                     <SelectItem value="none">None</SelectItem>
                                     <SelectItem value="top">Top Only</SelectItem>

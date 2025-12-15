@@ -11,6 +11,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+type MaterialWithTierPricing = Material & {
+  wholesaleBaseRate?: string | null;
+  wholesaleMinCharge?: string | null;
+  retailBaseRate?: string | null;
+  retailMinCharge?: string | null;
+};
+
 const materialSchema = z.object({
   name: z.string().min(1, "Name required"),
   sku: z.string().min(1, "SKU required"),
@@ -46,7 +53,7 @@ export type MaterialFormValues = z.infer<typeof materialSchema>;
 interface Props {
   open: boolean;
   onOpenChange: (o:boolean)=>void;
-  material?: Material;
+  material?: MaterialWithTierPricing;
   /** When true, we are creating a copy of the material */
   isDuplicate?: boolean;
 }
