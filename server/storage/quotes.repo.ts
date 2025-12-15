@@ -4,6 +4,7 @@ import {
     quoteLineItems,
     quoteWorkflowStates,
     users,
+    customers,
     products,
     productVariants,
     globalVariables,
@@ -312,8 +313,8 @@ export class QuotesRepository {
             updatedAt: new Date(),
         };
 
-        if (data.marginPercentage !== undefined) updateData.marginPercentage = data.marginPercentage.toString();
-        if (data.discountAmount !== undefined) updateData.discountAmount = data.discountAmount.toString();
+        if (data.marginPercentage != null) updateData.marginPercentage = data.marginPercentage.toString();
+        if (data.discountAmount != null) updateData.discountAmount = data.discountAmount.toString();
         if (data.requestedDueDate !== undefined) updateData.requestedDueDate = data.requestedDueDate;
         if (data.validUntil !== undefined) updateData.validUntil = data.validUntil;
         if (data.carrier !== undefined) updateData.carrier = data.carrier;
@@ -546,7 +547,9 @@ export class QuotesRepository {
         // Customers with no explicit source filter see all their quotes (both types)
 
         if (filters?.searchCustomer) {
-            conditions.push(like(quotes.customerName, `%${filters.searchCustomer}%`));
+            const term = `%${filters.searchCustomer}%`;
+            // Use a single SQL condition here to avoid `or()` returning `SQL | undefined` in drizzle's types.
+            conditions.push(sql`(${quotes.customerName} like ${term} OR ${customers.companyName} like ${term})`);
         }
 
         if (filters?.startDate) {
@@ -568,14 +571,21 @@ export class QuotesRepository {
         }
 
             const userQuotes = await this.dbInstance
-                .select()
+                .select({
+                    quote: quotes,
+                    customerCompanyName: customers.companyName,
+                })
                 .from(quotes)
+                .leftJoin(
+                    customers,
+                    and(eq(customers.id, quotes.customerId), eq(customers.organizationId, organizationId))
+                )
                 .where(and(...conditions))
                 .orderBy(desc(quotes.createdAt));
 
             // Fetch user and line items for each quote
             return await Promise.all(
-                userQuotes.map(async (quote) => {
+                userQuotes.map(async ({ quote, customerCompanyName }) => {
                     const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
 
                     // Fetch line items (no status column on line items)
@@ -612,6 +622,7 @@ export class QuotesRepository {
 
                     return {
                         ...quote,
+                        customerName: customerCompanyName ?? quote.customerName,
                         user,
                         lineItems: lineItemsWithRelations,
                     };

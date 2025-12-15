@@ -52,10 +52,15 @@ import {
   useColumnSettings,
   isColumnVisible,
   type ColumnDefinition,
+  type ColumnState,
 } from "@/components/titan";
 import type { QuoteWithRelations, Product } from "@shared/schema";
 
 type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "label";
+
+type QuoteRow = QuoteWithRelations & {
+  label?: string | null;
+};
 
 // Column definitions for quotes table
 const QUOTE_COLUMNS: ColumnDefinition[] = [
@@ -122,7 +127,9 @@ export default function InternalQuotes() {
   
   // Helper to get column width style
   const getColStyle = (key: string) => {
-    const settings = columnSettings[key];
+    const raw = columnSettings[key];
+    const settings: ColumnState | undefined =
+      raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ColumnState) : undefined;
     if (!settings?.visible) return { display: "none" as const };
     return { width: settings.width, minWidth: settings.width };
   };
@@ -181,7 +188,7 @@ export default function InternalQuotes() {
     }
   }, [quotes, hasEverLoaded]);
 
-  const quotesList = (quotes ?? []) as QuoteWithRelations[];
+  const quotesList: QuoteRow[] = (quotes ?? []) as QuoteRow[];
   const { data: products } = useQuery<Product[]>({
     queryKey: ["/api/products"],
   });
@@ -202,7 +209,7 @@ export default function InternalQuotes() {
   // Sorted quotes
   const sortedQuotes = useMemo(() => {
     if (!quotesList.length) return [];
-    return [...quotesList].sort((a: any, b: any) => {
+    return [...quotesList].sort((a: QuoteRow, b: QuoteRow) => {
       let comparison = 0;
       switch (sortKey) {
         case "date":
@@ -233,8 +240,16 @@ export default function InternalQuotes() {
           comparison = sourceA.localeCompare(sourceB);
           break;
         case "createdBy":
-          const userA = a.user ? `${a.user.firstName || ""} ${a.user.lastName || ""}`.trim() || a.user.email : "";
-          const userB = b.user ? `${b.user.firstName || ""} ${b.user.lastName || ""}`.trim() || b.user.email : "";
+          const userA =
+            a.user
+              ? `${a.user.firstName || ""} ${a.user.lastName || ""}`.trim() ||
+                (a.user.email ?? "")
+              : "";
+          const userB =
+            b.user
+              ? `${b.user.firstName || ""} ${b.user.lastName || ""}`.trim() ||
+                (b.user.email ?? "")
+              : "";
           comparison = userA.localeCompare(userB);
           break;
       }
@@ -680,10 +695,10 @@ export default function InternalQuotes() {
                           ) : (
                             <div 
                               className="cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
-                              onClick={() => handleStartLabelEdit(quote.id, (quote as any).label || '')}
+                              onClick={() => handleStartLabelEdit(quote.id, quote.label || "")}
                             >
-                              {(quote as any).label ? (
-                                <span className="text-sm">{(quote as any).label}</span>
+                              {quote.label ? (
+                                <span className="text-sm">{quote.label}</span>
                               ) : (
                                 <span className="text-muted-foreground text-sm italic">
                                   Click to add...
@@ -707,15 +722,12 @@ export default function InternalQuotes() {
                         >
                           {quote.customerId ? (
                             <Link to={ROUTES.customers.detail(quote.customerId)}>
-                              <Button
-                                variant="link"
-                                className="h-auto p-0 font-normal"
-                              >
-                                {quote.customerName || "View Customer"}
+                              <Button variant="link" className="h-auto p-0 font-normal">
+                                {quote.customerName?.trim()
+                                  ? quote.customerName
+                                  : "View Customer"}
                               </Button>
                             </Link>
-                          ) : quote.customerName ? (
-                            <span>{quote.customerName}</span>
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}

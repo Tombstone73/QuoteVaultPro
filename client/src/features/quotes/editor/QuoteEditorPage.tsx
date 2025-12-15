@@ -1,36 +1,164 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
-import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { ROUTES } from "@/config/routes";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard } from "./components/CustomerCard";
 import { FulfillmentCard } from "./components/FulfillmentCard";
-import { LineItemBuilder } from "./components/LineItemBuilder";
-import { LineItemsTable } from "./components/LineItemsTable";
+import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
-import type { QuoteLineItemDraft } from "./types";
+import type { CustomerSelectRef } from "@/components/CustomerSelect";
 
 type QuoteEditorPageProps = {
     mode?: "view" | "edit";
 };
 
 export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
+    // ALL HOOKS MUST BE CALLED UNCONDITIONALLY AT THE TOP
     const navigate = useNavigate();
+    const location = useLocation();
     const state = useQuoteEditorState();
 
-    // Derive read-only flag from mode
-    const readOnly = mode === "view";
+    // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
+    const [editMode, setEditMode] = useState(mode !== "view");
+    const readOnly = !editMode;
 
-    // Dialog state
+    // Expanded line item (accordion) state
+    const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+    // Dialog state (convert is still a dialog for now; core editing stays inline)
     const [showConvertDialog, setShowConvertDialog] = useState(false);
-    const [attachmentsItem, setAttachmentsItem] = useState<QuoteLineItemDraft | null>(null);
-    const [attachmentsOpen, setAttachmentsOpen] = useState(false);
 
+    // Ref for customer select to enable initial focus
+    const customerSelectRef = useRef<CustomerSelectRef>(null);
+    // Track if we've already attempted focus for current route to prevent re-runs
+    const hasAttemptedFocusRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (!editMode) setExpandedKey(null);
+    }, [editMode]);
+
+    // Reset focus attempt tracking when route changes
+    useEffect(() => {
+        hasAttemptedFocusRef.current = null;
+    }, [location.pathname]);
+
+    // Initial focus: focus customer search input on new quote/new order pages
+    useEffect(() => {
+        // Only attempt focus once per route
+        if (hasAttemptedFocusRef.current === location.pathname) return;
+        
+        // Only focus if:
+        // 1. Not read-only (edit mode)
+        // 2. On new quote/new order route OR no customer selected yet
+        // 3. User hasn't already focused something (activeElement is not an input/textarea/select/button)
+        // 4. No dialog is open
+        // 5. Not still loading initial quote data
+        if (readOnly) return;
+        if (showConvertDialog) return;
+        if (state.isInitialQuoteLoading) return; // Wait for initial load to complete
+        
+        // Check if we're on a new quote/new order route
+        const isNewRoute = location.pathname === ROUTES.quotes.new || location.pathname === ROUTES.orders.new;
+        
+        // Only focus on new routes or when customer is not selected
+        const shouldFocus = isNewRoute || !state.selectedCustomerId;
+        if (!shouldFocus) {
+            hasAttemptedFocusRef.current = location.pathname; // Mark as attempted even if we don't focus
+            return;
+        }
+
+        // Check if user has already focused something (skip if they have)
+        const activeEl = document.activeElement;
+        const isUserFocused = activeEl && activeEl !== document.body && (
+            activeEl.tagName === 'INPUT' ||
+            activeEl.tagName === 'TEXTAREA' ||
+            activeEl.tagName === 'SELECT' ||
+            activeEl.tagName === 'BUTTON' ||
+            activeEl.getAttribute('role') === 'combobox' ||
+            activeEl.getAttribute('contenteditable') === 'true'
+        );
+
+        if (isUserFocused) {
+            hasAttemptedFocusRef.current = location.pathname;
+            return;
+        }
+
+        // Mark that we've attempted focus for this route
+        hasAttemptedFocusRef.current = location.pathname;
+
+        // Use multiple animation frames + longer delay to ensure we focus after user menu/other components
+        // This ensures the customer input gets focus after any header/menu components
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    // Double-check conditions haven't changed
+                    if (readOnly || showConvertDialog) return;
+                    const stillNewRoute = location.pathname === ROUTES.quotes.new || location.pathname === ROUTES.orders.new;
+                    if (!stillNewRoute && state.selectedCustomerId) return;
+                    
+                    customerSelectRef.current?.focus();
+                }, 250);
+            });
+        });
+    }, [readOnly, showConvertDialog, state.isNewQuote, state.selectedCustomerId, state.isInitialQuoteLoading, location.pathname]);
+
+    const lastUpdatedLabel = useMemo(() => {
+        const q: any = state.quote as any;
+        const raw = q?.updatedAt || q?.createdAt;
+        if (!raw) return undefined;
+        const t = new Date(raw).getTime();
+        if (!Number.isFinite(t)) return undefined;
+        const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+        if (mins <= 1) return "just now";
+        if (mins < 60) return `${mins} mins ago`;
+        const hours = Math.round(mins / 60);
+        return `${hours} hr${hours !== 1 ? "s" : ""} ago`;
+    }, [state.quote]);
+
+    const updatedByLabel = useMemo(() => {
+        const u: any = (state.quote as any)?.user;
+        if (!u) return undefined;
+        const name = `${u.firstName || ""} ${u.lastName || ""}`.trim();
+        return name || u.email || undefined;
+    }, [state.quote]);
+
+    /**
+     * Wrapper for save quote - saves and stays on the quote (no navigation)
+     */
+    const handleSave = async () => {
+        try {
+            await state.handlers.saveQuote();
+            // Stay on the quote page after save (no navigation)
+        } catch (err) {
+            // Error handling is already done inside saveQuote (toast shown)
+            console.error("[QuoteEditorPage] Save failed", err);
+        }
+    };
+
+    /**
+     * Save quote and navigate back to quotes list
+     */
+    const handleSaveAndBack = async () => {
+        try {
+            await state.handlers.saveQuote();
+            navigate(ROUTES.quotes.list, { replace: true });
+        } catch (err) {
+            // Error handling is already done inside saveQuote (toast shown)
+            console.error("[QuoteEditorPage] Save & Back failed", err);
+        }
+    };
+
+    const handleDiscard = async () => {
+        await state.handlers.discardAllChanges();
+        setExpandedKey(null);
+        setEditMode(false);
+    };
+
+    // EARLY RETURNS MUST COME AFTER ALL HOOKS
     // Permission check
     if (!state.isInternalUser) {
         return (
@@ -70,190 +198,116 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
         );
     }
 
-    /**
-     * Wrapper for save quote that handles navigation based on result
-     */
-    const handleSave = async () => {
-        try {
-            const result = await state.handlers.saveQuote();
-
-            if (result.kind === "created") {
-                // New quote created - redirect to quotes list
-                navigate(ROUTES.quotes.list, { replace: true });
-            }
-            // For "updated" quotes, stay on the current page (no navigation)
-        } catch (err) {
-            // Error handling is already done inside saveQuote (toast shown)
-            console.error("[QuoteEditorPage] Save failed", err);
-        }
-    };
-
-    const handleOpenAttachments = (item: QuoteLineItemDraft) => {
-        if (!item.id) return;
-        setAttachmentsItem(item);
-        setAttachmentsOpen(true);
-    };
-
-    const handleCloseAttachments = () => {
-        setAttachmentsOpen(false);
-        setAttachmentsItem(null);
-    };
-
     return (
-        <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-            {/* Top header (full width): back link + quote header */}
-            <QuoteHeader
-                quoteNumber={(state.quote as any)?.quoteNumber || ""}
-                quoteId={state.quoteId}
-                canSaveQuote={state.canSaveQuote}
-                canConvertToOrder={state.canConvertToOrder}
-                isSaving={state.isSaving}
-                canDuplicateQuote={state.canDuplicateQuote}
-                isDuplicatingQuote={state.isDuplicatingQuote}
-                readOnly={readOnly}
-                onBack={state.handlers.handleBack}
-                onSave={handleSave}
-                onConvertToOrder={() => setShowConvertDialog(true)}
-                onDuplicateQuote={state.handlers.duplicateQuote}
-                convertToOrderPending={state.convertToOrderHook?.isPending}
-            />
-
-            {/* Customer / job meta (full width) */}
-            <div className="grid gap-6 md:grid-cols-2">
-                <CustomerCard
-                    selectedCustomerId={state.selectedCustomerId}
-                    selectedCustomer={state.selectedCustomer}
-                    selectedContactId={state.selectedContactId}
-                    contacts={state.contacts}
-                    effectiveTaxRate={state.effectiveTaxRate}
-                    pricingTier={state.pricingTier}
-                    discountPercent={state.discountPercent}
-                    markupPercent={state.markupPercent}
-                    marginPercent={state.marginPercent}
-                    deliveryMethod={state.deliveryMethod}
-                    readOnly={readOnly}
-                    onCustomerChange={state.handlers.setCustomer}
-                    onContactChange={state.handlers.setContactId}
+        <div className="min-h-screen bg-background">
+            <div className="max-w-[1600px] mx-auto px-6 py-4">
+                {/* Top bar: Back + Quote # + Status + Actions */}
+                <QuoteHeader
+                    quoteNumber={(state.quote as any)?.quoteNumber || ""}
+                    quoteId={state.quoteId}
+                    canDuplicateQuote={state.canDuplicateQuote}
+                    isDuplicatingQuote={state.isDuplicatingQuote}
+                    status={(state.quote as any)?.status}
+                    editMode={editMode}
+                    editModeDisabled={state.isSaving}
+                    onBack={state.handlers.handleBack}
+                    onDuplicateQuote={state.handlers.duplicateQuote}
+                    onEditModeChange={(next) => setEditMode(next)}
                 />
 
-                <FulfillmentCard
-                    deliveryMethod={state.deliveryMethod}
-                    shippingAddress={state.shippingAddress}
-                    quoteNotes={state.quoteNotes}
-                    selectedCustomer={state.selectedCustomer}
-                    useCustomerAddress={state.useCustomerAddress}
-                    customerHasAddress={!!state.customerHasAddress}
-                    readOnly={readOnly}
-                    onDeliveryMethodChange={state.handlers.setDeliveryMethod}
-                    onShippingAddressChange={state.handlers.updateShippingAddress}
-                    onQuoteNotesChange={state.handlers.setQuoteNotes}
-                    onCopyCustomerAddress={state.handlers.handleCopyCustomerAddress}
-                />
-            </div>
-
-            {/* Main content area (2-column on desktop, stacked on mobile) */}
-            <div className="grid gap-6 md:grid-cols-[2fr_1fr]">
-                {/* Left: Line Items */}
-                <div className="space-y-6">
-                    <LineItemsTable
-                        lineItems={state.lineItems}
-                        products={state.products}
-                        quoteId={state.quoteId}
-                        readOnly={readOnly}
-                        onEdit={state.handlers.editLineItem}
-                        onDuplicate={state.handlers.duplicateLineItem}
-                        onRemove={state.handlers.removeLineItem}
-                        onOpenAttachments={handleOpenAttachments}
-                        onSetLineItemPriceOverride={state.handlers.setLineItemPriceOverride}
-                    />
-
-                    {/* Builder sits below the list; hidden in view mode */}
-                    {!readOnly && (
-                        <LineItemBuilder
-                            products={state.products}
-                            selectedProductId={state.selectedProductId}
-                            selectedProduct={state.selectedProduct}
-                            selectedVariantId={state.selectedVariantId}
-                            productVariants={state.productVariants}
-                            width={state.width}
-                            height={state.height}
-                            quantity={state.quantity}
-                            calculatedPrice={state.calculatedPrice}
-                            isCalculating={state.isCalculating}
-                            calcError={state.calcError}
-                            optionSelections={state.optionSelections}
-                            lineItemNotes={state.lineItemNotes}
-                            requiresDimensions={state.requiresDimensions}
-                            productOptions={state.productOptions}
-                            hasAttachmentOption={state.hasAttachmentOption}
-                            productSearchOpen={state.productSearchOpen}
-                            productSearchQuery={state.productSearchQuery}
-                            filteredProducts={state.filteredProducts}
-                            onProductSelect={state.handlers.setSelectedProductId}
-                            onVariantSelect={state.handlers.setSelectedVariantId}
-                            onWidthChange={state.handlers.setWidth}
-                            onHeightChange={state.handlers.setHeight}
-                            onQuantityChange={state.handlers.setQuantity}
-                            onOptionSelectionsChange={state.handlers.setOptionSelections}
-                            onLineItemNotesChange={state.handlers.setLineItemNotes}
-                            onAddLineItem={state.handlers.addLineItem}
-                            onProductSearchOpenChange={state.handlers.setProductSearchOpen}
-                            onProductSearchQueryChange={state.handlers.setProductSearchQuery}
+                {/* Two-column layout: Left (Customer + Line Items) | Right (Summary) */}
+                <div className="grid gap-6 mt-6 lg:grid-cols-[1fr_400px]">
+                    {/* LEFT COLUMN: Customer + Line Items */}
+                    <div className="space-y-6">
+                        {/* Customer & Details Panel */}
+                        <CustomerCard
+                            ref={customerSelectRef}
+                            selectedCustomerId={state.selectedCustomerId}
+                            selectedCustomer={state.selectedCustomer}
+                            selectedContactId={state.selectedContactId}
+                            contacts={state.contacts}
+                            effectiveTaxRate={state.effectiveTaxRate}
+                            pricingTier={state.pricingTier}
+                            discountPercent={state.discountPercent}
+                            markupPercent={state.markupPercent}
+                            marginPercent={state.marginPercent}
+                            deliveryMethod={state.deliveryMethod}
+                            readOnly={readOnly}
+                            jobLabel={state.jobLabel}
+                            requestedDueDate={state.requestedDueDate}
+                            tags={state.tags}
+                            onCustomerChange={state.handlers.setCustomer}
+                            onContactChange={state.handlers.setContactId}
+                            onJobLabelChange={state.handlers.setJobLabel}
+                            onRequestedDueDateChange={state.handlers.setRequestedDueDate}
+                            onAddTag={state.handlers.addTag}
+                            onRemoveTag={state.handlers.removeTag}
                         />
-                    )}
-                </div>
 
-                {/* Right: Summary */}
-                <div className="md:sticky md:top-6 h-fit">
-                    <SummaryCard
-                        lineItems={state.lineItems}
-                        products={state.products}
-                        subtotal={state.subtotal}
-                        taxAmount={state.taxAmount}
-                        grandTotal={state.grandTotal}
-                        effectiveTaxRate={state.effectiveTaxRate}
-                        discountPercent={state.discountPercent}
-                        deliveryMethod={state.deliveryMethod}
-                        selectedCustomer={state.selectedCustomer}
-                        canSaveQuote={state.canSaveQuote}
-                        isSaving={state.isSaving}
-                        readOnly={readOnly}
-                        onSave={handleSave}
-                        onConvertToOrder={() => setShowConvertDialog(true)}
-                        canConvertToOrder={state.canConvertToOrder}
-                        convertToOrderPending={state.convertToOrderHook?.isPending}
-                    />
+                        {/* Line Items Section */}
+                        <LineItemsSection
+                            quoteId={state.quoteId}
+                            readOnly={readOnly}
+                            lineItems={state.lineItems}
+                            products={state.products}
+                            expandedKey={expandedKey}
+                            onExpandedKeyChange={setExpandedKey}
+                            onCreateDraftLineItem={state.handlers.createDraftLineItem}
+                            onUpdateLineItem={state.handlers.updateLineItemLocal}
+                            onSaveLineItem={state.handlers.saveLineItem}
+                            onDuplicateLineItem={state.handlers.duplicateLineItem}
+                            onRemoveLineItem={state.handlers.removeLineItem}
+                        />
+                    </div>
+
+                    {/* RIGHT COLUMN: Fulfillment + Quote Summary + Actions */}
+                    <div className="space-y-6 lg:sticky lg:top-4 h-fit">
+                        {/* Fulfillment Panel */}
+                        <FulfillmentCard
+                            deliveryMethod={state.deliveryMethod}
+                            shippingAddress={state.shippingAddress}
+                            quoteNotes={state.quoteNotes}
+                            selectedCustomer={state.selectedCustomer}
+                            useCustomerAddress={state.useCustomerAddress}
+                            customerHasAddress={!!state.customerHasAddress}
+                            readOnly={readOnly}
+                            onDeliveryMethodChange={state.handlers.setDeliveryMethod}
+                            onShippingAddressChange={state.handlers.updateShippingAddress}
+                            onQuoteNotesChange={state.handlers.setQuoteNotes}
+                            onCopyCustomerAddress={state.handlers.handleCopyCustomerAddress}
+                        />
+
+                        {/* Quote Summary */}
+                        <SummaryCard
+                            lineItems={state.lineItems}
+                            products={state.products}
+                            subtotal={state.subtotal}
+                            taxAmount={state.taxAmount}
+                            grandTotal={state.grandTotal}
+                            effectiveTaxRate={state.effectiveTaxRate}
+                            discountAmount={state.discountAmount}
+                            deliveryMethod={state.deliveryMethod}
+                            selectedCustomer={state.selectedCustomer}
+                            canSaveQuote={state.canSaveQuote}
+                            isSaving={state.isSaving}
+                            hasUnsavedChanges={state.hasUnsavedChanges}
+                            readOnly={readOnly}
+                            onSave={handleSave}
+                            onSaveAndBack={handleSaveAndBack}
+                            onConvertToOrder={() => setShowConvertDialog(true)}
+                            canConvertToOrder={state.canConvertToOrder}
+                            convertToOrderPending={state.convertToOrderHook?.isPending}
+                            showConvertToOrder={!editMode && !!state.quoteId}
+                            onDiscard={handleDiscard}
+                            onDiscountAmountChange={state.handlers.setDiscountAmount}
+                            quoteTaxExempt={state.quoteTaxExempt}
+                            quoteTaxRateOverride={state.quoteTaxRateOverride}
+                            onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
+                            onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
+                        />
+                    </div>
                 </div>
             </div>
-
-            {/* Artwork Attachments Dialog */}
-            <Dialog
-                open={attachmentsOpen}
-                onOpenChange={(open) => {
-                    if (!open) {
-                        handleCloseAttachments();
-                    } else {
-                        setAttachmentsOpen(true);
-                    }
-                }}
-            >
-                <DialogContent className="max-w-lg">
-                    <DialogHeader>
-                        <DialogTitle>Artwork Attachments</DialogTitle>
-                        {attachmentsItem?.productName && (
-                            <DialogDescription>
-                                {attachmentsItem.productName}
-                            </DialogDescription>
-                        )}
-                    </DialogHeader>
-                    <LineItemAttachmentsPanel
-                        quoteId={state.quoteId}
-                        lineItemId={attachmentsItem?.id}
-                        productName={attachmentsItem?.productName}
-                        defaultExpanded
-                    />
-                </DialogContent>
-            </Dialog>
 
             {/* Convert to Order Dialog */}
             <ConvertQuoteToOrderDialog

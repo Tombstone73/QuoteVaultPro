@@ -287,14 +287,14 @@ export type LineItemMaterialUsage = {
 export type ProductOptionItem = {
   id: string;
   label: string;
-  type: "checkbox" | "quantity" | "toggle" | "select";
+  type: "checkbox" | "quantity" | "toggle" | "select" | "attachment";
   priceMode: "flat" | "per_qty" | "per_sqft" | "percent_of_base" | "flat_per_item";
   amount?: number;
   percentBase?: "media" | "line"; // For percent_of_base mode: "media" = percent of media cost only, "line" = percent of full line (default)
   defaultSelected?: boolean; // Controls whether this option is selected by default on new line items
   sortOrder?: number; // Controls display order in calculator/quote UI
   config?: {
-    kind?: "grommets" | "sides" | "thickness" | "hems" | "pole_pockets" | "generic";
+    kind: "grommets" | "sides" | "thickness" | "hems" | "pole_pockets" | "generic";
     // For grommets
     locations?: Array<"all_corners" | "top_corners" | "top_even" | "custom">;
     defaultLocation?: "all_corners" | "top_corners" | "top_even" | "custom";
@@ -865,10 +865,7 @@ export const quotes = pgTable("quotes", {
   // Dates
   requestedDueDate: timestamp("requested_due_date", { withTimezone: true, mode: "string" }),
   validUntil: timestamp("valid_until", { withTimezone: true, mode: "string" }),
-  
-  // Quote ⇄ Order linking
-  convertedToOrderId: varchar("converted_to_order_id").references(() => orders.id, { onDelete: 'set null' }),
-  
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("quotes_organization_id_idx").on(table.organizationId),
@@ -930,7 +927,6 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   quoteNumber: true,
   createdAt: true,
   organizationId: true,
-  convertedToOrderId: true,
 }).extend({
   customerId: z.string().optional().nullable(),
   contactId: z.string().optional().nullable(),

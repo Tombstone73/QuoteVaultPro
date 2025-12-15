@@ -21,7 +21,9 @@ export default function QuoteCheckout() {
   const [priority, setPriority] = useState("normal");
   const [customerNotes, setCustomerNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [uploadedFileUrls, setUploadedFileUrls] = useState<Array<{ fileName: string; fileUrl: string; fileSize: number }>>([]);
+  const [uploadedFileUrls, setUploadedFileUrls] = useState<
+    Array<{ fileName: string; fileUrl: string; fileSize: number; originalFilename?: string }>
+  >([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
 

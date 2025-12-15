@@ -20,8 +20,8 @@ class EmailService {
   /**
    * Get email configuration from database
    */
-  private async getEmailConfig(): Promise<EmailConfig | null> {
-    const settings = await storage.getDefaultEmailSettings();
+  private async getEmailConfig(organizationId: string): Promise<EmailConfig | null> {
+    const settings = await storage.getDefaultEmailSettings(organizationId);
     if (!settings) {
       return null;
     }
@@ -90,8 +90,8 @@ class EmailService {
   /**
    * Send a test email to verify configuration
    */
-  async sendTestEmail(recipientEmail: string): Promise<void> {
-    const config = await this.getEmailConfig();
+  async sendTestEmail(organizationId: string, recipientEmail: string): Promise<void> {
+    const config = await this.getEmailConfig(organizationId);
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
@@ -122,14 +122,14 @@ class EmailService {
   /**
    * Send quote email to recipient
    */
-  async sendQuoteEmail(quoteId: string, recipientEmail: string): Promise<void> {
-    const config = await this.getEmailConfig();
+  async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string): Promise<void> {
+    const config = await this.getEmailConfig(organizationId);
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
 
     // Get quote data
-    const quote = await storage.getQuoteById(quoteId);
+    const quote = await storage.getQuoteById(organizationId, quoteId, userId);
     if (!quote) {
       throw new Error("Quote not found");
     }
@@ -151,8 +151,8 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(options: { to: string; subject: string; html: string; from?: string }): Promise<void> {
-    const config = await this.getEmailConfig();
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string }): Promise<void> {
+    const config = await this.getEmailConfig(organizationId);
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }

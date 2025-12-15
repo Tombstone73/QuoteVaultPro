@@ -77,7 +77,7 @@ export default function ProductsPage() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<Product | null>(null);
-  
+
   // Refs for scrolling to first error
   const addFormRef = useRef<HTMLFormElement>(null);
   const editFormRef = useRef<HTMLFormElement>(null);
@@ -149,7 +149,7 @@ export default function ProductsPage() {
   // Handle edit form validation errors  
   const handleEditFormError = () => {
     toast({
-      title: "Validation Error", 
+      title: "Validation Error",
       description: "Please fill out all required fields before saving.",
       variant: "destructive",
     });
@@ -176,11 +176,11 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       const wasDuplicate = !!duplicateSource;
-      toast({ 
-        title: wasDuplicate ? "Product Duplicated" : "Product Added", 
-        description: wasDuplicate 
-          ? "The product has been duplicated successfully." 
-          : "The product has been added successfully." 
+      toast({
+        title: wasDuplicate ? "Product Duplicated" : "Product Added",
+        description: wasDuplicate
+          ? "The product has been duplicated successfully."
+          : "The product has been added successfully."
       });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       setIsAddDialogOpen(false);
@@ -429,18 +429,18 @@ export default function ProductsPage() {
           <DialogHeader>
             <DialogTitle>{duplicateSource ? "Duplicate Product" : "Add New Product"}</DialogTitle>
             <DialogDescription>
-              {duplicateSource 
+              {duplicateSource
                 ? `Creating a copy of "${duplicateSource.name}". Modify the details below and save.`
                 : "Create a new product for use in quotes and orders."}
             </DialogDescription>
           </DialogHeader>
           <Form {...addProductForm}>
-            <form 
+            <form
               ref={addFormRef}
               onSubmit={addProductForm.handleSubmit(
                 (data) => addProductMutation.mutate(data as InsertProduct),
                 handleAddFormError
-              )} 
+              )}
               className="space-y-6"
             >
               {/* Section: Basic Info */}
@@ -456,9 +456,9 @@ export default function ProductsPage() {
                     <FormItem data-error={!!fieldState.error}>
                       <FormLabel><RequiredLabel required>Name</RequiredLabel></FormLabel>
                       <FormControl>
-                        <Input 
-                          placeholder="Product name" 
-                          {...field} 
+                        <Input
+                          placeholder="Product name"
+                          {...field}
                           className={fieldState.error ? "border-destructive" : ""}
                         />
                       </FormControl>
@@ -541,7 +541,7 @@ export default function ProductsPage() {
                   <Calculator className="h-4 w-4" />
                   Pricing Calculator
                 </div>
-                
+
                 {/* Pricing Formula Selector (Optional) */}
                 <FormField
                   control={addProductForm.control}
@@ -551,7 +551,7 @@ export default function ProductsPage() {
                     return (
                       <FormItem>
                         <FormLabel>Formula Library</FormLabel>
-                        <Select 
+                        <Select
                           onValueChange={(val) => {
                             field.onChange(val === "__none__" ? null : val);
                             // When a formula is selected, update the profile key to match
@@ -564,7 +564,7 @@ export default function ProductsPage() {
                                 }
                               }
                             }
-                          }} 
+                          }}
                           value={field.value || "__none__"}
                         >
                           <FormControl>
@@ -582,7 +582,7 @@ export default function ProductsPage() {
                           </SelectContent>
                         </Select>
                         <FormDescription className="text-xs italic">
-                          {selectedFormula 
+                          {selectedFormula
                             ? `Using "${selectedFormula.name}" formula. Profile and config inherited from formula.`
                             : "Optional: choose a saved pricing formula as a starting point."}
                         </FormDescription>
@@ -595,7 +595,7 @@ export default function ProductsPage() {
                 {/* Show note when formula is selected */}
                 {addPricingFormulaId && (
                   <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-3 text-sm text-blue-700 dark:text-blue-300">
-                    <strong>Using Pricing Formula:</strong> Profile and configuration below are inherited from the selected formula. 
+                    <strong>Using Pricing Formula:</strong> Profile and configuration below are inherited from the selected formula.
                     Changes to the formula in Settings will affect all products using it.
                   </div>
                 )}
@@ -606,7 +606,7 @@ export default function ProductsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Pricing Profile</FormLabel>
-                      <Select 
+                      <Select
                         onValueChange={(val) => {
                           field.onChange(val);
                           // Set default formula for the selected profile
@@ -624,7 +624,7 @@ export default function ProductsPage() {
                               minPricePerItem: null,
                             });
                           }
-                        }} 
+                        }}
                         value={field.value || "default"}
                         disabled={!!addPricingFormulaId}
                       >
@@ -646,14 +646,14 @@ export default function ProductsPage() {
                     </FormItem>
                   )}
                 />
-                
+
                 {/* Profile-specific notes */}
                 {getProfile(addPricingProfileKey).requiresDimensions === false && (
                   <div className="rounded-lg bg-green-500/10 border border-green-500/30 p-3 text-sm text-green-700 dark:text-green-300">
                     <strong>Note:</strong> This profile does NOT require width/height. Dimensions will be hidden in the quote editor.
                   </div>
                 )}
-                
+
                 {/* Flat Goods Configuration */}
                 {addPricingProfileKey === "flat_goods" && (
                   <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-4 space-y-4">
@@ -757,10 +757,10 @@ export default function ProductsPage() {
                       <FormItem>
                         <FormLabel>Pricing Formula</FormLabel>
                         <FormControl>
-                          <Input 
-                            placeholder={getDefaultFormula(addPricingProfileKey)} 
-                            {...field} 
-                            value={field.value || ""} 
+                          <Input
+                            placeholder={getDefaultFormula(addPricingProfileKey)}
+                            {...field}
+                            value={field.value || ""}
                           />
                         </FormControl>
                         <FormDescription className="text-xs">
@@ -789,8 +789,8 @@ export default function ProductsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Primary Material</FormLabel>
-                      <Select 
-                        onValueChange={(val) => field.onChange(val === "__none__" ? null : val)} 
+                      <Select
+                        onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
                         value={field.value || "__none__"}
                       >
                         <FormControl>
@@ -839,11 +839,11 @@ export default function ProductsPage() {
                           const current = addProductForm.getValues("optionsJson") || [];
                           addProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Printing",
-                              type: "select", 
-                              priceMode: "flat", 
+                              type: "select",
+                              priceMode: "flat",
                               amount: 0,
                               defaultSelected: false,
                               config: {
@@ -870,10 +870,10 @@ export default function ProductsPage() {
                           const current = addProductForm.getValues("optionsJson") || [];
                           addProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Contour Cutting",
-                              type: "checkbox", 
+                              type: "checkbox",
                               priceMode: "percent_of_base",
                               percentBase: "media",
                               amount: 10,
@@ -894,11 +894,11 @@ export default function ProductsPage() {
                           const current = addProductForm.getValues("optionsJson") || [];
                           addProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Grommets",
-                              type: "checkbox", 
-                              priceMode: "flat_per_item", 
+                              type: "checkbox",
+                              priceMode: "flat_per_item",
                               amount: 0.25,
                               defaultSelected: false,
                               config: {
@@ -922,10 +922,10 @@ export default function ProductsPage() {
                           const current = addProductForm.getValues("optionsJson") || [];
                           addProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Overlaminate",
-                              type: "checkbox", 
+                              type: "checkbox",
                               priceMode: "percent_of_base",
                               percentBase: "line",
                               amount: 25,
@@ -946,11 +946,11 @@ export default function ProductsPage() {
                           const current = addProductForm.getValues("optionsJson") || [];
                           addProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Hems",
-                              type: "checkbox", 
-                              priceMode: "flat_per_item", 
+                              type: "checkbox",
+                              priceMode: "flat_per_item",
                               amount: 2.00,
                               defaultSelected: false,
                               config: {
@@ -974,11 +974,11 @@ export default function ProductsPage() {
                           const current = addProductForm.getValues("optionsJson") || [];
                           addProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Pole Pockets",
-                              type: "checkbox", 
-                              priceMode: "flat_per_item", 
+                              type: "checkbox",
+                              priceMode: "flat_per_item",
                               amount: 5.00,
                               defaultSelected: false,
                               config: {
@@ -994,36 +994,36 @@ export default function ProductsPage() {
                         <Zap className="h-4 w-4 mr-2" />
                         + Pole Pockets
                       </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const current = addProductForm.getValues("optionsJson") || [];
-                      addProductForm.setValue("optionsJson", [
-                        ...current,
-                        { 
-                          id: generateOptionId(), 
-                          label: "Artwork Upload", 
-                          type: "attachment", 
-                          priceMode: "flat", 
-                          amount: 0,
-                          defaultSelected: false,
-                          config: { kind: "generic" },
-                          sortOrder: current.length + 1
-                        }
-                      ]);
-                    }}
-                  >
-                    <Sparkles className="h-4 w-4 mr-2" />
-                    + Attachment (File Upload)
-                  </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const current = addProductForm.getValues("optionsJson") || [];
+                          addProductForm.setValue("optionsJson", [
+                            ...current,
+                            {
+                              id: generateOptionId(),
+                              label: "Artwork Upload",
+                              type: "attachment",
+                              priceMode: "flat",
+                              amount: 0,
+                              defaultSelected: false,
+                              config: { kind: "generic" },
+                              sortOrder: current.length + 1
+                            }
+                          ]);
+                        }}
+                      >
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        + Attachment (File Upload)
+                      </Button>
                     </div>
                   </div>
 
                   {/* Show added options (exclude thickness selector from basic view) */}
-                  <ProductOptionsEditor 
-                    form={addProductForm} 
+                  <ProductOptionsEditor
+                    form={addProductForm}
                     fieldName="optionsJson"
                     excludeThickness={true}
                   />
@@ -1049,11 +1049,11 @@ export default function ProductsPage() {
                         const current = addProductForm.getValues("optionsJson") || [];
                         addProductForm.setValue("optionsJson", [
                           ...current,
-                          { 
-                            id: generateOptionId(), 
-                            label: "", 
-                            type: "checkbox", 
-                            priceMode: "flat", 
+                          {
+                            id: generateOptionId(),
+                            label: "",
+                            type: "checkbox",
+                            priceMode: "flat",
                             amount: 0,
                             defaultSelected: false,
                             sortOrder: current.length + 1
@@ -1064,10 +1064,10 @@ export default function ProductsPage() {
                       <Plus className="h-4 w-4 mr-1" />
                       Add Custom Option
                     </Button>
-                    
+
                     {/* Show only thickness selector options in advanced */}
-                    <ProductOptionsEditor 
-                      form={addProductForm} 
+                    <ProductOptionsEditor
+                      form={addProductForm}
                       fieldName="optionsJson"
                       onlyThickness={true}
                     />
@@ -1170,10 +1170,10 @@ export default function ProductsPage() {
                     <FormItem data-error={!!fieldState.error}>
                       <FormLabel><RequiredLabel required>Name</RequiredLabel></FormLabel>
                       <FormControl>
-                        <Input 
-                          placeholder="Product name" 
-                          {...field} 
-                          value={field.value || ""} 
+                        <Input
+                          placeholder="Product name"
+                          {...field}
+                          value={field.value || ""}
                           className={fieldState.error ? "border-destructive" : ""}
                         />
                       </FormControl>
@@ -1256,7 +1256,7 @@ export default function ProductsPage() {
                   <Calculator className="h-4 w-4" />
                   Pricing Calculator
                 </div>
-                
+
                 {/* Pricing Formula Selector (Optional) */}
                 <FormField
                   control={editProductForm.control}
@@ -1266,7 +1266,7 @@ export default function ProductsPage() {
                     return (
                       <FormItem>
                         <FormLabel>Formula Library</FormLabel>
-                        <Select 
+                        <Select
                           onValueChange={(val) => {
                             field.onChange(val === "__none__" ? null : val);
                             // When a formula is selected, update the profile key to match
@@ -1279,7 +1279,7 @@ export default function ProductsPage() {
                                 }
                               }
                             }
-                          }} 
+                          }}
                           value={field.value || "__none__"}
                         >
                           <FormControl>
@@ -1297,7 +1297,7 @@ export default function ProductsPage() {
                           </SelectContent>
                         </Select>
                         <FormDescription className="text-xs italic">
-                          {selectedFormula 
+                          {selectedFormula
                             ? `Using "${selectedFormula.name}" formula. Profile and config inherited from formula.`
                             : "Optional: choose a saved pricing formula as a starting point."}
                         </FormDescription>
@@ -1310,7 +1310,7 @@ export default function ProductsPage() {
                 {/* Show note when formula is selected */}
                 {editPricingFormulaId && (
                   <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 p-3 text-sm text-blue-700 dark:text-blue-300">
-                    <strong>Using Pricing Formula:</strong> Profile and configuration below are inherited from the selected formula. 
+                    <strong>Using Pricing Formula:</strong> Profile and configuration below are inherited from the selected formula.
                     Changes to the formula in Settings will affect all products using it.
                   </div>
                 )}
@@ -1321,7 +1321,7 @@ export default function ProductsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Pricing Profile</FormLabel>
-                      <Select 
+                      <Select
                         onValueChange={(val) => {
                           field.onChange(val);
                           // Set default formula for the selected profile
@@ -1339,7 +1339,7 @@ export default function ProductsPage() {
                               minPricePerItem: null,
                             });
                           }
-                        }} 
+                        }}
                         value={field.value || "default"}
                         disabled={!!editPricingFormulaId}
                       >
@@ -1361,14 +1361,14 @@ export default function ProductsPage() {
                     </FormItem>
                   )}
                 />
-                
+
                 {/* Profile-specific notes */}
                 {getProfile(editPricingProfileKey).requiresDimensions === false && (
                   <div className="rounded-lg bg-green-500/10 border border-green-500/30 p-3 text-sm text-green-700 dark:text-green-300">
                     <strong>Note:</strong> This profile does NOT require width/height. Dimensions will be hidden in the quote editor.
                   </div>
                 )}
-                
+
                 {/* Flat Goods Configuration */}
                 {editPricingProfileKey === "flat_goods" && (
                   <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-4 space-y-4">
@@ -1472,10 +1472,10 @@ export default function ProductsPage() {
                       <FormItem>
                         <FormLabel>Pricing Formula</FormLabel>
                         <FormControl>
-                          <Input 
-                            placeholder={getDefaultFormula(editPricingProfileKey)} 
-                            {...field} 
-                            value={field.value || ""} 
+                          <Input
+                            placeholder={getDefaultFormula(editPricingProfileKey)}
+                            {...field}
+                            value={field.value || ""}
                           />
                         </FormControl>
                         <FormDescription className="text-xs">
@@ -1504,8 +1504,8 @@ export default function ProductsPage() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Primary Material</FormLabel>
-                      <Select 
-                        onValueChange={(val) => field.onChange(val === "__none__" ? null : val)} 
+                      <Select
+                        onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
                         value={field.value || "__none__"}
                       >
                         <FormControl>
@@ -1555,11 +1555,11 @@ export default function ProductsPage() {
                           const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
                           editProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Printing",
-                              type: "select", 
-                              priceMode: "flat", 
+                              type: "select",
+                              priceMode: "flat",
                               amount: 0,
                               defaultSelected: false,
                               config: {
@@ -1587,10 +1587,10 @@ export default function ProductsPage() {
                           const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
                           editProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Contour Cutting",
-                              type: "checkbox", 
+                              type: "checkbox",
                               priceMode: "percent_of_base",
                               percentBase: "media",
                               amount: 10,
@@ -1612,11 +1612,11 @@ export default function ProductsPage() {
                           const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
                           editProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Grommets",
-                              type: "checkbox", 
-                              priceMode: "flat_per_item", 
+                              type: "checkbox",
+                              priceMode: "flat_per_item",
                               amount: 0.25,
                               defaultSelected: false,
                               config: {
@@ -1641,10 +1641,10 @@ export default function ProductsPage() {
                           const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
                           editProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Overlaminate",
-                              type: "checkbox", 
+                              type: "checkbox",
                               priceMode: "percent_of_base",
                               percentBase: "line",
                               amount: 25,
@@ -1666,11 +1666,11 @@ export default function ProductsPage() {
                           const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
                           editProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Hems",
-                              type: "checkbox", 
-                              priceMode: "flat_per_item", 
+                              type: "checkbox",
+                              priceMode: "flat_per_item",
                               amount: 2.00,
                               defaultSelected: false,
                               config: {
@@ -1695,11 +1695,11 @@ export default function ProductsPage() {
                           const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
                           editProductForm.setValue("optionsJson", [
                             ...current,
-                            { 
-                              id: generateOptionId(), 
+                            {
+                              id: generateOptionId(),
                               label: "Pole Pockets",
-                              type: "checkbox", 
-                              priceMode: "flat_per_item", 
+                              type: "checkbox",
+                              priceMode: "flat_per_item",
                               amount: 5.00,
                               defaultSelected: false,
                               config: {
@@ -1715,37 +1715,37 @@ export default function ProductsPage() {
                         <Zap className="h-4 w-4 mr-2" />
                         + Pole Pockets
                       </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const current = editProductForm.getValues("optionsJson") || [];
-                      const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
-                      editProductForm.setValue("optionsJson", [
-                        ...current,
-                        { 
-                          id: generateOptionId(), 
-                          label: "Artwork Upload", 
-                          type: "attachment", 
-                          priceMode: "flat", 
-                          amount: 0,
-                          defaultSelected: false,
-                          config: { kind: "generic" },
-                          sortOrder: maxSortOrder + 1
-                        }
-                      ]);
-                    }}
-                  >
-                    <Sparkles className="h-4 w-4 mr-2" />
-                    + Attachment (File Upload)
-                  </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const current = editProductForm.getValues("optionsJson") || [];
+                          const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
+                          editProductForm.setValue("optionsJson", [
+                            ...current,
+                            {
+                              id: generateOptionId(),
+                              label: "Artwork Upload",
+                              type: "attachment",
+                              priceMode: "flat",
+                              amount: 0,
+                              defaultSelected: false,
+                              config: { kind: "generic" },
+                              sortOrder: maxSortOrder + 1
+                            }
+                          ]);
+                        }}
+                      >
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        + Attachment (File Upload)
+                      </Button>
                     </div>
                   </div>
 
                   {/* Show added options (exclude thickness selector from basic view) */}
-                  <ProductOptionsEditor 
-                    form={editProductForm} 
+                  <ProductOptionsEditor
+                    form={editProductForm}
                     fieldName="optionsJson"
                     excludeThickness={true}
                   />
@@ -1772,11 +1772,11 @@ export default function ProductsPage() {
                         const maxSortOrder = current.reduce((max, opt) => Math.max(max, opt.sortOrder || 0), 0);
                         editProductForm.setValue("optionsJson", [
                           ...current,
-                          { 
-                            id: generateOptionId(), 
-                            label: "", 
-                            type: "checkbox", 
-                            priceMode: "flat", 
+                          {
+                            id: generateOptionId(),
+                            label: "",
+                            type: "checkbox",
+                            priceMode: "flat",
                             amount: 0,
                             defaultSelected: false,
                             sortOrder: maxSortOrder + 1
@@ -1787,10 +1787,10 @@ export default function ProductsPage() {
                       <Plus className="h-4 w-4 mr-1" />
                       Add Custom Option
                     </Button>
-                    
+
                     {/* Show only thickness selector options in advanced */}
-                    <ProductOptionsEditor 
-                      form={editProductForm} 
+                    <ProductOptionsEditor
+                      form={editProductForm}
                       fieldName="optionsJson"
                       onlyThickness={true}
                     />
@@ -1868,7 +1868,7 @@ export default function ProductsPage() {
 // Simple Material Selector Component
 function MaterialSelector({ value, onChange }: { value: string; onChange: (materialId: string) => void }) {
   const { data: materials } = useMaterials();
-  
+
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger className="h-9">
@@ -1886,19 +1886,19 @@ function MaterialSelector({ value, onChange }: { value: string; onChange: (mater
 }
 
 // Product Options Editor Component with full grommets and sides support
-function ProductOptionsEditor({ 
-  form, 
-  fieldName, 
-  excludeThickness = false, 
-  onlyThickness = false 
-}: { 
-  form: any; 
+function ProductOptionsEditor({
+  form,
+  fieldName,
+  excludeThickness = false,
+  onlyThickness = false
+}: {
+  form: any;
   fieldName: string;
   excludeThickness?: boolean;
   onlyThickness?: boolean;
 }) {
   const allOptions: ProductOptionItem[] = form.watch(fieldName) || [];
-  
+
   // Filter options based on thickness config
   const options = allOptions.filter(opt => {
     const isThicknessOption = opt.config?.kind === "thickness";
@@ -1923,15 +1923,15 @@ function ProductOptionsEditor({
     const current = [...(form.getValues(fieldName) || [])];
     const newIndex = direction === "up" ? index - 1 : index + 1;
     if (newIndex < 0 || newIndex >= current.length) return;
-    
+
     // Swap elements
     [current[index], current[newIndex]] = [current[newIndex], current[index]];
-    
+
     // Update sortOrder values
     current.forEach((opt, idx) => {
       opt.sortOrder = idx + 1;
     });
-    
+
     form.setValue(fieldName, current);
   };
 
@@ -1964,450 +1964,413 @@ function ProductOptionsEditor({
       {options
         .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
         .map((opt, index) => (
-        <React.Fragment key={opt.id || index}>
-          <div className="flex items-start gap-3 p-3 border rounded-lg bg-muted/20">
-            {/* Reorder Controls */}
-            <div className="flex flex-col gap-1 pt-6">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0"
-                onClick={() => moveOption(index, "up")}
-                disabled={index === 0}
-              >
-                <ChevronUp className="h-4 w-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0"
-                onClick={() => moveOption(index, "down")}
-                disabled={index === options.length - 1}
-              >
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-          </div>
-          
-          <div className="flex-1 space-y-3">
-          </div>
-          
-          <div className="flex-1 space-y-3">
-              {/* Main option fields */}
-              <div className="grid grid-cols-5 gap-3">
-                <div className="col-span-2">
-                  <Label className="text-xs">Label</Label>
-                  <Input
-                    placeholder="e.g., Include Yard Stakes"
-                    value={opt.label}
-                    onChange={(e) => updateOption(index, { label: e.target.value })}
-                    className="h-9"
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs">Type</Label>
-                  <Select
-                    value={opt.type}
-                    onValueChange={(val) => updateOption(index, { type: val as any })}
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="checkbox">Checkbox</SelectItem>
-                      <SelectItem value="quantity">Quantity</SelectItem>
-                      <SelectItem value="toggle">Toggle</SelectItem>
-                      <SelectItem value="select">Select</SelectItem>
-                      <SelectItem value="attachment">Attachment (File Upload)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-   
-                {opt.type !== "attachment" && (
-                  <div>
-                    <Label className="text-xs">Price Mode</Label>
-                    <Select
-                      value={opt.priceMode}
-                      onValueChange={(val) => updateOption(index, { priceMode: val as any })}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="flat">Flat</SelectItem>
-                        <SelectItem value="per_qty">Per Qty</SelectItem>
-                        <SelectItem value="per_sqft">Per SqFt</SelectItem>
-                        <SelectItem value="flat_per_item">Flat Per Item</SelectItem>
-                        <SelectItem value="percent_of_base">Percent of Base</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-                {opt.type !== "attachment" && (
-                  <div>
-                    <Label className="text-xs">
-                      Amount {opt.priceMode === "percent_of_base" ? "(%)" : "($)"}
-                    </Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      placeholder={opt.priceMode === "percent_of_base" ? "10 = 10%" : "0.00"}
-                      value={opt.amount || ""}
-                      onChange={(e) => updateOption(index, { amount: parseFloat(e.target.value) || 0 })}
-                      className="h-9"
-                    />
-                    {opt.priceMode === "percent_of_base" && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {opt.percentBase === "media" 
-                          ? "Percentage of media/printing cost only (excludes finishing add-ons)."
-                          : "Percentage of base line price (before other add-ons)."}
-                      </p>
-                    )}
-                  </div>
-                )}
-                {opt.type !== "attachment" && opt.priceMode === "percent_of_base" && (
-                  <div>
-                    <Label className="text-xs">Percent of</Label>
-                    <Select
-                      value={opt.percentBase || "line"}
-                      onValueChange={(val) => updateOption(index, { percentBase: val as "media" | "line" })}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="line">Full Line Total</SelectItem>
-                        <SelectItem value="media">Media Cost Only</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
+          <React.Fragment key={opt.id || index}>
+            <div className="flex items-start gap-3 p-3 border rounded-lg bg-muted/20">
+              {/* Reorder Controls */}
+              <div className="flex flex-col gap-1 pt-6">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0"
+                  onClick={() => moveOption(index, "up")}
+                  disabled={index === 0}
+                >
+                  <ChevronUp className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0"
+                  onClick={() => moveOption(index, "down")}
+                  disabled={index === options.length - 1}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
               </div>
 
-              {/* Default selected & special config type */}
-              {opt.type === "attachment" ? (
-                <div className="mt-2 text-xs text-muted-foreground">
-                  Files for this product will be uploaded via the line-item attachments panel. No additional option configuration is required here.
-                </div>
-              ) : (
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id={`default-${opt.id}`}
-                      checked={opt.defaultSelected || false}
-                      onChange={(e) => updateOption(index, { defaultSelected: e.target.checked })}
-                      className="h-4 w-4 rounded border-gray-300"
-                    />
-                    <label htmlFor={`default-${opt.id}`} className="text-xs font-medium cursor-pointer">
-                      Default On <span className="text-muted-foreground">(auto-selected on new quotes)</span>
-                    </label>
-                  </div>
+              <div className="flex-1 space-y-3">
+              </div>
+
+              <div className="flex-1 space-y-3">
+                {/* Main option fields */}
+                <div className="grid grid-cols-5 gap-3">
                   <div className="col-span-2">
-                    <Label className="text-xs">Special Config</Label>
+                    <Label className="text-xs">Label</Label>
+                    <Input
+                      placeholder="e.g., Include Yard Stakes"
+                      value={opt.label}
+                      onChange={(e) => updateOption(index, { label: e.target.value })}
+                      className="h-9"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Type</Label>
                     <Select
-                      value={opt.config?.kind || "generic"}
-                      onValueChange={(val) => {
-                        if (val === "generic") {
-                          updateConfig(index, { kind: "generic" });
-                        } else if (val === "grommets") {
-                          updateConfig(index, {
-                            kind: "grommets",
-                            defaultLocation: "all_corners",
-                            locations: ["all_corners", "top_corners", "top_even", "custom"],
-                            spacingOptions: [12, 24],
-                            defaultSpacingInches: 24,
-                          });
-                        } else if (val === "hems") {
-                          updateConfig(index, {
-                            kind: "hems",
-                            hemsChoices: ["none", "all_sides", "top_bottom", "left_right"],
-                            defaultHems: "none",
-                          });
-                        } else if (val === "pole_pockets") {
-                          updateConfig(index, {
-                            kind: "pole_pockets",
-                            polePocketChoices: ["none", "top", "bottom", "top_bottom"],
-                            defaultPolePocket: "none",
-                          });
-                        } else if (val === "sides") {
-                          updateConfig(index, {
-                            kind: "sides",
-                            singleLabel: "Single Sided",
-                            doubleLabel: "Double Sided",
-                            defaultSide: "single",
-                            pricingMode: "multiplier",
-                            doublePriceMultiplier: 1.6,
-                          });
-                        } else if (val === "thickness") {
-                          updateConfig(index, {
-                            kind: "thickness",
-                            defaultThicknessKey: "4mm",
-                            thicknessVariants: [
-                              {
-                                key: "4mm",
-                                label: "4mm",
-                                materialId: "",
-                                pricingMode: "multiplier",
-                                priceMultiplier: 1.0,
-                              },
-                            ],
-                          });
-                        }
-                      }}
+                      value={opt.type}
+                      onValueChange={(val) => updateOption(index, { type: val as any })}
                     >
                       <SelectTrigger className="h-9">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="generic">None</SelectItem>
-                        <SelectItem value="grommets">Grommets</SelectItem>
-                        <SelectItem value="hems">Hems</SelectItem>
-                        <SelectItem value="pole_pockets">Pole Pockets</SelectItem>
-                        <SelectItem value="sides">Sides (Single/Double)</SelectItem>
-                        <SelectItem value="thickness">Thickness Selector</SelectItem>
+                        <SelectItem value="checkbox">Checkbox</SelectItem>
+                        <SelectItem value="quantity">Quantity</SelectItem>
+                        <SelectItem value="toggle">Toggle</SelectItem>
+                        <SelectItem value="select">Select</SelectItem>
+                        <SelectItem value="attachment">Attachment (File Upload)</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
-                </div>
-              )}
 
-              {/* Grommets Sub-Config */}
-              {opt.config?.kind === "grommets" && (
-                <div className="pl-4 border-l-2 border-orange-500/50 space-y-2">
-                  <div className="text-xs font-semibold text-orange-600">Grommet Configuration</div>
-                  <div className="grid grid-cols-2 gap-3">
+                  {opt.type !== "attachment" && (
                     <div>
-                      <Label className="text-xs">Default Location</Label>
+                      <Label className="text-xs">Price Mode</Label>
                       <Select
-                        value={opt.config.defaultLocation || "all_corners"}
-                        onValueChange={(val) => updateConfig(index, { defaultLocation: val as any })}
+                        value={opt.priceMode}
+                        onValueChange={(val) => updateOption(index, { priceMode: val as any })}
                       >
                         <SelectTrigger className="h-9">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="all_corners">All Corners</SelectItem>
-                          <SelectItem value="top_corners">Top Corners</SelectItem>
-                          <SelectItem value="top_even">Top - Evenly Spaced</SelectItem>
-                          <SelectItem value="custom">Custom</SelectItem>
+                          <SelectItem value="flat">Flat</SelectItem>
+                          <SelectItem value="per_qty">Per Qty</SelectItem>
+                          <SelectItem value="per_sqft">Per SqFt</SelectItem>
+                          <SelectItem value="flat_per_item">Flat Per Item</SelectItem>
+                          <SelectItem value="percent_of_base">Percent of Base</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
-                    {opt.config.defaultLocation === "top_even" && (
+                  )}
+                  {opt.type !== "attachment" && (
+                    <div>
+                      <Label className="text-xs">
+                        Amount {opt.priceMode === "percent_of_base" ? "(%)" : "($)"}
+                      </Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        placeholder={opt.priceMode === "percent_of_base" ? "10 = 10%" : "0.00"}
+                        value={opt.amount || ""}
+                        onChange={(e) => updateOption(index, { amount: parseFloat(e.target.value) || 0 })}
+                        className="h-9"
+                      />
+                      {opt.priceMode === "percent_of_base" && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {opt.percentBase === "media"
+                            ? "Percentage of media/printing cost only (excludes finishing add-ons)."
+                            : "Percentage of base line price (before other add-ons)."}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {opt.type !== "attachment" && opt.priceMode === "percent_of_base" && (
+                    <div>
+                      <Label className="text-xs">Percent of</Label>
+                      <Select
+                        value={opt.percentBase || "line"}
+                        onValueChange={(val) => updateOption(index, { percentBase: val as "media" | "line" })}
+                      >
+                        <SelectTrigger className="h-9">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="line">Full Line Total</SelectItem>
+                          <SelectItem value="media">Media Cost Only</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+
+                {/* Default selected & special config type */}
+                {opt.type === "attachment" ? (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    Files for this product will be uploaded via the line-item attachments panel. No additional option configuration is required here.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id={`default-${opt.id}`}
+                        checked={opt.defaultSelected || false}
+                        onChange={(e) => updateOption(index, { defaultSelected: e.target.checked })}
+                        className="h-4 w-4 rounded border-gray-300"
+                      />
+                      <label htmlFor={`default-${opt.id}`} className="text-xs font-medium cursor-pointer">
+                        Default On <span className="text-muted-foreground">(auto-selected on new quotes)</span>
+                      </label>
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-xs">Special Config</Label>
+                      <Select
+                        value={opt.config?.kind || "generic"}
+                        onValueChange={(val) => {
+                          if (val === "generic") {
+                            updateConfig(index, { kind: "generic" });
+                          } else if (val === "grommets") {
+                            updateConfig(index, {
+                              kind: "grommets",
+                              defaultLocation: "all_corners",
+                              locations: ["all_corners", "top_corners", "top_even", "custom"],
+                              spacingOptions: [12, 24],
+                              defaultSpacingInches: 24,
+                            });
+                          } else if (val === "hems") {
+                            updateConfig(index, {
+                              kind: "hems",
+                              hemsChoices: ["none", "all_sides", "top_bottom", "left_right"],
+                              defaultHems: "none",
+                            });
+                          } else if (val === "pole_pockets") {
+                            updateConfig(index, {
+                              kind: "pole_pockets",
+                              polePocketChoices: ["none", "top", "bottom", "top_bottom"],
+                              defaultPolePocket: "none",
+                            });
+                          } else if (val === "sides") {
+                            updateConfig(index, {
+                              kind: "sides",
+                              singleLabel: "Single Sided",
+                              doubleLabel: "Double Sided",
+                              defaultSide: "single",
+                              pricingMode: "multiplier",
+                              doublePriceMultiplier: 1.6,
+                            });
+                          } else if (val === "thickness") {
+                            updateConfig(index, {
+                              kind: "thickness",
+                              defaultThicknessKey: "4mm",
+                              thicknessVariants: [
+                                {
+                                  key: "4mm",
+                                  label: "4mm",
+                                  materialId: "",
+                                  pricingMode: "multiplier",
+                                  priceMultiplier: 1.0,
+                                },
+                              ],
+                            });
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="h-9">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="generic">None</SelectItem>
+                          <SelectItem value="grommets">Grommets</SelectItem>
+                          <SelectItem value="hems">Hems</SelectItem>
+                          <SelectItem value="pole_pockets">Pole Pockets</SelectItem>
+                          <SelectItem value="sides">Sides (Single/Double)</SelectItem>
+                          <SelectItem value="thickness">Thickness Selector</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                )}
+
+                {/* Grommets Sub-Config */}
+                {opt.config?.kind === "grommets" && (
+                  <div className="pl-4 border-l-2 border-orange-500/50 space-y-2">
+                    <div className="text-xs font-semibold text-orange-600">Grommet Configuration</div>
+                    <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <Label className="text-xs">Default Spacing Count</Label>
-                        <Input
-                          type="number"
-                          min="2"
-                          placeholder="e.g., 4"
-                          value={opt.config.defaultSpacingCount || ""}
-                          onChange={(e) => updateConfig(index, { defaultSpacingCount: parseInt(e.target.value) || undefined })}
-                          className="h-9"
+                        <Label className="text-xs">Default Location</Label>
+                        <Select
+                          value={opt.config.defaultLocation || "all_corners"}
+                          onValueChange={(val) => updateConfig(index, { defaultLocation: val as any })}
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all_corners">All Corners</SelectItem>
+                            <SelectItem value="top_corners">Top Corners</SelectItem>
+                            <SelectItem value="top_even">Top - Evenly Spaced</SelectItem>
+                            <SelectItem value="custom">Custom</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {opt.config.defaultLocation === "top_even" && (
+                        <div>
+                          <Label className="text-xs">Default Spacing Count</Label>
+                          <Input
+                            type="number"
+                            min="2"
+                            placeholder="e.g., 4"
+                            value={opt.config.defaultSpacingCount || ""}
+                            onChange={(e) => updateConfig(index, { defaultSpacingCount: parseInt(e.target.value) || undefined })}
+                            className="h-9"
+                          />
+                        </div>
+                      )}
+                    </div>
+                    {opt.config.defaultLocation === "custom" && (
+                      <div>
+                        <Label className="text-xs">Custom Notes (Optional)</Label>
+                        <Textarea
+                          placeholder="Enter default notes for custom grommet placement"
+                          value={opt.config.customNotes || ""}
+                          onChange={(e) => updateConfig(index, { customNotes: e.target.value })}
+                          rows={2}
+                          className="text-xs"
                         />
                       </div>
                     )}
-                  </div>
-                  {opt.config.defaultLocation === "custom" && (
+                    {/* Spacing Options for grommets */}
                     <div>
-                      <Label className="text-xs">Custom Notes (Optional)</Label>
-                      <Textarea
-                        placeholder="Enter default notes for custom grommet placement"
-                        value={opt.config.customNotes || ""}
-                        onChange={(e) => updateConfig(index, { customNotes: e.target.value })}
-                        rows={2}
-                        className="text-xs"
+                      <Label className="text-xs">Spacing Options (inches)</Label>
+                      <Input
+                        placeholder="e.g., 12,24"
+                        value={(opt.config.spacingOptions || []).join(",")}
+                        onChange={(e) => {
+                          const values = e.target.value.split(",").map(v => parseInt(v.trim())).filter(v => !isNaN(v));
+                          updateConfig(index, { spacingOptions: values });
+                        }}
+                        className="h-9"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">Comma-separated values (e.g., 12,24 for 12" and 24" spacing)</p>
+                    </div>
+                    <div>
+                      <Label className="text-xs">Default Spacing (inches)</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        placeholder="24"
+                        value={opt.config.defaultSpacingInches || ""}
+                        onChange={(e) => updateConfig(index, { defaultSpacingInches: parseInt(e.target.value) || undefined })}
+                        className="h-9"
                       />
                     </div>
-                  )}
-                  {/* Spacing Options for grommets */}
-                  <div>
-                    <Label className="text-xs">Spacing Options (inches)</Label>
-                    <Input
-                      placeholder="e.g., 12,24"
-                      value={(opt.config.spacingOptions || []).join(",")}
-                      onChange={(e) => {
-                        const values = e.target.value.split(",").map(v => parseInt(v.trim())).filter(v => !isNaN(v));
-                        updateConfig(index, { spacingOptions: values });
-                      }}
-                      className="h-9"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Comma-separated values (e.g., 12,24 for 12" and 24" spacing)</p>
                   </div>
-                  <div>
-                    <Label className="text-xs">Default Spacing (inches)</Label>
-                    <Input
-                      type="number"
-                      min="1"
-                      placeholder="24"
-                      value={opt.config.defaultSpacingInches || ""}
-                      onChange={(e) => updateConfig(index, { defaultSpacingInches: parseInt(e.target.value) || undefined })}
-                      className="h-9"
-                    />
-                  </div>
-                </div>
-              )}
+                )}
 
-              {/* Hems Sub-Config */}
-              {opt.config?.kind === "hems" && (
-                <div className="pl-4 border-l-2 border-blue-500/50 space-y-2">
-                  <div className="text-xs font-semibold text-blue-600">Hems Configuration</div>
-                  <div className="grid grid-cols-2 gap-3">
+                {/* Hems Sub-Config */}
+                {opt.config?.kind === "hems" && (
+                  <div className="pl-4 border-l-2 border-blue-500/50 space-y-2">
+                    <div className="text-xs font-semibold text-blue-600">Hems Configuration</div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-xs">Default Hem Style</Label>
+                        <Select
+                          value={opt.config.defaultHems || "none"}
+                          onValueChange={(val) => updateConfig(index, { defaultHems: val as "none" | "all_sides" | "top_bottom" | "left_right" })}
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">None</SelectItem>
+                            <SelectItem value="all_sides">All Sides</SelectItem>
+                            <SelectItem value="top_bottom">Top & Bottom</SelectItem>
+                            <SelectItem value="left_right">Left & Right</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Available Choices</Label>
+                        <Input
+                          placeholder="none,all_sides,top_bottom,left_right"
+                          value={(opt.config.hemsChoices || []).join(",")}
+                          onChange={(e) => {
+                            const choices = e.target.value.split(",").map(v => v.trim()).filter(Boolean);
+                            updateConfig(index, { hemsChoices: choices });
+                          }}
+                          className="h-9"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Pole Pockets Sub-Config */}
+                {opt.config?.kind === "pole_pockets" && (
+                  <div className="pl-4 border-l-2 border-green-500/50 space-y-2">
+                    <div className="text-xs font-semibold text-green-600">Pole Pockets Configuration</div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-xs">Default Pole Pocket</Label>
+                        <Select
+                          value={opt.config.defaultPolePocket || "none"}
+                          onValueChange={(val: "none" | "top" | "bottom" | "top_bottom") => updateConfig(index, { defaultPolePocket: val })}
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">None</SelectItem>
+                            <SelectItem value="top">Top</SelectItem>
+                            <SelectItem value="bottom">Bottom</SelectItem>
+                            <SelectItem value="top_bottom">Top & Bottom</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Available Choices</Label>
+                        <Input
+                          placeholder="none,top,bottom,top_bottom"
+                          value={(opt.config.polePocketChoices || []).join(",")}
+                          onChange={(e) => {
+                            const choices = e.target.value.split(",").map(v => v.trim()).filter(Boolean);
+                            updateConfig(index, { polePocketChoices: choices });
+                          }}
+                          className="h-9"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sides Sub-Config */}
+                {opt.config?.kind === "sides" && (
+                  <div className="pl-4 border-l-2 border-purple-500/50 space-y-3">
+                    <div className="text-xs font-semibold text-purple-600">Single/Double Sided Configuration</div>
+
+                    {/* Pricing Mode Selector */}
                     <div>
-                      <Label className="text-xs">Default Hem Style</Label>
+                      <Label className="text-xs">Sides Pricing Mode</Label>
                       <Select
-                        value={opt.config.defaultHems || "none"}
-                        onValueChange={(val) => updateConfig(index, { defaultHems: val as "none" | "all_sides" | "top_bottom" | "left_right" })}
+                        value={opt.config.pricingMode || "multiplier"}
+                        onValueChange={(val: "multiplier" | "volume") => {
+                          updateConfig(index, { pricingMode: val });
+                        }}
                       >
                         <SelectTrigger className="h-9">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="none">None</SelectItem>
-                          <SelectItem value="all_sides">All Sides</SelectItem>
-                          <SelectItem value="top_bottom">Top & Bottom</SelectItem>
-                          <SelectItem value="left_right">Left & Right</SelectItem>
+                          <SelectItem value="multiplier">Multiplier</SelectItem>
+                          <SelectItem value="volume">Per-Sheet Volume Pricing</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
-                    <div>
-                      <Label className="text-xs">Available Choices</Label>
-                      <Input
-                        placeholder="none,all_sides,top_bottom,left_right"
-                        value={(opt.config.hemsChoices || []).join(",")}
-                        onChange={(e) => {
-                          const choices = e.target.value.split(",").map(v => v.trim()).filter(Boolean);
-                          updateConfig(index, { hemsChoices: choices });
-                        }}
-                        className="h-9"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
 
-              {/* Pole Pockets Sub-Config */}
-              {opt.config?.kind === "pole_pockets" && (
-                <div className="pl-4 border-l-2 border-green-500/50 space-y-2">
-                  <div className="text-xs font-semibold text-green-600">Pole Pockets Configuration</div>
-                  <div className="grid grid-cols-2 gap-3">
+                    {/* Default Side Selector */}
                     <div>
-                      <Label className="text-xs">Default Pole Pocket</Label>
+                      <Label className="text-xs">Default Side</Label>
                       <Select
-                        value={opt.config.defaultPolePocket || "none"}
-                        onValueChange={(val: "none" | "top" | "bottom" | "top_bottom") => updateConfig(index, { defaultPolePocket: val })}
+                        value={opt.config.defaultSide || "single"}
+                        onValueChange={(val: "single" | "double") => {
+                          updateConfig(index, { defaultSide: val });
+                        }}
                       >
                         <SelectTrigger className="h-9">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="none">None</SelectItem>
-                          <SelectItem value="top">Top</SelectItem>
-                          <SelectItem value="bottom">Bottom</SelectItem>
-                          <SelectItem value="top_bottom">Top & Bottom</SelectItem>
+                          <SelectItem value="single">{opt.config.singleLabel || "Single Sided"}</SelectItem>
+                          <SelectItem value="double">{opt.config.doubleLabel || "Double Sided"}</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
-                    <div>
-                      <Label className="text-xs">Available Choices</Label>
-                      <Input
-                        placeholder="none,top,bottom,top_bottom"
-                        value={(opt.config.polePocketChoices || []).join(",")}
-                        onChange={(e) => {
-                          const choices = e.target.value.split(",").map(v => v.trim()).filter(Boolean);
-                          updateConfig(index, { polePocketChoices: choices });
-                        }}
-                        className="h-9"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
 
-              {/* Sides Sub-Config */}
-              {opt.config?.kind === "sides" && (
-                <div className="pl-4 border-l-2 border-purple-500/50 space-y-3">
-                  <div className="text-xs font-semibold text-purple-600">Single/Double Sided Configuration</div>
-                  
-                  {/* Pricing Mode Selector */}
-                  <div>
-                    <Label className="text-xs">Sides Pricing Mode</Label>
-                    <Select
-                      value={opt.config.pricingMode || "multiplier"}
-                      onValueChange={(val: "multiplier" | "volume") => {
-                        updateConfig(index, { pricingMode: val });
-                      }}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="multiplier">Multiplier</SelectItem>
-                        <SelectItem value="volume">Per-Sheet Volume Pricing</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* Default Side Selector */}
-                  <div>
-                    <Label className="text-xs">Default Side</Label>
-                    <Select
-                      value={opt.config.defaultSide || "single"}
-                      onValueChange={(val: "single" | "double") => {
-                        updateConfig(index, { defaultSide: val });
-                      }}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="single">{opt.config.singleLabel || "Single Sided"}</SelectItem>
-                        <SelectItem value="double">{opt.config.doubleLabel || "Double Sided"}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* Multiplier Mode UI */}
-                  {(!opt.config.pricingMode || opt.config.pricingMode === "multiplier") && (
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <Label className="text-xs">Single Label</Label>
-                        <Input
-                          placeholder="Single Sided"
-                          value={opt.config.singleLabel || ""}
-                          onChange={(e) => updateConfig(index, { singleLabel: e.target.value })}
-                          className="h-9"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Double Label</Label>
-                        <Input
-                          placeholder="Double Sided"
-                          value={opt.config.doubleLabel || ""}
-                          onChange={(e) => updateConfig(index, { doubleLabel: e.target.value })}
-                          className="h-9"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Double Multiplier</Label>
-                        <Input
-                          type="number"
-                          step="0.1"
-                          min="1"
-                          placeholder="1.6"
-                          value={opt.config.doublePriceMultiplier || ""}
-                          onChange={(e) => updateConfig(index, { doublePriceMultiplier: parseFloat(e.target.value) || 1 })}
-                          className="h-9"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Volume Pricing Mode UI */}
-                  {opt.config.pricingMode === "volume" && (
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-2 gap-3">
+                    {/* Multiplier Mode UI */}
+                    {(!opt.config.pricingMode || opt.config.pricingMode === "multiplier") && (
+                      <div className="grid grid-cols-3 gap-3">
                         <div>
                           <Label className="text-xs">Single Label</Label>
                           <Input
@@ -2426,545 +2389,582 @@ function ProductOptionsEditor({
                             className="h-9"
                           />
                         </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs font-semibold">Volume Price Tiers</Label>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              const currentTiers = opt.config.volumeTiers || [];
-                              updateConfig(index, {
-                                volumeTiers: [
-                                  ...currentTiers,
-                                  { minSheets: 1, maxSheets: null, singlePricePerSheet: 0, doublePricePerSheet: 0 }
-                                ]
-                              });
-                            }}
-                          >
-                            <Plus className="h-3 w-3 mr-1" />
-                            Add Tier
-                          </Button>
-                        </div>
-
-                        {/* Volume Tiers Table */}
-                        <div className="border rounded-md overflow-hidden">
-                          <table className="w-full text-xs">
-                            <thead className="bg-muted/50">
-                              <tr>
-                                <th className="p-2 text-left font-medium">Min Sheets</th>
-                                <th className="p-2 text-left font-medium">Max Sheets</th>
-                                <th className="p-2 text-left font-medium">Single $/Sheet</th>
-                                <th className="p-2 text-left font-medium">Double $/Sheet</th>
-                                <th className="p-2 w-10"></th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(opt.config.volumeTiers || []).map((tier, tierIndex) => (
-                                <tr key={tierIndex} className="border-t">
-                                  <td className="p-2">
-                                    <Input
-                                      type="number"
-                                      min="1"
-                                      value={tier.minSheets}
-                                      onChange={(e) => {
-                                        const updatedTiers = [...(opt.config.volumeTiers || [])];
-                                        updatedTiers[tierIndex] = { ...tier, minSheets: parseInt(e.target.value) || 1 };
-                                        updateConfig(index, { volumeTiers: updatedTiers });
-                                      }}
-                                      className="h-8"
-                                    />
-                                  </td>
-                                  <td className="p-2">
-                                    <Input
-                                      type="number"
-                                      min="1"
-                                      placeholder="∞"
-                                      value={tier.maxSheets ?? ""}
-                                      onChange={(e) => {
-                                        const updatedTiers = [...(opt.config.volumeTiers || [])];
-                                        updatedTiers[tierIndex] = { ...tier, maxSheets: e.target.value ? parseInt(e.target.value) : null };
-                                        updateConfig(index, { volumeTiers: updatedTiers });
-                                      }}
-                                      className="h-8"
-                                    />
-                                  </td>
-                                  <td className="p-2">
-                                    <Input
-                                      type="number"
-                                      step="0.01"
-                                      min="0"
-                                      value={tier.singlePricePerSheet}
-                                      onChange={(e) => {
-                                        const updatedTiers = [...(opt.config.volumeTiers || [])];
-                                        updatedTiers[tierIndex] = { ...tier, singlePricePerSheet: parseFloat(e.target.value) || 0 };
-                                        updateConfig(index, { volumeTiers: updatedTiers });
-                                      }}
-                                      className="h-8"
-                                    />
-                                  </td>
-                                  <td className="p-2">
-                                    <Input
-                                      type="number"
-                                      step="0.01"
-                                      min="0"
-                                      value={tier.doublePricePerSheet}
-                                      onChange={(e) => {
-                                        const updatedTiers = [...(opt.config.volumeTiers || [])];
-                                        updatedTiers[tierIndex] = { ...tier, doublePricePerSheet: parseFloat(e.target.value) || 0 };
-                                        updateConfig(index, { volumeTiers: updatedTiers });
-                                      }}
-                                      className="h-8"
-                                    />
-                                  </td>
-                                  <td className="p-2">
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-8 w-8 p-0 text-destructive"
-                                      onClick={() => {
-                                        const updatedTiers = (opt.config.volumeTiers || []).filter((_, i) => i !== tierIndex);
-                                        updateConfig(index, { volumeTiers: updatedTiers });
-                                      }}
-                                    >
-                                      <X className="h-3 w-3" />
-                                    </Button>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                        {(!opt.config.volumeTiers || opt.config.volumeTiers.length === 0) && (
-                          <p className="text-xs text-muted-foreground p-2 text-center">
-                            No tiers defined. Click "Add Tier" to create volume pricing.
-                          </p>
-                        )}
-                        <p className="text-xs text-muted-foreground">
-                          Define pricing tiers based on billable sheets. Leave Max Sheets empty for open-ended tiers (e.g., "51+").
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {(!opt.config.pricingMode || opt.config.pricingMode === "multiplier") && (
-                    <p className="text-xs text-muted-foreground">
-                      When customer selects "{opt.config.doubleLabel || 'Double'}", base price will be multiplied by {opt.config.doublePriceMultiplier || 1.6}x
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Thickness Selector Sub-Config */}
-              {opt.config?.kind === "thickness" && (
-                <div className="pl-4 border-l-2 border-blue-500/50 space-y-3">
-                  <div className="text-xs font-semibold text-blue-600">Thickness Selector Configuration</div>
-                  
-                  {/* Default Thickness */}
-                  <div>
-                    <Label className="text-xs">Default Thickness</Label>
-                    <Select
-                      value={opt.config.defaultThicknessKey || ""}
-                      onValueChange={(val) => updateConfig(index, { defaultThicknessKey: val })}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue placeholder="Select default" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(opt.config.thicknessVariants || []).map(variant => (
-                          <SelectItem key={variant.key} value={variant.key}>
-                            {variant.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* Thickness Variants */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs font-semibold">Thickness Variants</Label>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          const currentVariants = opt.config.thicknessVariants || [];
-                          const newKey = `variant_${currentVariants.length + 1}`;
-                          updateConfig(index, {
-                            thicknessVariants: [
-                              ...currentVariants,
-                              {
-                                key: newKey,
-                                label: "",
-                                materialId: "",
-                                pricingMode: "multiplier",
-                                priceMultiplier: 1.0
-                              }
-                            ]
-                          });
-                        }}
-                      >
-                        <Plus className="h-3 w-3 mr-1" />
-                        Add Variant
-                      </Button>
-                    </div>
-
-                    {/* Variants List */}
-                    {(opt.config.thicknessVariants || []).map((variant, variantIndex) => (
-                      <div key={variantIndex} className="border rounded-md p-3 space-y-3 bg-background">
-                        <div className="flex items-center justify-between">
-                          <h4 className="text-sm font-medium">Variant {variantIndex + 1}</h4>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 text-destructive"
-                            onClick={() => {
-                              const updatedVariants = (opt.config.thicknessVariants || []).filter((_, i) => i !== variantIndex);
-                              updateConfig(index, { thicknessVariants: updatedVariants });
-                            }}
-                          >
-                            <X className="h-3 w-3 mr-1" />
-                            Remove
-                          </Button>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <Label className="text-xs">Key (internal)</Label>
-                            <Input
-                              placeholder="e.g., 4mm"
-                              value={variant.key}
-                              onChange={(e) => {
-                                const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                updatedVariants[variantIndex] = { ...variant, key: e.target.value };
-                                updateConfig(index, { thicknessVariants: updatedVariants });
-                              }}
-                              className="h-9"
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-xs">Display Label</Label>
-                            <Input
-                              placeholder="e.g., 4mm Coroplast"
-                              value={variant.label}
-                              onChange={(e) => {
-                                const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                updatedVariants[variantIndex] = { ...variant, label: e.target.value };
-                                updateConfig(index, { thicknessVariants: updatedVariants });
-                              }}
-                              className="h-9"
-                            />
-                          </div>
-                        </div>
-
                         <div>
-                          <Label className="text-xs">Material</Label>
-                          <MaterialSelector
-                            value={variant.materialId}
-                            onChange={(materialId) => {
-                              const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                              updatedVariants[variantIndex] = { ...variant, materialId };
-                              updateConfig(index, { thicknessVariants: updatedVariants });
-                            }}
+                          <Label className="text-xs">Double Multiplier</Label>
+                          <Input
+                            type="number"
+                            step="0.1"
+                            min="1"
+                            placeholder="1.6"
+                            value={opt.config.doublePriceMultiplier || ""}
+                            onChange={(e) => updateConfig(index, { doublePriceMultiplier: parseFloat(e.target.value) || 1 })}
+                            className="h-9"
                           />
                         </div>
+                      </div>
+                    )}
 
+                    {/* Volume Pricing Mode UI */}
+                    {opt.config.pricingMode === "volume" && (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Label className="text-xs">Single Label</Label>
+                            <Input
+                              placeholder="Single Sided"
+                              value={opt.config.singleLabel || ""}
+                              onChange={(e) => updateConfig(index, { singleLabel: e.target.value })}
+                              className="h-9"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs">Double Label</Label>
+                            <Input
+                              placeholder="Double Sided"
+                              value={opt.config.doubleLabel || ""}
+                              onChange={(e) => updateConfig(index, { doubleLabel: e.target.value })}
+                              className="h-9"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs font-semibold">Volume Price Tiers</Label>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                const currentTiers = opt.config?.volumeTiers ?? [];
+                                updateConfig(index, {
+                                  volumeTiers: [
+                                    ...currentTiers,
+                                    { minSheets: 1, maxSheets: null, singlePricePerSheet: 0, doublePricePerSheet: 0 }
+                                  ]
+                                });
+                              }}
+                            >
+                              <Plus className="h-3 w-3 mr-1" />
+                              Add Tier
+                            </Button>
+                          </div>
+
+                          {/* Volume Tiers Table */}
+                          <div className="border rounded-md overflow-hidden">
+                            <table className="w-full text-xs">
+                              <thead className="bg-muted/50">
+                                <tr>
+                                  <th className="p-2 text-left font-medium">Min Sheets</th>
+                                  <th className="p-2 text-left font-medium">Max Sheets</th>
+                                  <th className="p-2 text-left font-medium">Single $/Sheet</th>
+                                  <th className="p-2 text-left font-medium">Double $/Sheet</th>
+                                  <th className="p-2 w-10"></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(opt.config?.volumeTiers ?? []).map((tier, tierIndex) => (
+                                  <tr key={tierIndex} className="border-t">
+                                    <td className="p-2">
+                                      <Input
+                                        type="number"
+                                        min="1"
+                                        value={tier.minSheets}
+                                        onChange={(e) => {
+                                          const updatedTiers = [...(opt.config?.volumeTiers ?? [])];
+                                          updatedTiers[tierIndex] = { ...tier, minSheets: parseInt(e.target.value) || 1 };
+                                          updateConfig(index, { volumeTiers: updatedTiers });
+                                        }}
+                                        className="h-8"
+                                      />
+                                    </td>
+                                    <td className="p-2">
+                                      <Input
+                                        type="number"
+                                        min="1"
+                                        placeholder="∞"
+                                        value={tier.maxSheets ?? ""}
+                                        onChange={(e) => {
+                                          const updatedTiers = [...(opt.config?.volumeTiers ?? [])];
+                                          updatedTiers[tierIndex] = { ...tier, maxSheets: e.target.value ? parseInt(e.target.value) : null };
+                                          updateConfig(index, { volumeTiers: updatedTiers });
+                                        }}
+                                        className="h-8"
+                                      />
+                                    </td>
+                                    <td className="p-2">
+                                      <Input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        value={tier.singlePricePerSheet}
+                                        onChange={(e) => {
+                                          const updatedTiers = [...(opt.config?.volumeTiers ?? [])];
+                                          updatedTiers[tierIndex] = { ...tier, singlePricePerSheet: parseFloat(e.target.value) || 0 };
+                                          updateConfig(index, { volumeTiers: updatedTiers });
+                                        }}
+                                        className="h-8"
+                                      />
+                                    </td>
+                                    <td className="p-2">
+                                      <Input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        value={tier.doublePricePerSheet}
+                                        onChange={(e) => {
+                                          const updatedTiers = [...(opt.config?.volumeTiers ?? [])];
+                                          updatedTiers[tierIndex] = { ...tier, doublePricePerSheet: parseFloat(e.target.value) || 0 };
+                                          updateConfig(index, { volumeTiers: updatedTiers });
+                                        }}
+                                        className="h-8"
+                                      />
+                                    </td>
+                                    <td className="p-2">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 w-8 p-0 text-destructive"
+                                        onClick={() => {
+                                          const updatedTiers = (opt.config?.volumeTiers ?? []).filter((_, i) => i !== tierIndex);
+                                          updateConfig(index, { volumeTiers: updatedTiers });
+                                        }}
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          {(!opt.config?.volumeTiers || opt.config?.volumeTiers.length === 0) && (
+                            <p className="text-xs text-muted-foreground p-2 text-center">
+                              No tiers defined. Click "Add Tier" to create volume pricing.
+                            </p>
+                          )}
+                          <p className="text-xs text-muted-foreground">
+                            Define pricing tiers based on billable sheets. Leave Max Sheets empty for open-ended tiers (e.g., "51+").
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {(!opt.config.pricingMode || opt.config.pricingMode === "multiplier") && (
+                      <p className="text-xs text-muted-foreground">
+                        When customer selects "{opt.config.doubleLabel || 'Double'}", base price will be multiplied by {opt.config.doublePriceMultiplier || 1.6}x
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Thickness Selector Sub-Config */}
+                {opt.config?.kind === "thickness" && (
+                  <div className="pl-4 border-l-2 border-blue-500/50 space-y-3">
+                    <div className="text-xs font-semibold text-blue-600">Thickness Selector Configuration</div>
+
+                    {/* Default Thickness */}
+                    <div>
+                      <Label className="text-xs">Default Thickness</Label>
+                      <Select
+                        value={opt.config.defaultThicknessKey || ""}
+                        onValueChange={(val) => updateConfig(index, { defaultThicknessKey: val })}
+                      >
+                        <SelectTrigger className="h-9">
+                          <SelectValue placeholder="Select default" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(opt.config.thicknessVariants || []).map(variant => (
+                            <SelectItem key={variant.key} value={variant.key}>
+                              {variant.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Thickness Variants */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs font-semibold">Thickness Variants</Label>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const currentVariants = opt.config?.thicknessVariants ?? [];
+                            const newKey = `variant_${currentVariants.length + 1}`;
+                            updateConfig(index, {
+                              thicknessVariants: [
+                                ...currentVariants,
+                                {
+                                  key: newKey,
+                                  label: "",
+                                  materialId: "",
+                                  pricingMode: "multiplier",
+                                  priceMultiplier: 1.0
+                                }
+                              ]
+                            });
+                          }}
+                        >
+                          <Plus className="h-3 w-3 mr-1" />
+                          Add Variant
+                        </Button>
+                      </div>
+
+                      {/* Variants List */}
+                      {(opt.config?.thicknessVariants ?? []).map((variant, variantIndex) => (
+                        <div key={variantIndex} className="border rounded-md p-3 space-y-3 bg-background">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-sm font-medium">Variant {variantIndex + 1}</h4>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 text-destructive"
+                              onClick={() => {
+                                const updatedVariants = (opt.config?.thicknessVariants ?? []).filter((_, i) => i !== variantIndex);
+                                updateConfig(index, { thicknessVariants: updatedVariants });
+                              }}
+                            >
+                              <X className="h-3 w-3 mr-1" />
+                              Remove
+                            </Button>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label className="text-xs">Key (internal)</Label>
+                              <Input
+                                placeholder="e.g., 4mm"
+                                value={variant.key}
+                                onChange={(e) => {
+                                  const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                  updatedVariants[variantIndex] = { ...variant, key: e.target.value };
+                                  updateConfig(index, { thicknessVariants: updatedVariants });
+                                }}
+                                className="h-9"
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Display Label</Label>
+                              <Input
+                                placeholder="e.g., 4mm Coroplast"
+                                value={variant.label}
+                                onChange={(e) => {
+                                  const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                  updatedVariants[variantIndex] = { ...variant, label: e.target.value };
+                                  updateConfig(index, { thicknessVariants: updatedVariants });
+                                }}
+                                className="h-9"
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <Label className="text-xs">Material</Label>
+                            <MaterialSelector
+                              value={variant.materialId}
+                              onChange={(materialId) => {
+                                const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                updatedVariants[variantIndex] = { ...variant, materialId };
+                                updateConfig(index, { thicknessVariants: updatedVariants });
+                              }}
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs">Pricing Mode</Label>
+                            <Select
+                              value={variant.pricingMode}
+                              onValueChange={(val: "multiplier" | "volume") => {
+                                const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                updatedVariants[variantIndex] = { ...variant, pricingMode: val };
+                                updateConfig(index, { thicknessVariants: updatedVariants });
+                              }}
+                            >
+                              <SelectTrigger className="h-9">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="multiplier">Multiplier</SelectItem>
+                                <SelectItem value="volume">Per-Sheet Volume Pricing</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          {/* Multiplier Mode */}
+                          {variant.pricingMode === "multiplier" && (
+                            <div>
+                              <Label className="text-xs">Price Multiplier</Label>
+                              <Input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                placeholder="1.0"
+                                value={variant.priceMultiplier || ""}
+                                onChange={(e) => {
+                                  const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                  updatedVariants[variantIndex] = { ...variant, priceMultiplier: parseFloat(e.target.value) || 1 };
+                                  updateConfig(index, { thicknessVariants: updatedVariants });
+                                }}
+                                className="h-9"
+                              />
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Sheet cost will be multiplied by this value (e.g., 1.5 for 50% more expensive)
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Volume Pricing Mode */}
+                          {variant.pricingMode === "volume" && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Label className="text-xs font-semibold">Volume Price Tiers</Label>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                    const currentTiers = variant.volumeTiers || [];
+                                    updatedVariants[variantIndex] = {
+                                      ...variant,
+                                      volumeTiers: [
+                                        ...currentTiers,
+                                        { minSheets: 1, maxSheets: null, pricePerSheet: 0 }
+                                      ]
+                                    };
+                                    updateConfig(index, { thicknessVariants: updatedVariants });
+                                  }}
+                                >
+                                  <Plus className="h-3 w-3 mr-1" />
+                                  Add Tier
+                                </Button>
+                              </div>
+
+                              <div className="border rounded-md overflow-hidden">
+                                <table className="w-full text-xs">
+                                  <thead className="bg-muted/50">
+                                    <tr>
+                                      <th className="p-2 text-left font-medium">Min Sheets</th>
+                                      <th className="p-2 text-left font-medium">Max Sheets</th>
+                                      <th className="p-2 text-left font-medium">Price/Sheet ($)</th>
+                                      <th className="p-2 w-10"></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {(variant.volumeTiers || []).map((tier, tierIndex) => (
+                                      <tr key={tierIndex} className="border-t">
+                                        <td className="p-2">
+                                          <Input
+                                            type="number"
+                                            min="1"
+                                            value={tier.minSheets}
+                                            onChange={(e) => {
+                                              const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                              const updatedTiers = [...(variant.volumeTiers || [])];
+                                              updatedTiers[tierIndex] = { ...tier, minSheets: parseInt(e.target.value) || 1 };
+                                              updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
+                                              updateConfig(index, { thicknessVariants: updatedVariants });
+                                            }}
+                                            className="h-8"
+                                          />
+                                        </td>
+                                        <td className="p-2">
+                                          <Input
+                                            type="number"
+                                            min="1"
+                                            placeholder="∞"
+                                            value={tier.maxSheets ?? ""}
+                                            onChange={(e) => {
+                                              const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                              const updatedTiers = [...(variant.volumeTiers || [])];
+                                              updatedTiers[tierIndex] = { ...tier, maxSheets: e.target.value ? parseInt(e.target.value) : null };
+                                              updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
+                                              updateConfig(index, { thicknessVariants: updatedVariants });
+                                            }}
+                                            className="h-8"
+                                          />
+                                        </td>
+                                        <td className="p-2">
+                                          <Input
+                                            type="number"
+                                            step="0.01"
+                                            min="0"
+                                            value={tier.pricePerSheet}
+                                            onChange={(e) => {
+                                              const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                              const updatedTiers = [...(variant.volumeTiers || [])];
+                                              updatedTiers[tierIndex] = { ...tier, pricePerSheet: parseFloat(e.target.value) || 0 };
+                                              updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
+                                              updateConfig(index, { thicknessVariants: updatedVariants });
+                                            }}
+                                            className="h-8"
+                                          />
+                                        </td>
+                                        <td className="p-2">
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-8 w-8 p-0 text-destructive"
+                                            onClick={() => {
+                                              const updatedVariants = [...(opt.config?.thicknessVariants ?? [])];
+                                              const updatedTiers = (variant.volumeTiers || []).filter((_, i) => i !== tierIndex);
+                                              updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
+                                              updateConfig(index, { thicknessVariants: updatedVariants });
+                                            }}
+                                          >
+                                            <X className="h-3 w-3" />
+                                          </Button>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              {(!variant.volumeTiers || variant.volumeTiers.length === 0) && (
+                                <p className="text-xs text-muted-foreground p-2 text-center">
+                                  No tiers defined. Click "Add Tier" to create volume pricing.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+
+                      {(!opt.config.thicknessVariants || opt.config.thicknessVariants.length === 0) && (
+                        <p className="text-xs text-muted-foreground p-2 text-center border border-dashed rounded">
+                          No variants defined. Click "Add Variant" to add thickness options.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Material Add-on Configuration */}
+                <div className="mt-3 pt-3 border-t">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <input
+                      type="checkbox"
+                      id={`material-addon-${opt.id}`}
+                      checked={!!opt.materialAddonConfig}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          updateOption(index, {
+                            materialAddonConfig: {
+                              materialId: "",
+                              usageBasis: "same_area",
+                              unitType: "sqft",
+                              wasteFactor: 0
+                            }
+                          });
+                        } else {
+                          updateOption(index, { materialAddonConfig: undefined });
+                        }
+                      }}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor={`material-addon-${opt.id}`} className="text-xs font-medium cursor-pointer">
+                      This option uses an additional material <span className="text-muted-foreground">(e.g., laminate)</span>
+                    </label>
+                  </div>
+
+                  {opt.materialAddonConfig && (
+                    <div className="pl-4 border-l-2 border-green-500/50 space-y-3">
+                      <div className="text-xs font-semibold text-green-600">Material Add-on Configuration</div>
+
+                      <div>
+                        <Label className="text-xs">Material</Label>
+                        <MaterialSelector
+                          value={opt.materialAddonConfig.materialId}
+                          onChange={(materialId) => {
+                            updateOption(index, {
+                              materialAddonConfig: {
+                                ...opt.materialAddonConfig!,
+                                materialId
+                              }
+                            });
+                          }}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <Label className="text-xs">Pricing Mode</Label>
+                          <Label className="text-xs">Usage Basis</Label>
                           <Select
-                            value={variant.pricingMode}
-                            onValueChange={(val: "multiplier" | "volume") => {
-                              const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                              updatedVariants[variantIndex] = { ...variant, pricingMode: val };
-                              updateConfig(index, { thicknessVariants: updatedVariants });
+                            value={opt.materialAddonConfig.usageBasis}
+                            onValueChange={(val) => {
+                              const usageBasis = val as "same_area" | "same_sheets";
+                              const unitType = val === "same_area" ? "sqft" : "sheet";
+                              updateOption(index, {
+                                materialAddonConfig: {
+                                  ...opt.materialAddonConfig!,
+                                  usageBasis,
+                                  unitType
+                                }
+                              });
                             }}
                           >
                             <SelectTrigger className="h-9">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="multiplier">Multiplier</SelectItem>
-                              <SelectItem value="volume">Per-Sheet Volume Pricing</SelectItem>
+                              <SelectItem value="same_area">Same Area as Print</SelectItem>
+                              <SelectItem value="same_sheets">Same Number of Sheets</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
 
-                        {/* Multiplier Mode */}
-                        {variant.pricingMode === "multiplier" && (
-                          <div>
-                            <Label className="text-xs">Price Multiplier</Label>
-                            <Input
-                              type="number"
-                              step="0.1"
-                              min="0"
-                              placeholder="1.0"
-                              value={variant.priceMultiplier || ""}
-                              onChange={(e) => {
-                                const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                updatedVariants[variantIndex] = { ...variant, priceMultiplier: parseFloat(e.target.value) || 1 };
-                                updateConfig(index, { thicknessVariants: updatedVariants });
-                              }}
-                              className="h-9"
-                            />
-                            <p className="text-xs text-muted-foreground mt-1">
-                              Sheet cost will be multiplied by this value (e.g., 1.5 for 50% more expensive)
-                            </p>
-                          </div>
-                        )}
-
-                        {/* Volume Pricing Mode */}
-                        {variant.pricingMode === "volume" && (
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <Label className="text-xs font-semibold">Volume Price Tiers</Label>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => {
-                                  const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                  const currentTiers = variant.volumeTiers || [];
-                                  updatedVariants[variantIndex] = {
-                                    ...variant,
-                                    volumeTiers: [
-                                      ...currentTiers,
-                                      { minSheets: 1, maxSheets: null, pricePerSheet: 0 }
-                                    ]
-                                  };
-                                  updateConfig(index, { thicknessVariants: updatedVariants });
-                                }}
-                              >
-                                <Plus className="h-3 w-3 mr-1" />
-                                Add Tier
-                              </Button>
-                            </div>
-
-                            <div className="border rounded-md overflow-hidden">
-                              <table className="w-full text-xs">
-                                <thead className="bg-muted/50">
-                                  <tr>
-                                    <th className="p-2 text-left font-medium">Min Sheets</th>
-                                    <th className="p-2 text-left font-medium">Max Sheets</th>
-                                    <th className="p-2 text-left font-medium">Price/Sheet ($)</th>
-                                    <th className="p-2 w-10"></th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {(variant.volumeTiers || []).map((tier, tierIndex) => (
-                                    <tr key={tierIndex} className="border-t">
-                                      <td className="p-2">
-                                        <Input
-                                          type="number"
-                                          min="1"
-                                          value={tier.minSheets}
-                                          onChange={(e) => {
-                                            const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                            const updatedTiers = [...(variant.volumeTiers || [])];
-                                            updatedTiers[tierIndex] = { ...tier, minSheets: parseInt(e.target.value) || 1 };
-                                            updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
-                                            updateConfig(index, { thicknessVariants: updatedVariants });
-                                          }}
-                                          className="h-8"
-                                        />
-                                      </td>
-                                      <td className="p-2">
-                                        <Input
-                                          type="number"
-                                          min="1"
-                                          placeholder="∞"
-                                          value={tier.maxSheets ?? ""}
-                                          onChange={(e) => {
-                                            const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                            const updatedTiers = [...(variant.volumeTiers || [])];
-                                            updatedTiers[tierIndex] = { ...tier, maxSheets: e.target.value ? parseInt(e.target.value) : null };
-                                            updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
-                                            updateConfig(index, { thicknessVariants: updatedVariants });
-                                          }}
-                                          className="h-8"
-                                        />
-                                      </td>
-                                      <td className="p-2">
-                                        <Input
-                                          type="number"
-                                          step="0.01"
-                                          min="0"
-                                          value={tier.pricePerSheet}
-                                          onChange={(e) => {
-                                            const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                            const updatedTiers = [...(variant.volumeTiers || [])];
-                                            updatedTiers[tierIndex] = { ...tier, pricePerSheet: parseFloat(e.target.value) || 0 };
-                                            updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
-                                            updateConfig(index, { thicknessVariants: updatedVariants });
-                                          }}
-                                          className="h-8"
-                                        />
-                                      </td>
-                                      <td className="p-2">
-                                        <Button
-                                          type="button"
-                                          variant="ghost"
-                                          size="sm"
-                                          className="h-8 w-8 p-0 text-destructive"
-                                          onClick={() => {
-                                            const updatedVariants = [...(opt.config.thicknessVariants || [])];
-                                            const updatedTiers = (variant.volumeTiers || []).filter((_, i) => i !== tierIndex);
-                                            updatedVariants[variantIndex] = { ...variant, volumeTiers: updatedTiers };
-                                            updateConfig(index, { thicknessVariants: updatedVariants });
-                                          }}
-                                        >
-                                          <X className="h-3 w-3" />
-                                        </Button>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                            {(!variant.volumeTiers || variant.volumeTiers.length === 0) && (
-                              <p className="text-xs text-muted-foreground p-2 text-center">
-                                No tiers defined. Click "Add Tier" to create volume pricing.
-                              </p>
-                            )}
-                          </div>
-                        )}
+                        <div>
+                          <Label className="text-xs">Waste Factor (%)</Label>
+                          <Input
+                            type="number"
+                            step="1"
+                            min="0"
+                            max="100"
+                            placeholder="0"
+                            value={(opt.materialAddonConfig.wasteFactor || 0) * 100}
+                            onChange={(e) => {
+                              const percent = parseFloat(e.target.value) || 0;
+                              updateOption(index, {
+                                materialAddonConfig: {
+                                  ...opt.materialAddonConfig!,
+                                  wasteFactor: percent / 100
+                                }
+                              });
+                            }}
+                            className="h-9"
+                          />
+                        </div>
                       </div>
-                    ))}
 
-                    {(!opt.config.thicknessVariants || opt.config.thicknessVariants.length === 0) && (
-                      <p className="text-xs text-muted-foreground p-2 text-center border border-dashed rounded">
-                        No variants defined. Click "Add Variant" to add thickness options.
+                      <p className="text-xs text-muted-foreground">
+                        {opt.materialAddonConfig.usageBasis === "same_area"
+                          ? "This material will consume the same square footage as the printed area."
+                          : "This material will use the same number of sheets as the base product."}
+                        {opt.materialAddonConfig.wasteFactor ? ` Waste factor adds ${(opt.materialAddonConfig.wasteFactor * 100).toFixed(0)}% extra.` : ""}
                       </p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Material Add-on Configuration */}
-              <div className="mt-3 pt-3 border-t">
-                <div className="flex items-center space-x-2 mb-2">
-                  <input
-                    type="checkbox"
-                    id={`material-addon-${opt.id}`}
-                    checked={!!opt.materialAddonConfig}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        updateOption(index, {
-                          materialAddonConfig: {
-                            materialId: "",
-                            usageBasis: "same_area",
-                            unitType: "sqft",
-                            wasteFactor: 0
-                          }
-                        });
-                      } else {
-                        updateOption(index, { materialAddonConfig: undefined });
-                      }
-                    }}
-                    className="h-4 w-4 rounded border-gray-300"
-                  />
-                  <label htmlFor={`material-addon-${opt.id}`} className="text-xs font-medium cursor-pointer">
-                    This option uses an additional material <span className="text-muted-foreground">(e.g., laminate)</span>
-                  </label>
-                </div>
-
-                {opt.materialAddonConfig && (
-                  <div className="pl-4 border-l-2 border-green-500/50 space-y-3">
-                    <div className="text-xs font-semibold text-green-600">Material Add-on Configuration</div>
-                    
-                    <div>
-                      <Label className="text-xs">Material</Label>
-                      <MaterialSelector
-                        value={opt.materialAddonConfig.materialId}
-                        onChange={(materialId) => {
-                          updateOption(index, {
-                            materialAddonConfig: {
-                              ...opt.materialAddonConfig!,
-                              materialId
-                            }
-                          });
-                        }}
-                      />
                     </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label className="text-xs">Usage Basis</Label>
-                        <Select
-                          value={opt.materialAddonConfig.usageBasis}
-                          onValueChange={(val) => {
-                            const usageBasis = val as "same_area" | "same_sheets";
-                            const unitType = val === "same_area" ? "sqft" : "sheet";
-                            updateOption(index, {
-                              materialAddonConfig: {
-                                ...opt.materialAddonConfig!,
-                                usageBasis,
-                                unitType
-                              }
-                            });
-                          }}
-                        >
-                          <SelectTrigger className="h-9">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="same_area">Same Area as Print</SelectItem>
-                            <SelectItem value="same_sheets">Same Number of Sheets</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div>
-                        <Label className="text-xs">Waste Factor (%)</Label>
-                        <Input
-                          type="number"
-                          step="1"
-                          min="0"
-                          max="100"
-                          placeholder="0"
-                          value={(opt.materialAddonConfig.wasteFactor || 0) * 100}
-                          onChange={(e) => {
-                            const percent = parseFloat(e.target.value) || 0;
-                            updateOption(index, {
-                              materialAddonConfig: {
-                                ...opt.materialAddonConfig!,
-                                wasteFactor: percent / 100
-                              }
-                            });
-                          }}
-                          className="h-9"
-                        />
-                      </div>
-                    </div>
-
-                    <p className="text-xs text-muted-foreground">
-                      {opt.materialAddonConfig.usageBasis === "same_area" 
-                        ? "This material will consume the same square footage as the printed area."
-                        : "This material will use the same number of sheets as the base product."}
-                      {opt.materialAddonConfig.wasteFactor ? ` Waste factor adds ${(opt.materialAddonConfig.wasteFactor * 100).toFixed(0)}% extra.` : ""}
-                    </p>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
 
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              onClick={() => removeOption(index)}
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </React.Fragment>
-      ))}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={() => removeOption(index)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </React.Fragment>
+        ))}
       <p className="text-xs text-muted-foreground">
         Examples: "Grommets" (Checkbox + Grommets Config), "Printing" (Toggle + Sides Config), "Rush Fee" (Checkbox, Flat, $25)
       </p>

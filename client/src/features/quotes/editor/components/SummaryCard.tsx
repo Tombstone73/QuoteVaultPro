@@ -1,8 +1,12 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { DollarSign, Save } from "lucide-react";
+import { Save, X, ArrowLeft } from "lucide-react";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
@@ -14,16 +18,25 @@ type SummaryCardProps = {
     taxAmount: number;
     grandTotal: number;
     effectiveTaxRate: number;
-    discountPercent: number | null;
+    discountAmount: number;
     deliveryMethod: string;
     selectedCustomer: CustomerWithContacts | undefined;
     canSaveQuote: boolean;
     isSaving: boolean;
+    hasUnsavedChanges?: boolean;
     canConvertToOrder?: boolean;
     convertToOrderPending?: boolean;
     readOnly?: boolean;
+    showConvertToOrder?: boolean;
     onSave: () => void;
+    onSaveAndBack?: () => void;
     onConvertToOrder: () => void;
+    onDiscard: () => void;
+    onDiscountAmountChange: (next: number) => void;
+    quoteTaxExempt?: boolean | null;
+    quoteTaxRateOverride?: number | null;
+    onQuoteTaxExemptChange?: (exempt: boolean | null) => void;
+    onQuoteTaxRateOverrideChange?: (rate: number | null) => void;
 };
 
 export function SummaryCard({
@@ -31,49 +44,159 @@ export function SummaryCard({
     taxAmount,
     grandTotal,
     effectiveTaxRate,
-    discountPercent,
+    discountAmount,
     deliveryMethod,
     selectedCustomer,
     canSaveQuote,
     isSaving,
+    hasUnsavedChanges = false,
     canConvertToOrder = true,
     convertToOrderPending,
     readOnly = false,
+    showConvertToOrder = true,
     onSave,
+    onSaveAndBack,
     onConvertToOrder,
+    onDiscard,
+    onDiscountAmountChange,
+    quoteTaxExempt,
+    quoteTaxRateOverride,
+    onQuoteTaxExemptChange,
+    onQuoteTaxRateOverrideChange,
 }: SummaryCardProps) {
+    const [showTaxOverride, setShowTaxOverride] = useState(false);
+    const safeDiscount = Number.isFinite(discountAmount) ? Math.max(0, discountAmount) : 0;
+    const isTaxExempt = quoteTaxExempt === true || (quoteTaxExempt === null && selectedCustomer?.isTaxExempt);
+    const displayTaxRate = quoteTaxRateOverride != null 
+        ? quoteTaxRateOverride 
+        : (selectedCustomer?.taxRateOverride != null 
+            ? Number(selectedCustomer.taxRateOverride) 
+            : effectiveTaxRate);
     return (
-        <Card className="rounded-xl bg-card/70 border-border/60 shadow-lg">
-            <CardHeader className="pb-2 px-5 pt-4">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <DollarSign className="w-4 h-4" />
-                    Quote Summary
-                </CardTitle>
+        <Card className="rounded-lg border border-border/40 bg-card/50">
+            <CardHeader className="px-4 py-3 border-b border-border/40">
+                <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm font-medium">Quote Summary</CardTitle>
+                    {!readOnly && (
+                        <span className="text-xs">
+                            {isSaving ? (
+                                <span className="text-blue-500">Saving…</span>
+                            ) : hasUnsavedChanges ? (
+                                <span className="text-amber-500">Unsaved</span>
+                            ) : (
+                                <span className="text-muted-foreground">Saved</span>
+                            )}
+                        </span>
+                    )}
+                </div>
             </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-4">
+            <CardContent className="space-y-4 px-4 py-4">
                 <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Subtotal</span>
-                    <span className="font-mono">${subtotal.toFixed(2)}</span>
+                    <span className="font-mono font-medium">${subtotal.toFixed(2)}</span>
                 </div>
 
-                {discountPercent && discountPercent > 0 && (
-                    <div className="flex justify-between text-sm text-green-600">
-                        <span>Discount ({discountPercent}%)</span>
-                        <span className="font-mono">-${(subtotal * discountPercent / 100).toFixed(2)}</span>
-                    </div>
-                )}
+                <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Discount</span>
+                    {readOnly ? (
+                        <span className={safeDiscount > 0 ? "font-mono text-green-600" : "font-mono text-muted-foreground"}>
+                            {safeDiscount > 0 ? `-${safeDiscount.toFixed(2)}` : "—"}
+                        </span>
+                    ) : (
+                        <div className="w-28">
+                            <Input
+                                value={safeDiscount === 0 ? "" : String(safeDiscount.toFixed(2))}
+                                onChange={(e) => {
+                                    const raw = e.target.value.replace(/[$,]/g, "").trim();
+                                    const n = raw === "" ? 0 : Number.parseFloat(raw);
+                                    onDiscountAmountChange(Number.isFinite(n) ? Math.max(0, n) : 0);
+                                }}
+                                placeholder="0.00"
+                                className="h-8 text-right font-mono"
+                                inputMode="decimal"
+                            />
+                        </div>
+                    )}
+                </div>
 
                 <Separator />
 
-                <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">
-                        Tax ({(effectiveTaxRate * 100).toFixed(2)}%)
-                        {selectedCustomer?.isTaxExempt && (
-                            <Badge variant="outline" className="ml-2 text-xs">Exempt</Badge>
+                <div className="flex justify-between items-center text-sm">
+                    <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground">
+                            Tax ({(displayTaxRate * 100).toFixed(2)}%)
+                            {isTaxExempt && (
+                                <Badge variant="outline" className="ml-2 text-xs">Exempt</Badge>
+                            )}
+                        </span>
+                        {!readOnly && (
+                            <button
+                                type="button"
+                                onClick={() => setShowTaxOverride(!showTaxOverride)}
+                                className="text-xs text-muted-foreground hover:text-foreground underline"
+                            >
+                                {showTaxOverride ? "Hide" : "Override"}
+                            </button>
                         )}
-                    </span>
+                    </div>
                     <span className="font-mono">${taxAmount.toFixed(2)}</span>
                 </div>
+                {!readOnly && showTaxOverride && (
+                    <div className="pl-4 space-y-2 border-l-2 border-border/50">
+                        <div className="flex items-center gap-2">
+                            <Checkbox
+                                id="tax-exempt-override"
+                                checked={quoteTaxExempt === true}
+                                onCheckedChange={(checked) => {
+                                    onQuoteTaxExemptChange?.(checked === true ? true : null);
+                                    if (checked === true) {
+                                        onQuoteTaxRateOverrideChange?.(null);
+                                    }
+                                }}
+                            />
+                            <Label htmlFor="tax-exempt-override" className="text-xs cursor-pointer">
+                                Tax Exempt
+                            </Label>
+                        </div>
+                        {quoteTaxExempt !== true && (
+                            <div className="space-y-1">
+                                <Label className="text-xs text-muted-foreground">Tax Rate Override (%)</Label>
+                                <Input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    max="30"
+                                    value={quoteTaxRateOverride != null ? (quoteTaxRateOverride * 100).toFixed(2) : ""}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val === "") {
+                                            onQuoteTaxRateOverrideChange?.(null);
+                                        } else {
+                                            const num = Number.parseFloat(val) / 100;
+                                            if (Number.isFinite(num) && num >= 0 && num <= 0.30) {
+                                                onQuoteTaxRateOverrideChange?.(num);
+                                            }
+                                        }
+                                    }}
+                                    placeholder="0.00"
+                                    className="h-8 text-xs"
+                                />
+                            </div>
+                        )}
+                        {(quoteTaxExempt === true || quoteTaxRateOverride != null) && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    onQuoteTaxExemptChange?.(null);
+                                    onQuoteTaxRateOverrideChange?.(null);
+                                }}
+                                className="text-xs text-muted-foreground hover:text-foreground underline"
+                            >
+                                Clear override
+                            </button>
+                        )}
+                    </div>
+                )}
 
                 {deliveryMethod === 'ship' && (
                     <div className="flex justify-between text-sm">
@@ -82,28 +205,50 @@ export function SummaryCard({
                     </div>
                 )}
 
-                <Separator />
+                <Separator className="my-4" />
 
-                <div className="flex justify-between items-baseline pt-1">
-                    <span className="font-semibold">Grand Total</span>
-                    <span className="text-2xl font-bold font-mono">${grandTotal.toFixed(2)}</span>
+                {/* Grand Total - emphasized */}
+                <div className="flex justify-between items-baseline pt-2 pb-2">
+                    <span className="text-base font-semibold">Grand Total</span>
+                    <span className="text-3xl font-bold font-mono tracking-tight">${grandTotal.toFixed(2)}</span>
                 </div>
             </CardContent>
 
-            <CardFooter className="flex flex-col gap-3 pt-0 px-5 pb-4">
+            <CardFooter className="flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40">
                 {!readOnly ? (
                     <>
                         {/* Row 1: Save (edit mode only) */}
-                        {!readOnly && (
+                        <Button
+                            className="w-full h-10"
+                            onClick={onSave}
+                            disabled={!canSaveQuote || isSaving}
+                        >
+                            <Save className="w-4 h-4 mr-2" />
+                            {isSaving ? "Saving…" : "Save Changes"}
+                        </Button>
+
+                        {/* Optional Save & Back button */}
+                        {onSaveAndBack && (
                             <Button
+                                variant="outline"
                                 className="w-full h-10"
-                                onClick={onSave}
+                                onClick={onSaveAndBack}
                                 disabled={!canSaveQuote || isSaving}
                             >
-                                <Save className="w-4 h-4 mr-2" />
-                                {isSaving ? "Saving…" : "Save Changes"}
+                                <ArrowLeft className="w-4 h-4 mr-2" />
+                                {isSaving ? "Saving…" : "Save & Back"}
                             </Button>
                         )}
+
+                        <Button
+                            variant="outline"
+                            className="w-full h-10"
+                            onClick={onDiscard}
+                            disabled={isSaving}
+                        >
+                            <X className="w-4 h-4 mr-2" />
+                            Discard (revert all changes)
+                        </Button>
 
                         {/* Row 2: Email + Preview (Preview full-width in view mode) */}
                         <div className="grid grid-cols-2 gap-2 w-full">
@@ -122,14 +267,16 @@ export function SummaryCard({
                         </div>
 
                         {/* Row 3: Convert (both modes) */}
-                        <Button
-                            variant={readOnly ? "default" : "secondary"}
-                            className="w-full h-10"
-                            onClick={onConvertToOrder}
-                            disabled={!canConvertToOrder || !!convertToOrderPending || isSaving}
-                        >
-                            {convertToOrderPending ? "Converting…" : "Convert to Order"}
-                        </Button>
+                        {showConvertToOrder && (
+                            <Button
+                                variant="secondary"
+                                className="w-full h-10"
+                                onClick={onConvertToOrder}
+                                disabled={!canConvertToOrder || !!convertToOrderPending || isSaving}
+                            >
+                                {convertToOrderPending ? "Converting…" : "Convert to Order"}
+                            </Button>
+                        )}
                     </>
                 ) : (
                     <>

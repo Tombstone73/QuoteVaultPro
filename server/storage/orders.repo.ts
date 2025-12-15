@@ -20,6 +20,7 @@ import {
     type OrderWithRelations,
     type OrderLineItem,
     type InsertOrderLineItem,
+    type LineItemMaterialUsage,
     type Shipment,
     type InsertShipment,
     type UpdateShipment,
@@ -52,7 +53,7 @@ export class OrdersRepository {
                 const current = Math.floor(Number(row.value));
                 // Increment for next
                 await executor.update(globalVariables)
-                    .set({ value: (current + 1).toString(), updatedAt: new Date() })
+                    .set({ value: (current + 1).toString(), updatedAt: new Date().toISOString() })
                     .where(and(eq(globalVariables.id, row.id), eq(globalVariables.organizationId, organizationId)));
                 return current.toString();
             }
@@ -86,8 +87,8 @@ export class OrdersRepository {
         if (filters?.status) conditions.push(eq(orders.status, filters.status));
         if (filters?.priority) conditions.push(eq(orders.priority, filters.priority));
         if (filters?.customerId) conditions.push(eq(orders.customerId, filters.customerId));
-        if (filters?.startDate) conditions.push(gte(orders.createdAt, filters.startDate));
-        if (filters?.endDate) conditions.push(lte(orders.createdAt, filters.endDate));
+        if (filters?.startDate) conditions.push(gte(orders.createdAt, filters.startDate.toISOString()));
+        if (filters?.endDate) conditions.push(lte(orders.createdAt, filters.endDate.toISOString()));
 
         let query = this.dbInstance.select().from(orders) as any;
         query = query.where(and(...conditions));
@@ -185,7 +186,7 @@ export class OrdersRepository {
                 promisedDate: sanitizeDateField(data.promisedDate),
                 subtotal: subtotal.toString(),
                 tax: taxAmount.toString(),
-                taxRate: data.taxRate ?? null,
+                taxRate: data.taxRate != null ? data.taxRate.toString() : null,
                 taxAmount: data.taxAmount != null ? data.taxAmount.toString() : undefined,
                 taxableSubtotal: data.taxableSubtotal != null ? data.taxableSubtotal.toString() : undefined,
                 total: total.toString(),
@@ -313,8 +314,8 @@ export class OrdersRepository {
             productVariantId: ql.variantId,
             productType: ql.productType,
             description: ql.productName,
-            width: ql.width,
-            height: ql.height,
+            width: ql.width ? Number(ql.width) : 0,
+            height: ql.height ? Number(ql.height) : 0,
             quantity: ql.quantity,
             sqft: null,
             unitPrice: parseFloat(ql.linePrice) / ql.quantity,
@@ -325,7 +326,7 @@ export class OrdersRepository {
             nestingConfigSnapshot: null,
             requiresInventory: false,
             materialId: null,
-            taxAmount: ql.taxAmount ? parseFloat(ql.taxAmount) : null,
+            taxAmount: ql.taxAmount || '0',
             isTaxableSnapshot: ql.isTaxableSnapshot,
         }));
 
@@ -361,14 +362,66 @@ export class OrdersRepository {
     }
 
     async createOrderLineItem(lineItem: InsertOrderLineItem): Promise<OrderLineItem> {
-        const [created] = await this.dbInstance.insert(orderLineItems).values(lineItem).returning();
+        type SelectedOptionsInsert = typeof orderLineItems.$inferInsert["selectedOptions"];
+        type SelectedOptionInsert = SelectedOptionsInsert extends Array<infer T> ? T : never;
+        type NestingConfigInsert = typeof orderLineItems.$inferInsert["nestingConfigSnapshot"];
+        type NestingConfigNonNull = Exclude<NestingConfigInsert, null | undefined>;
+        type MaterialUsageJsonInsert = typeof orderLineItems.$inferInsert["materialUsageJson"];
+        type MaterialUsageJsonNonNull = Exclude<MaterialUsageJsonInsert, null | undefined>;
+        type MaterialUsageJsonRow = MaterialUsageJsonNonNull extends Array<infer T> ? T : never;
+        type MaterialUsagesInsert = typeof orderLineItems.$inferInsert["materialUsages"];
+
+        const asArrayOrUndefined = <T>(value: unknown): T[] | undefined => {
+            return Array.isArray(value) ? (value as T[]) : undefined;
+        };
+
+        const asObjectOrNull = <T>(value: unknown): T | null | undefined => {
+            if (value === undefined) return undefined;
+            if (value === null) return null;
+            return typeof value === "object" ? (value as T) : undefined;
+        };
+
+        // JSON/array fields often come from Zod/JSON sources as unknown; narrow them to the Drizzle column types.
+        const selectedOptions = asArrayOrUndefined<SelectedOptionInsert>(lineItem.selectedOptions) as SelectedOptionsInsert | undefined;
+        const nestingConfigSnapshot = asObjectOrNull<NestingConfigNonNull>(lineItem.nestingConfigSnapshot) as NestingConfigInsert;
+        const materialUsageJson = asArrayOrUndefined<MaterialUsageJsonRow>(lineItem.materialUsageJson) as MaterialUsageJsonInsert | undefined;
+        const materialUsages = asArrayOrUndefined<LineItemMaterialUsage>(lineItem.materialUsages) as MaterialUsagesInsert | undefined;
+
+        // Drizzle table expects string-valued money/dimension columns; API/DTO may provide numbers.
+        const lineItemInsert: typeof orderLineItems.$inferInsert = {
+            orderId: lineItem.orderId,
+            quoteLineItemId: lineItem.quoteLineItemId ?? null,
+            productId: lineItem.productId,
+            productVariantId: lineItem.productVariantId ?? null,
+            productType: lineItem.productType ?? "wide_roll",
+            description: lineItem.description,
+            width: lineItem.width == null ? null : lineItem.width.toString(),
+            height: lineItem.height == null ? null : lineItem.height.toString(),
+            quantity: lineItem.quantity,
+            sqft: lineItem.sqft == null ? null : lineItem.sqft.toString(),
+            unitPrice: lineItem.unitPrice.toString(),
+            totalPrice: lineItem.totalPrice.toString(),
+            status: lineItem.status,
+            specsJson: lineItem.specsJson ?? undefined,
+            selectedOptions,
+            nestingConfigSnapshot,
+            materialId: lineItem.materialId ?? null,
+            materialUsageJson,
+            materialUsages,
+            requiresInventory: lineItem.requiresInventory ?? undefined,
+            // In schema this is optional (defaultable) but not nullable: use undefined (omit) rather than null.
+            taxAmount: lineItem.taxAmount == null ? undefined : String(lineItem.taxAmount),
+            isTaxableSnapshot: lineItem.isTaxableSnapshot ?? undefined,
+        };
+        const [created] = await this.dbInstance.insert(orderLineItems).values(lineItemInsert).returning();
         return created;
     }
 
     async updateOrderLineItem(id: string, lineItem: Partial<InsertOrderLineItem>): Promise<OrderLineItem> {
+        const updateData: any = { ...lineItem, updatedAt: new Date().toISOString() };
         const [updated] = await this.dbInstance
             .update(orderLineItems)
-            .set({ ...lineItem, updatedAt: new Date() })
+            .set(updateData)
             .where(eq(orderLineItems.id, id))
             .returning();
         if (!updated) throw new Error('Order line item not found');

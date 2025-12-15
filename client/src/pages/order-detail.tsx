@@ -30,7 +30,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem } from "@/hooks/useOrders";
 import { useQuery } from "@tanstack/react-query";
 import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
-import type { OrderLineItem } from "@/hooks/useOrders";
+import type { OrderLineItem as HookOrderLineItem, OrderWithRelations as HookOrderWithRelations } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge, LineItemStatusBadge } from "@/components/order-status-badge";
 import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
 import { ShipmentForm } from "@/components/ShipmentForm";
@@ -42,6 +42,41 @@ import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
+
+/**
+ * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
+ * that are returned by the API but are not part of the current `OrderWithRelations`
+ * type in `@shared/schema`.
+ *
+ * We model them here as optional fields to keep runtime behavior identical while
+ * satisfying TypeScript without weakening types globally.
+ */
+type OrderAddressSnapshotFields = {
+  billToName?: string | null;
+  billToCompany?: string | null;
+  billToAddress1?: string | null;
+  billToAddress2?: string | null;
+  billToCity?: string | null;
+  billToState?: string | null;
+  billToPostalCode?: string | null;
+  billToPhone?: string | null;
+  billToEmail?: string | null;
+
+  shipToName?: string | null;
+  shipToCompany?: string | null;
+  shipToAddress1?: string | null;
+  shipToAddress2?: string | null;
+  shipToCity?: string | null;
+  shipToState?: string | null;
+  shipToPostalCode?: string | null;
+
+  shippingMethod?: string | null;
+  carrier?: string | null;
+  trackingNumber?: string | null;
+};
+
+type OrderDetailOrder = HookOrderWithRelations & OrderAddressSnapshotFields;
+type OrderDetailLineItem = HookOrderWithRelations["lineItems"][number];
 
 export default function OrderDetail() {
   const { user } = useAuth();
@@ -57,7 +92,7 @@ export default function OrderDetail() {
   const [tempDueDate, setTempDueDate] = useState("");
   const [tempPromisedDate, setTempPromisedDate] = useState("");
   const [showLineItemDialog, setShowLineItemDialog] = useState(false);
-  const [editingLineItem, setEditingLineItem] = useState<(OrderLineItem & { product: any; productVariant?: any }) | null>(null);
+  const [editingLineItem, setEditingLineItem] = useState<(OrderDetailLineItem & { product: any; productVariant?: any }) | null>(null);
   const [lineItemToDelete, setLineItemToDelete] = useState<string | null>(null);
   
   // Inline price editing state
@@ -76,7 +111,8 @@ export default function OrderDetail() {
   const [shipmentToDelete, setShipmentToDelete] = useState<string | null>(null);
 
   const orderId = params.id;
-  const { data: order, isLoading } = useOrder(orderId);
+  const { data: orderRaw, isLoading } = useOrder(orderId);
+  const order = orderRaw as OrderDetailOrder | undefined;
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
   const updateLineItem = useUpdateOrderLineItem(orderId!);
@@ -234,7 +270,7 @@ export default function OrderDetail() {
     setShowLineItemDialog(true);
   };
 
-  const handleEditLineItem = (lineItem: OrderLineItem & { product: any; productVariant?: any }) => {
+  const handleEditLineItem = (lineItem: OrderDetailLineItem & { product: any; productVariant?: any }) => {
     console.log("handleEditLineItem called with:", lineItem);
     console.log("productVariantId:", lineItem.productVariantId, "Type:", typeof lineItem.productVariantId);
     setEditingLineItem(lineItem);
@@ -297,7 +333,7 @@ export default function OrderDetail() {
     setTempPrice(currentValue);
   };
 
-  const handleSavePrice = async (item: OrderLineItem) => {
+  const handleSavePrice = async (item: OrderDetailLineItem) => {
     if (!tempPrice || !editingPriceType) return;
 
     try {
