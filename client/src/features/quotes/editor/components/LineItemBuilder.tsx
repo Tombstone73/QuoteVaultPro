@@ -324,26 +324,38 @@ export function LineItemBuilder({
 
                 {/* Price display and Add button */}
                 <div className="flex items-center justify-between pt-2 border-t">
-                    <div className="flex items-center gap-3">
-                        {isCalculating && (
+                    <div className="flex flex-col gap-1">
+                        {/* Price display with recalculating indicator */}
+                        {calculatedPrice !== null ? (
+                            <div className="flex items-center gap-2">
+                                <div className="text-lg font-semibold font-mono">
+                                    ${calculatedPrice.toFixed(2)}
+                                </div>
+                                {isCalculating && (
+                                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        <span>recalculating...</span>
+                                    </div>
+                                )}
+                            </div>
+                        ) : isCalculating ? (
                             <div className="flex items-center gap-2 text-muted-foreground">
                                 <Loader2 className="w-4 h-4 animate-spin" />
                                 <span className="text-sm">Calculating...</span>
                             </div>
+                        ) : (
+                            <div className="text-sm text-muted-foreground">—</div>
                         )}
+                        
+                        {/* Error message (show below price if price exists) */}
                         {calcError && (
-                            <span className="text-sm text-destructive">{calcError}</span>
-                        )}
-                        {calculatedPrice !== null && !isCalculating && (
-                            <div className="text-lg font-semibold font-mono">
-                                ${calculatedPrice.toFixed(2)}
-                            </div>
+                            <span className="text-xs text-destructive">{calcError}</span>
                         )}
                     </div>
                     <Button
                         type="button"
                         onClick={handleAddClick}
-                        disabled={!calculatedPrice || isCalculating}
+                        disabled={calculatedPrice === null || isCalculating}
                         className="gap-2"
                     >
                         <Plus className="w-4 h-4" />
