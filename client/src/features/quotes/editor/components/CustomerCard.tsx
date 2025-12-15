@@ -59,6 +59,13 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
         return name || c.email || "—";
     })();
 
+    const customerDisplayLabel = (() => {
+        if (!selectedCustomer) return "—";
+        if (selectedCustomer.companyName) return selectedCustomer.companyName;
+        if (selectedCustomer.email) return selectedCustomer.email;
+        return "—";
+    })();
+
     const handleTagKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === "Enter" && tagInput.trim()) {
             e.preventDefault();
@@ -80,7 +87,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                         {readOnly ? (
                             <div className="h-9 px-3 rounded-md bg-muted/30 border border-border/50 flex items-center text-sm">
                                 <span className="truncate">
-                                    {selectedCustomer?.companyName || selectedCustomer?.displayName || "—"}
+                                    {customerDisplayLabel}
                                 </span>
                             </div>
                         ) : (
