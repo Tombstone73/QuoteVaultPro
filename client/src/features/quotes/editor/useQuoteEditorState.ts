@@ -59,6 +59,21 @@ export function useQuoteEditorState() {
     const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithContacts | undefined>(undefined);
 
     // ============================================================================
+    // QUOTE META (label / due date / discount)
+    // ============================================================================
+
+    const [jobLabel, setJobLabel] = useState<string>("");
+    // Store as ISO date string (YYYY-MM-DD) for simple input compatibility.
+    const [requestedDueDate, setRequestedDueDate] = useState<string>("");
+    // Stored as absolute currency amount (not %).
+    const [discountAmount, setDiscountAmount] = useState<number>(0);
+    // Tags for quote/order (client-side only for now - backend doesn't support yet)
+    const [tags, setTags] = useState<string[]>([]);
+    // Quote-level tax override (overrides customer tax settings)
+    const [quoteTaxExempt, setQuoteTaxExempt] = useState<boolean | null>(null);
+    const [quoteTaxRateOverride, setQuoteTaxRateOverride] = useState<number | null>(null);
+
+    // ============================================================================
     // FULFILLMENT STATE
     // ============================================================================
 
@@ -89,6 +104,73 @@ export function useQuoteEditorState() {
     const [draftLineItemId, setDraftLineItemId] = useState<string | null>(null);
     const [isCreatingDraft, setIsCreatingDraft] = useState(false);
     const [isDuplicatingQuote, setIsDuplicatingQuote] = useState(false);
+
+    // Snapshot of last-saved state to support full discard.
+    const savedSnapshotRef = useRef<{
+        selectedCustomerId: string | null;
+        selectedContactId: string | null;
+        selectedCustomer: CustomerWithContacts | undefined;
+        deliveryMethod: 'pickup' | 'ship' | 'deliver';
+        useCustomerAddress: boolean;
+        shippingAddress: Address;
+        quoteNotes: string;
+        jobLabel: string;
+        requestedDueDate: string;
+        discountAmount: number;
+        tags: string[];
+        quoteTaxExempt: boolean | null;
+        quoteTaxRateOverride: number | null;
+        lineItems: QuoteLineItemDraft[];
+    } | null>(null);
+
+    // Track if there are unsaved changes
+    const hasUnsavedChanges = useMemo(() => {
+        const snap = savedSnapshotRef.current;
+        if (!snap) return false; // No snapshot means new quote or not loaded yet
+        
+        // Compare current state with saved snapshot
+        if (selectedCustomerId !== snap.selectedCustomerId) return true;
+        if (selectedContactId !== snap.selectedContactId) return true;
+        if (jobLabel !== snap.jobLabel) return true;
+        if (requestedDueDate !== snap.requestedDueDate) return true;
+        if (Math.abs(discountAmount - snap.discountAmount) > 0.01) return true;
+        if (deliveryMethod !== snap.deliveryMethod) return true;
+        if (quoteNotes !== snap.quoteNotes) return true;
+        if (JSON.stringify(tags) !== JSON.stringify(snap.tags)) return true;
+        if (quoteTaxExempt !== snap.quoteTaxExempt) return true;
+        if (quoteTaxRateOverride !== snap.quoteTaxRateOverride) return true;
+        
+        // Compare line items
+        const currentIds = new Set(lineItems.map(li => li.id || li.tempId).filter((id): id is string => !!id));
+        const savedIds = new Set(snap.lineItems.map(li => li.id || li.tempId).filter((id): id is string => !!id));
+        if (currentIds.size !== savedIds.size) return true;
+        const currentIdsArray = Array.from(currentIds);
+        for (const id of currentIdsArray) {
+            if (!savedIds.has(id)) return true;
+            const current = lineItems.find(li => (li.id || li.tempId) === id);
+            const saved = snap.lineItems.find(li => (li.id || li.tempId) === id);
+            if (!current || !saved) return true;
+            if (current.linePrice !== saved.linePrice) return true;
+            if (current.width !== saved.width) return true;
+            if (current.height !== saved.height) return true;
+            if (current.quantity !== saved.quantity) return true;
+            if (JSON.stringify(current.selectedOptions) !== JSON.stringify(saved.selectedOptions)) return true;
+        }
+        
+        return false;
+    }, [
+        selectedCustomerId,
+        selectedContactId,
+        jobLabel,
+        requestedDueDate,
+        discountAmount,
+        deliveryMethod,
+        quoteNotes,
+        tags,
+        quoteTaxExempt,
+        quoteTaxRateOverride,
+        lineItems,
+    ]);
 
     // ============================================================================
     // PRODUCT BUILDER STATE
@@ -246,12 +328,24 @@ export function useQuoteEditorState() {
     const filteredProducts = useMemo(() => {
         if (!products) return [];
         const activeProducts = products.filter(p => p.isActive);
-        if (!productSearchQuery) return activeProducts;
-        const query = productSearchQuery.toLowerCase();
-        return activeProducts.filter(p =>
-            p.name.toLowerCase().includes(query) ||
-            ((p as any).sku && (p as any).sku.toLowerCase().includes(query))
-        );
+        
+        // Apply search filter if query exists
+        let result = activeProducts;
+        if (productSearchQuery.trim()) {
+            const query = productSearchQuery.toLowerCase();
+            result = activeProducts.filter(p =>
+                p.name.toLowerCase().includes(query) ||
+                ((p as any).sku && String((p as any).sku).toLowerCase().includes(query)) ||
+                ((p as any).category && String((p as any).category).toLowerCase().includes(query))
+            );
+        }
+        
+        // Sort alphabetically by product name (case-insensitive, stable sort)
+        return [...result].sort((a, b) => {
+            const nameA = (a.name || "").trim().toLowerCase();
+            const nameB = (b.name || "").trim().toLowerCase();
+            return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+        });
     }, [products, productSearchQuery]);
 
     // ============================================================================
@@ -261,20 +355,80 @@ export function useQuoteEditorState() {
     const contacts = selectedCustomer?.contacts || [];
 
     // ============================================================================
-    // COMPUTED VALUES: Pricing
+    // COMPUTED VALUES: Pricing (reactive - updates when lineItems change)
     // ============================================================================
 
-    const activeLineItems = lineItems.filter((li) => li.status !== "draft");
-    const subtotal = activeLineItems.reduce((sum, item) => sum + item.linePrice, 0);
+    const activeLineItems = useMemo(
+        () => lineItems.filter((li) => li.status !== "draft" && li.status !== "canceled"),
+        [lineItems]
+    );
 
-    const effectiveTaxRate = selectedCustomer?.isTaxExempt
-        ? 0
-        : selectedCustomer?.taxRateOverride != null
-            ? Number(selectedCustomer.taxRateOverride)
-            : Number(organization?.defaultTaxRate || 0);
+    const effectiveTaxRate = useMemo(() => {
+        // Quote-level overrides take precedence
+        if (quoteTaxExempt === true) {
+            return 0;
+        }
+        if (quoteTaxRateOverride != null) {
+            return Number(quoteTaxRateOverride);
+        }
+        // Fall back to customer settings
+        return selectedCustomer?.isTaxExempt
+            ? 0
+            : selectedCustomer?.taxRateOverride != null
+                ? Number(selectedCustomer.taxRateOverride)
+                : Number(organization?.defaultTaxRate || 0);
+    }, [quoteTaxExempt, quoteTaxRateOverride, selectedCustomer, organization]);
 
-    const taxAmount = subtotal * effectiveTaxRate;
-    const grandTotal = subtotal + taxAmount;
+    const effectiveDiscount = useMemo(
+        () => (Number.isFinite(discountAmount) ? Math.max(0, discountAmount) : 0),
+        [discountAmount]
+    );
+
+    // Single source of truth: computedTotals derived from current editor state
+    const computedTotals = useMemo(() => {
+        // Subtotal = sum of current lineItems' linePrice (or lineTotal if used)
+        const subtotal = activeLineItems.reduce((sum, item) => {
+            const lineTotal = item.linePrice ?? 0;
+            return sum + (Number.isFinite(lineTotal) ? lineTotal : 0);
+        }, 0);
+
+        // Discount = current discount in state
+        const discount = effectiveDiscount;
+
+        // Tax = computed from taxable subtotal * current taxRate (respect tax exempt)
+        const taxableBase = Math.max(0, subtotal - discount);
+        const tax = taxableBase * effectiveTaxRate;
+
+        // Grand Total = subtotal - discount + tax + fees (fees default to 0 if not present)
+        // Shipping is currently TBD in UI; keep as 0 for totals.
+        const shippingAmount = 0;
+        const fees = 0; // Fees not currently in state; keep as 0
+        const grandTotal = taxableBase + tax + shippingAmount + fees;
+
+        return {
+            subtotal,
+            discount,
+            tax,
+            grandTotal,
+        };
+    }, [activeLineItems, effectiveDiscount, effectiveTaxRate]);
+
+    // Extract individual values for backward compatibility
+    const subtotal = computedTotals.subtotal;
+    const taxAmount = computedTotals.tax;
+    const grandTotal = computedTotals.grandTotal;
+
+    // Dev-only sanity check: log totals changes (guarded for production builds)
+    useEffect(() => {
+        if (process.env.NODE_ENV === "development") {
+            console.debug("[QuoteEditor] Totals updated", {
+                subtotal: computedTotals.subtotal,
+                discount: computedTotals.discount,
+                tax: computedTotals.tax,
+                total: computedTotals.grandTotal,
+            });
+        }
+    }, [computedTotals]);
 
     // ============================================================================
     // COMPUTED VALUES: Save/Convert Flags
@@ -360,6 +514,32 @@ export function useQuoteEditorState() {
                 setSelectedCustomer((quote as any).customer as CustomerWithContacts);
             }
 
+            // Quote meta (label / due date / discount)
+            const q: any = quote as any;
+            setJobLabel(q.label || "");
+            // Convert timestamp-ish value to YYYY-MM-DD if present
+            if (q.requestedDueDate) {
+                try {
+                    const d = new Date(q.requestedDueDate);
+                    if (!Number.isNaN(d.getTime())) {
+                        const yyyy = d.getFullYear();
+                        const mm = String(d.getMonth() + 1).padStart(2, "0");
+                        const dd = String(d.getDate()).padStart(2, "0");
+                        setRequestedDueDate(`${yyyy}-${mm}-${dd}`);
+                    }
+                } catch {
+                    // ignore parse failures
+                }
+            } else {
+                setRequestedDueDate("");
+            }
+            setDiscountAmount(Number.parseFloat(q.discountAmount || "0") || 0);
+            // Load tags if supported (currently not in schema, so default to empty)
+            setTags((q.tags as string[]) || []);
+            // Load quote-level tax overrides if present
+            setQuoteTaxExempt((q as any).quoteTaxExempt ?? null);
+            setQuoteTaxRateOverride((q as any).quoteTaxRateOverride != null ? Number((q as any).quoteTaxRateOverride) : null);
+
             setLineItems((quote as any).lineItems?.map((item: any, idx: number) => ({
                 id: item.id,
                 productId: item.productId,
@@ -383,6 +563,65 @@ export function useQuoteEditorState() {
                 notes: (item.specsJson as any)?.notes || undefined,
                 productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
             })) || []);
+
+            // Update discard snapshot when we load a quote (and only once per loaded quote data).
+            savedSnapshotRef.current = {
+                selectedCustomerId: (quote as any).customerId ?? null,
+                selectedContactId: (quote as any).contactId ?? null,
+                selectedCustomer: (quote as any).customer as CustomerWithContacts | undefined,
+                deliveryMethod: (quote as any).shippingMethod === "ship" ? "ship" : (quote as any).shippingMethod === "deliver" ? "deliver" : "pickup",
+                useCustomerAddress: false,
+                shippingAddress: {
+                    street1: (quote as any).shipToAddress1 || "",
+                    street2: (quote as any).shipToAddress2 || "",
+                    city: (quote as any).shipToCity || "",
+                    state: (quote as any).shipToState || "",
+                    postalCode: (quote as any).shipToPostalCode || "",
+                    country: (quote as any).shipToCountry || "USA",
+                },
+                quoteNotes: (quote as any).shippingInstructions || "",
+                jobLabel: (quote as any).label || "",
+                tags: (quote as any).tags || [],
+                quoteTaxExempt: (quote as any).quoteTaxExempt ?? null,
+                quoteTaxRateOverride: (quote as any).quoteTaxRateOverride != null ? Number((quote as any).quoteTaxRateOverride) : null,
+                requestedDueDate: (() => {
+                    const raw = (quote as any).requestedDueDate;
+                    if (!raw) return "";
+                    try {
+                        const d = new Date(raw);
+                        if (Number.isNaN(d.getTime())) return "";
+                        const yyyy = d.getFullYear();
+                        const mm = String(d.getMonth() + 1).padStart(2, "0");
+                        const dd = String(d.getDate()).padStart(2, "0");
+                        return `${yyyy}-${mm}-${dd}`;
+                    } catch {
+                        return "";
+                    }
+                })(),
+                discountAmount: Number.parseFloat((quote as any).discountAmount || "0") || 0,
+                lineItems: (quote as any).lineItems?.map((item: any, idx: number) => ({
+                    id: item.id,
+                    productId: item.productId,
+                    productName: item.productName,
+                    variantId: item.variantId,
+                    variantName: item.variantName,
+                    productType: item.productType || 'wide_roll',
+                    status: (item as any).status || 'active',
+                    width: parseFloat(item.width),
+                    height: parseFloat(item.height),
+                    quantity: item.quantity,
+                    specsJson: item.specsJson || {},
+                    selectedOptions: item.selectedOptions || [],
+                    linePrice: parseFloat(item.linePrice),
+                    priceOverridden: false,
+                    overriddenPrice: null,
+                    formulaLinePrice: parseFloat(item.linePrice),
+                    priceBreakdown: item.priceBreakdown,
+                    displayOrder: idx,
+                    notes: (item.specsJson as any)?.notes || undefined,
+                    productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
+                })) || [],
+            };
         }
     }, [quote, selectedCustomerId, selectedContactId, selectedCustomer]);
 
@@ -1078,10 +1317,19 @@ export function useQuoteEditorState() {
             subtotal,
             taxRate: effectiveTaxRate,
             taxAmount,
+            discountAmount: effectiveDiscount,
             totalPrice: grandTotal,
+            label: jobLabel || null,
+            requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
+            shippingMethod: deliveryMethod,
+            shippingInstructions: quoteNotes || null,
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
             hasLineItems: payloadHasLineItems,
+            // Tags and tax overrides (backend may not support yet, but include in payload)
+            tags: tags, // Always include tags array (empty array if no tags)
+            quoteTaxExempt: quoteTaxExempt ?? undefined,
+            quoteTaxRateOverride: quoteTaxRateOverride ?? undefined,
         };
     };
 
@@ -1112,10 +1360,19 @@ export function useQuoteEditorState() {
             subtotal,
             taxRate: effectiveTaxRate,
             taxAmount,
+            discountAmount: effectiveDiscount,
             totalPrice: grandTotal,
+            label: jobLabel || null,
+            requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
+            shippingMethod: deliveryMethod,
+            shippingInstructions: quoteNotes || null,
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
             hasLineItems: payloadHasLineItems,
+            // Tags and tax overrides (backend may not support yet, but include in payload)
+            tags: tags, // Always include tags array (empty array if no tags)
+            quoteTaxExempt: quoteTaxExempt ?? undefined,
+            quoteTaxRateOverride: quoteTaxRateOverride ?? undefined,
         };
 
         const error = validateQuote(workingQuote);
@@ -1156,12 +1413,95 @@ export function useQuoteEditorState() {
             } else {
                 const payload = buildQuotePayload();
                 await saveQuoteMutation.mutateAsync(payload);
+
+                // Persist line item updates (create/update/delete) to match the current UI state.
+                // This is required to support "Discard" semantics and avoid auto-saving as the user types.
+                const snapshot = savedSnapshotRef.current;
+                const prevIds = new Set((snapshot?.lineItems || []).map((li) => li.id).filter(Boolean) as string[]);
+                const nextIds = new Set(lineItems.map((li) => li.id).filter(Boolean) as string[]);
+
+                // Deletes
+                const deletedIds = Array.from(prevIds).filter((id) => !nextIds.has(id));
+                await Promise.all(
+                    deletedIds.map((id) =>
+                        apiRequest("DELETE", `/api/quotes/${quoteId}/line-items/${id}`).catch((err) => {
+                            console.error("[saveQuote] Failed deleting line item", { id, err });
+                        })
+                    )
+                );
+
+                // Creates + Updates
+                for (const li of lineItems) {
+                    // Skip drafts with no product (placeholder)
+                    if (!li.productId) continue;
+
+                    const payloadLi: any = {
+                        productId: li.productId,
+                        productName: li.productName,
+                        variantId: li.variantId ?? null,
+                        variantName: li.variantName ?? null,
+                        productType: li.productType || "wide_roll",
+                        width: li.width,
+                        height: li.height,
+                        quantity: li.quantity,
+                        specsJson: li.specsJson || {},
+                        selectedOptions: li.selectedOptions || [],
+                        linePrice: li.linePrice ?? 0,
+                        priceBreakdown: li.priceBreakdown || {
+                            basePrice: li.linePrice ?? 0,
+                            optionsPrice: 0,
+                            total: li.linePrice ?? 0,
+                            formula: "",
+                        },
+                        displayOrder: li.displayOrder ?? 0,
+                        status: li.status === "canceled" ? "canceled" : "active",
+                    };
+
+                    if (li.id) {
+                        await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${li.id}`, payloadLi).catch((err) => {
+                            console.error("[saveQuote] Failed updating line item", { id: li.id, err });
+                        });
+                    } else {
+                        await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payloadLi)
+                            .then(async (resp) => await resp.json())
+                            .then((created) => {
+                                const createdId = created?.id || created?.data?.id;
+                                if (createdId) {
+                                    setLineItems((prev) =>
+                                        prev.map((x) => (x.tempId && x.tempId === li.tempId ? { ...x, id: createdId } : x))
+                                    );
+                                }
+                            })
+                            .catch((err) => {
+                                console.error("[saveQuote] Failed creating line item", { tempId: li.tempId, err });
+                            });
+                    }
+                }
+
                 toast({
                     title: "Quote saved",
                     description: "Your changes to this quote have been saved.",
                 });
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+
+                // Update snapshot to current state (for discard behavior)
+                savedSnapshotRef.current = {
+                    selectedCustomerId: payloadCustomerId,
+                    selectedContactId: selectedContactId ?? null,
+                    selectedCustomer,
+                    deliveryMethod,
+                    useCustomerAddress,
+                    shippingAddress,
+                    quoteNotes,
+                    jobLabel,
+                    requestedDueDate,
+                    discountAmount: effectiveDiscount,
+                    tags,
+                    quoteTaxExempt,
+                    quoteTaxRateOverride,
+                    lineItems: lineItems.map((li) => ({ ...li, status: li.status === "canceled" ? "canceled" : "active" })),
+                };
 
                 // Return result for existing quote
                 return { kind: "updated", quoteId: quoteId!, quoteNumber: (quote as any)?.quoteNumber };
@@ -1484,6 +1824,205 @@ export function useQuoteEditorState() {
     };
 
     // ============================================================================
+    // HANDLER: Create a new draft line item immediately (for inline "Add Product" flow)
+    // ============================================================================
+
+    const createDraftLineItem = useCallback(
+        async (productId: string): Promise<QuoteLineItemDraft | null> => {
+            if (!products || !productId) return null;
+            const product = products.find((p) => p.id === productId);
+            if (!product) return null;
+
+            // Default shape
+            const base: QuoteLineItemDraft = {
+                tempId: `temp-${Date.now()}`,
+                id: undefined,
+                productId: product.id,
+                productName: product.name,
+                variantId: null,
+                variantName: null,
+                productType: "wide_roll",
+                width: 1,
+                height: 1,
+                quantity: 1,
+                specsJson: {},
+                selectedOptions: [],
+                linePrice: 0,
+                priceOverridden: false,
+                overriddenPrice: null,
+                formulaLinePrice: 0,
+                priceBreakdown: { basePrice: 0, optionsPrice: 0, total: 0, formula: "" },
+                displayOrder: lineItems.length,
+                status: "draft",
+                productOptions: (product.optionsJson as any[]) || [],
+            };
+
+            // If we have a saved quote, create server-side draft so artwork can be attached immediately.
+            if (quoteId) {
+                try {
+                    setIsCreatingDraft(true);
+                    const resp = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, {
+                        productId: base.productId,
+                        productName: base.productName,
+                        variantId: base.variantId,
+                        variantName: base.variantName,
+                        productType: base.productType,
+                        status: "draft",
+                        width: base.width,
+                        height: base.height,
+                        quantity: base.quantity,
+                        specsJson: base.specsJson,
+                        selectedOptions: base.selectedOptions,
+                        linePrice: base.linePrice,
+                        priceBreakdown: base.priceBreakdown,
+                        displayOrder: base.displayOrder,
+                    });
+                    const json = await resp.json().catch(() => ({}));
+                    const created = json?.data || json;
+                    const createdId = created?.id;
+                    const withId: QuoteLineItemDraft = { ...base, id: createdId || undefined, tempId: base.tempId };
+                    setLineItems((prev) => [...prev, withId]);
+                    return withId;
+                } catch (err) {
+                    console.error("[createDraftLineItem] failed", err);
+                    setLineItems((prev) => [...prev, base]);
+                    return base;
+                } finally {
+                    setIsCreatingDraft(false);
+                }
+            }
+
+            // New quote route: local-only draft.
+            setLineItems((prev) => [...prev, base]);
+            return base;
+        },
+        [products, quoteId, lineItems.length]
+    );
+
+    const updateLineItemLocal = useCallback((itemKey: string, updates: Partial<QuoteLineItemDraft>) => {
+        if (!itemKey) return;
+        setLineItems((prev) =>
+            prev.map((li) => {
+                const key = li.id || li.tempId;
+                if (key !== itemKey) return li;
+                return { ...li, ...updates };
+            })
+        );
+    }, []);
+
+    // Save a single line item to the server
+    const saveLineItem = useCallback(async (itemKey: string): Promise<boolean> => {
+        if (!quoteId || !itemKey) return false;
+
+        const item = lineItems.find((li) => (li.id || li.tempId) === itemKey);
+        if (!item || !item.productId) return false;
+
+        try {
+            const payload: any = {
+                productId: item.productId,
+                productName: item.productName,
+                variantId: item.variantId ?? null,
+                variantName: item.variantName ?? null,
+                productType: item.productType || "wide_roll",
+                width: item.width,
+                height: item.height,
+                quantity: item.quantity,
+                specsJson: item.specsJson || {},
+                selectedOptions: item.selectedOptions || [],
+                linePrice: item.linePrice ?? 0,
+                priceBreakdown: item.priceBreakdown || {
+                    basePrice: item.linePrice ?? 0,
+                    optionsPrice: 0,
+                    total: item.linePrice ?? 0,
+                    formula: "",
+                },
+                displayOrder: item.displayOrder ?? 0,
+                status: item.status === "canceled" ? "canceled" : "active",
+            };
+
+            if (item.id) {
+                // Update existing line item
+                await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${item.id}`, payload);
+                // Update local state to mark as saved
+                setLineItems((prev) =>
+                    prev.map((li) => {
+                        if ((li.id || li.tempId) === itemKey) {
+                            return { ...li, status: "active" as const };
+                        }
+                        return li;
+                    })
+                );
+            } else {
+                // Create new line item
+                const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payload);
+                const json = await response.json();
+                const created = json?.data || json;
+                const createdId = created?.id;
+                if (createdId) {
+                    setLineItems((prev) =>
+                        prev.map((li) => {
+                            if ((li.id || li.tempId) === itemKey) {
+                                return { ...li, id: createdId, status: "active" as const };
+                            }
+                            return li;
+                        })
+                    );
+                }
+            }
+
+            toast({
+                title: "Line item saved",
+                description: "Changes have been saved.",
+            });
+            return true;
+        } catch (error: any) {
+            toast({
+                title: "Failed to save line item",
+                description: error?.message || "Please try again.",
+                variant: "destructive",
+            });
+            return false;
+        }
+    }, [quoteId, lineItems, toast]);
+
+    const discardAllChanges = useCallback(async () => {
+        const snap = savedSnapshotRef.current;
+        if (!snap) return;
+
+        // Delete any newly created line items on the server (best effort) for existing quotes.
+        if (quoteId) {
+            const prevIds = new Set((snap.lineItems || []).map((li) => li.id).filter(Boolean) as string[]);
+            const currentNewIds = (lineItems || [])
+                .map((li) => li.id)
+                .filter((id): id is string => !!id && !prevIds.has(id));
+
+            await Promise.all(
+                currentNewIds.map((id) =>
+                    apiRequest("DELETE", `/api/quotes/${quoteId}/line-items/${id}`).catch((err) => {
+                        console.error("[discardAllChanges] failed deleting new line item", { id, err });
+                    })
+                )
+            );
+        }
+
+        // Reset local state
+        setSelectedCustomerId(snap.selectedCustomerId);
+        setSelectedCustomer(snap.selectedCustomer);
+        setSelectedContactId(snap.selectedContactId);
+        setDeliveryMethod(snap.deliveryMethod);
+        setUseCustomerAddress(snap.useCustomerAddress);
+        setShippingAddress(snap.shippingAddress);
+        setQuoteNotes(snap.quoteNotes);
+        setJobLabel(snap.jobLabel);
+        setRequestedDueDate(snap.requestedDueDate);
+        setDiscountAmount(snap.discountAmount);
+        setTags(snap.tags);
+        setQuoteTaxExempt(snap.quoteTaxExempt);
+        setQuoteTaxRateOverride(snap.quoteTaxRateOverride);
+        setLineItems(snap.lineItems.map((li) => ({ ...li })));
+    }, [quoteId, lineItems]);
+
+    // ============================================================================
     // RETURN: Hook interface
     // ============================================================================
 
@@ -1516,6 +2055,14 @@ export function useQuoteEditorState() {
         shippingAddress,
         quoteNotes,
         useCustomerAddress,
+
+        // Quote meta
+        jobLabel,
+        requestedDueDate,
+        discountAmount,
+        tags,
+        quoteTaxExempt,
+        quoteTaxRateOverride,
 
         // Line items
         lineItems,
@@ -1554,6 +2101,7 @@ export function useQuoteEditorState() {
         isSaving,
         isDuplicatingQuote,
         canDuplicateQuote,
+        hasUnsavedChanges,
 
         // Handlers
         handlers: {
@@ -1584,6 +2132,26 @@ export function useQuoteEditorState() {
             },
             setQuoteNotes,
             handleCopyCustomerAddress,
+            setJobLabel,
+            setRequestedDueDate,
+            setDiscountAmount,
+            addTag: (tag: string) => {
+                const trimmed = tag.trim();
+                if (!trimmed) return; // Ignore empty tags
+                
+                // Check for duplicates case-insensitively
+                const lowerTrimmed = trimmed.toLowerCase();
+                const isDuplicate = tags.some(t => t.toLowerCase() === lowerTrimmed);
+                
+                if (!isDuplicate) {
+                    setTags([...tags, trimmed]);
+                }
+            },
+            removeTag: (tag: string) => {
+                setTags(tags.filter(t => t !== tag));
+            },
+            setQuoteTaxExempt,
+            setQuoteTaxRateOverride,
 
             // Product builder
             setSelectedProductId: handleProductSelect,
@@ -1622,6 +2190,10 @@ export function useQuoteEditorState() {
                 setDraftLineItemId(id);
             },
             setLineItemPriceOverride,
+            createDraftLineItem,
+            updateLineItemLocal,
+            saveLineItem,
+            discardAllChanges,
 
             // Quote operations
             saveQuote: handleSaveQuote,

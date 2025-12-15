@@ -1,13 +1,19 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Building2, User, X } from "lucide-react";
+import { Building2, User, X, ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import type { Customer, CustomerContact } from "@shared/schema";
 
 export type CustomerWithContacts = Customer & {
   contacts?: CustomerContact[];
 };
+
+export interface CustomerSelectRef {
+  focus: () => void;
+}
 
 interface CustomerSelectProps {
   value: string | null;
@@ -19,7 +25,7 @@ interface CustomerSelectProps {
   disabled?: boolean;
 }
 
-export function CustomerSelect({
+export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>(({
   value,
   onChange,
   autoFocus = true,
@@ -27,15 +33,12 @@ export function CustomerSelect({
   placeholder = "Search customers...",
   initialCustomer,
   disabled = false,
-}: CustomerSelectProps) {
+}, ref) => {
+  const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const commandInputRef = useRef<HTMLInputElement>(null);
 
   // Debounce search input
   useEffect(() => {
@@ -45,7 +48,7 @@ export function CustomerSelect({
 
     debounceTimerRef.current = setTimeout(() => {
       setDebouncedSearch(searchQuery);
-    }, 250);
+    }, 200);
 
     return () => {
       if (debounceTimerRef.current) {
@@ -54,7 +57,7 @@ export function CustomerSelect({
     };
   }, [searchQuery]);
 
-  // Fetch customers with search
+  // Fetch customers with search - show all when no search query
   const { data: customers = [], isLoading } = useQuery<CustomerWithContacts[]>({
     queryKey: ["/api/customers", { search: debouncedSearch }],
     queryFn: async () => {
@@ -85,309 +88,176 @@ export function CustomerSelect({
   // Get the selected customer
   const selectedCustomer = initialCustomer || customerDetail || customers.find(c => c.id === value);
 
-  // Update input display when customer is selected
+  // Reset search when popover closes
   useEffect(() => {
-    if (value && selectedCustomer && !searchQuery) {
-      // Input is not being edited, show customer name
-    } else if (!value) {
+    if (!open) {
       setSearchQuery("");
     }
-  }, [value, selectedCustomer]);
+  }, [open]);
 
-  // Auto-focus when component mounts
-  useEffect(() => {
-    if (autoFocus) {
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 100);
-    }
-  }, [autoFocus]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setShowDropdown(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  // Reset highlighted index when search changes
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [debouncedSearch]);
-
-  // Build display items that include customer and their contacts
-  const displayItems: Array<{
-    type: 'customer' | 'contact';
-    customer: CustomerWithContacts;
-    contact?: CustomerContact;
-    searchText: string;
-  }> = [];
-
-  customers.forEach(customer => {
-    displayItems.push({
-      type: 'customer',
-      customer,
-      searchText: customer.companyName,
-    });
-
-    if (debouncedSearch && customer.contacts && customer.contacts.length > 0) {
-      customer.contacts.forEach(contact => {
-        const contactName = `${contact.firstName} ${contact.lastName}`.trim();
-        const contactSearch = `${contactName} ${contact.email || ''} ${contact.phone || ''}`.toLowerCase();
-        
-        if (contactSearch.includes(debouncedSearch.toLowerCase())) {
-          displayItems.push({
-            type: 'contact',
-            customer,
-            contact,
-            searchText: contactName,
-          });
-        }
+  // Expose focus method via ref
+  useImperativeHandle(ref, () => ({
+    focus: () => {
+      if (disabled) return;
+      // Open the popover first, then focus the input
+      setOpen(true);
+      // Use multiple animation frames to ensure popover is fully rendered before focusing
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            // Focus the command input inside the popover
+            const input = commandInputRef.current;
+            if (input) {
+              input.focus();
+            }
+          }, 100);
+        });
       });
-    }
-  });
+    },
+  }), [disabled]);
 
   // Handle customer selection
-  const handleSelectCustomer = useCallback((customer: CustomerWithContacts, matchedContactId?: string) => {
+  const handleSelectCustomer = useCallback((customer: CustomerWithContacts) => {
     let contactId: string | null = null;
     
-    if (matchedContactId) {
-      contactId = matchedContactId;
-    } else if (customer.contacts && customer.contacts.length > 0) {
+    if (customer.contacts && customer.contacts.length > 0) {
       const primaryContact = customer.contacts.find(c => c.isPrimary);
       contactId = primaryContact?.id || customer.contacts[0].id;
     }
 
     onChange(customer.id, customer, contactId);
-    setSearchQuery(customer.companyName);
-    setShowDropdown(false);
-  }, [onChange]);
-
-  // Clear selection
-  const handleClear = useCallback(() => {
-    onChange(null, undefined, null);
+    setOpen(false);
     setSearchQuery("");
-    inputRef.current?.focus();
   }, [onChange]);
 
-  // Handle input focus
-  const handleFocus = () => {
-    // Only show dropdown if user has typed something or there's a search query
-    if (searchQuery.length > 0) {
-      setShowDropdown(true);
-    }
-  };
-
-  // Handle input change
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = e.target.value;
-    setSearchQuery(newValue);
+  // Helper function to get sort key for a customer (alphabetical sorting)
+  const getCustomerSortKey = useCallback((customer: CustomerWithContacts): string => {
+    // Primary: companyName (trimmed, case-insensitive)
+    // Fallbacks: email, then id
+    const companyName = (customer.companyName || "").trim().toLowerCase();
+    const email = (customer.email || "").trim().toLowerCase();
+    const id = customer.id || "";
     
-    // Show dropdown when user starts typing
-    if (newValue.length > 0) {
-      setShowDropdown(true);
-    } else {
-      setShowDropdown(false);
+    // Return the first available value, with id as final fallback
+    return companyName || email || id;
+  }, []);
+
+  // Filter and sort customers based on search
+  const filteredCustomers = useMemo(() => {
+    let result = customers;
+    
+    // Apply search filter if query exists
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.toLowerCase();
+      result = customers.filter((customer) => {
+        const companyName = (customer.companyName || "").toLowerCase();
+        const email = (customer.email || "").toLowerCase();
+        const phone = (customer.phone || "").toLowerCase();
+        const matchesName = companyName.includes(q);
+        const matchesEmail = email.includes(q);
+        const matchesPhone = phone.includes(q);
+        const matchesContact = customer.contacts?.some((contact) => {
+          const contactName = `${contact.firstName || ""} ${contact.lastName || ""}`.trim().toLowerCase();
+          const contactEmail = (contact.email || "").toLowerCase();
+          const contactPhone = (contact.phone || "").toLowerCase();
+          return contactName.includes(q) || contactEmail.includes(q) || contactPhone.includes(q);
+        });
+        return matchesName || matchesEmail || matchesPhone || matchesContact;
+      });
     }
     
-    // Clear selection if user is typing and current value doesn't match
-    if (value && selectedCustomer && newValue !== selectedCustomer.companyName) {
-      onChange(null, undefined, null);
-    }
-  };
-
-  // Keyboard navigation
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!showDropdown && e.key !== 'Escape') {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        setShowDropdown(true);
-        return;
-      }
-    }
-
-    if (!showDropdown) return;
-
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        setHighlightedIndex((prev) => 
-          prev < displayItems.length - 1 ? prev + 1 : prev
-        );
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        setHighlightedIndex((prev) => (prev > 0 ? prev - 1 : 0));
-        break;
-      case "Enter":
-        e.preventDefault();
-        if (displayItems[highlightedIndex]) {
-          const item = displayItems[highlightedIndex];
-          handleSelectCustomer(
-            item.customer,
-            item.type === 'contact' ? item.contact?.id : undefined
-          );
-        }
-        break;
-      case "Escape":
-        e.preventDefault();
-        setShowDropdown(false);
-        break;
-    }
-  };
-
-  // Scroll highlighted item into view
-  useEffect(() => {
-    if (dropdownRef.current && showDropdown) {
-      const highlightedElement = dropdownRef.current.querySelector(
-        `[data-index="${highlightedIndex}"]`
-      ) as HTMLElement;
-      if (highlightedElement) {
-        highlightedElement.scrollIntoView({ block: "nearest" });
-      }
-    }
-  }, [highlightedIndex, showDropdown]);
-
-  // Get display value for input
-  const displayValue = searchQuery || (value && selectedCustomer ? selectedCustomer.companyName : "");
+    // Sort alphabetically by companyName (with fallbacks) - stable sort, non-mutating
+    return [...result].sort((a, b) => {
+      const keyA = getCustomerSortKey(a);
+      const keyB = getCustomerSortKey(b);
+      return keyA.localeCompare(keyB, undefined, { sensitivity: 'base' });
+    });
+  }, [customers, debouncedSearch, getCustomerSortKey]);
 
   return (
-    <div className="space-y-2" ref={containerRef}>
+    <div className="space-y-2">
       {label && (
         <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
           {label}
         </label>
       )}
       
-      <div className="relative">
-        {/* Single Input Field */}
-        <Input
-          ref={inputRef}
-          type="text"
-          placeholder={placeholder}
-          value={displayValue}
-          onChange={handleInputChange}
-          onFocus={handleFocus}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          className="w-full pr-8"
-          autoComplete="off"
-        />
-        
-        {/* Clear button */}
-        {value && !disabled && (
-          <button
-            type="button"
-            onClick={handleClear}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+      <Popover open={open} onOpenChange={(newOpen) => {
+        setOpen(newOpen);
+        if (!newOpen) {
+          setSearchQuery("");
+        }
+      }}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            disabled={disabled}
+            className="w-full justify-between font-normal h-9"
           >
-            <X className="h-4 w-4" />
-          </button>
-        )}
-
-        {/* Dropdown Results */}
-        {showDropdown && (displayItems.length > 0 || isLoading) && (
-          <div
-            ref={dropdownRef}
-            className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-md shadow-lg max-h-[300px] overflow-y-auto"
-          >
-            {isLoading ? (
-              <div className="p-4 text-sm text-muted-foreground text-center">
-                Loading customers...
-              </div>
-            ) : displayItems.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground text-center">
-                No customers found.
-              </div>
-            ) : (
-              <div className="py-1">
-                {displayItems.map((item, index) => {
-                  const isSelected = value === item.customer.id;
-                  const isHighlighted = index === highlightedIndex;
-                  const key = item.type === 'contact' 
-                    ? `contact-${item.contact?.id}-${index}` 
-                    : `customer-${item.customer.id}`;
-
-                  return (
-                    <div
-                      key={key}
-                      data-index={index}
-                      className={cn(
-                        "flex items-start px-3 py-2 cursor-pointer transition-colors",
-                        item.type === 'contact' && "pl-9",
-                        isHighlighted && "bg-accent text-accent-foreground",
-                        isSelected && "bg-accent/50",
-                        "hover:bg-accent hover:text-accent-foreground"
-                      )}
-                      onClick={() => handleSelectCustomer(
-                        item.customer,
-                        item.type === 'contact' ? item.contact?.id : undefined
-                      )}
-                      onMouseEnter={() => setHighlightedIndex(index)}
-                    >
-                      {/* Icon */}
-                      {item.type === 'customer' ? (
-                        <Building2 className="h-4 w-4 mr-2 flex-shrink-0 mt-0.5 text-muted-foreground" />
-                      ) : (
-                        <User className="h-4 w-4 mr-2 flex-shrink-0 mt-0.5 text-muted-foreground" />
-                      )}
-
-                      {/* Content */}
-                      <div className="flex flex-col flex-1 min-w-0">
-                        {item.type === 'customer' ? (
-                          <>
-                            <div className="font-medium truncate text-sm">
-                              {item.customer.companyName}
+            <span className="truncate">
+              {selectedCustomer?.companyName || selectedCustomer?.email || placeholder}
+            </span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[400px] p-0" align="start">
+          <Command shouldFilter={false}>
+            <CommandInput
+              ref={commandInputRef}
+              placeholder="Search by company name, email, or contact..."
+              value={searchQuery}
+              onValueChange={setSearchQuery}
+            />
+            <CommandList>
+              {isLoading ? (
+                <div className="p-4 text-sm text-muted-foreground text-center">
+                  Loading customers...
+                </div>
+              ) : (
+                <>
+                  <CommandEmpty>No customers found. Try a different search term.</CommandEmpty>
+                  <CommandGroup heading={searchQuery ? `Found ${filteredCustomers.length} customer${filteredCustomers.length !== 1 ? 's' : ''}` : `All customers (${filteredCustomers.length})`}>
+                    {filteredCustomers.map((customer) => {
+                      const isSelected = value === customer.id;
+                      return (
+                        <CommandItem
+                          key={customer.id}
+                          value={`${customer.companyName} ${customer.email || ''} ${customer.phone || ''}`}
+                          onSelect={() => handleSelectCustomer(customer)}
+                        >
+                          <Check
+                            className={cn(
+                              "mr-2 h-4 w-4",
+                              isSelected ? "opacity-100" : "opacity-0"
+                            )}
+                          />
+                          <Building2 className="mr-2 h-4 w-4 text-muted-foreground" />
+                          <div className="flex flex-col flex-1 min-w-0">
+                            <div className="font-medium truncate">
+                              {customer.companyName || customer.email || `Customer ${customer.id}`}
                             </div>
-                            <div className="text-xs text-muted-foreground truncate">
-                              {item.customer.email && <span>{item.customer.email}</span>}
-                              {item.customer.phone && (
-                                <>
-                                  {item.customer.email && <span className="mx-1">•</span>}
-                                  <span>{item.customer.phone}</span>
-                                </>
-                              )}
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <div className="font-medium truncate text-sm">
-                              {item.searchText}
-                              {item.contact?.isPrimary && (
-                                <span className="ml-2 text-xs text-muted-foreground">(Primary)</span>
-                              )}
-                            </div>
-                            <div className="text-xs text-muted-foreground truncate">
-                              <span className="font-medium">{item.customer.companyName}</span>
-                              {item.contact?.email && (
-                                <>
-                                  <span className="mx-1">•</span>
-                                  <span>{item.contact.email}</span>
-                                </>
-                              )}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-      
-      {/* Show selected customer details below input */}
-      {value && selectedCustomer && !showDropdown && (
-        <div className="text-xs text-muted-foreground">
-          {selectedCustomer.email && `${selectedCustomer.email}`}
-        </div>
-      )}
+                            {(customer.email || customer.phone) && customer.companyName && (
+                              <div className="text-xs text-muted-foreground truncate">
+                                {customer.email && <span>{customer.email}</span>}
+                                {customer.email && customer.phone && <span className="mx-1">•</span>}
+                                {customer.phone && <span>{customer.phone}</span>}
+                              </div>
+                            )}
+                          </div>
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                </>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
     </div>
   );
-}
+});
+
+CustomerSelect.displayName = "CustomerSelect";
