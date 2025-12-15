@@ -11,12 +11,20 @@ export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
+  init?: RequestInit,
 ): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  
+  if (data !== undefined) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
+    ...init,
+    headers,
+    body: data !== undefined ? JSON.stringify(data) : undefined,
   });
 
   await throwIfResNotOk(res);

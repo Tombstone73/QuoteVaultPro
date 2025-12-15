@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ROUTES } from "@/config/routes";
@@ -89,6 +89,8 @@ export default function EditQuote() {
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
   const [lineItemError, setLineItemError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const calcRequestIdRef = useRef(0);
 
   // Fetch customers list
   const { data: customers } = useQuery<Customer[]>({
@@ -189,30 +191,79 @@ export default function EditQuote() {
       return;
     }
 
+    // Cancel previous request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      if (import.meta.env.DEV) {
+        console.debug(`[CALC] Aborted previous request before starting #${calcRequestIdRef.current + 1}`);
+      }
+    }
+
+    // Create new AbortController and increment request ID
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    calcRequestIdRef.current += 1;
+    const requestId = calcRequestIdRef.current;
+
     setIsCalculating(true);
+    // DO NOT clear calculatedPrice - keep last known price visible
+
     try {
-      const response = await apiRequest("POST", "/api/quotes/calculate", {
-        productId: selectedProductId,
-        variantId: selectedVariantId,
-        width: parseFloat(lineItemWidth) || 1,
-        height: parseFloat(lineItemHeight) || 1,
-        quantity: parseInt(lineItemQuantity),
-        selectedOptions: {},
-      });
+      const response = await apiRequest(
+        "POST",
+        "/api/quotes/calculate",
+        {
+          productId: selectedProductId,
+          variantId: selectedVariantId,
+          width: parseFloat(lineItemWidth) || 1,
+          height: parseFloat(lineItemHeight) || 1,
+          quantity: parseInt(lineItemQuantity),
+          selectedOptions: {},
+        },
+        { signal: controller.signal }
+      );
+
+      // Check if this response is stale
+      if (requestId !== calcRequestIdRef.current) {
+        if (import.meta.env.DEV) {
+          console.debug(`[CALC] Ignored stale response #${requestId}, latest is #${calcRequestIdRef.current}`);
+        }
+        return;
+      }
+
       const data = await response.json();
       setCalculatedPrice(data.price);
+      setLineItemError(null);
     } catch (error) {
-      console.error("Price calculation error:", error);
-      setCalculatedPrice(null);
+      // Ignore AbortError (expected when cancelling)
+      if (error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+
+      // Only update error if this is still the latest request
+      if (requestId === calcRequestIdRef.current) {
+        console.error("Price calculation error:", error);
+        const errorMessage = error instanceof Error ? error.message : "Calculation failed";
+        setLineItemError(errorMessage);
+        // Keep calculatedPrice as-is (preserve last known valid price)
+      }
     } finally {
-      setIsCalculating(false);
+      // Only clear calculating flag if this is still the latest request
+      if (requestId === calcRequestIdRef.current) {
+        setIsCalculating(false);
+      }
     }
   }, [selectedProductId, selectedVariantId, lineItemWidth, lineItemHeight, lineItemQuantity, products]);
 
-  // Debounced calculation
+  // Debounced calculation (reduced to 200ms for faster response)
   useEffect(() => {
-    const timer = setTimeout(calculatePrice, 500);
-    return () => clearTimeout(timer);
+    const timer = setTimeout(calculatePrice, 200);
+    return () => {
+      clearTimeout(timer);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [calculatePrice]);
 
   const updateQuoteMutation = useMutation({
@@ -411,8 +462,19 @@ export default function EditQuote() {
       return;
     }
 
-    if (!selectedProductId || calculatedPrice === null) {
-      console.warn("[handleSaveLineItem] Missing product or price:", { selectedProductId, calculatedPrice });
+    // CRITICAL TEMP → PERMANENT BOUNDARY: Do not allow persisting null price
+    if (!selectedProductId) {
+      setLineItemError("Please select a product.");
+      return;
+    }
+
+    if (calculatedPrice === null) {
+      setLineItemError("Price is not calculated yet. Fix inputs or wait for calculation.");
+      toast({
+        title: "Cannot save line item",
+        description: "Price calculation is not complete. Please wait or fix validation errors.",
+        variant: "destructive",
+      });
       return;
     }
 
@@ -965,16 +1027,29 @@ export default function EditQuote() {
             {/* Calculated Price */}
             <div className="flex items-center justify-between pt-2 border-t">
               <span className="text-sm text-muted-foreground">Calculated Price:</span>
-              {isCalculating ? (
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Calculating...</span>
-                </div>
-              ) : calculatedPrice !== null ? (
-                <span className="text-lg font-semibold font-mono">${calculatedPrice.toFixed(2)}</span>
-              ) : (
-                <span className="text-muted-foreground">—</span>
-              )}
+              <div className="flex flex-col items-end gap-1">
+                {calculatedPrice !== null ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg font-semibold font-mono">${calculatedPrice.toFixed(2)}</span>
+                    {isCalculating && (
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>recalculating...</span>
+                      </div>
+                    )}
+                  </div>
+                ) : isCalculating ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Calculating...</span>
+                  </div>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+                {lineItemError && (
+                  <span className="text-xs text-destructive">{lineItemError}</span>
+                )}
+              </div>
             </div>
 
             {/* Artwork Attachments - auto-show when product defines attachment option */}

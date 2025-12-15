@@ -185,6 +185,9 @@ export function useQuoteEditorState() {
     const [isCalculating, setIsCalculating] = useState(false);
     const [calcError, setCalcError] = useState<string | null>(null);
     const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const abortControllerRef = useRef<AbortController | null>(null);
+    const calcRequestIdRef = useRef(0);
+    const lastCalcInputsHashRef = useRef<string | null>(null);
 
     // ============================================================================
     // OPTION SELECTION STATE
@@ -924,25 +927,77 @@ export function useQuoteEditorState() {
             return;
         }
 
+        // Cancel previous request
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            if (import.meta.env.DEV) {
+                console.debug(`[CALC] Aborted previous request before starting #${calcRequestIdRef.current + 1}`);
+            }
+        }
+
+        // Create new AbortController and increment request ID
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        calcRequestIdRef.current += 1;
+        const requestId = calcRequestIdRef.current;
+
+        // Build input hash for staleness detection
+        const inputHash = JSON.stringify({
+            productId: selectedProductId,
+            variantId: selectedVariantId,
+            width: widthNum,
+            height: heightNum,
+            quantity: quantityNum,
+            options: buildSelectedOptionsPayload(),
+        });
+
         setIsCalculating(true);
-        setCalcError(null);
+        // DO NOT clear calculatedPrice - keep last known price visible
+        // DO NOT clear calcError here - will be cleared on success
 
         try {
-            const response = await apiRequest("POST", "/api/quotes/calculate", {
-                productId: selectedProductId,
-                variantId: selectedVariantId,
-                width: widthNum,
-                height: heightNum,
-                quantity: quantityNum,
-                selectedOptions: buildSelectedOptionsPayload(),
-            });
+            const response = await apiRequest(
+                "POST",
+                "/api/quotes/calculate",
+                {
+                    productId: selectedProductId,
+                    variantId: selectedVariantId,
+                    width: widthNum,
+                    height: heightNum,
+                    quantity: quantityNum,
+                    selectedOptions: buildSelectedOptionsPayload(),
+                },
+                { signal: controller.signal }
+            );
+
+            // Check if this response is stale
+            if (requestId !== calcRequestIdRef.current) {
+                if (import.meta.env.DEV) {
+                    console.debug(`[CALC] Ignored stale response #${requestId}, latest is #${calcRequestIdRef.current}`);
+                }
+                return;
+            }
+
             const data = await response.json();
             setCalculatedPrice(data.price);
+            setCalcError(null);
+            lastCalcInputsHashRef.current = inputHash;
         } catch (error) {
-            setCalcError(error instanceof Error ? error.message : "Calculation failed");
-            setCalculatedPrice(null);
+            // Ignore AbortError (expected when cancelling)
+            if (error instanceof Error && error.name === "AbortError") {
+                return;
+            }
+
+            // Only update error if this is still the latest request
+            if (requestId === calcRequestIdRef.current) {
+                setCalcError(error instanceof Error ? error.message : "Calculation failed");
+                // Keep calculatedPrice as-is (preserve last known valid price)
+            }
         } finally {
-            setIsCalculating(false);
+            // Only clear calculating flag if this is still the latest request
+            if (requestId === calcRequestIdRef.current) {
+                setIsCalculating(false);
+            }
         }
     }, [selectedProductId, selectedVariantId, width, height, quantity, requiresDimensions, buildSelectedOptionsPayload]);
 
@@ -956,15 +1011,18 @@ export function useQuoteEditorState() {
             clearTimeout(debounceTimerRef.current);
         }
 
-        // Set new timer for 500ms debounce
+        // Set new timer for 200ms debounce (faster response)
         debounceTimerRef.current = setTimeout(() => {
             triggerAutoCalculate();
-        }, 500);
+        }, 200);
 
-        // Cleanup
+        // Cleanup: clear timer and abort any in-flight request
         return () => {
             if (debounceTimerRef.current) {
                 clearTimeout(debounceTimerRef.current);
+            }
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
             }
         };
     }, [triggerAutoCalculate]);
@@ -1031,7 +1089,18 @@ export function useQuoteEditorState() {
             });
         });
 
-        const linePrice = calculatedPrice ?? 0;
+        // CRITICAL TEMP → PERMANENT BOUNDARY: Do not allow persisting null/zero price
+        if (calculatedPrice === null) {
+            setCalcError("Price is not calculated yet. Fix inputs or wait for calculation.");
+            toast({
+                title: "Cannot add line item",
+                description: "Price calculation is not complete. Please wait or fix validation errors.",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        const linePrice = calculatedPrice;
 
         // If we have a draft line item and a quoteId, promote it to active
         if (draftLineItemId && quoteId) {
