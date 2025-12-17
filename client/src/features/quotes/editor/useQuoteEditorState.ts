@@ -2054,6 +2054,83 @@ export function useQuoteEditorState() {
         }
     }, [quoteId, lineItems, toast]);
 
+    /**
+     * Ensure a line item has a persisted ID (explicit intent on upload).
+     * If the line item is TEMP (no id), persist it to get a real lineItemId.
+     * If quoteId is missing, create quote first.
+     * Returns both quoteId and lineItemId for use in attach requests.
+     */
+    const ensureLineItemId = useCallback(
+        async (itemKey: string): Promise<{ quoteId: string; lineItemId: string }> => {
+            const item = lineItems.find((li) => (li.id || li.tempId) === itemKey);
+            if (!item) {
+                throw new Error("Line item not found");
+            }
+
+            // If already persisted, return existing ids
+            if (item.id && quoteId) {
+                return { quoteId, lineItemId: item.id };
+            }
+
+            // If no quote exists, create it first (explicit intent)
+            let targetQuoteId = quoteId;
+            if (!targetQuoteId) {
+                const result = await handleSaveQuote();
+                targetQuoteId = result.quoteId;
+            }
+
+            // If line item already has an id but we just created the quote, return both
+            if (item.id) {
+                return { quoteId: targetQuoteId, lineItemId: item.id };
+            }
+
+            // Now persist the line item
+            const payload: any = {
+                productId: item.productId,
+                productName: item.productName,
+                variantId: item.variantId ?? null,
+                variantName: item.variantName ?? null,
+                productType: item.productType || "wide_roll",
+                width: item.width,
+                height: item.height,
+                quantity: item.quantity,
+                specsJson: item.specsJson || {},
+                selectedOptions: item.selectedOptions || [],
+                linePrice: item.linePrice ?? 0,
+                priceBreakdown: item.priceBreakdown || {
+                    basePrice: item.linePrice ?? 0,
+                    optionsPrice: 0,
+                    total: item.linePrice ?? 0,
+                    formula: "",
+                },
+                displayOrder: item.displayOrder ?? 0,
+                status: "draft", // Keep as draft during artwork upload
+            };
+
+            const response = await apiRequest("POST", `/api/quotes/${targetQuoteId}/line-items`, payload);
+            const json = await response.json();
+            const created = json?.data || json;
+            const createdId = created?.id;
+
+            if (!createdId) {
+                throw new Error("Failed to create line item");
+            }
+
+            // Update local state with the new id
+            setLineItems((prev) =>
+                prev.map((li) => {
+                    if ((li.id || li.tempId) === itemKey) {
+                        return { ...li, id: createdId };
+                    }
+                    return li;
+                })
+            );
+
+            return { quoteId: targetQuoteId, lineItemId: createdId };
+        },
+        [lineItems, quoteId, handleSaveQuote]
+    );
+
     const discardAllChanges = useCallback(async () => {
         const snap = savedSnapshotRef.current;
         if (!snap) return;
@@ -2262,6 +2339,7 @@ export function useQuoteEditorState() {
             createDraftLineItem,
             updateLineItemLocal,
             saveLineItem,
+            ensureLineItemId,
             discardAllChanges,
 
             // Quote operations

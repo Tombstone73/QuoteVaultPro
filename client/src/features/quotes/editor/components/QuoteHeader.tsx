@@ -44,8 +44,8 @@ export function QuoteHeader({
         const s = String(status || "").toLowerCase();
         if (s === "draft") return { label: "Draft", variant: "secondary" as const };
         if (s === "canceled" || s === "cancelled") return { label: "Canceled", variant: "destructive" as const };
-        // Backend uses "active" as main state; UI label maps to "Sent" for ERP workflow.
-        return { label: "Sent", variant: "outline" as const };
+        // For "active" or other neutral states, don't show a status badge
+        return null;
     })();
 
     return (
@@ -53,7 +53,7 @@ export function QuoteHeader({
             {/* Left: Back button */}
             <Button variant="ghost" size="sm" onClick={onBack} className="gap-2 -ml-2">
                 <ArrowLeft className="h-4 w-4" />
-                Back to Quotes
+                Back
             </Button>
 
             {/* Center: Quote # + Status */}
@@ -61,21 +61,23 @@ export function QuoteHeader({
                 <h1 className="text-lg font-semibold">
                     {quoteNumber ? `Quote #${quoteNumber}` : "New Quote"}
                 </h1>
-                <Badge variant={statusUi.variant} className="text-xs">
-                    {statusUi.label}
-                </Badge>
+                {statusUi && (
+                    <Badge variant={statusUi.variant} className="text-xs">
+                        {statusUi.label}
+                    </Badge>
+                )}
             </div>
 
             {/* Right: Edit Mode + Duplicate */}
             <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Edit Mode</span>
                     <Switch
                         checked={editMode}
                         onCheckedChange={onEditModeChange}
                         disabled={editModeDisabled}
                         aria-label="Toggle Edit Mode"
                     />
+                    <span className="text-xs text-muted-foreground">Edit Mode</span>
                 </div>
 
                 {!!quoteId && (

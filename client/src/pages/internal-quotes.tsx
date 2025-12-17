@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
@@ -51,6 +51,7 @@ import {
   ColumnConfig,
   useColumnSettings,
   isColumnVisible,
+  getColumnOrder,
   type ColumnDefinition,
   type ColumnState,
 } from "@/components/titan";
@@ -137,8 +138,14 @@ export default function InternalQuotes() {
   // Helper to check column visibility
   const isVisible = (key: string) => isColumnVisible(columnSettings, key);
   
+  // Get ordered columns based on settings
+  const orderedColumns = useMemo(
+    () => getColumnOrder(QUOTE_COLUMNS, columnSettings),
+    [columnSettings]
+  );
+  
   // Count visible columns for colspan
-  const visibleColumnCount = QUOTE_COLUMNS.filter(col => isVisible(col.key)).length;
+  const visibleColumnCount = orderedColumns.filter(col => isVisible(col.key)).length;
 
   const {
     data: quotes,
@@ -272,6 +279,179 @@ export default function InternalQuotes() {
     return sortDirection === "asc" 
       ? <ChevronUp className="inline w-4 h-4 ml-1" />
       : <ChevronDown className="inline w-4 h-4 ml-1" />;
+  };
+
+  // Render cell content based on column key
+  const renderCell = (quote: QuoteRow, columnKey: string) => {
+    switch (columnKey) {
+      case "quoteNumber":
+        return (
+          <TableCell style={getColStyle("quoteNumber")}>
+            <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer">
+              {quote.quoteNumber || "N/A"}
+            </span>
+          </TableCell>
+        );
+      
+      case "label":
+        return (
+          <TableCell 
+            style={getColStyle("label")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {editingQuoteId === quote.id ? (
+              <div className="flex items-center gap-1">
+                <Input
+                  value={tempLabel}
+                  onChange={(e) => setTempLabel(e.target.value)}
+                  className="h-8 w-[130px]"
+                  placeholder="Enter label..."
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveLabel(quote.id);
+                    if (e.key === 'Escape') handleCancelLabelEdit();
+                  }}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={updateLabelMutation.isPending && editingQuoteId === quote.id}
+                  onClick={() => handleSaveLabel(quote.id)}
+                >
+                  {updateLabelMutation.isPending && editingQuoteId === quote.id ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Check className="h-3 w-3" />
+                  )}
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelLabelEdit}>
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              <div 
+                className="cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
+                onClick={() => handleStartLabelEdit(quote.id, quote.label || "")}
+              >
+                {quote.label ? (
+                  <span className="text-sm">{quote.label}</span>
+                ) : (
+                  <span className="text-muted-foreground text-sm italic">
+                    Click to add...
+                  </span>
+                )}
+              </div>
+            )}
+          </TableCell>
+        );
+      
+      case "date":
+        return (
+          <TableCell style={getColStyle("date")}>
+            {format(new Date(quote.createdAt), "MMM d, yyyy")}
+          </TableCell>
+        );
+      
+      case "customer":
+        return (
+          <TableCell
+            style={getColStyle("customer")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {quote.customerId ? (
+              <Link to={ROUTES.customers.detail(quote.customerId)}>
+                <Button variant="link" className="h-auto p-0 font-normal">
+                  {quote.customerName?.trim()
+                    ? quote.customerName
+                    : "View Customer"}
+                </Button>
+              </Link>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+          </TableCell>
+        );
+      
+      case "items":
+        return (
+          <TableCell style={getColStyle("items")}>
+            <Badge variant="secondary">
+              {quote.lineItems?.length || 0} items
+            </Badge>
+          </TableCell>
+        );
+      
+      case "source":
+        return (
+          <TableCell style={getColStyle("source")}>
+            <QuoteSourceBadge source={quote.source} />
+          </TableCell>
+        );
+      
+      case "createdBy":
+        return (
+          <TableCell style={getColStyle("createdBy")}>
+            <div className="flex items-center gap-2">
+              <User className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm">
+                {quote.user
+                  ? (
+                      `${quote.user.firstName || ""} ${
+                        quote.user.lastName || ""
+                      }`.trim() || quote.user.email
+                    )
+                  : "—"}
+              </span>
+            </div>
+          </TableCell>
+        );
+      
+      case "total":
+        return (
+          <TableCell className="text-right font-mono font-medium" style={getColStyle("total")}>
+            ${parseFloat(quote.totalPrice).toFixed(2)}
+          </TableCell>
+        );
+      
+      case "actions":
+        return (
+          <TableCell
+            style={getColStyle("actions")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex gap-1 flex-nowrap">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
+                title="View quote"
+              >
+                <Eye className="h-4 w-4" />
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => navigate(ROUTES.quotes.edit(quote.id))}
+                title="Edit quote"
+              >
+                <Edit className="h-4 w-4" />
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleConvertToOrder(quote.id)}
+                title="Convert to order"
+              >
+                <Package className="h-4 w-4" />
+              </Button>
+            </div>
+          </TableCell>
+        );
+      
+      default:
+        return <TableCell key={columnKey}>—</TableCell>;
+    }
   };
 
   // Handle label edit
@@ -566,81 +746,24 @@ export default function InternalQuotes() {
               <Table className="table-dense">
                 <TableHeader>
                   <TableRow>
-                    {isVisible("quoteNumber") && (
-                      <TableHead 
-                        className="cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("quoteNumber")}
-                        onClick={() => handleSort("quoteNumber")}
-                      >
-                        Quote #<SortIcon columnKey="quoteNumber" />
-                      </TableHead>
-                    )}
-                    {isVisible("label") && (
-                      <TableHead 
-                        className="cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("label")}
-                        onClick={() => handleSort("label")}
-                      >
-                        Label<SortIcon columnKey="label" />
-                      </TableHead>
-                    )}
-                    {isVisible("date") && (
-                      <TableHead 
-                        className="cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("date")}
-                        onClick={() => handleSort("date")}
-                      >
-                        Date<SortIcon columnKey="date" />
-                      </TableHead>
-                    )}
-                    {isVisible("customer") && (
-                      <TableHead 
-                        className="cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("customer")}
-                        onClick={() => handleSort("customer")}
-                      >
-                        Customer<SortIcon columnKey="customer" />
-                      </TableHead>
-                    )}
-                    {isVisible("items") && (
-                      <TableHead 
-                        className="cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("items")}
-                        onClick={() => handleSort("items")}
-                      >
-                        Items<SortIcon columnKey="items" />
-                      </TableHead>
-                    )}
-                    {isVisible("source") && (
-                      <TableHead 
-                        className="cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("source")}
-                        onClick={() => handleSort("source")}
-                      >
-                        Source<SortIcon columnKey="source" />
-                      </TableHead>
-                    )}
-                    {isVisible("createdBy") && (
-                      <TableHead 
-                        className="cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("createdBy")}
-                        onClick={() => handleSort("createdBy")}
-                      >
-                        Created By<SortIcon columnKey="createdBy" />
-                      </TableHead>
-                    )}
-                    {isVisible("total") && (
-                      <TableHead 
-                        className="text-right cursor-pointer hover:bg-muted/50 select-none"
-                        style={getColStyle("total")}
-                        onClick={() => handleSort("total")}
-                      >
-                        Total<SortIcon columnKey="total" />
-                      </TableHead>
-                    )}
-                    {isVisible("actions") && (
-                      <TableHead style={getColStyle("actions")}>Actions</TableHead>
-                    )}
+                    {orderedColumns.map((col) => {
+                      if (!isVisible(col.key)) return null;
+                      
+                      const isSortable = col.sortable !== false;
+                      const isRightAligned = col.align === "right";
+                      
+                      return (
+                        <TableHead
+                          key={col.key}
+                          className={`${isSortable ? "cursor-pointer hover:bg-muted/50 select-none" : ""} ${isRightAligned ? "text-right" : ""}`}
+                          style={getColStyle(col.key)}
+                          onClick={isSortable ? () => handleSort(col.key as SortKey) : undefined}
+                        >
+                          {col.label}
+                          {isSortable && <SortIcon columnKey={col.key as SortKey} />}
+                        </TableHead>
+                      );
+                    })}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -650,157 +773,10 @@ export default function InternalQuotes() {
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
                     >
-                      {isVisible("quoteNumber") && (
-                        <TableCell style={getColStyle("quoteNumber")}>
-                          <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer">
-                            {quote.quoteNumber || "N/A"}
-                          </span>
-                        </TableCell>
-                      )}
-                      {isVisible("label") && (
-                        <TableCell 
-                          style={getColStyle("label")}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {editingQuoteId === quote.id ? (
-                            <div className="flex items-center gap-1">
-                              <Input
-                                value={tempLabel}
-                                onChange={(e) => setTempLabel(e.target.value)}
-                                className="h-8 w-[130px]"
-                                placeholder="Enter label..."
-                                autoFocus
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') handleSaveLabel(quote.id);
-                                  if (e.key === 'Escape') handleCancelLabelEdit();
-                                }}
-                              />
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                disabled={updateLabelMutation.isPending && editingQuoteId === quote.id}
-                                onClick={() => handleSaveLabel(quote.id)}
-                              >
-                                {updateLabelMutation.isPending && editingQuoteId === quote.id ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <Check className="h-3 w-3" />
-                                )}
-                              </Button>
-                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelLabelEdit}>
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          ) : (
-                            <div 
-                              className="cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
-                              onClick={() => handleStartLabelEdit(quote.id, quote.label || "")}
-                            >
-                              {quote.label ? (
-                                <span className="text-sm">{quote.label}</span>
-                              ) : (
-                                <span className="text-muted-foreground text-sm italic">
-                                  Click to add...
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </TableCell>
-                      )}
-                      {isVisible("date") && (
-                        <TableCell style={getColStyle("date")}>
-                          {format(new Date(quote.createdAt), "MMM d, yyyy")}
-                        </TableCell>
-                      )}
-                      {isVisible("customer") && (
-                        <TableCell
-                          style={getColStyle("customer")}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                          }}
-                        >
-                          {quote.customerId ? (
-                            <Link to={ROUTES.customers.detail(quote.customerId)}>
-                              <Button variant="link" className="h-auto p-0 font-normal">
-                                {quote.customerName?.trim()
-                                  ? quote.customerName
-                                  : "View Customer"}
-                              </Button>
-                            </Link>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                      )}
-                      {isVisible("items") && (
-                        <TableCell style={getColStyle("items")}>
-                          <Badge variant="secondary">
-                            {quote.lineItems?.length || 0} items
-                          </Badge>
-                        </TableCell>
-                      )}
-                      {isVisible("source") && (
-                        <TableCell style={getColStyle("source")}>
-                          <QuoteSourceBadge source={quote.source} />
-                        </TableCell>
-                      )}
-                      {isVisible("createdBy") && (
-                        <TableCell style={getColStyle("createdBy")}>
-                          <div className="flex items-center gap-2">
-                            <User className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm">
-                              {quote.user
-                                ? (
-                                    `${quote.user.firstName || ""} ${
-                                      quote.user.lastName || ""
-                                    }`.trim() || quote.user.email
-                                  )
-                                : "—"}
-                            </span>
-                          </div>
-                        </TableCell>
-                      )}
-                      {isVisible("total") && (
-                        <TableCell className="text-right font-mono font-medium" style={getColStyle("total")}>
-                          ${parseFloat(quote.totalPrice).toFixed(2)}
-                        </TableCell>
-                      )}
-                      {isVisible("actions") && (
-                        <TableCell
-                          style={getColStyle("actions")}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                          }}
-                        >
-                          <div className="flex gap-1 flex-nowrap">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => navigate(ROUTES.quotes.detail(quote.id))}
-                              title="View quote"
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => navigate(ROUTES.quotes.edit(quote.id))}
-                              title="Edit quote"
-                            >
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleConvertToOrder(quote.id)}
-                              title="Convert to order"
-                            >
-                              <Package className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      )}
+                      {orderedColumns.map((col) => {
+                        if (!isVisible(col.key)) return null;
+                        return <Fragment key={col.key}>{renderCell(quote, col.key)}</Fragment>;
+                      })}
                     </TableRow>
                   ))}
                 </TableBody>

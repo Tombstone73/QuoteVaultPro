@@ -129,7 +129,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
 
                 <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
-                        <Label className="text-xs text-muted-foreground">Job label / reference</Label>
+                        <Label className="text-xs text-muted-foreground">Job Label</Label>
                         {readOnly ? (
                             <div className="h-9 px-3 rounded-md bg-muted/30 border border-border/50 flex items-center text-sm">
                                 <span className="truncate">{jobLabel || "—"}</span>
@@ -138,7 +138,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                             <Input
                                 value={jobLabel}
                                 onChange={(e) => onJobLabelChange(e.target.value)}
-                                placeholder="e.g., Lobby Window Vinyl (Phase 2)"
+                                placeholder="Job name or reference"
                                 className="h-9"
                             />
                         )}
@@ -157,7 +157,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                     type="date"
                                     value={requestedDueDate}
                                     onChange={(e) => onRequestedDueDateChange(e.target.value)}
-                                    className="h-9 pr-9"
+                                    className="h-9 pr-9 [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:right-0 [&::-webkit-calendar-picker-indicator]:w-9 [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer"
                                 />
                                 <Calendar className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                             </div>
@@ -187,9 +187,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                         ) : (
                             <>
                                 <div className="flex flex-wrap gap-1.5 mb-1.5">
-                                    {tags.length === 0 ? (
-                                        <span className="text-xs text-muted-foreground">No tags</span>
-                                    ) : (
+                                    {tags.length > 0 && (
                                         tags.map((t) => (
                                             <Badge key={t} variant="secondary" className="text-[11px] py-0 flex items-center gap-1">
                                                 {t}
@@ -209,7 +207,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                     value={tagInput}
                                     onChange={(e) => setTagInput(e.target.value)}
                                     onKeyDown={handleTagKeyDown}
-                                    placeholder="Type tag and press Enter"
+                                    placeholder="Add tag (Enter)"
                                     className="h-8 text-xs"
                                 />
                             </>

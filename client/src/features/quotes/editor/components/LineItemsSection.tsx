@@ -27,10 +27,12 @@ type LineItemsSectionProps = {
   onSaveLineItem?: (itemKey: string) => Promise<boolean>;
   onDuplicateLineItem: (itemKey: string) => void;
   onRemoveLineItem: (itemKey: string) => void;
+  ensureQuoteId?: () => Promise<string>;
+  ensureLineItemId?: (itemKey: string) => Promise<{ quoteId: string; lineItemId: string }>;
 };
 
 function getItemKey(item: QuoteLineItemDraft): string {
-  return item.id || item.tempId || "";
+  return item.tempId || item.id || "";
 }
 
 function getProduct(products: Product[], productId: string) {
@@ -159,6 +161,8 @@ export function LineItemsSection({
   onSaveLineItem,
   onDuplicateLineItem,
   onRemoveLineItem,
+  ensureQuoteId,
+  ensureLineItemId,
 }: LineItemsSectionProps) {
   const count = lineItems.filter((li) => li.status !== "canceled").length;
 
@@ -380,19 +384,18 @@ export function LineItemsSection({
 
   return (
     <Card className="rounded-lg border border-border/40 bg-card/50">
-      <CardHeader className="px-4 py-3 border-b border-border/40">
+      <CardHeader className="px-4 py-2.5 border-b border-border/40">
         <div className="flex items-center gap-2">
-          <div className="text-sm font-medium">Line Items</div>
           <Badge variant="outline" className="border-border/60 text-xs">
-            {count}
+            {count} {count === 1 ? 'item' : 'items'}
           </Badge>
         </div>
       </CardHeader>
 
-      <CardContent className="px-4 py-4">
+      <CardContent className="px-4 py-3">
         {lineItems.length === 0 ? (
-          <div className="py-8 text-center text-muted-foreground">
-            <div className="text-sm">No line items</div>
+          <div className="py-6 text-center text-xs text-muted-foreground">
+            —
           </div>
         ) : (
           <div className="space-y-2">
@@ -455,7 +458,6 @@ export function LineItemsSection({
                           {/* Top editing row */}
                           <div className="flex flex-wrap items-end gap-3">
                             <div className="flex items-center gap-2">
-                              <div className="text-xs text-muted-foreground">Size</div>
                               <div className="flex items-center gap-2">
                                 <Input
                                   value={widthText}
@@ -506,7 +508,7 @@ export function LineItemsSection({
                             </div>
 
                             <div className="ml-auto text-right min-h-[60px]">
-                              <div className="text-xs text-muted-foreground">Line total</div>
+                              <div className="text-xs text-muted-foreground">Total</div>
                               <div className="font-mono text-lg font-bold">{formatMoney(expandedItem?.linePrice ?? item.linePrice)}</div>
                               <div className="h-5 flex items-center justify-end">
                                 {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
@@ -540,6 +542,8 @@ export function LineItemsSection({
                                 lineItemId={item.id}
                                 productName={item.productName}
                                 defaultExpanded={false}
+                                ensureQuoteId={ensureQuoteId}
+                                ensureLineItemId={ensureLineItemId ? () => ensureLineItemId(itemKey) : undefined}
                               />
                             </div>
                           </div>
@@ -595,7 +599,7 @@ export function LineItemsSection({
                               </Button>
                             </div>
                             {isDirty && (
-                              <div className="text-xs text-amber-600">Unsaved changes</div>
+                              <div className="text-xs text-amber-600">Unsaved</div>
                             )}
                           </div>
                         </div>
@@ -624,7 +628,7 @@ export function LineItemsSection({
                   className="w-full justify-between h-9 font-normal"
                 >
                   <span className="text-muted-foreground">
-                    {searchQuery ? `Searching: ${searchQuery}` : "Add product to quote"}
+                    {searchQuery ? `Searching: ${searchQuery}` : "Add Product"}
                   </span>
                   <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
@@ -637,8 +641,8 @@ export function LineItemsSection({
                     onValueChange={setSearchQuery}
                   />
                   <CommandList>
-                    <CommandEmpty>No products found. Try a different search term.</CommandEmpty>
-                    <CommandGroup heading={searchQuery ? `Found ${filteredProducts.length} product${filteredProducts.length !== 1 ? 's' : ''}` : `All products (${filteredProducts.length})`}>
+                    <CommandEmpty>No products found.</CommandEmpty>
+                    <CommandGroup>
                       {filteredProducts.map((p) => (
                         <CommandItem
                           key={p.id}

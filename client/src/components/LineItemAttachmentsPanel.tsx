@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -27,6 +27,10 @@ interface LineItemAttachmentsPanelProps {
   productName?: string;
   /** Whether the panel is expanded by default */
   defaultExpanded?: boolean;
+  /** Optional function to ensure quote is created before upload (for new quotes) */
+  ensureQuoteId?: () => Promise<string>;
+  /** Optional function to ensure line item is persisted before upload (for TEMP line items) */
+  ensureLineItemId?: () => Promise<{ quoteId: string; lineItemId: string }>;
 }
 
 export function LineItemAttachmentsPanel({
@@ -34,30 +38,55 @@ export function LineItemAttachmentsPanel({
   lineItemId,
   productName,
   defaultExpanded = false,
+  ensureQuoteId,
+  ensureLineItemId,
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const [isCreatingQuote, setIsCreatingQuote] = useState(false);
+  const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
+  const [pendingOpenPicker, setPendingOpenPicker] = useState(false);
+  // Store ensured IDs to use during upload (props may not have updated yet)
+  const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
+    quoteId: null,
+    lineItemId: null,
+  });
+
+  // Effect: Auto-open file picker after line item persistence completes.
+  // This ensures single-click UX: user clicks Upload → persistence happens → picker opens automatically.
+  useEffect(() => {
+    if (pendingOpenPicker && lineItemId && !isPersistingLineItem) {
+      // Use requestAnimationFrame to ensure the DOM is stable after state updates
+      requestAnimationFrame(() => {
+        fileInputRef.current?.click();
+        setPendingOpenPicker(false);
+      });
+    }
+  }, [pendingOpenPicker, lineItemId, isPersistingLineItem]);
 
   // Build API path for this line item's files. For temporary line items
   // we still have a concrete lineItemId, so the quoteId may be null.
-  const filesApiPath = quoteId
-    ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
-    : `/api/line-items/${lineItemId}/files`;
+  // SAFETY: Do not construct path with undefined lineItemId.
+  const filesApiPath = lineItemId
+    ? (quoteId
+        ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
+        : `/api/line-items/${lineItemId}/files`)
+    : null;
 
   // Fetch attachments for this line item
   const { data: attachments = [], isLoading } = useQuery<LineItemAttachment[]>({
-    queryKey: [filesApiPath],
+    queryKey: filesApiPath ? [filesApiPath] : ["disabled-attachments"],
     queryFn: async () => {
-      if (!lineItemId) return [];
+      if (!filesApiPath) return [];
       const response = await fetch(filesApiPath, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to load line item files");
       const json = await response.json();
       return json.data || [];
     },
-    enabled: !!lineItemId,
+    enabled: !!filesApiPath,
   });
 
   // Format file size for display
@@ -103,6 +132,46 @@ export function LineItemAttachmentsPanel({
       }
     }
 
+    // Use ensured IDs from ref if available (from ensureLineItemId call), otherwise use props
+    let targetQuoteId = ensuredIdsRef.current.quoteId || quoteId;
+    let targetLineItemId = ensuredIdsRef.current.lineItemId || lineItemId;
+
+    console.log("[LineItemAttachmentsPanel] Upload IDs:", {
+      propsQuoteId: quoteId,
+      propsLineItemId: lineItemId,
+      ensuredQuoteId: ensuredIdsRef.current.quoteId,
+      ensuredLineItemId: ensuredIdsRef.current.lineItemId,
+      targetQuoteId,
+      targetLineItemId,
+    });
+
+    // If we don't have a quoteId yet and ensureQuoteId is provided, create the quote first
+    if (!targetQuoteId && ensureQuoteId) {
+      setIsCreatingQuote(true);
+      try {
+        targetQuoteId = await ensureQuoteId();
+        ensuredIdsRef.current.quoteId = targetQuoteId; // Store for subsequent files
+      } catch (error: any) {
+        toast({
+          title: "Cannot Upload",
+          description: error.message || "Failed to create quote. Please try again.",
+          variant: "destructive",
+        });
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        setIsCreatingQuote(false);
+        return;
+      } finally {
+        setIsCreatingQuote(false);
+      }
+    }
+
+    // Build the API path with the (possibly newly created) quoteId and ensured lineItemId
+    const uploadApiPath = targetQuoteId
+      ? `/api/quotes/${targetQuoteId}/line-items/${targetLineItemId}/files`
+      : `/api/line-items/${targetLineItemId}/files`;
+
+    console.log("[LineItemAttachmentsPanel] Upload API path:", uploadApiPath);
+
     setIsUploading(true);
     let successCount = 0;
     let errorCount = 0;
@@ -141,7 +210,7 @@ export function LineItemAttachmentsPanel({
           const fileUrl = url.split("?")[0];
 
           // Step 4: Attach file to line item
-          const attachResponse = await fetch(filesApiPath, {
+          const attachResponse = await fetch(uploadApiPath, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "include",
@@ -164,8 +233,11 @@ export function LineItemAttachmentsPanel({
         }
       }
 
-      // Refresh file list
-      queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+      // Refresh file list (invalidate both possible paths)
+      queryClient.invalidateQueries({ queryKey: [uploadApiPath] });
+      if (filesApiPath && uploadApiPath !== filesApiPath) {
+        queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+      }
 
       if (successCount > 0) {
         toast({
@@ -197,7 +269,7 @@ export function LineItemAttachmentsPanel({
 
   // Handle file deletion
   const handleDeleteFile = async (fileId: string) => {
-    if (!lineItemId) return;
+    if (!filesApiPath) return;
 
     try {
       const response = await fetch(`${filesApiPath}/${fileId}`, {
@@ -225,41 +297,97 @@ export function LineItemAttachmentsPanel({
 
   const fileCount = attachments.length;
 
-  // If no lineItemId, don't render anything (this shouldn't happen with new flow)
-  if (!lineItemId) {
-    return null;
-  }
+  // TitanOS UX RULE: Always render shell, even if actions are disabled.
+  // This ensures visibility of state and clear messaging to the user.
+  const canUpload = !!lineItemId && (!!quoteId || !!ensureQuoteId);
+
+  /**
+   * Handle upload button click - ensure line item is persisted BEFORE opening file picker.
+   * Single-click flow: persist → auto-open picker via useEffect.
+   */
+  const handleUploadClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    // Prevent double-clicks during processing
+    if (isUploading || isCreatingQuote || isPersistingLineItem) {
+      return;
+    }
+
+    // If lineItemId already exists, open picker immediately
+    if (lineItemId) {
+      // Store current IDs for use during upload (in case of quote creation during upload)
+      ensuredIdsRef.current = { quoteId, lineItemId };
+      fileInputRef.current?.click();
+      return;
+    }
+
+    // If lineItemId is missing and we have ensureLineItemId, persist the line item first
+    if (ensureLineItemId) {
+      setPendingOpenPicker(true); // Signal that we want to open picker after persistence
+      setIsPersistingLineItem(true);
+      try {
+        const { quoteId: persistedQuoteId, lineItemId: persistedLineItemId } = await ensureLineItemId();
+        // Store the ensured IDs for use during upload (props may not have updated yet)
+        ensuredIdsRef.current = { 
+          quoteId: persistedQuoteId,
+          lineItemId: persistedLineItemId 
+        };
+        // Don't open picker here - the useEffect will do it once lineItemId updates
+      } catch (error: any) {
+        setPendingOpenPicker(false); // Cancel pending open on error
+        ensuredIdsRef.current = { quoteId: null, lineItemId: null }; // Clear on error
+        toast({
+          title: "Cannot upload artwork",
+          description: error.message || "Failed to save line item.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsPersistingLineItem(false);
+      }
+      return;
+    }
+
+    // Fallback: no way to persist, should not happen with proper prop wiring
+    toast({
+      title: "Cannot upload",
+      description: "Line item must be saved first.",
+      variant: "destructive",
+    });
+  };
 
   return (
     <div className="border rounded-lg bg-muted/30">
       {/* Compact header - always visible */}
-      <div 
-        className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-muted/50 transition-colors"
-        onClick={() => setIsExpanded(!isExpanded)}
-      >
-        <div className="flex items-center gap-2">
-          <Paperclip className="w-4 h-4 text-muted-foreground" />
-          <span className="text-sm font-medium">Artwork</span>
+      <div className="px-3 py-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Paperclip className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium">Artwork</span>
+            {fileCount > 0 && (
+              <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
+                {fileCount}
+              </span>
+            )}
+          </div>
           {fileCount > 0 && (
-            <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
-              {fileCount}
-            </span>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              className="h-6 w-6 p-0"
+              onClick={() => setIsExpanded(!isExpanded)}
+            >
+              {isExpanded ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </Button>
           )}
         </div>
-        <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-          {isExpanded ? (
-            <ChevronUp className="w-4 h-4" />
-          ) : (
-            <ChevronDown className="w-4 h-4" />
-          )}
-        </Button>
-      </div>
 
-      {/* Expanded content */}
-      {isExpanded && (
-        <div className="px-3 pb-3 space-y-2 border-t">
-          {/* Upload button */}
-          <div className="pt-2">
+        {/* Upload button - always visible when no files, or when expanded */}
+        {(fileCount === 0 || isExpanded) && (
+          <div className="mt-2">
             <input
               type="file"
               ref={fileInputRef}
@@ -272,21 +400,38 @@ export function LineItemAttachmentsPanel({
               variant="outline"
               size="sm"
               className="w-full h-8"
-              onClick={(e) => {
-                e.stopPropagation();
-                fileInputRef.current?.click();
-              }}
-              disabled={isUploading}
+              onClick={handleUploadClick}
+              disabled={isUploading || isCreatingQuote || isPersistingLineItem || (!lineItemId && !ensureLineItemId)}
             >
-              {isUploading ? (
+              {(isUploading || isCreatingQuote || isPersistingLineItem) ? (
                 <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
               ) : (
                 <Upload className="w-3.5 h-3.5 mr-1.5" />
               )}
-              {isUploading ? "Uploading..." : "Upload Artwork"}
+              {isPersistingLineItem
+                ? "Saving line item..."
+                : isCreatingQuote
+                ? "Creating quote..."
+                : isUploading
+                ? "Uploading..."
+                : "Upload Artwork"}
             </Button>
+            {!lineItemId && !ensureLineItemId ? (
+              <p className="text-xs text-muted-foreground text-center mt-1">
+                Save line item to upload artwork
+              </p>
+            ) : !quoteId && !ensureQuoteId ? (
+              <p className="text-xs text-muted-foreground text-center mt-1">
+                Save quote to upload artwork
+              </p>
+            ) : null}
           </div>
+        )}
+      </div>
 
+      {/* Expanded content - file list */}
+      {isExpanded && fileCount > 0 && (
+        <div className="px-3 pb-3 space-y-2 border-t">
           {/* File list */}
           {isLoading ? (
             <p className="text-xs text-muted-foreground text-center py-2">Loading...</p>

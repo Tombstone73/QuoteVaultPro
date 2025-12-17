@@ -10,6 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
+import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
 
 type SummaryCardProps = {
     lineItems: QuoteLineItemDraft[];
@@ -30,6 +31,7 @@ type SummaryCardProps = {
     showConvertToOrder?: boolean;
     onSave: () => void;
     onSaveAndBack?: () => void;
+    afterSaveNavigation?: AfterSaveNavigation;
     onConvertToOrder: () => void;
     onDiscard: () => void;
     onDiscountAmountChange: (next: number) => void;
@@ -56,6 +58,7 @@ export function SummaryCard({
     showConvertToOrder = true,
     onSave,
     onSaveAndBack,
+    afterSaveNavigation = "stay",
     onConvertToOrder,
     onDiscard,
     onDiscountAmountChange,
@@ -74,23 +77,7 @@ export function SummaryCard({
             : effectiveTaxRate);
     return (
         <Card className="rounded-lg border border-border/40 bg-card/50">
-            <CardHeader className="px-4 py-3 border-b border-border/40">
-                <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-medium">Quote Summary</CardTitle>
-                    {!readOnly && (
-                        <span className="text-xs">
-                            {isSaving ? (
-                                <span className="text-blue-500">Saving…</span>
-                            ) : hasUnsavedChanges ? (
-                                <span className="text-amber-500">Unsaved</span>
-                            ) : (
-                                <span className="text-muted-foreground">Saved</span>
-                            )}
-                        </span>
-                    )}
-                </div>
-            </CardHeader>
-            <CardContent className="space-y-4 px-4 py-4">
+            <CardContent className="space-y-4 px-4 py-3 pt-4">
                 <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Subtotal</span>
                     <span className="font-mono font-medium">${subtotal.toFixed(2)}</span>
@@ -160,7 +147,7 @@ export function SummaryCard({
                         </div>
                         {quoteTaxExempt !== true && (
                             <div className="space-y-1">
-                                <Label className="text-xs text-muted-foreground">Tax Rate Override (%)</Label>
+                                <Label className="text-xs text-muted-foreground">Tax Rate Override</Label>
                                 <Input
                                     type="number"
                                     step="0.01"
@@ -192,7 +179,7 @@ export function SummaryCard({
                                 }}
                                 className="text-xs text-muted-foreground hover:text-foreground underline"
                             >
-                                Clear override
+                                Clear
                             </button>
                         )}
                     </div>
@@ -224,11 +211,15 @@ export function SummaryCard({
                             disabled={!canSaveQuote || isSaving}
                         >
                             <Save className="w-4 h-4 mr-2" />
-                            {isSaving ? "Saving…" : "Save Changes"}
+                            {isSaving 
+                                ? "Saving…" 
+                                : afterSaveNavigation === "back" 
+                                    ? "Save & Back" 
+                                    : "Save Changes"}
                         </Button>
 
-                        {/* Optional Save & Back button */}
-                        {onSaveAndBack && (
+                        {/* Optional Save & Back button (only shown when preference is "stay") */}
+                        {onSaveAndBack && afterSaveNavigation === "stay" && (
                             <Button
                                 variant="outline"
                                 className="w-full h-10"
@@ -247,7 +238,7 @@ export function SummaryCard({
                             disabled={isSaving}
                         >
                             <X className="w-4 h-4 mr-2" />
-                            Discard (revert all changes)
+                            Discard
                         </Button>
 
                         {/* Row 2: Email + Preview (Preview full-width in view mode) */}

@@ -14,3 +14,4 @@ ADD COLUMN IF NOT EXISTS "status" quote_status NOT NULL DEFAULT 'active';
 
 -- Create index on status for filtering queries
 CREATE INDEX IF NOT EXISTS "quotes_status_idx" ON "quotes" ("status");
+

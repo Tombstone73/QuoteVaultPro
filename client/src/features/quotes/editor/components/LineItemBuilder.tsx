@@ -120,6 +120,13 @@ export function LineItemBuilder({
         onAddLineItem(pendingAttachments.length > 0 ? pendingAttachments : undefined);
         setPendingAttachments([]);
     };
+
+    // Derived UI states for pricing clarity
+    const hasPrice = calculatedPrice !== null;
+    const showRecalc = isCalculating && hasPrice;
+    const showCalculating = isCalculating && !hasPrice;
+    const canSubmit = hasPrice && !isCalculating;
+
     return (
         <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
             <CardHeader className="pb-2 px-5 pt-4">
@@ -325,20 +332,20 @@ export function LineItemBuilder({
                 {/* Price display and Add button */}
                 <div className="flex items-center justify-between pt-2 border-t">
                     <div className="flex flex-col gap-1">
-                        {/* Price display with recalculating indicator */}
-                        {calculatedPrice !== null ? (
+                        {/* Price display with state-driven clarity */}
+                        {hasPrice ? (
                             <div className="flex items-center gap-2">
                                 <div className="text-lg font-semibold font-mono">
                                     ${calculatedPrice.toFixed(2)}
                                 </div>
-                                {isCalculating && (
+                                {showRecalc && (
                                     <div className="flex items-center gap-1 text-xs text-muted-foreground">
                                         <Loader2 className="w-3 h-3 animate-spin" />
                                         <span>recalculating...</span>
                                     </div>
                                 )}
                             </div>
-                        ) : isCalculating ? (
+                        ) : showCalculating ? (
                             <div className="flex items-center gap-2 text-muted-foreground">
                                 <Loader2 className="w-4 h-4 animate-spin" />
                                 <span className="text-sm">Calculating...</span>
@@ -355,7 +362,7 @@ export function LineItemBuilder({
                     <Button
                         type="button"
                         onClick={handleAddClick}
-                        disabled={calculatedPrice === null || isCalculating}
+                        disabled={!canSubmit}
                         className="gap-2"
                     >
                         <Plus className="w-4 h-4" />

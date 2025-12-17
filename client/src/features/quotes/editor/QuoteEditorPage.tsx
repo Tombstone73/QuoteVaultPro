@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useEffect, useMemo, useState, useRef, useContext } from "react";
+import { useNavigate, useLocation, UNSAFE_NavigationContext } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import { ROUTES } from "@/config/routes";
+import { useUserPreferences } from "@/hooks/useUserPreferences";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard } from "./components/CustomerCard";
@@ -20,6 +22,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     // ALL HOOKS MUST BE CALLED UNCONDITIONALLY AT THE TOP
     const navigate = useNavigate();
     const location = useLocation();
+    const { preferences } = useUserPreferences();
     const state = useQuoteEditorState();
 
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
@@ -31,15 +34,65 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
 
     // Dialog state (convert is still a dialog for now; core editing stays inline)
     const [showConvertDialog, setShowConvertDialog] = useState(false);
+    const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false);
+    const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
 
     // Ref for customer select to enable initial focus
     const customerSelectRef = useRef<CustomerSelectRef>(null);
     // Track if we've already attempted focus for current route to prevent re-runs
     const hasAttemptedFocusRef = useRef<string | null>(null);
 
+    // Ref to store pending transition retry callback for navigation blocking
+    const pendingTransitionRef = useRef<(() => void) | null>(null);
+
+    // Access navigation context for BrowserRouter-compatible blocking
+    const navigationContext = useContext(UNSAFE_NavigationContext);
+
     useEffect(() => {
         if (!editMode) setExpandedKey(null);
     }, [editMode]);
+
+    // Block in-app navigation when there are unsaved changes (BrowserRouter-compatible)
+    useEffect(() => {
+        if (!navigationContext?.navigator) return;
+        if (!state.hasUnsavedChanges) return;
+
+        const { navigator } = navigationContext;
+        
+        // Type assertion for navigator.block() which exists but isn't in standard types
+        const navigatorWithBlock = navigator as any;
+        if (typeof navigatorWithBlock.block === 'function') {
+            const unblock = navigatorWithBlock.block((tx: any) => {
+                const nextPath = tx.location?.pathname || tx.location;
+                const currentPath = location.pathname;
+
+                // Only block if pathname changes
+                if (nextPath !== currentPath) {
+                    pendingTransitionRef.current = () => tx.retry();
+                    setShowUnsavedChangesDialog(true);
+                    // Don't call tx.retry() here - wait for user choice
+                } else {
+                    // Same path, allow navigation
+                    tx.retry();
+                }
+            });
+
+            return unblock;
+        }
+    }, [navigationContext, state.hasUnsavedChanges, location.pathname]);
+
+    // Warn user before leaving page if there are unsaved changes (browser navigation)
+    useEffect(() => {
+        if (!state.hasUnsavedChanges) return;
+
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            e.preventDefault();
+            e.returnValue = ""; // Modern browsers require this for the dialog to show
+        };
+
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+    }, [state.hasUnsavedChanges]);
 
     // Reset focus attempt tracking when route changes
     useEffect(() => {
@@ -127,16 +180,51 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     }, [state.quote]);
 
     /**
-     * Wrapper for save quote - saves and stays on the quote (no navigation)
+     * Centralized navigation decision after successful save.
+     * Respects user preference for after-save navigation behavior.
+     */
+    const handlePostSaveNavigation = (result: { kind: "created" | "updated"; quoteId: string; quoteNumber?: string }) => {
+        // For NEW quotes, always navigate to edit route with the new quoteId
+        // (this is required for the quote to be properly loaded)
+        if (result.kind === "created") {
+            navigate(ROUTES.quotes.edit(result.quoteId), { replace: true });
+            return;
+        }
+
+        // For EXISTING quotes, check user preference
+        if (preferences.afterSaveNavigation === "back") {
+            navigate(ROUTES.quotes.list);
+        }
+        // If preference is "stay", do nothing (stay on page)
+    };
+
+    /**
+     * Wrapper for save quote - saves and navigates based on user preference
      */
     const handleSave = async () => {
         try {
-            await state.handlers.saveQuote();
-            // Stay on the quote page after save (no navigation)
+            const result = await state.handlers.saveQuote();
+            handlePostSaveNavigation(result);
         } catch (err) {
             // Error handling is already done inside saveQuote (toast shown)
             console.error("[QuoteEditorPage] Save failed", err);
         }
+    };
+
+    /**
+     * Ensure quote exists and return its ID.
+     * For new quotes, this saves the quote first.
+     * For existing quotes, returns the current quoteId.
+     * Used by artwork upload to ensure we have a quote to attach to.
+     */
+    const ensureQuoteId = async (): Promise<string> => {
+        if (state.quoteId) {
+            return state.quoteId;
+        }
+
+        // New quote - save it first
+        const result = await state.handlers.saveQuote();
+        return result.quoteId;
     };
 
     /**
@@ -156,6 +244,76 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
         await state.handlers.discardAllChanges();
         setExpandedKey(null);
         setEditMode(false);
+    };
+
+    /**
+     * Handle back navigation with unsaved changes check
+     * Note: Navigation blocking via navigator.block() will handle most cases,
+     * but we keep this for explicit Back button clicks
+     */
+    const handleBack = () => {
+        if (state.hasUnsavedChanges) {
+            // Set up pending navigation for the back button
+            setPendingNavigation(() => () => navigate(ROUTES.quotes.list));
+            setShowUnsavedChangesDialog(true);
+        } else {
+            navigate(ROUTES.quotes.list);
+        }
+    };
+
+    /**
+     * Handle "Save & Leave" from unsaved changes dialog
+     */
+    const handleSaveAndLeave = async () => {
+        try {
+            await state.handlers.saveQuote();
+            setShowUnsavedChangesDialog(false);
+            
+            // Proceed with the pending transition if it exists
+            if (pendingTransitionRef.current) {
+                const retry = pendingTransitionRef.current;
+                pendingTransitionRef.current = null;
+                retry();
+            } else if (pendingNavigation) {
+                pendingNavigation();
+                setPendingNavigation(null);
+            } else {
+                navigate(ROUTES.quotes.list);
+            }
+        } catch (err) {
+            // Error is already shown via toast in saveQuote
+            console.error("[QuoteEditorPage] Save & Leave failed", err);
+            // Keep dialog open so user can try again or choose another option
+        }
+    };
+
+    /**
+     * Handle "Discard & Leave" from unsaved changes dialog
+     */
+    const handleDiscardAndLeave = () => {
+        setShowUnsavedChangesDialog(false);
+        
+        // Proceed with the pending transition if it exists
+        if (pendingTransitionRef.current) {
+            const retry = pendingTransitionRef.current;
+            pendingTransitionRef.current = null;
+            retry();
+        } else if (pendingNavigation) {
+            pendingNavigation();
+            setPendingNavigation(null);
+        } else {
+            navigate(ROUTES.quotes.list);
+        }
+    };
+
+    /**
+     * Handle "Cancel" from unsaved changes dialog
+     */
+    const handleCancelNavigation = () => {
+        setShowUnsavedChangesDialog(false);
+        // Clear both pending transition and explicit navigation
+        pendingTransitionRef.current = null;
+        setPendingNavigation(null);
     };
 
     // EARLY RETURNS MUST COME AFTER ALL HOOKS
@@ -210,7 +368,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                     status={(state.quote as any)?.status}
                     editMode={editMode}
                     editModeDisabled={state.isSaving}
-                    onBack={state.handlers.handleBack}
+                    onBack={handleBack}
                     onDuplicateQuote={state.handlers.duplicateQuote}
                     onEditModeChange={(next) => setEditMode(next)}
                 />
@@ -257,6 +415,8 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             onSaveLineItem={state.handlers.saveLineItem}
                             onDuplicateLineItem={state.handlers.duplicateLineItem}
                             onRemoveLineItem={state.handlers.removeLineItem}
+                            ensureQuoteId={ensureQuoteId}
+                            ensureLineItemId={state.handlers.ensureLineItemId}
                         />
                     </div>
 
@@ -293,7 +453,8 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             hasUnsavedChanges={state.hasUnsavedChanges}
                             readOnly={readOnly}
                             onSave={handleSave}
-                            onSaveAndBack={handleSaveAndBack}
+                            onSaveAndBack={preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack}
+                            afterSaveNavigation={preferences.afterSaveNavigation}
                             onConvertToOrder={() => setShowConvertDialog(true)}
                             canConvertToOrder={state.canConvertToOrder}
                             convertToOrderPending={state.convertToOrderHook?.isPending}
@@ -316,6 +477,45 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                 isLoading={state.convertToOrderHook?.isPending}
                 onSubmit={state.handlers.convertToOrder}
             />
+
+            {/* Unsaved Changes Dialog - for both Back button and navigation blocking */}
+            {showUnsavedChangesDialog && (
+                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+                    <Card className="max-w-md w-full">
+                        <CardHeader>
+                            <CardTitle>Unsaved Changes</CardTitle>
+                            <CardDescription>
+                                You have unsaved changes. What would you like to do?
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="flex flex-col gap-3">
+                            <Button
+                                onClick={handleSaveAndLeave}
+                                disabled={state.isSaving}
+                                className="w-full"
+                            >
+                                {state.isSaving ? "Saving..." : "Save & Leave"}
+                            </Button>
+                            <Button
+                                variant="destructive"
+                                onClick={handleDiscardAndLeave}
+                                disabled={state.isSaving}
+                                className="w-full"
+                            >
+                                Discard & Leave
+                            </Button>
+                            <Button
+                                variant="outline"
+                                onClick={handleCancelNavigation}
+                                disabled={state.isSaving}
+                                className="w-full"
+                            >
+                                Cancel
+                            </Button>
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
         </div>
     );
 }
