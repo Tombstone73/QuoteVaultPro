@@ -569,6 +569,12 @@ export default function EditQuote() {
     );
   }
 
+  // Derived UI states for pricing clarity
+  const hasPrice = calculatedPrice !== null;
+  const showRecalc = isCalculating && hasPrice;
+  const showCalculating = isCalculating && !hasPrice;
+  const canSubmit = hasPrice && !isCalculating;
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-4">
@@ -1028,17 +1034,17 @@ export default function EditQuote() {
             <div className="flex items-center justify-between pt-2 border-t">
               <span className="text-sm text-muted-foreground">Calculated Price:</span>
               <div className="flex flex-col items-end gap-1">
-                {calculatedPrice !== null ? (
+                {hasPrice ? (
                   <div className="flex items-center gap-2">
                     <span className="text-lg font-semibold font-mono">${calculatedPrice.toFixed(2)}</span>
-                    {isCalculating && (
+                    {showRecalc && (
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
                         <Loader2 className="w-3 h-3 animate-spin" />
                         <span>recalculating...</span>
                       </div>
                     )}
                   </div>
-                ) : isCalculating ? (
+                ) : showCalculating ? (
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>Calculating...</span>
@@ -1087,7 +1093,7 @@ export default function EditQuote() {
             </Button>
             <Button 
               onClick={handleSaveLineItem}
-              disabled={!selectedProductId || calculatedPrice === null || addLineItemMutation.isPending || updateLineItemMutation.isPending}
+              disabled={!selectedProductId || !canSubmit || addLineItemMutation.isPending || updateLineItemMutation.isPending}
             >
               {(addLineItemMutation.isPending || updateLineItemMutation.isPending) ? (
                 <>

@@ -41,9 +41,7 @@ export function FulfillmentCard({
             <CardContent className="space-y-4 p-4">
                 {/* Delivery method */}
                 {readOnly ? (
-                    <div className="flex items-center gap-2">
-                        <div className="text-xs text-muted-foreground">Method</div>
-                        <div className="flex items-center gap-1 rounded-lg border border-border/50 bg-muted/20 p-1">
+                    <div className="flex items-center gap-1 rounded-lg border border-border/50 bg-muted/20 p-1">
                             <div
                                 className={cn(
                                     "px-2 py-1 rounded-md text-xs",
@@ -69,7 +67,6 @@ export function FulfillmentCard({
                                 Deliver
                             </div>
                         </div>
-                    </div>
                 ) : (
                     <div className="grid grid-cols-3 gap-1 p-1 bg-muted rounded-lg">
                         <Button
@@ -113,7 +110,7 @@ export function FulfillmentCard({
                     <div className="space-y-3">
                         {readOnly ? (
                             <div className="rounded-md border border-border/50 bg-muted/20 p-3 text-sm">
-                                <div className="text-xs text-muted-foreground mb-1">Ship to</div>
+                                <div className="text-xs text-muted-foreground mb-1">Shipping Address</div>
                                 <div className="space-y-0.5">
                                     <div className="text-foreground">{shippingAddress.street1 || "—"}</div>
                                     {shippingAddress.street2 && <div className="text-muted-foreground">{shippingAddress.street2}</div>}
@@ -148,7 +145,7 @@ export function FulfillmentCard({
                                 )}
 
                                 <div className="space-y-1.5">
-                                    <Label className="text-xs">Street Address</Label>
+                                    <Label className="text-xs">Address</Label>
                                     <Input
                                         value={shippingAddress.street1}
                                         onChange={(e) => onShippingAddressChange({ street1: e.target.value })}
@@ -160,7 +157,7 @@ export function FulfillmentCard({
                                 <Input
                                     value={shippingAddress.street2}
                                     onChange={(e) => onShippingAddressChange({ street2: e.target.value })}
-                                    placeholder="Suite / Apt (optional)"
+                                    placeholder="Suite/Apt (optional)"
                                     className="h-8 text-sm"
                                     disabled={readOnly}
                                 />
@@ -211,7 +208,7 @@ export function FulfillmentCard({
 
                 {/* Quote notes */}
                 <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">Quote Notes</Label>
+                    <Label className="text-xs text-muted-foreground">Notes</Label>
                     {readOnly ? (
                         <div className="rounded-md border border-border/50 bg-muted/20 p-3 text-sm text-foreground min-h-[80px] whitespace-pre-wrap">
                             {quoteNotes?.trim() ? quoteNotes : "—"}
@@ -220,7 +217,7 @@ export function FulfillmentCard({
                         <Textarea
                             value={quoteNotes}
                             onChange={(e) => onQuoteNotesChange(e.target.value)}
-                            placeholder="Internal notes, special instructions..."
+                            placeholder="Internal notes or instructions"
                             rows={4}
                             className="text-sm resize-none min-h-[80px]"
                             readOnly={readOnly}
