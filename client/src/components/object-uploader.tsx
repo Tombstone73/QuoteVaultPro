@@ -21,6 +21,12 @@ export function ObjectUploader({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
+  // Prevent event bubbling to parent collapsible/accordion triggers
+  const stopBubbling = (e: React.MouseEvent | React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   const handleFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
@@ -140,9 +146,18 @@ export function ObjectUploader({
             <div
               key={`${url}-${index}`}
               draggable
-              onDragStart={() => handleDragStart(index)}
-              onDragOver={(e) => handleDragOver(e, index)}
-              onDragEnd={handleDragEnd}
+              onDragStart={(e) => {
+                stopBubbling(e);
+                handleDragStart(index);
+              }}
+              onDragOver={(e) => {
+                stopBubbling(e);
+                handleDragOver(e, index);
+              }}
+              onDragEnd={(e) => {
+                stopBubbling(e);
+                handleDragEnd();
+              }}
               className="group relative rounded-md border border-border bg-card overflow-hidden cursor-move hover-elevate"
               data-testid={`thumbnail-preview-${index}`}
             >
@@ -161,7 +176,11 @@ export function ObjectUploader({
                   size="icon"
                   variant="destructive"
                   className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6"
-                  onClick={() => handleRemove(index)}
+                  onMouseDown={stopBubbling}
+                  onClick={(e) => {
+                    stopBubbling(e);
+                    handleRemove(index);
+                  }}
                   data-testid={`button-remove-thumbnail-${index}`}
                 >
                   <X className="w-3 h-3" />
@@ -180,6 +199,7 @@ export function ObjectUploader({
             multiple
             accept={allowedFileTypes.join(",")}
             onChange={(e) => handleFileSelect(e.target.files)}
+            onClick={stopBubbling}
             className="hidden"
             data-testid="file-input"
           />
@@ -187,7 +207,11 @@ export function ObjectUploader({
             <Button
               type="button"
               variant="outline"
-              onClick={() => fileInputRef.current?.click()}
+              onMouseDown={stopBubbling}
+              onClick={(e) => {
+                stopBubbling(e);
+                fileInputRef.current?.click();
+              }}
               disabled={uploading}
               data-testid="button-upload"
             >
