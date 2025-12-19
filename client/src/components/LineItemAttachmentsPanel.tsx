@@ -296,14 +296,24 @@ export function LineItemAttachmentsPanel({
     }
   };
 
-  // Handle file download - use proxy endpoint for correct filename
+  // Handle file download - use anchor element with download attribute to force original filename
   const handleDownloadFile = async (fileId: string, fileName: string) => {
     if (!filesApiPath) return;
 
     try {
-      // Use proxy endpoint which sets Content-Disposition with correct filename
+      // Use proxy endpoint which provides the file content
       const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
-      window.open(proxyUrl, "_blank");
+      
+      // Create temporary anchor element with download attribute to force filename
+      const anchor = document.createElement("a");
+      anchor.href = proxyUrl;
+      anchor.download = fileName; // This forces the browser to use the original filename
+      anchor.rel = "noreferrer";
+      anchor.style.display = "none";
+      
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
     } catch (error: any) {
       console.error("[handleDownloadFile] Error:", error);
       toast({
