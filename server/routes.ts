@@ -5,7 +5,7 @@ import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
 import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables } from "@shared/schema";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, isNull } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
@@ -3124,9 +3124,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Line item not found" });
       }
       
+      // Query attachments by lineItemId only (not by quoteId) to ensure files uploaded
+      // before quote persistence remain visible. Access control is via the line item validation above.
       const files = await db.select().from(quoteAttachments)
         .where(and(
-          eq(quoteAttachments.quoteId, quoteId),
           eq(quoteAttachments.quoteLineItemId, lineItemId),
           eq(quoteAttachments.organizationId, organizationId)
         ))
@@ -3209,16 +3210,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         fileName,
         originalFilename: fileName,
-        fileUrl,
+        fileUrl,  // This is now the storage key: uploads/<uuid>
         fileSize: fileSize || null,
         mimeType: mimeType || null,
         description: description || null,
+        bucket: 'titan-private',
+        processingStatus: 'uploaded',
       };
       
       console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
       const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
       
       console.log(`[LineItemFiles:POST] Created attachment id=${attachment.id}, quoteLineItemId=${attachment.quoteLineItemId}`);
+      
+      // Enqueue async processing for thumbnails
+      if (mimeType && mimeType.startsWith('image/')) {
+        const { enqueueArtworkProcessing } = await import('../services/artworkProcessor');
+        enqueueArtworkProcessing({
+          fileId: attachment.id,
+          orgId: organizationId,
+          quoteId,
+          lineItemId,
+          bucket: 'titan-private',
+          originalStorageKey: fileUrl,  // This is uploads/<uuid>
+          contentType: mimeType,
+        });
+      }
+      
       res.json({ success: true, data: attachment });
     } catch (error) {
       console.error("[LineItemFiles:POST] Error:", error);
@@ -3227,6 +3245,172 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete attachment from a quote line item
+  // Download a line item attachment (quote-scoped) - returns signed URL
+  app.get("/api/quotes/:quoteId/line-items/:lineItemId/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      console.log(`[LineItemFiles:DOWNLOAD] quoteId=${quoteId}, lineItemId=${lineItemId}, fileId=${fileId}`);
+      
+      // Validate the line item belongs to this quote (access control)
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.quoteId, quoteId)
+        ))
+        .limit(1);
+      
+      if (!lineItem) {
+        console.log(`[LineItemFiles:DOWNLOAD] Line item not found or doesn't belong to quote`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+      
+      // Get the attachment by fileId and lineItemId only (not quoteId) to support files
+      // uploaded before quote persistence. Access control is via line item validation above.
+      const [attachment] = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, fileId),
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .limit(1);
+      
+      if (!attachment) {
+        console.log(`[LineItemFiles:DOWNLOAD] Attachment not found or access denied`);
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+      
+      // Generate signed download URL (valid for 1 hour)
+      let signedUrl: string;
+      if (isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService();
+        signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
+      } else {
+        // For Replit Object Storage or other providers, return the stored URL directly
+        // Note: This assumes the stored URL is publicly accessible or pre-signed
+        signedUrl = attachment.fileUrl;
+      }
+      
+      // Use originalFilename for download, fallback to fileName
+      const fileName = attachment.originalFilename || attachment.fileName;
+      
+      console.log(`[LineItemFiles:DOWNLOAD] Generated signed URL for file ${fileId}, fileName: ${fileName}`);
+      
+      return res.json({ success: true, data: { signedUrl, fileName } });
+    } catch (error: any) {
+      console.error("[LineItemFiles:DOWNLOAD] Error:", error);
+      return res.status(500).json({ success: false, error: error.message || "Failed to generate download URL" });
+    }
+  });
+
+  // Proxy download endpoint - streams file with correct filename in Content-Disposition header
+  app.get("/api/quotes/:quoteId/line-items/:lineItemId/files/:fileId/download/proxy", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      // Validate line item belongs to quote
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.quoteId, quoteId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      // Get attachment
+      const [attachment] = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, fileId),
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!attachment) {
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+
+      // Download from Supabase and stream to client
+      if (isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService();
+        const signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
+
+        // Fetch file from Supabase
+        const fileResponse = await fetch(signedUrl);
+        if (!fileResponse.ok) {
+          throw new Error("Failed to fetch file from storage");
+        }
+
+        // Set Content-Disposition header with original filename
+        const fileName = attachment.originalFilename || attachment.fileName;
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
+
+        // Stream file to client
+        const buffer = await fileResponse.arrayBuffer();
+        res.send(Buffer.from(buffer));
+      } else {
+        return res.status(501).json({ error: "Proxy download not supported for this storage provider" });
+      }
+    } catch (error: any) {
+      console.error("[LineItemFiles:DOWNLOAD:PROXY] Error:", error);
+      return res.status(500).json({ error: error.message || "Failed to download file" });
+    }
+  });
+
+  // Download a line item attachment (temp line items) - returns signed URL
+  app.get("/api/line-items/:lineItemId/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      const userId = req.user.id;
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      console.log(`[LineItemFiles:DOWNLOAD:TEMP] lineItemId=${lineItemId}, fileId=${fileId}`);
+      
+      // Get the attachment and verify it belongs to a temp line item owned by this user
+      const [attachment] = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, fileId),
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId),
+          eq(quoteAttachments.uploadedByUserId, userId),
+          isNull(quoteAttachments.quoteId) // Temp items have null quoteId
+        ))
+        .limit(1);
+      
+      if (!attachment) {
+        console.log(`[LineItemFiles:DOWNLOAD:TEMP] Attachment not found or access denied`);
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+      
+      // Generate signed download URL (valid for 1 hour)
+      let signedUrl: string;
+      if (isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService();
+        signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
+      } else {
+        // For Replit Object Storage or other providers, return the stored URL directly
+        // Note: This assumes the stored URL is publicly accessible or pre-signed
+        signedUrl = attachment.fileUrl;
+      }
+      
+      console.log(`[LineItemFiles:DOWNLOAD:TEMP] Generated signed URL for file ${fileId}`);
+      
+      return res.json({ success: true, data: { signedUrl } });
+    } catch (error: any) {
+      console.error("[LineItemFiles:DOWNLOAD:TEMP] Error:", error);
+      return res.status(500).json({ success: false, error: error.message || "Failed to generate download URL" });
+    }
+  });
+
   app.delete("/api/quotes/:quoteId/line-items/:lineItemId/files/:fileId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const { quoteId, lineItemId, fileId } = req.params;
@@ -3235,11 +3419,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       console.log(`[LineItemFiles:DELETE] quoteId=${quoteId}, lineItemId=${lineItemId}, fileId=${fileId}`);
       
-      // First get the attachment to verify it exists and get the fileUrl for storage cleanup
+      // Validate the line item belongs to this quote (access control)
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.quoteId, quoteId)
+        ))
+        .limit(1);
+      
+      if (!lineItem) {
+        console.log(`[LineItemFiles:DELETE] Line item not found or doesn't belong to quote`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+      
+      // Get the attachment by fileId and lineItemId only (not quoteId) to support files
+      // uploaded before quote persistence. Access control is via line item validation above.
       const [existingAttachment] = await db.select().from(quoteAttachments)
         .where(and(
           eq(quoteAttachments.id, fileId),
-          eq(quoteAttachments.quoteId, quoteId),
           eq(quoteAttachments.quoteLineItemId, lineItemId),
           eq(quoteAttachments.organizationId, organizationId)
         ))

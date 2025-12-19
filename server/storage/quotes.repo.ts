@@ -18,7 +18,7 @@ import {
     type InsertQuoteWorkflowState,
     type InsertGlobalVariable,
 } from "@shared/schema";
-import { and, eq, isNull, like, gte, lte, desc, sql } from "drizzle-orm";
+import { and, eq, isNull, like, gte, lte, desc, sql, inArray } from "drizzle-orm";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
@@ -166,7 +166,18 @@ export class QuotesRepository {
         });
 
         // Create line items
-        const lineItemsData = lineItemsInput.map((item, index) => ({
+        // IMPORTANT: Only create NEW line items (those without an existing id).
+        // Line items that already have an id were created via ensureLineItemId during
+        // artwork upload and will be linked to this quote via finalizeTemporaryLineItemsForUser.
+        // Creating duplicate line items would orphan the attachments keyed to the original IDs.
+        const newLineItems = lineItemsInput.filter((item: any) => !item.id);
+        const existingLineItemIds = lineItemsInput.filter((item: any) => item.id).map((item: any) => item.id);
+        
+        if (existingLineItemIds.length > 0) {
+            console.log(`[createQuote] Skipping ${existingLineItemIds.length} line items that already exist (will be linked via finalizeTemporaryLineItemsForUser):`, existingLineItemIds);
+        }
+        
+        const lineItemsData = newLineItems.map((item, index) => ({
             quoteId: newQuote.id,
             productId: item.productId,
             productName: item.productName,
@@ -199,10 +210,40 @@ export class QuotesRepository {
         const createdLineItems = lineItemsData.length
             ? await this.dbInstance.insert(quoteLineItems).values(lineItemsData).returning()
             : [];
+        
+        // Link existing line items to this quote
+        // These are line items that were persisted before quote creation (e.g., via ensureLineItemId during artwork upload)
+        // SAFETY: Only link items that are truly unlinked (quoteId IS NULL, isTemporary = true)
+        // This prevents accidentally stealing line items from other quotes.
+        let linkedLineItems: QuoteLineItem[] = [];
+        if (existingLineItemIds.length > 0) {
+            linkedLineItems = await this.dbInstance
+                .update(quoteLineItems)
+                .set({ quoteId: newQuote.id, isTemporary: false })
+                .where(
+                    and(
+                        inArray(quoteLineItems.id, existingLineItemIds),
+                        isNull(quoteLineItems.quoteId),
+                        eq(quoteLineItems.isTemporary, true)
+                    )
+                )
+                .returning();
+            console.log(`[createQuote] Linked ${linkedLineItems.length}/${existingLineItemIds.length} existing line items to quote ${newQuote.id}`);
+            
+            // Warn if any items were NOT linked (already had a quoteId or weren't temporary)
+            if (linkedLineItems.length < existingLineItemIds.length) {
+                const linkedIds = new Set(linkedLineItems.map(li => li.id));
+                const notLinked = existingLineItemIds.filter(id => !linkedIds.has(id));
+                console.warn(`[createQuote] Could not link ${notLinked.length} line items - they may already be linked to another quote:`, notLinked);
+            }
+        }
+
+        // Combine created and linked line items
+        const allLineItems = [...createdLineItems, ...linkedLineItems];
 
         // Fetch user and product details for line items
         const lineItemsWithRelations = await Promise.all(
-            createdLineItems.map(async (lineItem) => {
+            allLineItems.map(async (lineItem) => {
                 const [product] = await this.dbInstance.select().from(products).where(eq(products.id, lineItem.productId));
                 let variant = null;
                 if (lineItem.variantId) {

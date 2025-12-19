@@ -998,6 +998,14 @@ export const quoteAttachments = pgTable("quote_attachments", {
   // Thumbnail support (future)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
+  // Async processing fields
+  processingStatus: varchar("processing_status", { length: 50 }).default('uploaded'),
+  thumbStorageKey: text("thumb_storage_key"),
+  previewStorageKey: text("preview_storage_key"),
+  derivedPrintStorageKey: text("derived_print_storage_key"),
+  derivedPrintFilename: varchar("derived_print_filename", { length: 500 }),
+  processingError: text("processing_error"),
+  bucket: varchar("bucket", { length: 100 }).default('titan-private'),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [

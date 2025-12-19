@@ -309,20 +309,10 @@ export function LineItemsSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedKey, widthNum, heightNum, qtyNum, notes]);
 
-  // Update saved snapshot when item data changes from server (after save)
-  useEffect(() => {
-    if (!expandedItem || !expandedKey) return;
-    // Only update snapshot if item has an ID (saved to server) and matches current values
-    if (expandedItem.id && savedItemKey === expandedKey) {
-      savedSnapshotRef.current[expandedKey] = {
-        width: expandedItem.width,
-        height: expandedItem.height,
-        quantity: expandedItem.quantity,
-        notes: (expandedItem.specsJson as any)?.notes || expandedItem.notes || "",
-        selectedOptions: expandedItem.selectedOptions || [],
-      };
-    }
-  }, [expandedItem?.id, expandedItem?.width, expandedItem?.height, expandedItem?.quantity, expandedItem?.selectedOptions, savedItemKey, expandedKey]);
+  // Identity persistence must not reset edit snapshot; only explicit user saves do.
+  // The snapshot is already correctly updated in handleSaveItem when user clicks Save.
+  // This effect was incorrectly treating "ID appeared" as "user saved", breaking live pricing.
+  // REMOVED: Snapshot updates now ONLY occur in handleSaveItem (explicit save action).
 
   // Debounced price calculation for expanded item
   useDebouncedEffect(

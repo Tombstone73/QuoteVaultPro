@@ -11,7 +11,7 @@ import { randomUUID } from 'crypto';
 // Environment variables
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'uploads';
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'titan-private';
 
 // Check if Supabase is configured
 export function isSupabaseConfigured(): boolean {
