@@ -191,7 +191,7 @@ export function LineItemAttachmentsPanel({
             throw new Error("Failed to get upload URL");
           }
 
-          const { url, method } = await urlResponse.json();
+          const { url, method, path } = await urlResponse.json();
 
           // Step 2: Upload file to storage
           const uploadResponse = await fetch(url, {
@@ -206,8 +206,9 @@ export function LineItemAttachmentsPanel({
             throw new Error(`Failed to upload ${file.name}`);
           }
 
-          // Step 3: Extract the file URL (remove query params)
-          const fileUrl = url.split("?")[0];
+          // Step 3: Use the storage path (not the full signed URL)
+          // The path is the actual object key in the bucket (e.g., "uploads/abc-123")
+          const fileUrl = path || url.split("?")[0];
 
           // Step 4: Attach file to line item
           const attachResponse = await fetch(uploadApiPath, {
@@ -290,6 +291,24 @@ export function LineItemAttachmentsPanel({
       toast({
         title: "Delete Failed",
         description: error.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Handle file download - use proxy endpoint for correct filename
+  const handleDownloadFile = async (fileId: string, fileName: string) => {
+    if (!filesApiPath) return;
+
+    try {
+      // Use proxy endpoint which sets Content-Disposition with correct filename
+      const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
+      window.open(proxyUrl, "_blank");
+    } catch (error: any) {
+      console.error("[handleDownloadFile] Error:", error);
+      toast({
+        title: "Download Failed",
+        description: error.message || "Could not download file.",
         variant: "destructive",
       });
     }
@@ -451,20 +470,18 @@ export function LineItemAttachmentsPanel({
                       </span>
                     </div>
                     <div className="flex gap-0.5 shrink-0">
-                      {file.fileUrl && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.open(file.fileUrl, "_blank");
-                          }}
-                          title="Download"
-                        >
-                          <Download className="w-3 h-3" />
-                        </Button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownloadFile(file.id, file.originalFilename || file.fileName);
+                        }}
+                        title="Download"
+                      >
+                        <Download className="w-3 h-3" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"

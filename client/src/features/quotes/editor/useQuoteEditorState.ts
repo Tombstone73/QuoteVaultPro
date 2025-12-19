@@ -23,6 +23,13 @@ export type SaveQuoteResult =
     | { kind: "updated"; quoteId: string; quoteNumber?: string };
 
 /**
+ * Helper: Get stable key for line item (TEMP-FIRST for consistency across TEMP → PERMANENT transitions)
+ */
+function getStableLineItemKey(li: QuoteLineItemDraft): string {
+    return li.tempId || li.id || "";
+}
+
+/**
  * Main hook for Quote Editor state management and business logic.
  * Centralizes all data fetching, state, and handlers for the quote editor.
  */
@@ -44,8 +51,19 @@ export function useQuoteEditorState() {
     // Are we on the "new quote" route?
     const isNewQuoteRoute = location.pathname === ROUTES.quotes.new;
 
-    // Canonical quoteId for querying (null on /quotes/new)
-    const quoteId: string | null = isNewQuoteRoute ? null : routeQuoteId;
+    // Track imperatively created quotes (e.g., via ensureQuoteId during artwork upload)
+    // This ensures the editor adopts the quote even before route navigation completes.
+    const [imperativeQuoteId, setImperativeQuoteId] = useState<string | null>(null);
+    
+    // Clear imperative quoteId when route changes to an actual quote (navigation completed)
+    useEffect(() => {
+        if (!isNewQuoteRoute && routeQuoteId) {
+            setImperativeQuoteId(null);
+        }
+    }, [isNewQuoteRoute, routeQuoteId]);
+    
+    // Canonical quoteId: prefer imperatively created > route param > null
+    const quoteId: string | null = imperativeQuoteId ?? (isNewQuoteRoute ? null : routeQuoteId);
     const isNewQuote = !quoteId;
 
     const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
@@ -140,15 +158,15 @@ export function useQuoteEditorState() {
         if (quoteTaxExempt !== snap.quoteTaxExempt) return true;
         if (quoteTaxRateOverride !== snap.quoteTaxRateOverride) return true;
         
-        // Compare line items
-        const currentIds = new Set(lineItems.map(li => li.id || li.tempId).filter((id): id is string => !!id));
-        const savedIds = new Set(snap.lineItems.map(li => li.id || li.tempId).filter((id): id is string => !!id));
+        // Compare line items (using stable TEMP-FIRST keys)
+        const currentIds = new Set(lineItems.map(li => getStableLineItemKey(li)).filter((id): id is string => !!id));
+        const savedIds = new Set(snap.lineItems.map(li => getStableLineItemKey(li)).filter((id): id is string => !!id));
         if (currentIds.size !== savedIds.size) return true;
         const currentIdsArray = Array.from(currentIds);
         for (const id of currentIdsArray) {
             if (!savedIds.has(id)) return true;
-            const current = lineItems.find(li => (li.id || li.tempId) === id);
-            const saved = snap.lineItems.find(li => (li.id || li.tempId) === id);
+            const current = lineItems.find(li => getStableLineItemKey(li) === id);
+            const saved = snap.lineItems.find(li => getStableLineItemKey(li) === id);
             if (!current || !saved) return true;
             if (current.linePrice !== saved.linePrice) return true;
             if (current.width !== saved.width) return true;
@@ -1476,6 +1494,9 @@ export function useQuoteEditorState() {
 
                 toast({ title: "Quote saved", description: "Your new quote has been created." });
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
+                
+                // Adopt this quote as canonical immediately to prevent duplicate creation
+                setImperativeQuoteId(newId);
 
                 // Return result instead of navigating
                 return { kind: "created", quoteId: newId, quoteNumber: newQuoteNumber };
@@ -1972,7 +1993,7 @@ export function useQuoteEditorState() {
         if (!itemKey) return;
         setLineItems((prev) =>
             prev.map((li) => {
-                const key = li.id || li.tempId;
+                const key = getStableLineItemKey(li);
                 if (key !== itemKey) return li;
                 return { ...li, ...updates };
             })
@@ -1983,7 +2004,7 @@ export function useQuoteEditorState() {
     const saveLineItem = useCallback(async (itemKey: string): Promise<boolean> => {
         if (!quoteId || !itemKey) return false;
 
-        const item = lineItems.find((li) => (li.id || li.tempId) === itemKey);
+        const item = lineItems.find((li) => getStableLineItemKey(li) === itemKey);
         if (!item || !item.productId) return false;
 
         try {
@@ -2015,7 +2036,7 @@ export function useQuoteEditorState() {
                 // Update local state to mark as saved
                 setLineItems((prev) =>
                     prev.map((li) => {
-                        if ((li.id || li.tempId) === itemKey) {
+                        if (getStableLineItemKey(li) === itemKey) {
                             return { ...li, status: "active" as const };
                         }
                         return li;
@@ -2030,7 +2051,7 @@ export function useQuoteEditorState() {
                 if (createdId) {
                     setLineItems((prev) =>
                         prev.map((li) => {
-                            if ((li.id || li.tempId) === itemKey) {
+                            if (getStableLineItemKey(li) === itemKey) {
                                 return { ...li, id: createdId, status: "active" as const };
                             }
                             return li;
@@ -2057,12 +2078,15 @@ export function useQuoteEditorState() {
     /**
      * Ensure a line item has a persisted ID (explicit intent on upload).
      * If the line item is TEMP (no id), persist it to get a real lineItemId.
-     * If quoteId is missing, create quote first.
+     * If quoteId is missing, create quote WITH this line item atomically.
      * Returns both quoteId and lineItemId for use in attach requests.
+     * 
+     * CRITICAL: This function must NOT update savedSnapshotRef or trigger full save behavior.
+     * It only creates the minimal persistence needed for attachments.
      */
     const ensureLineItemId = useCallback(
         async (itemKey: string): Promise<{ quoteId: string; lineItemId: string }> => {
-            const item = lineItems.find((li) => (li.id || li.tempId) === itemKey);
+            const item = lineItems.find((li) => getStableLineItemKey(li) === itemKey);
             if (!item) {
                 throw new Error("Line item not found");
             }
@@ -2072,63 +2096,177 @@ export function useQuoteEditorState() {
                 return { quoteId, lineItemId: item.id };
             }
 
-            // If no quote exists, create it first (explicit intent)
-            let targetQuoteId = quoteId;
-            if (!targetQuoteId) {
-                const result = await handleSaveQuote();
-                targetQuoteId = result.quoteId;
+            // CASE 1: Quote exists but line item needs persistence
+            if (quoteId && !item.id) {
+                // Now persist the line item to existing quote
+                const payload: any = {
+                    productId: item.productId,
+                    productName: item.productName,
+                    variantId: item.variantId ?? null,
+                    variantName: item.variantName ?? null,
+                    productType: item.productType || "wide_roll",
+                    width: item.width,
+                    height: item.height,
+                    quantity: item.quantity,
+                    specsJson: item.specsJson || {},
+                    selectedOptions: item.selectedOptions || [],
+                    linePrice: item.linePrice ?? 0,
+                    priceBreakdown: item.priceBreakdown || {
+                        basePrice: item.linePrice ?? 0,
+                        optionsPrice: 0,
+                        total: item.linePrice ?? 0,
+                        formula: "",
+                    },
+                    displayOrder: item.displayOrder ?? 0,
+                    status: "active",
+                };
+
+                const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-items`, payload);
+                const json = await response.json();
+                const created = json?.data || json;
+                const createdId = created?.id;
+
+                if (!createdId) {
+                    throw new Error("Failed to create line item");
+                }
+
+                // Update local state with the new id (preserve all draft fields)
+                setLineItems((prev) =>
+                    prev.map((li) => {
+                        if (getStableLineItemKey(li) === itemKey) {
+                            return { ...li, id: createdId };
+                        }
+                        return li;
+                    })
+                );
+
+                return { quoteId, lineItemId: createdId };
             }
 
-            // If line item already has an id but we just created the quote, return both
+            // CASE 2: No quote exists AND line item has no id
+            // Create quote WITH this line item atomically to satisfy backend validation
+            if (!quoteId && !item.id) {
+                const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? (quote as any)?.customerId ?? null;
+
+                // Build line item payload
+                const lineItemPayload = {
+                    productId: item.productId,
+                    productName: item.productName,
+                    variantId: item.variantId ?? null,
+                    variantName: item.variantName ?? null,
+                    productType: item.productType || "wide_roll",
+                    width: item.width,
+                    height: item.height,
+                    quantity: item.quantity,
+                    specsJson: item.specsJson || {},
+                    selectedOptions: item.selectedOptions || [],
+                    linePrice: item.linePrice ?? 0,
+                    priceBreakdown: item.priceBreakdown || {
+                        basePrice: item.linePrice ?? 0,
+                        optionsPrice: 0,
+                        total: item.linePrice ?? 0,
+                        formula: "",
+                    },
+                    displayOrder: item.displayOrder ?? 0,
+                    status: "active",
+                };
+
+                // Create quote with this line item included
+                const quoteWithLineItem = {
+                    customerId: payloadCustomerId,
+                    contactId: selectedContactId ?? null,
+                    customerName: selectedCustomer?.companyName ?? (quote as any)?.customerName ?? null,
+                    lineItems: [lineItemPayload], // Include the line item!
+                    subtotal,
+                    taxRate: effectiveTaxRate,
+                    taxAmount,
+                    discountAmount: effectiveDiscount,
+                    totalPrice: grandTotal,
+                    label: jobLabel || null,
+                    requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
+                    shippingMethod: deliveryMethod,
+                    shippingInstructions: quoteNotes || null,
+                    source: "internal",
+                    hasCustomerId: !!payloadCustomerId,
+                    hasLineItems: true, // We're including a line item
+                    tags: tags,
+                    quoteTaxExempt: quoteTaxExempt ?? undefined,
+                    quoteTaxRateOverride: quoteTaxRateOverride ?? undefined,
+                };
+
+                const error = validateQuote(quoteWithLineItem);
+                if (error) {
+                    throw new Error(error);
+                }
+
+                const response = await apiRequest("POST", "/api/quotes", quoteWithLineItem);
+                if (!response.ok) {
+                    const errorBody = await response.json().catch(() => ({}));
+                    throw new Error(errorBody?.message || "Failed to create quote");
+                }
+                const created = await response.json();
+                const newQuoteId = created?.id || created?.quote?.id || created?.data?.id || created?.data?.quote?.id;
+                
+                if (!newQuoteId) {
+                    throw new Error("Quote creation did not return an id");
+                }
+
+                // Extract the created line item ID from the response
+                const createdLineItems = created?.finalizedLineItems || created?.quote?.lineItems || created?.data?.lineItems || [];
+                const createdLineItem = createdLineItems[0];
+                const newLineItemId = createdLineItem?.id;
+
+                if (!newLineItemId) {
+                    throw new Error("Quote created but line item ID not returned");
+                }
+
+                // Update local state: patch the line item with its new id (preserve tempId and draft fields)
+                setLineItems((prev) =>
+                    prev.map((li) => {
+                        if (getStableLineItemKey(li) === itemKey) {
+                            return { ...li, id: newLineItemId };
+                        }
+                        return li;
+                    })
+                );
+
+                // Invalidate quote list but do NOT update snapshot (keeps dirty tracking active)
+                queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
+                
+                // Adopt this quote as canonical immediately to prevent duplicate creation
+                setImperativeQuoteId(newQuoteId);
+
+                return { quoteId: newQuoteId, lineItemId: newLineItemId };
+            }
+
+            // CASE 3: Quote just created, line item already has id
             if (item.id) {
-                return { quoteId: targetQuoteId, lineItemId: item.id };
+                return { quoteId: quoteId!, lineItemId: item.id };
             }
 
-            // Now persist the line item
-            const payload: any = {
-                productId: item.productId,
-                productName: item.productName,
-                variantId: item.variantId ?? null,
-                variantName: item.variantName ?? null,
-                productType: item.productType || "wide_roll",
-                width: item.width,
-                height: item.height,
-                quantity: item.quantity,
-                specsJson: item.specsJson || {},
-                selectedOptions: item.selectedOptions || [],
-                linePrice: item.linePrice ?? 0,
-                priceBreakdown: item.priceBreakdown || {
-                    basePrice: item.linePrice ?? 0,
-                    optionsPrice: 0,
-                    total: item.linePrice ?? 0,
-                    formula: "",
-                },
-                displayOrder: item.displayOrder ?? 0,
-                status: "draft", // Keep as draft during artwork upload
-            };
-
-            const response = await apiRequest("POST", `/api/quotes/${targetQuoteId}/line-items`, payload);
-            const json = await response.json();
-            const created = json?.data || json;
-            const createdId = created?.id;
-
-            if (!createdId) {
-                throw new Error("Failed to create line item");
-            }
-
-            // Update local state with the new id
-            setLineItems((prev) =>
-                prev.map((li) => {
-                    if ((li.id || li.tempId) === itemKey) {
-                        return { ...li, id: createdId };
-                    }
-                    return li;
-                })
-            );
-
-            return { quoteId: targetQuoteId, lineItemId: createdId };
+            throw new Error("Unexpected state in ensureLineItemId");
         },
-        [lineItems, quoteId, handleSaveQuote]
+        [
+            lineItems,
+            quoteId,
+            selectedCustomer,
+            selectedCustomerId,
+            quote,
+            selectedContactId,
+            subtotal,
+            effectiveTaxRate,
+            taxAmount,
+            effectiveDiscount,
+            grandTotal,
+            jobLabel,
+            requestedDueDate,
+            deliveryMethod,
+            quoteNotes,
+            tags,
+            quoteTaxExempt,
+            quoteTaxRateOverride,
+            validateQuote,
+        ]
     );
 
     const discardAllChanges = useCallback(async () => {

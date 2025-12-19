@@ -224,6 +224,11 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
 
         // New quote - save it first
         const result = await state.handlers.saveQuote();
+        
+        // CRITICAL: Navigate to the newly created quote so the editor adopts it as canonical.
+        // This prevents "Save Changes" from creating a duplicate quote and orphaning attachments.
+        navigate(ROUTES.quotes.edit(result.quoteId), { replace: true });
+        
         return result.quoteId;
     };
 
