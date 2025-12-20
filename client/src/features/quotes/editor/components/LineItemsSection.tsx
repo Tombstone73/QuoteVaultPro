@@ -111,6 +111,7 @@ function useDebouncedEffect(effect: () => void, deps: any[], delayMs: number) {
 }
 
 function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineItemId: string | undefined }) {
+  const [imageError, setImageError] = useState(false);
   const filesApiPath = quoteId
     ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
     : `/api/line-items/${lineItemId}/files`;
@@ -128,13 +129,49 @@ function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineIt
   });
 
   const first = attachments[0];
+  
+  // Don't render anything if no attachments
+  if (!first) {
+    return (
+      <div className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0 flex items-center justify-center">
+        <FileText className="h-5 w-5 text-muted-foreground" />
+      </div>
+    );
+  }
+
   const isImage = first?.mimeType?.startsWith?.("image/");
   const isPdf = first?.mimeType === "application/pdf" || (first?.fileName || "").toLowerCase().endsWith(".pdf");
+  
+  // Determine image URL - ONLY use signed URLs from server, never construct URLs client-side
+  // For images: use thumbUrl if available, fallback to originalUrl (both are signed URLs from server)
+  // For PDFs: use first page thumbUrl if available (signed URL from server)
+  let imageUrl: string | null = null;
+  if (!imageError && first) {
+    if (isImage) {
+      // Only use signed URLs - thumbUrl or originalUrl (both from server)
+      const candidateUrl = first?.thumbUrl || first?.originalUrl;
+      // Validate URL is actually a string and looks like a URL
+      if (candidateUrl && typeof candidateUrl === 'string' && candidateUrl.startsWith('http')) {
+        imageUrl = candidateUrl;
+      }
+    } else if (isPdf && first?.pages?.length > 0) {
+      // Only use signed thumbUrl from first page
+      const candidateUrl = first.pages[0]?.thumbUrl;
+      if (candidateUrl && typeof candidateUrl === 'string' && candidateUrl.startsWith('http')) {
+        imageUrl = candidateUrl;
+      }
+    }
+  }
 
   return (
     <div className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0">
-      {isImage ? (
-        <img src={first.fileUrl} alt={first.fileName || "Artwork"} className="h-full w-full object-cover" />
+      {imageUrl ? (
+        <img 
+          src={imageUrl} 
+          alt="" 
+          className="h-full w-full object-cover"
+          onError={() => setImageError(true)}
+        />
       ) : (
         <div className="h-full w-full flex items-center justify-center relative">
           <FileText className="h-5 w-5 text-muted-foreground" />
@@ -397,51 +434,102 @@ export function LineItemsSection({
                 const product = getProduct(products, item.productId);
                 const subtitle = item.variantName || (product as any)?.category || (product as any)?.sku || "";
 
+                // Extract key options for summary display
+                const displayOptions = (item.selectedOptions || []).slice(0, 4).map((opt: any) => {
+                  let displayValue = '';
+                  if (typeof opt.value === 'boolean') {
+                    displayValue = opt.value ? 'Yes' : 'No';
+                  } else if (opt.value !== undefined && opt.value !== null && opt.value !== '') {
+                    displayValue = `: ${opt.value}`;
+                  }
+                  return {
+                    name: opt.optionName,
+                    display: `${opt.optionName}${displayValue}`,
+                  };
+                });
+
                 return (
                   <div key={itemKey} className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
-                    <div className="flex items-center gap-3 p-3">
-                      <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
+                    {/* Collapsed Summary Row - Always Visible */}
+                    <div className="p-3">
+                      <div className="flex items-start gap-3">
+                        {/* Thumbnail */}
+                        <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
 
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <div className="text-sm font-semibold truncate">{item.productName}</div>
-                          {item.status === "draft" && !readOnly && (
-                            <Badge variant="secondary" className="text-[10px] py-0">
-                              Draft
-                            </Badge>
+                        {/* Product Info & Details */}
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          {/* Product Name + Category */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="text-sm font-semibold">{item.productName}</div>
+                            {subtitle && (
+                              <span className="text-xs text-muted-foreground">• {subtitle}</span>
+                            )}
+                            {item.status === "draft" && !readOnly && (
+                              <Badge variant="secondary" className="text-[10px] py-0">
+                                Draft
+                              </Badge>
+                            )}
+                          </div>
+
+                          {/* Size + Quantity */}
+                          <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
+                            <span className="font-mono">
+                              {item.width}" × {item.height}"
+                            </span>
+                            <span>•</span>
+                            <span>
+                              Qty: <span className="font-semibold text-foreground">{item.quantity}</span>
+                            </span>
+                          </div>
+
+                          {/* Key Options (2-4 shown) */}
+                          {displayOptions.length > 0 && (
+                            <div className="flex items-center gap-2 flex-wrap text-xs">
+                              {displayOptions.map((opt, idx) => (
+                                <Badge 
+                                  key={idx} 
+                                  variant="outline" 
+                                  className="font-normal text-[10px] px-1.5 py-0 border-border/60"
+                                >
+                                  {opt.display}
+                                </Badge>
+                              ))}
+                              {(item.selectedOptions || []).length > 4 && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  +{(item.selectedOptions || []).length - 4} more
+                                </span>
+                              )}
+                            </div>
                           )}
                         </div>
-                        {subtitle ? (
-                          <div className="text-xs text-muted-foreground truncate">{subtitle}</div>
-                        ) : (
-                          <div className="text-xs text-muted-foreground truncate">—</div>
-                        )}
-                      </div>
 
-                      <div className="flex items-center gap-3 shrink-0">
-                        <div className="text-right">
-                          <div className="font-mono text-sm font-semibold">{formatMoney(item.linePrice)}</div>
-                          <div className="text-[11px] text-muted-foreground">
-                            {item.quantity} · {item.width}"×{item.height}"
+                        {/* Price + Expand Button */}
+                        <div className="flex items-start gap-3 shrink-0">
+                          <div className="text-right">
+                            <div className="font-mono text-sm font-semibold whitespace-nowrap">{formatMoney(item.linePrice)}</div>
+                            <div className="text-[10px] text-muted-foreground">
+                              {formatMoney(item.linePrice / item.quantity)}/ea
+                            </div>
                           </div>
-                        </div>
 
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className={cn("h-8 w-8", readOnly && "opacity-40 cursor-not-allowed")}
-                          onClick={() => {
-                            if (readOnly) return;
-                            onExpandedKeyChange(isExpanded ? null : itemKey);
-                          }}
-                          aria-label={readOnly ? "Locked (enable Edit Mode to expand)" : isExpanded ? "Collapse line item" : "Expand line item"}
-                        >
-                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                        </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className={cn("h-8 w-8", readOnly && "opacity-40 cursor-not-allowed")}
+                            onClick={() => {
+                              if (readOnly) return;
+                              onExpandedKeyChange(isExpanded ? null : itemKey);
+                            }}
+                            aria-label={readOnly ? "Locked (enable Edit Mode to expand)" : isExpanded ? "Collapse line item" : "Expand line item"}
+                          >
+                            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                          </Button>
+                        </div>
                       </div>
                     </div>
 
+                    {/* Expanded Editor - Only When Expanded */}
                     {isExpanded && !readOnly && (
                       <div className="px-3 pb-3">
                         <div className="rounded-md border border-border/40 bg-muted/20 p-3 min-h-[400px]">

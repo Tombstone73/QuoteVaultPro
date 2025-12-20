@@ -83,6 +83,11 @@ export default function CalculatorComponent() {
     height?: boolean;
     quantity?: boolean;
   }>({});
+  const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
+
+  // Helper: validate URL is a proper http(s) string
+  const isValidHttpUrl = (v: unknown): v is string =>
+    typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -473,6 +478,8 @@ export default function CalculatorComponent() {
                   {products?.filter(p => p.isActive).map((product) => {
                     const isSelected = selectedProductId === product.id;
                     const thumbnailUrl = product.thumbnailUrls?.[0];
+                    const safeSrc = isValidHttpUrl(thumbnailUrl) ? thumbnailUrl : null;
+                    const hasError = imageErrors.has(product.id);
                     
                     return (
                       <button
@@ -495,12 +502,15 @@ export default function CalculatorComponent() {
                       >
                         <div className="overflow-hidden rounded-t-md">
                           <div className="aspect-square relative bg-muted">
-                            {thumbnailUrl ? (
+                            {safeSrc && !hasError ? (
                               <img
-                                src={thumbnailUrl}
-                                alt={product.name}
+                                src={safeSrc}
+                                alt=""
                                 className="w-full h-full object-cover"
                                 data-testid={`product-image-${product.id}`}
+                                onError={() => {
+                                  setImageErrors(prev => new Set(prev).add(product.id));
+                                }}
                               />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center text-muted-foreground">

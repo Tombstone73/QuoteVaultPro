@@ -809,6 +809,10 @@ function EmailSettingsTab() {
   );
 }
 
+// Helper: validate URL is a proper http(s) string
+const isValidHttpUrl = (v: unknown): v is string =>
+  typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
+
 export default function AdminSettings() {
   const { toast } = useToast();
   const [showUserManagement, setShowUserManagement] = useState(false);
@@ -830,6 +834,7 @@ export default function AdminSettings() {
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
   const [mediaPickerMode, setMediaPickerMode] = useState<"add" | "edit">("add");
+  const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
 
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -4117,14 +4122,21 @@ export default function AdminSettings() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" data-testid="products-grid">
                   {products && products.length > 0 ? (
-                    products.map((product) => (
+                    products.map((product) => {
+                      const safeSrc = isValidHttpUrl(product.thumbnailUrls?.[0]) ? product.thumbnailUrls[0] : null;
+                      const hasError = imageErrors.has(product.id);
+                      
+                      return (
                       <Card key={product.id} className="flex flex-col" data-testid={`card-product-${product.id}`}>
                         <div className="aspect-square relative bg-muted overflow-hidden rounded-t-md">
-                          {product.thumbnailUrls && product.thumbnailUrls.length > 0 ? (
+                          {safeSrc && !hasError ? (
                             <img
-                              src={product.thumbnailUrls[0]}
-                              alt={product.name}
+                              src={safeSrc}
+                              alt=""
                               className="w-full h-full object-cover"
+                              onError={() => {
+                                setImageErrors(prev => new Set(prev).add(product.id));
+                              }}
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-muted-foreground">
@@ -4190,7 +4202,8 @@ export default function AdminSettings() {
                           </AlertDialog>
                         </div>
                       </Card>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="col-span-full text-center py-12 text-muted-foreground">
                       No products yet. Add your first product to get started.

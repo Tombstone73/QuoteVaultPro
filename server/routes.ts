@@ -4,7 +4,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables } from "@shared/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -2983,6 +2983,116 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Quote Files / Attachments
   // ────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Helper: Enrich attachment records with signed URLs for display
+   * 
+   * IMPORTANT: fileUrl, thumbKey, previewKey are STORAGE KEYS (not URLs).
+   * The client must NEVER use these fields directly in <img src> or <a href>.
+   * This function generates time-limited signed URLs from storage keys.
+   * 
+   * Returns originalUrl, thumbUrl (if thumbKey exists), previewUrl (if previewKey exists)
+   * For PDFs, also fetches and enriches page data with signed URLs
+   */
+  async function enrichAttachmentWithUrls(attachment: any): Promise<any> {
+    let originalUrl: string | null = null;
+    let thumbUrl: string | null = null;
+    let previewUrl: string | null = null;
+
+    if (isSupabaseConfigured()) {
+      const supabaseService = new SupabaseStorageService();
+      
+      // Generate signed URL for original file
+      if (attachment.fileUrl) {
+        try {
+          originalUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
+        } catch (error) {
+          console.error(`[enrichAttachmentWithUrls] Failed to generate originalUrl for ${attachment.id}:`, error);
+        }
+      }
+      
+      // Generate signed URL for thumbnail (only if thumbKey exists)
+      if (attachment.thumbKey) {
+        try {
+          thumbUrl = await supabaseService.getSignedDownloadUrl(attachment.thumbKey, 3600);
+        } catch (error) {
+          console.error(`[enrichAttachmentWithUrls] Failed to generate thumbUrl for ${attachment.id}:`, error);
+        }
+      }
+      
+      // Generate signed URL for preview (only if previewKey exists)
+      if (attachment.previewKey) {
+        try {
+          previewUrl = await supabaseService.getSignedDownloadUrl(attachment.previewKey, 3600);
+        } catch (error) {
+          console.error(`[enrichAttachmentWithUrls] Failed to generate previewUrl for ${attachment.id}:`, error);
+        }
+      }
+    } else {
+      // Fallback for non-Supabase storage: use stored URLs directly
+      originalUrl = attachment.fileUrl;
+      // For non-Supabase, we don't have thumbnail support yet
+      thumbUrl = null;
+      previewUrl = null;
+    }
+
+    // For PDFs, fetch page data
+    let pages: any[] = [];
+    const isPdf = attachment.mimeType === 'application/pdf' || 
+                  (attachment.fileName || '').toLowerCase().endsWith('.pdf');
+    
+    if (isPdf && attachment.pageCount) {
+      try {
+        const pageRecords = await db.select()
+          .from(quoteAttachmentPages)
+          .where(eq(quoteAttachmentPages.attachmentId, attachment.id))
+          .orderBy(quoteAttachmentPages.pageIndex);
+        
+        // Enrich each page with signed URLs
+        if (isSupabaseConfigured()) {
+          const supabaseService = new SupabaseStorageService();
+          pages = await Promise.all(pageRecords.map(async (page) => {
+            let pageThumbUrl: string | null = null;
+            let pagePreviewUrl: string | null = null;
+            
+            if (page.thumbKey) {
+              try {
+                pageThumbUrl = await supabaseService.getSignedDownloadUrl(page.thumbKey, 3600);
+              } catch (error) {
+                console.error(`[enrichAttachmentWithUrls] Failed to generate page thumbUrl:`, error);
+              }
+            }
+            
+            if (page.previewKey) {
+              try {
+                pagePreviewUrl = await supabaseService.getSignedDownloadUrl(page.previewKey, 3600);
+              } catch (error) {
+                console.error(`[enrichAttachmentWithUrls] Failed to generate page previewUrl:`, error);
+              }
+            }
+            
+            return {
+              ...page,
+              thumbUrl: pageThumbUrl,
+              previewUrl: pagePreviewUrl,
+            };
+          }));
+        } else {
+          pages = pageRecords;
+        }
+      } catch (error) {
+        console.error(`[enrichAttachmentWithUrls] Failed to fetch pages for ${attachment.id}:`, error);
+      }
+    }
+
+    return {
+      ...attachment,
+      originalUrl,
+      thumbUrl,
+      previewUrl,
+      pages, // Include pages array (empty for non-PDFs or PDFs without page data)
+    };
+  }
+
   // Get all attachments for a quote
   app.get("/api/quotes/:id/files", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -2996,7 +3106,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ))
         .orderBy(desc(quoteAttachments.createdAt));
       
-      res.json({ success: true, data: files });
+      // Enrich each attachment with signed URLs
+      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      
+      res.json({ success: true, data: enrichedFiles });
     } catch (error) {
       console.error("Error fetching quote files:", error);
       res.status(500).json({ error: "Failed to fetch quote files" });
@@ -3133,8 +3246,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ))
         .orderBy(desc(quoteAttachments.createdAt));
       
+      // Enrich each attachment with signed URLs
+      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      
       console.log(`[LineItemFiles:GET] Found ${files.length} files for line item ${lineItemId}`);
-      res.json({ success: true, data: files });
+      res.json({ success: true, data: enrichedFiles });
     } catch (error) {
       console.error("[LineItemFiles:GET] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });
@@ -3162,8 +3278,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         )
         .orderBy(desc(quoteAttachments.createdAt));
 
+      // Enrich each attachment with signed URLs
+      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+
       console.log(`[LineItemFiles:GET:Temp] Found ${files.length} files for temp line item ${lineItemId}`);
-      res.json({ success: true, data: files });
+      res.json({ success: true, data: enrichedFiles });
     } catch (error) {
       console.error("[LineItemFiles:GET:Temp] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });
@@ -3215,7 +3334,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         mimeType: mimeType || null,
         description: description || null,
         bucket: 'titan-private',
-        processingStatus: 'uploaded',
+        thumbStatus: 'uploaded' as const, // Default status for thumbnail scaffolding
       };
       
       console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
@@ -3223,24 +3342,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       console.log(`[LineItemFiles:POST] Created attachment id=${attachment.id}, quoteLineItemId=${attachment.quoteLineItemId}`);
       
-      // Enqueue async processing for thumbnails
-      if (mimeType && mimeType.startsWith('image/')) {
-        const { enqueueArtworkProcessing } = await import('../services/artworkProcessor');
-        enqueueArtworkProcessing({
-          fileId: attachment.id,
-          orgId: organizationId,
-          quoteId,
-          lineItemId,
-          bucket: 'titan-private',
-          originalStorageKey: fileUrl,  // This is uploads/<uuid>
-          contentType: mimeType,
-        });
-      }
+      // TODO: Auto-thumbnail generation temporarily disabled (missing dependencies: pdfjs-dist, canvas)
+      // Will be re-enabled once dependencies are installed
       
       res.json({ success: true, data: attachment });
-    } catch (error) {
+    } catch (error: any) {
       console.error("[LineItemFiles:POST] Error:", error);
-      res.status(500).json({ error: "Failed to attach file to line item" });
+      // Provide useful error message without leaking sensitive details
+      const errorDetail = error.message?.substring(0, 200) || 'Unknown error';
+      res.status(500).json({ 
+        success: false, 
+        message: "Failed to attach file to line item",
+        detail: errorDetail 
+      });
     }
   });
 
@@ -3363,6 +3477,174 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("[LineItemFiles:DOWNLOAD:PROXY] Error:", error);
       return res.status(500).json({ error: error.message || "Failed to download file" });
     }
+  });
+
+  // Get derived assets (thumbnails/previews) for an attachment - returns signed URLs
+  app.get("/api/quotes/:quoteId/line-items/:lineItemId/files/:fileId/assets", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      console.log(`[LineItemFiles:ASSETS] quoteId=${quoteId}, lineItemId=${lineItemId}, fileId=${fileId}`);
+
+      // Validate line item belongs to quote
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.quoteId, quoteId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        console.log(`[LineItemFiles:ASSETS] Line item not found or doesn't belong to quote`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      // Get attachment
+      const [attachment] = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, fileId),
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!attachment) {
+        console.log(`[LineItemFiles:ASSETS] Attachment not found or access denied`);
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+
+      // Generate signed URLs for derived assets if they exist
+      let thumbUrl: string | null = null;
+      let previewUrl: string | null = null;
+
+      if (attachment.thumbKey && isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService();
+        thumbUrl = await supabaseService.getSignedDownloadUrl(attachment.thumbKey, 3600);
+      }
+
+      if (attachment.previewKey && isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService();
+        previewUrl = await supabaseService.getSignedDownloadUrl(attachment.previewKey, 3600);
+      }
+
+      console.log(`[LineItemFiles:ASSETS] Returning assets for file ${fileId}, thumbStatus=${attachment.thumbStatus}`);
+
+      return res.json({
+        success: true,
+        data: {
+          thumbUrl,
+          previewUrl,
+          thumbStatus: attachment.thumbStatus || 'uploaded',
+        },
+      });
+    } catch (error: any) {
+      console.error("[LineItemFiles:ASSETS] Error:", error);
+      return res.status(500).json({ error: error.message || "Failed to get attachment assets" });
+    }
+  });
+
+  // Generate thumbnails for an attachment (explicit user action, images only)
+  app.post("/api/quotes/:quoteId/line-items/:lineItemId/files/:fileId/generate-thumbnails", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      console.log(`[LineItemFiles:GENERATE_THUMBS] quoteId=${quoteId}, lineItemId=${lineItemId}, fileId=${fileId}`);
+
+      // Validate line item belongs to quote
+      const [lineItem] = await db.select().from(quoteLineItems)
+        .where(and(
+          eq(quoteLineItems.id, lineItemId),
+          eq(quoteLineItems.quoteId, quoteId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        console.log(`[LineItemFiles:GENERATE_THUMBS] Line item not found or doesn't belong to quote`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      // Get attachment
+      const [attachment] = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, fileId),
+          eq(quoteAttachments.quoteLineItemId, lineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!attachment) {
+        console.log(`[LineItemFiles:GENERATE_THUMBS] Attachment not found or access denied`);
+        return res.status(404).json({ error: "Attachment not found" });
+      }
+
+      // Validate mime type (images only)
+      if (!attachment.mimeType || !attachment.mimeType.startsWith('image/')) {
+        console.log(`[LineItemFiles:GENERATE_THUMBS] Not an image: ${attachment.mimeType}`);
+        return res.status(400).json({ error: "Thumbnail generation is only supported for image files" });
+      }
+
+      // Set status to pending
+      await db.update(quoteAttachments)
+        .set({
+          thumbStatus: 'thumb_pending',
+          thumbError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(quoteAttachments.id, fileId));
+
+      console.log(`[LineItemFiles:GENERATE_THUMBS] Set status to pending for ${fileId}`);
+
+      // Download original file from storage
+      let originalBuffer: Buffer;
+      if (isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService();
+        const signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
+        const response = await fetch(signedUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to download original file: ${response.statusText}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        originalBuffer = Buffer.from(arrayBuffer);
+      } else {
+        throw new Error('Supabase storage not configured');
+      }
+
+      console.log(`[LineItemFiles:GENERATE_THUMBS] Downloaded original file, size: ${originalBuffer.length} bytes`);
+
+      // TODO: Thumbnail generation temporarily disabled (missing dependencies: sharp)
+      throw new Error('Thumbnail generation temporarily unavailable - dependencies not installed');
+    } catch (error: any) {
+      console.error("[LineItemFiles:GENERATE_THUMBS] Error:", error);
+      
+      // Update DB with failure
+      try {
+        const { fileId } = req.params;
+        await db.update(quoteAttachments)
+          .set({
+            thumbStatus: 'thumb_failed',
+            thumbError: error.message?.substring(0, 500) || 'Thumbnail generation failed',
+            updatedAt: new Date(),
+          })
+          .where(eq(quoteAttachments.id, fileId));
+      } catch (dbError) {
+        console.error("[LineItemFiles:GENERATE_THUMBS] Failed to update error status:", dbError);
+      }
+
+      return res.status(500).json({ error: error.message || "Failed to generate thumbnails" });
+    }
+  });
+
+  // Generate PDF page thumbnails - TEMPORARILY DISABLED
+  // Dependencies (pdfjs-dist, canvas) not yet installed
+  app.post("/api/quotes/:quoteId/line-items/:lineItemId/files/:fileId/generate-pdf-thumbnails", isAuthenticated, tenantContext, async (req: any, res) => {
+    return res.status(501).json({ 
+      error: "PDF thumbnail generation temporarily unavailable",
+      message: "Feature requires additional dependencies to be installed"
+    });
   });
 
   // Download a line item attachment (temp line items) - returns signed URL
@@ -5174,7 +5456,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
     try {
       const files = await storage.listOrderFiles(req.params.id);
-      res.json({ success: true, data: files });
+      
+      // Enrich each attachment with signed URLs (reuse quote attachment enrichment logic)
+      const enrichedFiles = await Promise.all(files.map(async (file: any) => {
+        let originalUrl: string | null = null;
+        let thumbUrl: string | null = null;
+        let previewUrl: string | null = null;
+        
+        if (isSupabaseConfigured()) {
+          const supabaseService = new SupabaseStorageService();
+          
+          // Generate signed URL for original file
+          if (file.fileUrl) {
+            try {
+              originalUrl = await supabaseService.getSignedDownloadUrl(file.fileUrl, 3600);
+            } catch (error) {
+              console.error(`[OrderFiles] Failed to generate originalUrl for ${file.id}:`, error);
+            }
+          }
+          
+          // Order attachments may have thumbnailUrl field (legacy) - generate signed URL if present
+          if (file.thumbnailUrl) {
+            try {
+              thumbUrl = await supabaseService.getSignedDownloadUrl(file.thumbnailUrl, 3600);
+            } catch (error) {
+              console.error(`[OrderFiles] Failed to generate thumbUrl for ${file.id}:`, error);
+            }
+          }
+        } else {
+          // Fallback for non-Supabase storage: use stored URLs directly
+          originalUrl = file.fileUrl;
+          thumbUrl = file.thumbnailUrl || null;
+        }
+        
+        return {
+          ...file,
+          originalUrl,
+          thumbUrl,
+          previewUrl, // Order attachments don't have previewUrl yet, but include for consistency
+        };
+      }));
+      
+      res.json({ success: true, data: enrichedFiles });
     } catch (error) {
       console.error('Error fetching order files:', error);
       res.status(500).json({ error: 'Failed to fetch files' });

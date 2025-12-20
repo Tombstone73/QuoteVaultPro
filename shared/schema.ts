@@ -4,6 +4,7 @@ import {
   boolean,
   decimal,
   index,
+  uniqueIndex,
   integer,
   jsonb,
   pgEnum,
@@ -28,7 +29,7 @@ export const organizationTypeEnum = pgEnum('organization_type', ['internal', 'ex
 export const organizationStatusEnum = pgEnum('organization_status', ['active', 'suspended', 'trial', 'canceled']);
 
 // Quote status enum
-export const quoteStatusEnum = pgEnum('quote_status', ['draft', 'active', 'canceled']);
+export const quoteStatusEnum = pgEnum('quote_status', ['draft', 'pending', 'active', 'canceled']);
 
 // Organizations table - top-level tenant container
 export const organizations = pgTable("organizations", {
@@ -866,6 +867,9 @@ export const quotes = pgTable("quotes", {
   requestedDueDate: timestamp("requested_due_date", { withTimezone: true, mode: "string" }),
   validUntil: timestamp("valid_until", { withTimezone: true, mode: "string" }),
 
+  // Legacy field - kept for backward compatibility
+  convertedToOrderId: varchar("converted_to_order_id"),
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("quotes_organization_id_idx").on(table.organizationId),
@@ -972,6 +976,9 @@ export type QuoteLineItem = typeof quoteLineItems.$inferSelect;
 // Storage provider enum - for future multi-provider support
 export const storageProviderEnum = pgEnum('storage_provider', ['local', 's3', 'gcs', 'supabase']);
 
+// Thumbnail status enum - tracks thumbnail generation lifecycle
+export const thumbStatusEnum = pgEnum('thumb_status', ['uploaded', 'thumb_pending', 'thumb_ready', 'thumb_failed']);
+
 // Quote Attachments table - files uploaded during quote creation (before order conversion)
 // Supports both quote-level attachments (quoteLineItemId = null) and line-item attachments
 export const quoteAttachments = pgTable("quote_attachments", {
@@ -995,16 +1002,16 @@ export const quoteAttachments = pgTable("quote_attachments", {
   extension: varchar("extension", { length: 20 }), // File extension without dot
   sizeBytes: integer("size_bytes"), // File size in bytes
   checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
-  // Thumbnail support (future)
+  // Thumbnail support (legacy fields kept for backward compatibility)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
-  // Async processing fields
-  processingStatus: varchar("processing_status", { length: 50 }).default('uploaded'),
-  thumbStorageKey: text("thumb_storage_key"),
-  previewStorageKey: text("preview_storage_key"),
-  derivedPrintStorageKey: text("derived_print_storage_key"),
-  derivedPrintFilename: varchar("derived_print_filename", { length: 500 }),
-  processingError: text("processing_error"),
+  // Thumbnail scaffolding fields (migration 0034)
+  thumbStatus: thumbStatusEnum("thumb_status").default('uploaded'),
+  thumbKey: text("thumb_key"), // Storage key for small thumbnail (e.g., 200x200)
+  previewKey: text("preview_key"), // Storage key for medium preview (e.g., 800x800)
+  thumbError: text("thumb_error"), // Error message if thumbnail generation failed
+  // PDF page count (for multi-page PDF support)
+  pageCount: integer("page_count"), // Total number of pages for PDF files
   bucket: varchar("bucket", { length: 100 }).default('titan-private'),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -1012,6 +1019,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_quote_id_idx").on(table.quoteId),
   index("quote_attachments_quote_line_item_id_idx").on(table.quoteLineItemId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
+  index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
 ]);
 
 export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).omit({
@@ -1023,6 +1031,34 @@ export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).
 
 export type InsertQuoteAttachment = z.infer<typeof insertQuoteAttachmentSchema>;
 export type QuoteAttachment = typeof quoteAttachments.$inferSelect;
+
+// Quote attachment pages table (for multi-page PDF thumbnails)
+export const quoteAttachmentPages = pgTable("quote_attachment_pages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  attachmentId: varchar("attachment_id").notNull().references(() => quoteAttachments.id, { onDelete: 'cascade' }),
+  pageIndex: integer("page_index").notNull(), // 0-based page index
+  thumbStatus: thumbStatusEnum("thumb_status").notNull().default('uploaded'),
+  thumbKey: text("thumb_key"), // Storage key for page thumbnail
+  previewKey: text("preview_key"), // Storage key for page preview
+  thumbError: text("thumb_error"), // Error message if page thumbnail generation failed
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("quote_attachment_pages_attachment_id_idx").on(table.attachmentId),
+  index("quote_attachment_pages_organization_id_idx").on(table.organizationId),
+  // Enforce uniqueness: one row per page per attachment
+  uniqueIndex("quote_attachment_pages_attachment_page_idx").on(table.attachmentId, table.pageIndex),
+]);
+
+export const insertQuoteAttachmentPageSchema = createInsertSchema(quoteAttachmentPages).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertQuoteAttachmentPage = z.infer<typeof insertQuoteAttachmentPageSchema>;
+export type QuoteAttachmentPage = typeof quoteAttachmentPages.$inferSelect;
 
 // Pricing rules table
 export const pricingRules = pgTable("pricing_rules", {
