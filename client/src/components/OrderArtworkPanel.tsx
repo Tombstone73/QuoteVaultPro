@@ -54,6 +54,10 @@ interface OrderArtworkPanelProps {
   isAdminOrOwner: boolean;
 }
 
+// Helper: validate URL is a proper http(s) string
+const isValidHttpUrl = (v: unknown): v is string =>
+  typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
+
 export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanelProps) {
   const { toast } = useToast();
   const { data: files = [], isLoading } = useOrderFiles(orderId);
@@ -64,6 +68,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editingFile, setEditingFile] = useState<OrderFileWithUser | null>(null);
   const [fileToDelete, setFileToDelete] = useState<string | null>(null);
+  const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
 
   // Upload state
   const [isUploading, setIsUploading] = useState(false);
@@ -316,28 +321,44 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {files.map((file) => (
+                {files.map((file) => {
+                  const safeSrc = isValidHttpUrl(file.thumbnailUrl) ? file.thumbnailUrl : null;
+                  const hasError = imageErrors.has(file.id);
+                  
+                  return (
                   <TableRow key={file.id}>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        {file.thumbnailUrl ? (
+                        {safeSrc && !hasError ? (
                           <img 
-                            src={file.thumbnailUrl} 
-                            alt={file.originalFilename || file.fileName} 
+                            src={safeSrc} 
+                            alt="" 
                             className="h-10 w-10 object-cover rounded"
+                            onError={() => {
+                              setImageErrors(prev => new Set(prev).add(file.id));
+                            }}
                           />
                         ) : (
-                          getRoleIcon(file.role || 'other')
+                          <div className="h-10 w-10 rounded border border-border/60 bg-muted/30 flex items-center justify-center shrink-0">
+                            {getRoleIcon(file.role || 'other')}
+                          </div>
                         )}
                         <div>
-                          <a
-                            href={file.fileUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-medium hover:underline text-sm"
-                          >
-                            {file.originalFilename || file.fileName}
-                          </a>
+                          {/* Use signed originalUrl from server, not storage key fileUrl */}
+                          {file.originalUrl && isValidHttpUrl(file.originalUrl) ? (
+                            <a
+                              href={file.originalUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-medium hover:underline text-sm"
+                            >
+                              {file.originalFilename || file.fileName}
+                            </a>
+                          ) : (
+                            <span className="font-medium text-sm text-muted-foreground">
+                              {file.originalFilename || file.fileName}
+                            </span>
+                          )}
                           {file.description && (
                             <div className="text-xs text-muted-foreground truncate max-w-[200px]">
                               {file.description}
@@ -392,7 +413,8 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                       </TableCell>
                     )}
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           )}

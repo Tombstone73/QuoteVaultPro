@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { OrderAttachment, InsertOrderAttachment, UpdateOrderAttachment, JobFile, InsertJobFile } from "@shared/schema";
 
-// Enriched order attachment with user info
+// Enriched order attachment with user info and signed URLs
 export type OrderFileWithUser = OrderAttachment & {
   uploadedByUser?: {
     id: string;
@@ -9,6 +9,10 @@ export type OrderFileWithUser = OrderAttachment & {
     firstName: string | null;
     lastName: string | null;
   } | null;
+  // Signed URLs from server (use these for display/download, not fileUrl)
+  originalUrl?: string | null;
+  thumbUrl?: string | null;
+  previewUrl?: string | null;
 };
 
 // Artwork summary response shape

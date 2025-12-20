@@ -8,14 +8,22 @@ import { Paperclip, Upload, Download, X, Loader2, FileText, Image, File } from "
 // Max file size: 50MB
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
 
+// Helper: validate URL is a proper http(s) string
+const isValidHttpUrl = (v: unknown): v is string =>
+  typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
+
 type Attachment = {
   id: string;
   fileName: string;
-  fileUrl: string;
+  fileUrl: string; // Storage key - DO NOT use directly in UI
   fileSize?: number | null;
   mimeType?: string | null;
   createdAt: string;
   originalFilename?: string | null;
+  // Signed URLs from server (use these for display/download)
+  originalUrl?: string | null;
+  thumbUrl?: string | null;
+  previewUrl?: string | null;
 };
 
 interface AttachmentsPanelProps {
@@ -313,12 +321,13 @@ export function AttachmentsPanel({
                     )}
                   </div>
                   <div className="flex gap-1 shrink-0">
-                    {file.fileUrl && (
+                    {/* Use signed originalUrl from server, not storage key fileUrl */}
+                    {file.originalUrl && isValidHttpUrl(file.originalUrl) && (
                       <Button
                         variant="ghost"
                         size="sm"
                         className="h-7 w-7 p-0"
-                        onClick={() => window.open(file.fileUrl, "_blank")}
+                        onClick={() => window.open(file.originalUrl!, "_blank")}
                         title="Download"
                       >
                         <Download className="w-3.5 h-3.5" />

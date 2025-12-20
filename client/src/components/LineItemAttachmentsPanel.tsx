@@ -2,11 +2,22 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp } from "lucide-react";
+import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Max file size: 50MB
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
+
+type AttachmentPage = {
+  id: string;
+  pageIndex: number;
+  thumbStatus: 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
+  thumbKey?: string | null;
+  previewKey?: string | null;
+  thumbError?: string | null;
+  thumbUrl?: string | null;
+  previewUrl?: string | null;
+};
 
 type LineItemAttachment = {
   id: string;
@@ -16,6 +27,18 @@ type LineItemAttachment = {
   mimeType?: string | null;
   createdAt: string;
   originalFilename?: string | null;
+  // Thumbnail scaffolding fields (migration 0034)
+  thumbStatus?: 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
+  thumbKey?: string | null;
+  previewKey?: string | null;
+  thumbError?: string | null;
+  // Server-generated signed URLs (added for proper image rendering)
+  originalUrl?: string | null;
+  thumbUrl?: string | null;
+  previewUrl?: string | null;
+  // PDF multi-page support
+  pageCount?: number | null;
+  pages?: AttachmentPage[];
 };
 
 interface LineItemAttachmentsPanelProps {
@@ -243,8 +266,17 @@ export function LineItemAttachmentsPanel({
       if (successCount > 0) {
         toast({
           title: "Artwork Uploaded",
-          description: `${successCount} file${successCount !== 1 ? "s" : ""} attached.`,
+          description: `${successCount} file${successCount !== 1 ? "s" : ""} attached. Thumbnails generating...`,
         });
+
+        // Auto-thumbnails are being generated in background - refresh after a short delay
+        // to pick up the updated status
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: [uploadApiPath] });
+          if (filesApiPath && uploadApiPath !== filesApiPath) {
+            queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+          }
+        }, 2000);
       }
 
       if (errorCount > 0) {
@@ -324,6 +356,72 @@ export function LineItemAttachmentsPanel({
     }
   };
 
+  // Handle thumbnail generation (explicit user action, images only)
+  const handleGenerateThumbnails = async (fileId: string, fileName: string) => {
+    if (!filesApiPath) return;
+
+    try {
+      const response = await fetch(`${filesApiPath}/${fileId}/generate-thumbnails`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to generate thumbnails');
+      }
+
+      // Invalidate queries to refresh the attachment list with updated status
+      queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+
+      toast({
+        title: "Thumbnails Generated",
+        description: `Thumbnails created for ${fileName}`,
+      });
+    } catch (error: any) {
+      console.error("[handleGenerateThumbnails] Error:", error);
+      toast({
+        title: "Generation Failed",
+        description: error.message || "Could not generate thumbnails.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Handle PDF thumbnail generation (explicit user action, PDFs only)
+  const handleGeneratePdfThumbnails = async (fileId: string, fileName: string) => {
+    if (!filesApiPath) return;
+
+    try {
+      const response = await fetch(`${filesApiPath}/${fileId}/generate-pdf-thumbnails`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to generate PDF thumbnails');
+      }
+
+      const result = await response.json();
+
+      // Invalidate queries to refresh the attachment list with updated pages
+      queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+
+      toast({
+        title: "PDF Thumbnails Generated",
+        description: `Generated ${result.data.pagesGenerated} page thumbnail${result.data.pagesGenerated === 1 ? '' : 's'} for ${fileName}`,
+      });
+    } catch (error: any) {
+      console.error("[handleGeneratePdfThumbnails] Error:", error);
+      toast({
+        title: "PDF Generation Failed",
+        description: error.message || "Could not generate PDF thumbnails.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const fileCount = attachments.length;
 
   // TitanOS UX RULE: Always render shell, even if actions are disabled.
@@ -385,7 +483,10 @@ export function LineItemAttachmentsPanel({
   };
 
   return (
-    <div className="border rounded-lg bg-muted/30">
+    <div 
+      className="border rounded-lg bg-muted/30"
+      onPointerDownCapture={(e) => e.stopPropagation()}
+    >
       {/* Compact header - always visible */}
       <div className="px-3 py-2">
         <div className="flex items-center justify-between">
@@ -403,6 +504,7 @@ export function LineItemAttachmentsPanel({
               variant="ghost" 
               size="sm" 
               className="h-6 w-6 p-0"
+              onPointerDownCapture={(e) => e.stopPropagation()}
               onClick={() => setIsExpanded(!isExpanded)}
             >
               {isExpanded ? (
@@ -424,11 +526,14 @@ export function LineItemAttachmentsPanel({
               multiple
               accept="image/*,.pdf,.ai,.eps,.psd,.svg"
               onChange={handleFileUpload}
+              onPointerDownCapture={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
             />
             <Button
               variant="outline"
               size="sm"
               className="w-full h-8"
+              onPointerDownCapture={(e) => e.stopPropagation()}
               onClick={handleUploadClick}
               disabled={isUploading || isCreatingQuote || isPersistingLineItem || (!lineItemId && !ensureLineItemId)}
             >
@@ -468,42 +573,113 @@ export function LineItemAttachmentsPanel({
             <div className="space-y-1">
               {attachments.map((file) => {
                 const FileIcon = getFileIcon(file.mimeType);
+                const isPdf = file.mimeType === 'application/pdf';
+                // Only use signed URL from server - validate it's a proper URL
+                const firstPageThumb = file.pages?.[0]?.thumbUrl;
+                const hasValidThumb = firstPageThumb && typeof firstPageThumb === 'string' && firstPageThumb.startsWith('http');
+                
                 return (
-                  <div
-                    key={file.id}
-                    className="flex items-center gap-2 p-1.5 rounded bg-background hover:bg-muted/50 transition-colors"
-                  >
-                    <FileIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs truncate block">
-                        {file.originalFilename || file.fileName}
-                      </span>
-                    </div>
-                    <div className="flex gap-0.5 shrink-0">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDownloadFile(file.id, file.originalFilename || file.fileName);
-                        }}
-                        title="Download"
-                      >
-                        <Download className="w-3 h-3" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0 text-destructive hover:text-destructive"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteFile(file.id);
-                        }}
-                        title="Remove"
-                      >
-                        <X className="w-3 h-3" />
-                      </Button>
+                  <div key={file.id} className="space-y-1">
+                    <div className="flex items-center gap-2 p-1.5 rounded bg-background hover:bg-muted/50 transition-colors">
+                      {/* PDF first page thumbnail or icon */}
+                      {isPdf && hasValidThumb ? (
+                        <div className="w-8 h-8 rounded border border-border/60 overflow-hidden shrink-0">
+                          <img 
+                            src={firstPageThumb} 
+                            alt="" 
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              // On error, hide image and show icon instead
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <FileIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                      )}
+                      
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs truncate block">
+                          {file.originalFilename || file.fileName}
+                        </span>
+                        {isPdf && file.pageCount && (
+                          <span className="text-[10px] text-muted-foreground">
+                            {file.pageCount} {file.pageCount === 1 ? 'page' : 'pages'}
+                            {file.pages && file.pages.length > 0 && ` • ${file.pages.length} thumbnail${file.pages.length === 1 ? '' : 's'}`}
+                          </span>
+                        )}
+                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && (
+                          <span className={cn(
+                            "text-[10px]",
+                            file.thumbStatus === 'thumb_ready' && "text-green-600",
+                            file.thumbStatus === 'thumb_pending' && "text-amber-600",
+                            file.thumbStatus === 'thumb_failed' && "text-destructive"
+                          )}>
+                            {file.thumbStatus === 'thumb_ready' && '✓ Thumbs ready'}
+                            {file.thumbStatus === 'thumb_pending' && '⏳ Generating...'}
+                            {file.thumbStatus === 'thumb_failed' && '✗ Generation failed'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex gap-0.5 shrink-0">
+                        {file.mimeType?.startsWith('image/') && file.thumbStatus !== 'thumb_ready' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0"
+                            onPointerDownCapture={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleGenerateThumbnails(file.id, file.originalFilename || file.fileName);
+                            }}
+                            title="Generate Thumbnails"
+                            disabled={file.thumbStatus === 'thumb_pending'}
+                          >
+                            <Sparkles className="w-3 h-3" />
+                          </Button>
+                        )}
+                        {isPdf && (!file.pages || file.pages.length === 0) && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0"
+                            onPointerDownCapture={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleGeneratePdfThumbnails(file.id, file.originalFilename || file.fileName);
+                            }}
+                            title="Generate PDF Thumbnails"
+                          >
+                            <Sparkles className="w-3 h-3" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          onPointerDownCapture={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDownloadFile(file.id, file.originalFilename || file.fileName);
+                          }}
+                          title="Download"
+                        >
+                          <Download className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                          onPointerDownCapture={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteFile(file.id);
+                          }}
+                          title="Remove"
+                        >
+                          <X className="w-3 h-3" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -552,6 +728,7 @@ export function LineItemArtworkBadge({ quoteId, lineItemId, onClick }: LineItemA
 
   return (
     <button
+      onPointerDownCapture={(e) => e.stopPropagation()}
       onClick={onClick}
       className={cn(
         "inline-flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors",
