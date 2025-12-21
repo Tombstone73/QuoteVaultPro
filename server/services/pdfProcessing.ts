@@ -72,8 +72,26 @@ async function ensurePdfjs(): Promise<boolean> {
 }
 
 async function ensureCanvas(): Promise<boolean> {
-  canvasAvailable = false;
-  return false;
+  if (canvasModule !== null) {
+    return canvasAvailable;
+  }
+
+  try {
+    // Dynamic import for canvas (ESM-safe)
+    const canvasImport = await import('canvas');
+    // Canvas package exports createCanvas as a named export
+    canvasModule = canvasImport;
+    canvasAvailable = true;
+    console.log("[PdfProcessing] canvas loaded (esm)");
+    return true;
+  } catch (error) {
+    canvasAvailable = false;
+    if (!dependencyWarningLogged) {
+      console.warn('[PdfProcessing] canvas unavailable; PDF thumbnail generation disabled. Error:', error);
+      dependencyWarningLogged = true;
+    }
+    return false;
+  }
 }
 
 async function ensureSharp(): Promise<boolean> {
