@@ -3,10 +3,22 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, isValidHttpUrl } from "@/lib/utils";
+import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
+import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 // Max file size: 50MB
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
+
+// Helper: Check if error message indicates thumbnail generation is unavailable (not failed)
+function isThumbsUnavailableError(msg: string | null | undefined): boolean {
+  if (!msg) return false;
+  const lowerMsg = msg.toLowerCase();
+  return lowerMsg.includes('temporarily unavailable') ||
+         lowerMsg.includes('dependencies not installed') ||
+         lowerMsg.includes('sharp unavailable');
+}
 
 type AttachmentPage = {
   id: string;
@@ -72,6 +84,7 @@ export function LineItemAttachmentsPanel({
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
   const [pendingOpenPicker, setPendingOpenPicker] = useState(false);
+  const [previewFile, setPreviewFile] = useState<LineItemAttachment | null>(null);
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
     quoteId: null,
@@ -98,6 +111,19 @@ export function LineItemAttachmentsPanel({
         ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
         : `/api/line-items/${lineItemId}/files`)
     : null;
+
+  // Fetch system status to check if thumbnails are enabled
+  const { data: systemStatus } = useQuery<{ thumbnailsEnabled: boolean }>({
+    queryKey: ['/api/system/status'],
+    queryFn: async () => {
+      const response = await fetch('/api/system/status', { credentials: 'include' });
+      if (!response.ok) return { thumbnailsEnabled: true }; // Default to enabled on error
+      return response.json();
+    },
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
+
+  const thumbnailsEnabled = systemStatus?.thumbnailsEnabled ?? true; // Default to enabled
 
   // Fetch attachments for this line item
   const { data: attachments = [], isLoading } = useQuery<LineItemAttachment[]>({
@@ -328,12 +354,14 @@ export function LineItemAttachmentsPanel({
     }
   };
 
-  // Handle file download - use anchor element with download attribute to force original filename
+  // Handle file download - downloads the ORIGINAL file via proxy endpoint
+  // The proxy endpoint uses attachment.fileUrl (original storage key), not thumbKey/previewKey
   const handleDownloadFile = async (fileId: string, fileName: string) => {
     if (!filesApiPath) return;
 
     try {
-      // Use proxy endpoint which provides the file content
+      // Use proxy endpoint which streams the original file (fileUrl) from storage
+      // Server-side: uses attachment.fileUrl to fetch original, sets correct Content-Disposition
       const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
       
       // Create temporary anchor element with download attribute to force filename
@@ -366,9 +394,67 @@ export function LineItemAttachmentsPanel({
         credentials: 'include',
       });
 
+      // Handle 202 Accepted (queued)
+      if (response.status === 202) {
+        const data = await response.json().catch(() => ({}));
+        toast({
+          title: "Queued",
+          description: data.message || "Thumbnail generation queued",
+        });
+        
+        // Poll for thumbnail completion: refetch every 1s up to 10s OR until thumbUrl appears
+        let pollCount = 0;
+        const maxPolls = 10;
+        const pollInterval = 1000; // 1 second
+        
+        const pollForThumbnail = async () => {
+          pollCount++;
+          
+          // Refetch attachments and wait for result
+          await queryClient.refetchQueries({ queryKey: [filesApiPath] });
+          
+          // Get current attachment data after refetch
+          const queryData = queryClient.getQueryData<LineItemAttachment[]>([filesApiPath]);
+          const attachment = queryData?.find(a => a.id === fileId);
+          
+          // Check if thumbnail is ready (thumbUrl exists and is valid, or thumbKey exists)
+          const hasThumbnail = attachment && (
+            (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) ||
+            (attachment.thumbKey && attachment.thumbKey.length > 0)
+          );
+          
+          if (hasThumbnail) {
+            // Thumbnail is ready - stop polling
+            toast({
+              title: "Thumbnails ready",
+              description: `Thumbnails created for ${fileName}`,
+            });
+            return;
+          }
+          
+          // Continue polling if not ready and not exceeded max polls
+          if (pollCount < maxPolls) {
+            setTimeout(pollForThumbnail, pollInterval);
+          } else {
+            // Timeout - show message
+            toast({
+              title: "Queued",
+              description: "Queued; refresh in a few seconds",
+            });
+          }
+        };
+        
+        // Start polling after initial delay
+        setTimeout(pollForThumbnail, pollInterval);
+        return;
+      }
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to generate thumbnails');
+        const error = new Error(errorData.error || errorData.message || 'Failed to generate thumbnails') as any;
+        error.response = response; // Attach response for status checking
+        error.data = errorData; // Attach full error data for code checking
+        throw error;
       }
 
       // Invalidate queries to refresh the attachment list with updated status
@@ -380,11 +466,28 @@ export function LineItemAttachmentsPanel({
       });
     } catch (error: any) {
       console.error("[handleGenerateThumbnails] Error:", error);
-      toast({
-        title: "Generation Failed",
-        description: error.message || "Could not generate thumbnails.",
-        variant: "destructive",
-      });
+      
+      // Check if this is an "unavailable" error (503, 501 for PDF, THUMBNAILS_UNAVAILABLE code, or message-based detection)
+      const isUnavailableError = error.response?.status === 503 || 
+                                  error.response?.status === 501 ||
+                                  error.data?.code === 'THUMBNAILS_UNAVAILABLE' ||
+                                  isThumbsUnavailableError(error.message) ||
+                                  isThumbsUnavailableError(error.data?.message);
+      
+      if (isUnavailableError) {
+        // Show neutral message for unavailable (not a failure)
+        toast({
+          title: "Thumbnail Generation Unavailable",
+          description: error.data?.message || error.message || "Thumbnail generation is currently unavailable.",
+        });
+      } else {
+        // Show error message for actual failures
+        toast({
+          title: "Generation Failed",
+          description: error.message || error.data?.message || "Could not generate thumbnails.",
+          variant: "destructive",
+        });
+      }
     }
   };
 
@@ -573,84 +676,167 @@ export function LineItemAttachmentsPanel({
             <div className="space-y-1">
               {attachments.map((file) => {
                 const FileIcon = getFileIcon(file.mimeType);
-                const isPdf = file.mimeType === 'application/pdf';
+                const isPdf = isPdfAttachment(file);
                 // Only use signed URL from server - validate it's a proper URL
                 const firstPageThumb = file.pages?.[0]?.thumbUrl;
-                const hasValidThumb = firstPageThumb && typeof firstPageThumb === 'string' && firstPageThumb.startsWith('http');
+                const hasValidPdfThumb = firstPageThumb && isValidHttpUrl(firstPageThumb);
+                // Check if thumbUrl exists for any file type (not just images)
+                const hasValidThumb = file.thumbUrl && isValidHttpUrl(file.thumbUrl);
+                const hasAnyThumbnail = hasValidPdfThumb || hasValidThumb;
+                const thumbnailUrl = hasValidPdfThumb ? firstPageThumb : (hasValidThumb ? file.thumbUrl : null);
+                const fileName = getAttachmentDisplayName(file);
+                const pageCount = getPdfPageCount(file);
+                const showPageCount = isPdf && pageCount !== null && pageCount > 1;
                 
                 return (
                   <div key={file.id} className="space-y-1">
-                    <div className="flex items-center gap-2 p-1.5 rounded bg-background hover:bg-muted/50 transition-colors">
-                      {/* PDF first page thumbnail or icon */}
-                      {isPdf && hasValidThumb ? (
-                        <div className="w-8 h-8 rounded border border-border/60 overflow-hidden shrink-0">
-                          <img 
-                            src={firstPageThumb} 
-                            alt="" 
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              // On error, hide image and show icon instead
-                              e.currentTarget.style.display = 'none';
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <FileIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                      )}
+                    <div 
+                      className="flex items-center gap-2 p-1.5 rounded bg-background hover:bg-muted/50 transition-colors cursor-pointer"
+                      onClick={(e) => {
+                        // Only trigger preview if click is not on action buttons
+                        const target = e.target as HTMLElement;
+                        if (target.closest('button') && !target.closest('[aria-label*="Preview"]')) {
+                          return; // Don't trigger if clicking action buttons
+                        }
+                        e.stopPropagation();
+                        console.log("[PreviewClick]", file.id);
+                        setPreviewFile(file);
+                      }}
+                      onPointerDownCapture={(e) => {
+                        const target = e.target as HTMLElement;
+                        if (target.closest('button') && !target.closest('[aria-label*="Preview"]')) {
+                          return;
+                        }
+                        e.stopPropagation();
+                      }}
+                    >
+                      {/* Thumbnail (44x44) or icon - fixed width to prevent layout jitter */}
+                      <div className="h-11 w-11 shrink-0 flex items-center justify-center relative" title={fileName} aria-label={fileName}>
+                        {hasAnyThumbnail && thumbnailUrl ? (
+                          <>
+                            <img 
+                              src={thumbnailUrl} 
+                              alt={fileName}
+                              title={fileName}
+                              className="h-11 w-11 rounded object-cover border border-border/60 pointer-events-none select-none"
+                              onError={(e) => {
+                                // On error, hide image and show icon fallback
+                                e.currentTarget.style.display = 'none';
+                                const container = e.currentTarget.parentElement;
+                                if (container) {
+                                  const fallback = container.querySelector('.thumbnail-fallback');
+                                  if (fallback) {
+                                    (fallback as HTMLElement).style.display = 'flex';
+                                  }
+                                }
+                              }}
+                            />
+                            {/* Fallback icon (hidden by default, shown on image error) */}
+                            <div className="thumbnail-fallback hidden absolute inset-0 items-center justify-center">
+                              <FileIcon className="w-5 h-5 text-muted-foreground pointer-events-none select-none" />
+                            </div>
+                          </>
+                        ) : (
+                          <FileIcon className="w-5 h-5 text-muted-foreground pointer-events-none select-none" />
+                        )}
+                      </div>
                       
                       <div className="flex-1 min-w-0">
-                        <span className="text-xs truncate block">
-                          {file.originalFilename || file.fileName}
-                        </span>
-                        {isPdf && file.pageCount && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs truncate block">
+                            {fileName}
+                          </span>
+                          {showPageCount && (
+                            <span className="text-[10px] px-1.5 py-0.5 bg-muted border border-border/60 rounded text-muted-foreground shrink-0">
+                              Pages: {pageCount}
+                            </span>
+                          )}
+                        </div>
+                        {isPdf && pageCount !== null && (
                           <span className="text-[10px] text-muted-foreground">
-                            {file.pageCount} {file.pageCount === 1 ? 'page' : 'pages'}
+                            {pageCount} {pageCount === 1 ? 'page' : 'pages'}
                             {file.pages && file.pages.length > 0 && ` • ${file.pages.length} thumbnail${file.pages.length === 1 ? '' : 's'}`}
                           </span>
                         )}
-                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && (
-                          <span className={cn(
-                            "text-[10px]",
-                            file.thumbStatus === 'thumb_ready' && "text-green-600",
-                            file.thumbStatus === 'thumb_pending' && "text-amber-600",
-                            file.thumbStatus === 'thumb_failed' && "text-destructive"
-                          )}>
-                            {file.thumbStatus === 'thumb_ready' && '✓ Thumbs ready'}
-                            {file.thumbStatus === 'thumb_pending' && '⏳ Generating...'}
-                            {file.thumbStatus === 'thumb_failed' && '✗ Generation failed'}
-                          </span>
-                        )}
+                        {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && (() => {
+                          const isUnavailable = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
+                          return (
+                            <span className={cn(
+                              "text-[10px]",
+                              file.thumbStatus === 'thumb_ready' && "text-green-600",
+                              file.thumbStatus === 'thumb_pending' && "text-amber-600",
+                              file.thumbStatus === 'thumb_failed' && !isUnavailable && "text-destructive",
+                              file.thumbStatus === 'thumb_failed' && isUnavailable && "text-muted-foreground"
+                            )}>
+                              {file.thumbStatus === 'thumb_ready' && '✓ Thumbs ready'}
+                              {file.thumbStatus === 'thumb_pending' && '⏳ Generating...'}
+                              {file.thumbStatus === 'thumb_failed' && !isUnavailable && '✗ Generation failed'}
+                              {file.thumbStatus === 'thumb_failed' && isUnavailable && 'Thumbnails temporarily unavailable'}
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="flex gap-0.5 shrink-0">
-                        {file.mimeType?.startsWith('image/') && file.thumbStatus !== 'thumb_ready' && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 w-6 p-0"
-                            onPointerDownCapture={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleGenerateThumbnails(file.id, file.originalFilename || file.fileName);
-                            }}
-                            title="Generate Thumbnails"
-                            disabled={file.thumbStatus === 'thumb_pending'}
-                          >
-                            <Sparkles className="w-3 h-3" />
-                          </Button>
-                        )}
+                        {(() => {
+                          // Skip PDFs - they have separate disabled button below
+                          if (isPdf) return null;
+                          
+                          // Supported image types (same as server allowlist)
+                          const supportedImageTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/tiff', 'image/tif'];
+                          const isSupportedImage = file.mimeType && supportedImageTypes.includes(file.mimeType.toLowerCase());
+                          
+                          if (!isSupportedImage) return null;
+                          
+                          // Show button when:
+                          // - No thumbUrl exists (regardless of status), OR
+                          // - thumbStatus is thumb_failed (but not unavailable error)
+                          const hasThumbnail = file.thumbUrl && isValidHttpUrl(file.thumbUrl);
+                          const shouldShowButton = !hasThumbnail || file.thumbStatus === 'thumb_failed';
+                          
+                          if (!shouldShowButton) return null;
+                          
+                          const isUnavailableError = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
+                          const shouldDisable = !thumbnailsEnabled || isUnavailableError || file.thumbStatus === 'thumb_pending';
+                          
+                          if (shouldDisable) {
+                            return (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 w-6 p-0"
+                                disabled
+                                title={isUnavailableError ? "Thumbnail generation temporarily unavailable" : "Thumbnails currently disabled"}
+                              >
+                                <Sparkles className="w-3 h-3 opacity-50" />
+                              </Button>
+                            );
+                          }
+                          
+                          return (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              onPointerDownCapture={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleGenerateThumbnails(file.id, file.originalFilename || file.fileName);
+                              }}
+                              title="Regenerate thumbnails"
+                            >
+                              <Sparkles className="w-3 h-3" />
+                            </Button>
+                          );
+                        })()}
                         {isPdf && (!file.pages || file.pages.length === 0) && (
                           <Button
                             variant="ghost"
                             size="sm"
                             className="h-6 w-6 p-0"
-                            onPointerDownCapture={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleGeneratePdfThumbnails(file.id, file.originalFilename || file.fileName);
-                            }}
-                            title="Generate PDF Thumbnails"
+                            disabled
+                            title="PDF preview disabled (v2)"
                           >
-                            <Sparkles className="w-3 h-3" />
+                            <Sparkles className="w-3 h-3 opacity-50" />
                           </Button>
                         )}
                         <Button
@@ -662,7 +848,7 @@ export function LineItemAttachmentsPanel({
                             e.stopPropagation();
                             handleDownloadFile(file.id, file.originalFilename || file.fileName);
                           }}
-                          title="Download"
+                          title="Download original file"
                         >
                           <Download className="w-3 h-3" />
                         </Button>
@@ -692,6 +878,115 @@ export function LineItemAttachmentsPanel({
           )}
         </div>
       )}
+
+      {/* Preview Modal */}
+      {(() => {
+        console.log("[PreviewDialogOpen]", !!previewFile, previewFile?.originalFilename || previewFile?.fileName);
+        return (
+          <Dialog open={!!previewFile} onOpenChange={(open) => { if (!open) setPreviewFile(null); }}>
+            <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>
+                  {previewFile ? getAttachmentDisplayName(previewFile) : ""}
+                </DialogTitle>
+                <DialogDescription>
+                  <div className="space-y-1">
+                    {previewFile?.mimeType ? (
+                      <div>
+                        <span>File type: </span>
+                        <span>{previewFile.mimeType}</span>
+                      </div>
+                    ) : (
+                      <div>Preview attachment</div>
+                    )}
+                    <AttachmentPreviewMeta attachment={previewFile} />
+                  </div>
+                </DialogDescription>
+              </DialogHeader>
+              {previewFile && (() => {
+                const isPdf = isPdfAttachment(previewFile);
+                const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl;
+                const hasValidPreview = !isPdf && previewUrl && isValidHttpUrl(previewUrl);
+                const hasValidOriginal = previewFile.originalUrl && isValidHttpUrl(previewFile.originalUrl);
+                const fileName = getAttachmentDisplayName(previewFile);
+                
+                return (
+                  <div className="space-y-4">
+                    {isPdf ? (
+                      // PDF handling - no preview rendering, show button to open in new tab
+                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                        <FileText className="w-16 h-16 mb-4 opacity-50" />
+                        <p className="text-sm mb-4">PDF preview not available</p>
+                        {hasValidOriginal && (
+                          <div className="flex flex-col items-center gap-1">
+                            <Button
+                              onClick={() => {
+                                if (filesApiPath) {
+                                  handleDownloadFile(previewFile.id, fileName);
+                                }
+                              }}
+                              variant="outline"
+                            >
+                              <Download className="w-4 h-4 mr-2" />
+                              Download PDF
+                            </Button>
+                            <span className="text-xs text-muted-foreground">Downloads original file</span>
+                          </div>
+                        )}
+                      </div>
+                    ) : hasValidPreview ? (
+                      <div className="flex justify-center bg-muted/30 rounded-lg p-4">
+                        <img 
+                          src={previewUrl} 
+                          alt={fileName}
+                          className="max-w-full max-h-[60vh] object-contain"
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                        <FileText className="w-16 h-16 mb-4 opacity-50" />
+                        <p className="text-sm">Preview not available for this file</p>
+                      </div>
+                    )}
+                    
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="space-y-1">
+                        <div>
+                          <span className="font-medium">Filename: </span>
+                          <span className="text-muted-foreground">{fileName}</span>
+                        </div>
+                        {previewFile.mimeType && (
+                          <div>
+                            <span className="font-medium">Type: </span>
+                            <span className="text-muted-foreground">{previewFile.mimeType}</span>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {!isPdf && hasValidOriginal && (
+                        <div className="flex flex-col items-end gap-1">
+                          <Button
+                            onClick={() => {
+                              if (filesApiPath) {
+                                handleDownloadFile(previewFile.id, fileName);
+                              }
+                            }}
+                            variant="outline"
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            Download
+                          </Button>
+                          <span className="text-xs text-muted-foreground">Downloads original file</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </DialogContent>
+          </Dialog>
+        );
+      })()}
     </div>
   );
 }

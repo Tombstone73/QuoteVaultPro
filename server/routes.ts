@@ -3185,6 +3185,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
       
+      // Fire-and-forget thumbnail generation for images (non-blocking)
+      // Use isSupportedImageType helper which supports both mimeType and fileName-based detection
+      // Fire-and-forget thumbnail generation for images (non-blocking)
+      const { isSupportedImageType } = await import('./services/thumbnailGenerator');
+      const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
+      const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
+      const hasStorageProviderForThumb = !!attachment.storageProvider;
+      const isNotHttpUrlForThumb = attachment.fileUrl && !attachment.fileUrl.startsWith('http://') && !attachment.fileUrl.startsWith('https://');
+      
+      if (isSupportedImage && hasStorageProviderForThumb && isNotHttpUrlForThumb && attachment.fileUrl) {
+        const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
+        if (isThumbnailGenerationEnabled()) {
+          void generateImageDerivatives(
+            attachment.id,
+            'quote',
+            attachment.fileUrl,
+            attachment.mimeType || null,
+            attachment.storageProvider!,
+            organizationId,
+            attachmentFileNameForThumb
+          ).catch((error) => {
+            // Errors are already logged inside generateImageDerivatives
+            console.error(`[QuoteFiles:POST] Thumbnail generation failed for ${attachment.id}:`, error);
+          });
+        } else {
+          console.log(`[QuoteFiles:POST] Thumbnail generation disabled, skipping for ${attachment.id}`);
+        }
+      } else if (isSupportedImage && (!hasStorageProviderForThumb || !isNotHttpUrlForThumb)) {
+        console.log(`[QuoteFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+      }
+      
       res.json({ success: true, data: attachment });
     } catch (error) {
       console.error("Error attaching file to quote:", error);
@@ -3321,7 +3352,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Line item not found" });
       }
       
-      const attachmentData = {
+      // Detect if this is a PDF (by mimeType or filename) - will be recalculated after attachment creation
+      const isPdfEarly = (mimeType && mimeType.toLowerCase().includes('pdf')) || 
+                    (fileName && fileName.toLowerCase().endsWith('.pdf'));
+
+      // Check if PDF processing columns exist (from startup probe)
+      const { hasPageCountStatusColumn } = await import('./db');
+      const pdfColumnsExist = hasPageCountStatusColumn() === true;
+
+      if (isPdfEarly && !pdfColumnsExist) {
+        console.warn(`[LineItemFiles:POST] PDF detected but page_count_status column missing; PDF processing disabled for ${fileName}`);
+      }
+
+      // Determine storage provider:
+      // - If Supabase is configured and fileUrl doesn't start with http, it's Supabase
+      // - If fileUrl starts with http/https, it's a legacy external URL (no provider)
+      // - Otherwise, assume local (fallback)
+      let storageProvider: string | undefined;
+      const storageKey = fileUrl; // Use fileUrl as storage key
+      
+      if (isSupabaseConfigured() && fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
+        // Supabase storage: fileUrl is the object path (e.g., "uploads/<uuid>")
+        storageProvider = 'supabase';
+      } else if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+        // Legacy external URL (GCS, etc.) - no storageProvider set
+        storageProvider = undefined;
+      } else {
+        // Local storage (fallback)
+        storageProvider = 'local';
+      }
+
+      const attachmentData: any = {
         quoteId,
         quoteLineItemId: lineItemId,
         organizationId,
@@ -3329,21 +3390,127 @@ export async function registerRoutes(app: Express): Promise<Server> {
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         fileName,
         originalFilename: fileName,
-        fileUrl,  // This is now the storage key: uploads/<uuid>
+        fileUrl: storageKey,  // Storage key: uploads/<uuid> for Supabase, or path for local
         fileSize: fileSize || null,
         mimeType: mimeType || null,
         description: description || null,
         bucket: 'titan-private',
-        thumbStatus: 'uploaded' as const, // Default status for thumbnail scaffolding
+        storageProvider: storageProvider, // Set based on detection above
+        thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const), // PDFs start as pending, images as uploaded
       };
+
+      // Only include PDF-specific fields if columns exist
+      if (pdfColumnsExist) {
+        attachmentData.pageCountStatus = isPdfEarly ? ('detecting' as const) : ('unknown' as const);
+      }
       
       console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
       const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
       
+      console.log(`[LineItemFiles:POST] Saved attachment storageProvider=${attachment.storageProvider || 'none'} storageKey=${storageKey}`);
       console.log(`[LineItemFiles:POST] Created attachment id=${attachment.id}, quoteLineItemId=${attachment.quoteLineItemId}`);
       
-      // TODO: Auto-thumbnail generation temporarily disabled (missing dependencies: pdfjs-dist, canvas)
-      // Will be re-enabled once dependencies are installed
+      // Robust PDF detection using both mimeType and filename
+      const attachmentFileName =
+        (attachment.originalFilename ?? attachment.fileName ?? '').toString();
+
+      const isPdfByMime = (attachment.mimeType ?? '').toLowerCase().includes('pdf');
+      const isPdfByName = attachmentFileName.toLowerCase().endsWith('.pdf');
+      const isPdf = isPdfByMime || isPdfByName;
+
+      const hasStorageProvider = !!attachment.storageProvider;
+      const isNotHttpUrl =
+        !!attachment.fileUrl &&
+        !attachment.fileUrl.startsWith('http://') &&
+        !attachment.fileUrl.startsWith('https://');
+
+      console.log('[LineItemFiles:POST][Detect]', {
+        attachmentId: attachment.id,
+        fileName: attachmentFileName,
+        mimeType: attachment.mimeType ?? null,
+        storageProvider: attachment.storageProvider ?? null,
+        fileUrl: attachment.fileUrl ?? null,
+        isPdfByMime,
+        isPdfByName,
+        isPdf,
+        hasStorageProvider,
+        isNotHttpUrl,
+        pdfColumnsExist,
+      });
+      
+      // Fire-and-forget thumbnail generation for images (non-blocking)
+      // Use isSupportedImageType helper which supports both mimeType and fileName-based detection
+      const { isSupportedImageType } = await import('./services/thumbnailGenerator');
+      const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
+      const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
+      
+      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && attachment.fileUrl) {
+        const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
+        if (isThumbnailGenerationEnabled()) {
+          void generateImageDerivatives(
+            attachment.id,
+            'quote',
+            attachment.fileUrl,
+            attachment.mimeType || null,
+            attachment.storageProvider!,
+            organizationId,
+            attachmentFileNameForThumb
+          ).catch((error) => {
+            // Errors are already logged inside generateImageDerivatives
+            // This catch prevents unhandled promise rejection
+            console.error(`[LineItemFiles:POST] Thumbnail generation failed for ${attachment.id}:`, error);
+          });
+        } else {
+          console.log(`[LineItemFiles:POST] Thumbnail generation disabled, skipping for ${attachment.id}`);
+        }
+      } else if (isSupportedImage && (!hasStorageProvider || !isNotHttpUrl)) {
+        console.log(`[LineItemFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+      }
+      
+      // Fire-and-forget PDF processing for PDFs (non-blocking)
+      // Trigger AFTER response finishes to ensure upload completes successfully first
+      // Normalize storageProvider: if missing but Supabase is configured and fileUrl starts with "uploads/", treat as supabase
+      const normalizedStorageProvider =
+        attachment.storageProvider ??
+        (isSupabaseConfigured() && attachment.fileUrl?.startsWith("uploads/")
+          ? "supabase"
+          : null);
+      
+      if (isPdf) {
+        if (!pdfColumnsExist) {
+          console.warn(`[LineItemFiles:POST] PDF detected but pdf columns missing; skipping processing for attachmentId=${attachment.id}`);
+        } else if (!normalizedStorageProvider) {
+          console.warn(`[LineItemFiles:POST] PDF detected but storageProvider missing; skipping processing for attachmentId=${attachment.id}`);
+        } else if (!isNotHttpUrl) {
+          console.warn(`[LineItemFiles:POST] PDF detected but fileUrl is http(s); skipping processing for attachmentId=${attachment.id}`);
+        } else if (!attachment.fileUrl) {
+          console.warn(`[LineItemFiles:POST] PDF detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
+        } else {
+          console.log(`[LineItemFiles:POST] PDF detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
+          
+          res.on("finish", () => {
+            setImmediate(() => {
+              void (async () => {
+                try {
+                  console.log(`[LineItemFiles:POST] Starting PDF processing for attachmentId=${attachment.id}`);
+                  const { processPdfAttachmentDerivedData } = await import('./services/pdfProcessing');
+                  await processPdfAttachmentDerivedData({
+                    orgId: organizationId,
+                    attachmentId: attachment.id,
+                    storageKey: attachment.fileUrl,
+                    storageProvider: normalizedStorageProvider,
+                    mimeType: attachment.mimeType || null,
+                  });
+                } catch (error: any) {
+                  // Errors are already logged inside processPdfAttachmentDerivedData
+                  // This catch prevents unhandled promise rejection and server crashes
+                  console.error(`[LineItemFiles:POST] PDF kickoff failed for ${attachment.id}:`, error);
+                }
+              })();
+            });
+          });
+        }
+      }
       
       res.json({ success: true, data: attachment });
     } catch (error: any) {
@@ -3564,7 +3731,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!lineItem) {
         console.log(`[LineItemFiles:GENERATE_THUMBS] Line item not found or doesn't belong to quote`);
-        return res.status(404).json({ error: "Line item not found" });
+        return res.status(404).json({ success: false, message: "Line item not found" });
       }
 
       // Get attachment
@@ -3578,13 +3745,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!attachment) {
         console.log(`[LineItemFiles:GENERATE_THUMBS] Attachment not found or access denied`);
-        return res.status(404).json({ error: "Attachment not found" });
+        return res.status(404).json({ success: false, message: "Attachment not found" });
       }
 
-      // Validate mime type (images only)
-      if (!attachment.mimeType || !attachment.mimeType.startsWith('image/')) {
-        console.log(`[LineItemFiles:GENERATE_THUMBS] Not an image: ${attachment.mimeType}`);
-        return res.status(400).json({ error: "Thumbnail generation is only supported for image files" });
+      // Import thumbnail generator utilities
+      const thumbnailModule = await import('./services/thumbnailGenerator');
+      const { generateImageDerivatives, isThumbnailGenerationEnabled, isSupportedImageType } = thumbnailModule;
+      
+      // Check feature flag
+      if (!isThumbnailGenerationEnabled()) {
+        console.log(`[LineItemFiles:GENERATE_THUMBS] Thumbnail generation disabled via THUMBNAILS_ENABLED env var`);
+        return res.status(503).json({ 
+          success: false,
+          code: 'THUMBNAILS_UNAVAILABLE',
+          error: "Thumbnail generation is currently disabled",
+          message: "Thumbnail generation is disabled. Please enable it via THUMBNAILS_ENABLED environment variable."
+        });
+      }
+
+      // Check sharp availability at runtime (same as thumbnailGenerator uses)
+      const sharpAvailable = await thumbnailModule.ensureSharp();
+      if (!sharpAvailable) {
+        console.log(`[LineItemFiles:GENERATE_THUMBS] sharp not available - returning 503`);
+        return res.status(503).json({ 
+          success: false,
+          code: 'THUMBNAILS_UNAVAILABLE',
+          error: "Thumbnail generation temporarily unavailable",
+          message: "Thumbnail generation requires sharp package to be installed"
+        });
+      }
+
+      // Handle PDFs - disabled (no pdfjs/canvas deps)
+      if (attachment.mimeType === 'application/pdf') {
+        console.log(`[LineItemFiles:GENERATE_THUMBS] PDF thumbnail generation disabled (no pdf deps)`);
+        return res.status(501).json({ 
+          success: false,
+          message: "PDF thumbnails are disabled (no pdf deps installed yet)" 
+        });
+      }
+
+      // Check if it's a supported image type (uses mimeType and fileName fallback)
+      const fileName = attachment.originalFilename || attachment.fileName || null;
+      const isSupportedImage = isSupportedImageType(attachment.mimeType, fileName);
+
+      if (!isSupportedImage) {
+        console.log(`[LineItemFiles:GENERATE_THUMBS] Unsupported file type: mimeType=${attachment.mimeType}, fileName=${fileName}`);
+        return res.status(400).json({ 
+          success: false,
+          message: "Unsupported file type for thumbnail generation" 
+        });
+      }
+
+      console.log(`[LineItemFiles:GENERATE_THUMBS] Supported image type detected: mimeType=${attachment.mimeType}, fileName=${fileName}`);
+
+      // Validate required fields for image generation
+      if (!attachment.fileUrl || !attachment.storageProvider) {
+        return res.status(400).json({ 
+          success: false,
+          message: "Attachment missing required storage information" 
+        });
       }
 
       // Set status to pending
@@ -3596,45 +3815,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
         })
         .where(eq(quoteAttachments.id, fileId));
 
-      console.log(`[LineItemFiles:GENERATE_THUMBS] Set status to pending for ${fileId}`);
+      const attachmentFileName = attachment.originalFilename || attachment.fileName || null;
+      console.log(`[LineItemFiles:GENERATE_THUMBS] Queuing thumbnail generation for ${fileId} (sharp available: ${sharpAvailable})`);
 
-      // Download original file from storage
-      let originalBuffer: Buffer;
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        const signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-        const response = await fetch(signedUrl);
-        if (!response.ok) {
-          throw new Error(`Failed to download original file: ${response.statusText}`);
-        }
-        const arrayBuffer = await response.arrayBuffer();
-        originalBuffer = Buffer.from(arrayBuffer);
-      } else {
-        throw new Error('Supabase storage not configured');
-      }
+      // Trigger async thumbnail generation (fire-and-forget)
+      void generateImageDerivatives(
+        fileId,
+        'quote',
+        attachment.fileUrl,
+        attachment.mimeType,
+        attachment.storageProvider,
+        organizationId,
+        attachmentFileName
+      ).catch((error) => {
+        // Errors are already logged inside generateImageDerivatives
+        console.error(`[LineItemFiles:GENERATE_THUMBS] Thumbnail generation failed for ${fileId}:`, error);
+      });
 
-      console.log(`[LineItemFiles:GENERATE_THUMBS] Downloaded original file, size: ${originalBuffer.length} bytes`);
-
-      // TODO: Thumbnail generation temporarily disabled (missing dependencies: sharp)
-      throw new Error('Thumbnail generation temporarily unavailable - dependencies not installed');
+      // Return 202 immediately (processing queued)
+      return res.status(202).json({ 
+        success: true,
+        message: "Thumbnail generation queued" 
+      });
     } catch (error: any) {
       console.error("[LineItemFiles:GENERATE_THUMBS] Error:", error);
       
-      // Update DB with failure
-      try {
-        const { fileId } = req.params;
-        await db.update(quoteAttachments)
-          .set({
-            thumbStatus: 'thumb_failed',
-            thumbError: error.message?.substring(0, 500) || 'Thumbnail generation failed',
-            updatedAt: new Date(),
-          })
-          .where(eq(quoteAttachments.id, fileId));
-      } catch (dbError) {
-        console.error("[LineItemFiles:GENERATE_THUMBS] Failed to update error status:", dbError);
+      // Only update DB with failure if this was a real processing error (not unavailable/disabled)
+      // For 503/unavailable errors, don't mark as failed since the feature is not available
+      const isUnavailableError = error.code === 'THUMBNAILS_UNAVAILABLE' || 
+                                  error.message?.includes('disabled') || 
+                                  error.message?.includes('unavailable') ||
+                                  error.statusCode === 503;
+      
+      if (!isUnavailableError) {
+        try {
+          const { fileId } = req.params;
+          await db.update(quoteAttachments)
+            .set({
+              thumbStatus: 'thumb_failed',
+              thumbError: error.message?.substring(0, 500) || 'Thumbnail generation failed',
+              updatedAt: new Date(),
+            })
+            .where(eq(quoteAttachments.id, fileId));
+        } catch (dbError) {
+          console.error("[LineItemFiles:GENERATE_THUMBS] Failed to update error status:", dbError);
+        }
       }
 
-      return res.status(500).json({ error: error.message || "Failed to generate thumbnails" });
+      // Return appropriate status code and format based on error type
+      if (isUnavailableError) {
+        return res.status(503).json({ 
+          success: false,
+          code: 'THUMBNAILS_UNAVAILABLE',
+          error: "Thumbnail generation temporarily unavailable",
+          message: error.message || "Thumbnail generation temporarily unavailable - dependencies not installed"
+        });
+      }
+
+      return res.status(500).json({ 
+        success: false,
+        error: error.message || "Failed to generate thumbnails" 
+      });
     }
   });
 
@@ -5457,45 +5698,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const files = await storage.listOrderFiles(req.params.id);
       
-      // Enrich each attachment with signed URLs (reuse quote attachment enrichment logic)
-      const enrichedFiles = await Promise.all(files.map(async (file: any) => {
-        let originalUrl: string | null = null;
-        let thumbUrl: string | null = null;
-        let previewUrl: string | null = null;
-        
-        if (isSupabaseConfigured()) {
-          const supabaseService = new SupabaseStorageService();
-          
-          // Generate signed URL for original file
-          if (file.fileUrl) {
-            try {
-              originalUrl = await supabaseService.getSignedDownloadUrl(file.fileUrl, 3600);
-            } catch (error) {
-              console.error(`[OrderFiles] Failed to generate originalUrl for ${file.id}:`, error);
-            }
-          }
-          
-          // Order attachments may have thumbnailUrl field (legacy) - generate signed URL if present
-          if (file.thumbnailUrl) {
-            try {
-              thumbUrl = await supabaseService.getSignedDownloadUrl(file.thumbnailUrl, 3600);
-            } catch (error) {
-              console.error(`[OrderFiles] Failed to generate thumbUrl for ${file.id}:`, error);
-            }
-          }
-        } else {
-          // Fallback for non-Supabase storage: use stored URLs directly
-          originalUrl = file.fileUrl;
-          thumbUrl = file.thumbnailUrl || null;
-        }
-        
-        return {
-          ...file,
-          originalUrl,
-          thumbUrl,
-          previewUrl, // Order attachments don't have previewUrl yet, but include for consistency
-        };
-      }));
+      // Enrich each attachment with signed URLs using the shared helper
+      // This handles originalUrl, thumbUrl (if thumbKey exists), and previewUrl (if previewKey exists)
+      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
       
       res.json({ success: true, data: enrichedFiles });
     } catch (error) {
@@ -5620,6 +5825,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         note: `File attached: ${originalFilename || fileName} (${role || 'other'})`,
         metadata: { fileId: attachment.id, fileName: originalFilename || fileName, role, side } as any,
       });
+
+      // Fire-and-forget thumbnail generation for images (non-blocking)
+      // Use isSupportedImageType helper which supports both mimeType and fileName-based detection
+      const { isSupportedImageType } = await import('./services/thumbnailGenerator');
+      const orderAttachmentFileName = originalFilename || fileName || null;
+      const isSupportedImage = isSupportedImageType(attachment.mimeType, orderAttachmentFileName);
+      const hasStorageProvider = !!attachment.storageProvider;
+      const isNotHttpUrl = attachment.fileUrl && !attachment.fileUrl.startsWith('http://') && !attachment.fileUrl.startsWith('https://');
+      
+      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && attachment.fileUrl) {
+        const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
+        if (isThumbnailGenerationEnabled()) {
+          void generateImageDerivatives(
+            attachment.id,
+            'order',
+            attachment.fileUrl,
+            attachment.mimeType || null,
+            attachment.storageProvider!,
+            organizationId,
+            orderAttachmentFileName
+          ).catch((error) => {
+            // Errors are already logged inside generateImageDerivatives
+            console.error(`[OrderFiles:POST] Thumbnail generation failed for ${attachment.id}:`, error);
+          });
+        } else {
+          console.log(`[OrderFiles:POST] Thumbnail generation disabled, skipping for ${attachment.id}`);
+        }
+      } else if (isSupportedImage && (!hasStorageProvider || !isNotHttpUrl)) {
+        console.log(`[OrderFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+      }
 
       res.json({ success: true, data: attachment });
     } catch (error) {
@@ -6957,6 +7192,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error('[QB Worker Status] Error:', error);
       res.status(500).json({ error: 'Failed to get worker status' });
+    }
+  });
+
+  /**
+   * GET /api/system/status
+   * Get system status including feature flags
+   */
+  app.get('/api/system/status', isAuthenticated, async (req: any, res) => {
+    try {
+      const { isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
+      res.json({
+        thumbnailsEnabled: isThumbnailGenerationEnabled(),
+      });
+    } catch (error: any) {
+      console.error('[System Status] Error:', error);
+      res.status(500).json({ error: 'Failed to get system status' });
     }
   });
 

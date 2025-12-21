@@ -61,6 +61,10 @@ process.on('uncaughtException', (error) => {
 // Register routes and start server
 (async () => {
   try {
+    // Probe database schema before starting server
+    const { probeDatabaseSchema } = await import('./db');
+    await probeDatabaseSchema();
+
     const server = await registerRoutes(app);
     
     // Run user-to-customer sync in development

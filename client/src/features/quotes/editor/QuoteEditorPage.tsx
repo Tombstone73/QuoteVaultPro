@@ -30,6 +30,8 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const readOnly = !editMode;
 
     // Expanded line item (accordion) state
+    // Stored as lineItemId (tempId || id) - persists across refetches
+    // NOT derived from quote object identity, so it survives quote refetches
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
     // Dialog state (convert is still a dialog for now; core editing stays inline)
@@ -51,6 +53,42 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     useEffect(() => {
         if (!editMode) setExpandedKey(null);
     }, [editMode]);
+
+    // Preserve expanded state across refetches: ensure expandedKey still matches a line item
+    // This prevents collapse when quote refetches after attachment upload
+    // Only clear expandedKey if the line item was actually removed (not just refetched)
+    useEffect(() => {
+        if (!expandedKey) return;
+        
+        // Check if the expanded line item still exists in the current lineItems
+        // Match by checking both tempId and id (handles tempId→id transitions during save)
+        const stillExists = state.lineItems.some(li => {
+            const itemKey = li.tempId || li.id || "";
+            // Match if expandedKey equals the item's key, OR if expandedKey matches either tempId or id
+            // This handles the case where expandedKey was set to tempId but item now only has id
+            return itemKey === expandedKey || 
+                   li.tempId === expandedKey || 
+                   li.id === expandedKey;
+        });
+        
+        // If the item no longer exists, clear expandedKey (item was removed)
+        // Otherwise, keep it (item still exists, just refetched or transitioned tempId→id)
+        if (!stillExists) {
+            setExpandedKey(null);
+        } else {
+            // Update expandedKey to the current stable key (tempId || id) to handle tempId→id transitions
+            const matchingItem = state.lineItems.find(li => {
+                const itemKey = li.tempId || li.id || "";
+                return itemKey === expandedKey || li.tempId === expandedKey || li.id === expandedKey;
+            });
+            if (matchingItem) {
+                const currentKey = matchingItem.tempId || matchingItem.id || "";
+                if (currentKey && currentKey !== expandedKey) {
+                    setExpandedKey(currentKey);
+                }
+            }
+        }
+    }, [state.lineItems, expandedKey]);
 
     // Block in-app navigation when there are unsaved changes (BrowserRouter-compatible)
     useEffect(() => {
