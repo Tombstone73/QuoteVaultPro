@@ -3035,53 +3035,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
       previewUrl = null;
     }
 
-    // For PDFs, fetch page data
+    // For PDFs, fetch page data (only if table exists)
     let pages: any[] = [];
     const isPdf = attachment.mimeType === 'application/pdf' || 
                   (attachment.fileName || '').toLowerCase().endsWith('.pdf');
     
     if (isPdf && attachment.pageCount) {
-      try {
-        const pageRecords = await db.select()
-          .from(quoteAttachmentPages)
-          .where(eq(quoteAttachmentPages.attachmentId, attachment.id))
-          .orderBy(quoteAttachmentPages.pageIndex);
-        
-        // Enrich each page with signed URLs
-        if (isSupabaseConfigured()) {
-          const supabaseService = new SupabaseStorageService();
-          pages = await Promise.all(pageRecords.map(async (page) => {
-            let pageThumbUrl: string | null = null;
-            let pagePreviewUrl: string | null = null;
-            
-            if (page.thumbKey) {
-              try {
-                pageThumbUrl = await supabaseService.getSignedDownloadUrl(page.thumbKey, 3600);
-              } catch (error) {
-                console.error(`[enrichAttachmentWithUrls] Failed to generate page thumbUrl:`, error);
+      // Check if quote_attachment_pages table exists before querying
+      const { hasQuoteAttachmentPagesTable } = await import('./db');
+      const tableExists = hasQuoteAttachmentPagesTable();
+      
+      if (tableExists === true) {
+        try {
+          const pageRecords = await db.select()
+            .from(quoteAttachmentPages)
+            .where(eq(quoteAttachmentPages.attachmentId, attachment.id))
+            .orderBy(quoteAttachmentPages.pageIndex);
+          
+          // Enrich each page with signed URLs
+          if (isSupabaseConfigured()) {
+            const supabaseService = new SupabaseStorageService();
+            pages = await Promise.all(pageRecords.map(async (page) => {
+              let pageThumbUrl: string | null = null;
+              let pagePreviewUrl: string | null = null;
+              
+              if (page.thumbKey) {
+                try {
+                  pageThumbUrl = await supabaseService.getSignedDownloadUrl(page.thumbKey, 3600);
+                } catch (error) {
+                  console.error(`[enrichAttachmentWithUrls] Failed to generate page thumbUrl:`, error);
+                }
               }
-            }
-            
-            if (page.previewKey) {
-              try {
-                pagePreviewUrl = await supabaseService.getSignedDownloadUrl(page.previewKey, 3600);
-              } catch (error) {
-                console.error(`[enrichAttachmentWithUrls] Failed to generate page previewUrl:`, error);
+              
+              if (page.previewKey) {
+                try {
+                  pagePreviewUrl = await supabaseService.getSignedDownloadUrl(page.previewKey, 3600);
+                } catch (error) {
+                  console.error(`[enrichAttachmentWithUrls] Failed to generate page previewUrl:`, error);
+                }
               }
-            }
-            
-            return {
-              ...page,
-              thumbUrl: pageThumbUrl,
-              previewUrl: pagePreviewUrl,
-            };
-          }));
-        } else {
-          pages = pageRecords;
+              
+              return {
+                ...page,
+                thumbUrl: pageThumbUrl,
+                previewUrl: pagePreviewUrl,
+              };
+            }));
+          } else {
+            pages = pageRecords;
+          }
+        } catch (error) {
+          console.error(`[enrichAttachmentWithUrls] Failed to fetch pages for ${attachment.id}:`, error);
         }
-      } catch (error) {
-        console.error(`[enrichAttachmentWithUrls] Failed to fetch pages for ${attachment.id}:`, error);
       }
+      // If table doesn't exist (tableExists === false) or probe hasn't run (tableExists === null),
+      // skip query and return empty pages array (already initialized above)
     }
 
     return {

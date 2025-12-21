@@ -21,6 +21,7 @@ export const db = drizzle({ client: pool, schema });
 
 // Store schema probe results
 let _pageCountStatusColumnExists: boolean | null = null;
+let _quoteAttachmentPagesTableExists: boolean | null = null;
 
 /**
  * Probe database identity and schema at startup
@@ -76,10 +77,29 @@ export async function probeDatabaseSchema(): Promise<void> {
     if (!_pageCountStatusColumnExists) {
       console.warn(`[DB] Missing page_count_status column; PDF derived fields disabled until migrations/DB connection fixed.`);
     }
+
+    // Schema probe: check if quote_attachment_pages table exists (respects search_path)
+    const tableCheckResult = await db.execute(sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = current_schema()
+          AND table_name = 'quote_attachment_pages'
+      ) as has_table
+    `);
+    const tableCheck = tableCheckResult.rows[0] as { has_table: boolean };
+    _quoteAttachmentPagesTableExists = tableCheck.has_table;
+    
+    console.log(`[DB] quote_attachment_pages table exists? ${_quoteAttachmentPagesTableExists}`);
+
+    if (!_quoteAttachmentPagesTableExists) {
+      console.warn(`[DB] Missing quote_attachment_pages table; page enrichment disabled until migrations/DB connection fixed.`);
+    }
   } catch (error: any) {
     console.error(`[DB] Schema probe failed:`, error?.message || error);
-    // Don't throw - allow server to start but mark column as missing
+    // Don't throw - allow server to start but mark column/table as missing
     _pageCountStatusColumnExists = false;
+    _quoteAttachmentPagesTableExists = false;
   }
 }
 
@@ -89,4 +109,12 @@ export async function probeDatabaseSchema(): Promise<void> {
  */
 export function hasPageCountStatusColumn(): boolean | null {
   return _pageCountStatusColumnExists;
+}
+
+/**
+ * Check if quote_attachment_pages table exists (from startup probe)
+ * Returns null if probe hasn't run yet, true/false otherwise
+ */
+export function hasQuoteAttachmentPagesTable(): boolean | null {
+  return _quoteAttachmentPagesTableExists;
 }
