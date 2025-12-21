@@ -77,17 +77,17 @@ async function ensureCanvas(): Promise<boolean> {
   }
 
   try {
-    // Dynamic import for canvas (ESM-safe)
-    const canvasImport = await import('canvas');
-    // Canvas package exports createCanvas as a named export
+    // Dynamic import for @napi-rs/canvas (ESM-safe, Windows-compatible)
+    const canvasImport = await import('@napi-rs/canvas');
+    // @napi-rs/canvas exports createCanvas as a named export
     canvasModule = canvasImport;
     canvasAvailable = true;
-    console.log("[PdfProcessing] canvas loaded (esm)");
+    console.log("[PdfProcessing] @napi-rs/canvas loaded (esm, napi-rs backend)");
     return true;
   } catch (error) {
     canvasAvailable = false;
     if (!dependencyWarningLogged) {
-      console.warn('[PdfProcessing] canvas unavailable; PDF thumbnail generation disabled. Error:', error);
+      console.warn('[PdfProcessing] @napi-rs/canvas unavailable; PDF thumbnail generation disabled. Error:', error);
       dependencyWarningLogged = true;
     }
     return false;
