@@ -7,13 +7,16 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
-import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image } from "lucide-react";
 import type { Product, ProductOptionItem } from "@shared/schema";
 import type { QuoteLineItemDraft, OptionSelection } from "../types";
 import { apiRequest } from "@/lib/queryClient";
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
-import { cn } from "@/lib/utils";
+import { cn, isValidHttpUrl } from "@/lib/utils";
+import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
+import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -110,6 +113,19 @@ function useDebouncedEffect(effect: () => void, deps: any[], delayMs: number) {
   }, deps);
 }
 
+type AttachmentForPreview = {
+  id: string;
+  fileName: string;
+  originalFilename?: string | null;
+  mimeType?: string | null;
+  originalUrl?: string | null;
+  previewUrl?: string | null;
+  thumbUrl?: string | null;
+  pageCount?: number | null;
+  pages?: Array<{ thumbUrl?: string | null }>;
+  lineItemId?: string; // Added for download handler
+};
+
 function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineItemId: string | undefined }) {
   const [imageError, setImageError] = useState(false);
   const filesApiPath = quoteId
@@ -186,6 +202,142 @@ function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineIt
   );
 }
 
+// Artwork strip component - shows up to 3 thumbnails + "+N" indicator
+function LineItemArtworkStrip({ 
+  quoteId, 
+  lineItemId, 
+  onPreview 
+}: { 
+  quoteId: string | null; 
+  lineItemId: string | undefined;
+  onPreview: (attachment: AttachmentForPreview & { lineItemId: string }) => void;
+}) {
+  const filesApiPath = quoteId
+    ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
+    : `/api/line-items/${lineItemId}/files`;
+
+  const { data: attachments = [] } = useQuery<AttachmentForPreview[]>({
+    queryKey: [filesApiPath],
+    queryFn: async () => {
+      if (!lineItemId) return [];
+      const response = await fetch(filesApiPath, { credentials: "include" });
+      if (!response.ok) return [];
+      const json = await response.json();
+      return json.data || [];
+    },
+    enabled: !!lineItemId,
+  });
+
+  if (attachments.length === 0) return null;
+
+  const visibleAttachments = attachments.slice(0, 3);
+  const remainingCount = attachments.length - 3;
+
+  const getThumbnailUrl = (attachment: AttachmentForPreview): string | null => {
+    // Prefer previewUrl, fallback to thumbUrl, then originalUrl
+    if (attachment.previewUrl && isValidHttpUrl(attachment.previewUrl)) {
+      return attachment.previewUrl;
+    }
+    // For PDFs, use first page thumbUrl
+    if (attachment.mimeType === 'application/pdf' && attachment.pages?.[0]?.thumbUrl) {
+      const url = attachment.pages[0].thumbUrl;
+      if (url && isValidHttpUrl(url)) return url;
+    }
+    // For other files, use thumbUrl
+    if (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) {
+      return attachment.thumbUrl;
+    }
+    // Fallback to originalUrl for preview (only if no thumbUrl/previewUrl)
+    if (attachment.originalUrl && isValidHttpUrl(attachment.originalUrl)) {
+      return attachment.originalUrl;
+    }
+    return null;
+  };
+
+  const getFileIcon = (mimeType: string | null | undefined) => {
+    if (!mimeType) return FileText;
+    if (mimeType.startsWith("image/")) return Image;
+    if (mimeType === "application/pdf") return FileText;
+    return FileText;
+  };
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {visibleAttachments.map((attachment) => {
+        const thumbUrl = getThumbnailUrl(attachment);
+        const FileIcon = getFileIcon(attachment.mimeType);
+        const hasPreviewUrl = attachment.previewUrl && isValidHttpUrl(attachment.previewUrl);
+        const hasOriginalUrl = attachment.originalUrl && isValidHttpUrl(attachment.originalUrl);
+        const canPreview = hasPreviewUrl || hasOriginalUrl;
+        const fileName = getAttachmentDisplayName(attachment);
+        const isPdf = isPdfAttachment(attachment);
+        const pageCount = getPdfPageCount(attachment);
+        const showPageCount = isPdf && pageCount !== null && pageCount > 1;
+        
+        return (
+          <div key={attachment.id} className="relative shrink-0">
+            <button
+              type="button"
+              className="h-8 w-8 rounded border border-border/60 overflow-hidden shrink-0 cursor-pointer hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 bg-muted/30"
+              style={{ cursor: canPreview ? "pointer" : "default" }}
+              onClick={(e) => {
+                if (!canPreview) return;
+                e.stopPropagation();
+                onPreview({ ...attachment, lineItemId: lineItemId || '' });
+              }}
+              onPointerDownCapture={(e) => {
+                if (!canPreview) return;
+                e.stopPropagation();
+              }}
+              disabled={!canPreview}
+              title={fileName}
+              aria-label={canPreview ? `Preview ${fileName}` : `${fileName} (no preview available)`}
+            >
+              {thumbUrl ? (
+                <img 
+                  src={thumbUrl} 
+                  alt={fileName}
+                  title={fileName}
+                  className="w-full h-full object-cover pointer-events-none"
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <FileIcon className="w-4 h-4 text-muted-foreground" />
+                </div>
+              )}
+            </button>
+            {showPageCount && (
+              <span className="absolute -top-1 -right-1 px-1.5 py-0.5 text-[10px] font-medium bg-muted border border-border/60 rounded text-muted-foreground leading-none whitespace-nowrap">
+                Pages: {pageCount}
+              </span>
+            )}
+          </div>
+        );
+      })}
+      {remainingCount > 0 && (
+        <button
+          type="button"
+          className="h-8 px-2 rounded border border-border/60 bg-muted/30 flex items-center justify-center shrink-0 cursor-pointer hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+          style={{ cursor: "pointer" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            // Optional: expand line item when clicking +N (nice-to-have)
+            // This would require passing an expand handler, but for now just show it's clickable
+          }}
+          onPointerDownCapture={(e) => e.stopPropagation()}
+          aria-label={`${remainingCount} more file${remainingCount === 1 ? '' : 's'}`}
+          title={`${remainingCount} more file${remainingCount === 1 ? '' : 's'}`}
+        >
+          <span className="text-[10px] font-medium text-muted-foreground">+{remainingCount}</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function LineItemsSection({
   quoteId,
   readOnly,
@@ -206,6 +358,9 @@ export function LineItemsSection({
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  
+  // Preview modal state (shared with artwork strip)
+  const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
 
   const filteredProducts = useMemo(() => {
     const active = products.filter((p) => (p as any).isActive !== false);
@@ -501,6 +656,15 @@ export function LineItemsSection({
                               )}
                             </div>
                           )}
+                          
+                          {/* Artwork strip - shows up to 3 thumbnails +N indicator */}
+                          <div className="mt-1.5">
+                            <LineItemArtworkStrip
+                              quoteId={quoteId}
+                              lineItemId={item.id}
+                              onPreview={setPreviewFile}
+                            />
+                          </div>
                         </div>
 
                         {/* Price + Expand Button */}
@@ -516,12 +680,11 @@ export function LineItemsSection({
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className={cn("h-8 w-8", readOnly && "opacity-40 cursor-not-allowed")}
+                            className="h-8 w-8"
                             onClick={() => {
-                              if (readOnly) return;
                               onExpandedKeyChange(isExpanded ? null : itemKey);
                             }}
-                            aria-label={readOnly ? "Locked (enable Edit Mode to expand)" : isExpanded ? "Collapse line item" : "Expand line item"}
+                            aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
                           >
                             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           </Button>
@@ -529,8 +692,10 @@ export function LineItemsSection({
                       </div>
                     </div>
 
-                    {/* Expanded Editor - Only When Expanded */}
-                    {isExpanded && !readOnly && (
+                    {/* Expanded Editor - When Expanded (edit mode) OR Read-Only View (for attachments) */}
+                    {isExpanded && (
+                      <>
+                        {!readOnly && (
                       <div className="px-3 pb-3">
                         <div className="rounded-md border border-border/40 bg-muted/20 p-3 min-h-[400px]">
                           {/* Top editing row */}
@@ -542,7 +707,8 @@ export function LineItemsSection({
                                   onChange={(e) => setWidthText(e.target.value)}
                                   className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
                                   inputMode="decimal"
-                                  disabled={!dimsRequired}
+                                  disabled={readOnly || !dimsRequired}
+                                  readOnly={readOnly}
                                 />
                                 <span className="text-muted-foreground">×</span>
                                 <Input
@@ -550,7 +716,8 @@ export function LineItemsSection({
                                   onChange={(e) => setHeightText(e.target.value)}
                                   className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
                                   inputMode="decimal"
-                                  disabled={!dimsRequired}
+                                  disabled={readOnly || !dimsRequired}
+                                  readOnly={readOnly}
                                 />
                               </div>
                             </div>
@@ -564,6 +731,7 @@ export function LineItemsSection({
                                   size="icon"
                                   className="h-8 w-8"
                                   onClick={() => setQty((q) => Math.max(1, (q || 1) - 1))}
+                                  disabled={readOnly}
                                 >
                                   <Minus className="h-4 w-4" />
                                 </Button>
@@ -572,6 +740,8 @@ export function LineItemsSection({
                                   onChange={(e) => setQty(Number.parseInt(e.target.value || "1", 10) || 1)}
                                   className="h-8 w-16 border-0 text-center font-mono focus-visible:ring-0"
                                   inputMode="numeric"
+                                  disabled={readOnly}
+                                  readOnly={readOnly}
                                 />
                                 <Button
                                   type="button"
@@ -579,6 +749,7 @@ export function LineItemsSection({
                                   size="icon"
                                   className="h-8 w-8"
                                   onClick={() => setQty((q) => (q || 1) + 1)}
+                                  disabled={readOnly}
                                 >
                                   <Plus className="h-4 w-4" />
                                 </Button>
@@ -609,79 +780,83 @@ export function LineItemsSection({
                             onOptionSelectionsChange={setOptionSelections}
                           />
 
-                          {/* Artwork */}
-                          <div className="mt-3 border-t border-border/50 pt-3">
-                            <div className="flex items-center justify-between">
-                              <div className="text-sm font-medium">Artwork</div>
-                            </div>
-                            <div className="mt-2">
-                              <LineItemAttachmentsPanel
-                                quoteId={quoteId}
-                                lineItemId={item.id}
-                                productName={item.productName}
-                                defaultExpanded={false}
-                                ensureQuoteId={ensureQuoteId}
-                                ensureLineItemId={ensureLineItemId ? () => ensureLineItemId(itemKey) : undefined}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Bottom actions */}
-                          <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
-                            <div className="flex items-center gap-2">
-                              {onSaveLineItem && isDirty && (
+                          {/* Bottom actions - Edit mode only */}
+                          {!readOnly && (
+                            <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
+                              <div className="flex items-center gap-2">
+                                {onSaveLineItem && isDirty && (
+                                  <Button
+                                    type="button"
+                                    variant="default"
+                                    size="sm"
+                                    className="h-8"
+                                    onClick={handleSaveItem}
+                                    disabled={savingItemKey === itemKey || isCalculating}
+                                  >
+                                    {savingItemKey === itemKey ? (
+                                      <>
+                                        <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                        Saving…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Save className="w-3.5 h-3.5 mr-1.5" />
+                                        Save Item
+                                      </>
+                                    )}
+                                  </Button>
+                                )}
+                                {onSaveLineItem && !isDirty && savedItemKey === itemKey && (
+                                  <div className="flex items-center gap-1.5 text-xs text-green-600">
+                                    <Check className="w-3.5 h-3.5" />
+                                    Saved
+                                  </div>
+                                )}
                                 <Button
                                   type="button"
-                                  variant="default"
+                                  variant="ghost"
                                   size="sm"
                                   className="h-8"
-                                  onClick={handleSaveItem}
-                                  disabled={savingItemKey === itemKey || isCalculating}
+                                  onClick={() => onDuplicateLineItem(itemKey)}
                                 >
-                                  {savingItemKey === itemKey ? (
-                                    <>
-                                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                                      Saving…
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Save className="w-3.5 h-3.5 mr-1.5" />
-                                      Save Item
-                                    </>
-                                  )}
+                                  Duplicate Item
                                 </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 text-destructive hover:text-destructive"
+                                  onClick={() => onRemoveLineItem(itemKey)}
+                                >
+                                  Remove Item
+                                </Button>
+                              </div>
+                              {isDirty && (
+                                <div className="text-xs text-amber-600">Unsaved</div>
                               )}
-                              {onSaveLineItem && !isDirty && savedItemKey === itemKey && (
-                                <div className="flex items-center gap-1.5 text-xs text-green-600">
-                                  <Check className="w-3.5 h-3.5" />
-                                  Saved
-                                </div>
-                              )}
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8"
-                                onClick={() => onDuplicateLineItem(itemKey)}
-                              >
-                                Duplicate Item
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 text-destructive hover:text-destructive"
-                                onClick={() => onRemoveLineItem(itemKey)}
-                              >
-                                Remove Item
-                              </Button>
                             </div>
-                            {isDirty && (
-                              <div className="text-xs text-amber-600">Unsaved</div>
-                            )}
-                          </div>
+                          )}
                         </div>
                       </div>
+                        )}
+                        
+                        {/* Artwork Panel - Always visible when expanded (edit or view mode) */}
+                        <div className="px-3 pb-3">
+                          <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="text-sm font-medium">Artwork</div>
+                            </div>
+                            <LineItemAttachmentsPanel
+                              quoteId={quoteId}
+                              lineItemId={item.id}
+                              productName={item.productName}
+                              defaultExpanded={readOnly ? true : false}
+                              ensureQuoteId={!readOnly ? ensureQuoteId : undefined}
+                              ensureLineItemId={!readOnly && ensureLineItemId ? () => ensureLineItemId(itemKey) : undefined}
+                            />
+                          </div>
+                        </div>
+                      </>
                     )}
                   </div>
                 );
@@ -752,6 +927,127 @@ export function LineItemsSection({
           </div>
         )}
       </CardContent>
+      
+      {/* Shared Preview Modal */}
+      <Dialog open={!!previewFile} onOpenChange={(open) => { if (!open) setPreviewFile(null); }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {previewFile ? getAttachmentDisplayName(previewFile) : ""}
+            </DialogTitle>
+            <DialogDescription>
+              <div className="space-y-1">
+                {previewFile?.mimeType ? (
+                  <div>
+                    <span>File type: </span>
+                    <span>{previewFile.mimeType}</span>
+                  </div>
+                ) : (
+                  <div>Preview attachment</div>
+                )}
+                <AttachmentPreviewMeta attachment={previewFile} />
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          {previewFile && (() => {
+            const isPdf = previewFile.mimeType === 'application/pdf';
+            const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl;
+            const hasValidPreview = !isPdf && previewUrl && isValidHttpUrl(previewUrl);
+            const hasValidOriginal = previewFile.originalUrl && isValidHttpUrl(previewFile.originalUrl);
+            const fileName = previewFile.originalFilename || previewFile.fileName;
+            // Find the line item ID for this attachment - we need to get it from the attachment's lineItemId
+            // For now, we'll need to pass lineItemId through the preview state or find it another way
+            // Since we don't have lineItemId in the preview state, we'll construct the path differently
+            // Actually, we need to get the lineItemId - let's store it in the preview state
+            // For now, let's use a simpler approach - we'll need to pass more context
+            
+            const handleDownload = async () => {
+              try {
+                const lineItemId = previewFile.lineItemId;
+                if (!lineItemId) return;
+                const filesApiPath = quoteId
+                  ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
+                  : `/api/line-items/${lineItemId}/files`;
+                const proxyUrl = `${filesApiPath}/${previewFile.id}/download/proxy`;
+                const anchor = document.createElement("a");
+                anchor.href = proxyUrl;
+                anchor.download = fileName;
+                anchor.rel = "noreferrer";
+                anchor.style.display = "none";
+                document.body.appendChild(anchor);
+                anchor.click();
+                document.body.removeChild(anchor);
+              } catch (error: any) {
+                console.error("[PreviewDownload] Error:", error);
+              }
+            };
+            
+            return (
+              <div className="space-y-4">
+                {isPdf ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                    <FileText className="w-16 h-16 mb-4 opacity-50" />
+                    <p className="text-sm mb-4">PDF preview not available</p>
+                    {hasValidOriginal && (
+                      <div className="flex flex-col items-center gap-1">
+                        <Button
+                          onClick={handleDownload}
+                          variant="outline"
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          Download PDF
+                        </Button>
+                        <span className="text-xs text-muted-foreground">Downloads original file</span>
+                      </div>
+                    )}
+                  </div>
+                ) : hasValidPreview ? (
+                  <div className="flex justify-center bg-muted/30 rounded-lg p-4">
+                    <img 
+                      src={previewUrl} 
+                      alt={fileName}
+                      className="max-w-full max-h-[60vh] object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                    <FileText className="w-16 h-16 mb-4 opacity-50" />
+                    <p className="text-sm">Preview not available for this file</p>
+                  </div>
+                )}
+                
+                <div className="flex items-center justify-between text-sm">
+                  <div className="space-y-1">
+                    <div>
+                      <span className="font-medium">Filename: </span>
+                      <span className="text-muted-foreground">{fileName}</span>
+                    </div>
+                    {previewFile.mimeType && (
+                      <div>
+                        <span className="font-medium">Type: </span>
+                        <span className="text-muted-foreground">{previewFile.mimeType}</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {!isPdf && hasValidOriginal && (
+                    <div className="flex flex-col items-end gap-1">
+                      <Button
+                        onClick={handleDownload}
+                        variant="outline"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Download
+                      </Button>
+                      <span className="text-xs text-muted-foreground">Downloads original file</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

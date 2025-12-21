@@ -4,13 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, X, Loader2, FileText, Image, File } from "lucide-react";
+import { isValidHttpUrl } from "@/lib/utils";
 
 // Max file size: 50MB
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
-
-// Helper: validate URL is a proper http(s) string
-const isValidHttpUrl = (v: unknown): v is string =>
-  typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
 
 type Attachment = {
   id: string;

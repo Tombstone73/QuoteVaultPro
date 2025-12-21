@@ -3,7 +3,6 @@
  * Handles async thumbnail generation and derived file creation for uploaded artwork
  */
 import PQueue from 'p-queue';
-import sharp from 'sharp';
 import { createClient } from '@supabase/supabase-js';
 import { db } from '../db';
 import { sql } from 'drizzle-orm';
@@ -13,6 +12,20 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 // In-process queue for async artwork processing
 const processingQueue = new PQueue({ concurrency: 2 });
+
+/**
+ * Lazy-load sharp module with graceful error handling
+ * Throws controlled error if sharp is unavailable
+ */
+function getSharpOrThrow(): any {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sharpModule = require('sharp');
+    return sharpModule.default || sharpModule;
+  } catch (error) {
+    throw new Error('[ArtworkProcessor] sharp unavailable');
+  }
+}
 
 interface ProcessingJob {
   fileId: string;
@@ -107,6 +120,9 @@ async function processImageFile(
   lineItemId: string
 ): Promise<void> {
   const buffer = Buffer.from(await originalData.arrayBuffer());
+
+  // Get sharp instance (throws if unavailable)
+  const sharp = getSharpOrThrow();
 
   // Generate 256px thumbnail
   const thumbBuffer = await sharp(buffer)

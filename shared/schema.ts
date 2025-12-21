@@ -979,6 +979,9 @@ export const storageProviderEnum = pgEnum('storage_provider', ['local', 's3', 'g
 // Thumbnail status enum - tracks thumbnail generation lifecycle
 export const thumbStatusEnum = pgEnum('thumb_status', ['uploaded', 'thumb_pending', 'thumb_ready', 'thumb_failed']);
 
+// Page count status enum - tracks PDF page count detection lifecycle
+export const pageCountStatusEnum = pgEnum('page_count_status', ['unknown', 'detecting', 'known', 'failed']);
+
 // Quote Attachments table - files uploaded during quote creation (before order conversion)
 // Supports both quote-level attachments (quoteLineItemId = null) and line-item attachments
 export const quoteAttachments = pgTable("quote_attachments", {
@@ -1012,6 +1015,9 @@ export const quoteAttachments = pgTable("quote_attachments", {
   thumbError: text("thumb_error"), // Error message if thumbnail generation failed
   // PDF page count (for multi-page PDF support)
   pageCount: integer("page_count"), // Total number of pages for PDF files
+  pageCountStatus: pageCountStatusEnum("page_count_status").default('unknown'), // Status of page count detection
+  pageCountError: text("page_count_error"), // Error message if page count detection failed
+  pageCountUpdatedAt: timestamp("page_count_updated_at"), // Timestamp when page count status was last updated
   bucket: varchar("bucket", { length: 100 }).default('titan-private'),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -1020,6 +1026,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_quote_line_item_id_idx").on(table.quoteLineItemId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
   index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
+  index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
 ]);
 
 export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).omit({
@@ -2193,9 +2200,12 @@ export const orderAttachments = pgTable("order_attachments", {
   extension: varchar("extension", { length: 20 }), // File extension without dot
   sizeBytes: integer("size_bytes"), // File size in bytes
   checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
-  // Thumbnail support (future)
+  // Thumbnail support (legacy fields kept for backward compatibility)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
+  // Thumbnail scaffolding fields (migration 0035)
+  thumbKey: text("thumb_key"), // Storage key for small thumbnail (e.g., 320x320)
+  previewKey: text("preview_key"), // Storage key for medium preview (e.g., 1600x1600)
   // Artwork metadata fields
   role: fileRoleEnum("role").default('other'), // artwork, proof, reference, etc.
   side: fileSideEnum("side").default('na'), // front, back, or n/a

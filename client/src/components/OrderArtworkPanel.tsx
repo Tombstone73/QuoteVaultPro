@@ -29,6 +29,7 @@ import { useOrderFiles, useAttachFileToOrder, useUpdateOrderFile, useDetachOrder
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
+import { isValidHttpUrl } from "@/lib/utils";
 
 // Max file size: 50MB
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
@@ -53,10 +54,6 @@ interface OrderArtworkPanelProps {
   orderId: string;
   isAdminOrOwner: boolean;
 }
-
-// Helper: validate URL is a proper http(s) string
-const isValidHttpUrl = (v: unknown): v is string =>
-  typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
 
 export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanelProps) {
   const { toast } = useToast();
@@ -322,16 +319,22 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
               </TableHeader>
               <TableBody>
                 {files.map((file) => {
-                  const safeSrc = isValidHttpUrl(file.thumbnailUrl) ? file.thumbnailUrl : null;
+                  // Prefer thumbUrl (signed URL from enrichAttachmentWithUrls) over legacy thumbnailUrl
+                  // thumbUrl is only present if thumbKey exists and was successfully enriched
+                  const thumbSrc = file.thumbUrl && isValidHttpUrl(file.thumbUrl) 
+                    ? file.thumbUrl 
+                    : (file.thumbnailUrl && isValidHttpUrl(file.thumbnailUrl) 
+                      ? file.thumbnailUrl 
+                      : null);
                   const hasError = imageErrors.has(file.id);
                   
                   return (
                   <TableRow key={file.id}>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        {safeSrc && !hasError ? (
+                        {thumbSrc && !hasError ? (
                           <img 
-                            src={safeSrc} 
+                            src={thumbSrc} 
                             alt="" 
                             className="h-10 w-10 object-cover rounded"
                             onError={() => {
