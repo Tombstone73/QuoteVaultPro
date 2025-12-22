@@ -240,7 +240,7 @@ function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineIt
   );
 }
 
-// Artwork strip component - shows up to 3 thumbnails + "+N" indicator
+// Artwork strip component - shows all thumbnails in a wrapping layout
 function LineItemArtworkStrip({ 
   quoteId, 
   lineItemId, 
@@ -268,9 +268,6 @@ function LineItemArtworkStrip({
 
   if (attachments.length === 0) return null;
 
-  const visibleAttachments = attachments.slice(0, 3);
-  const remainingCount = attachments.length - 3;
-
   const getThumbnailUrl = (attachment: AttachmentForPreview): string | null => {
     const isPdf = isPdfAttachment(attachment);
     if (isPdf) return getPdfThumbUrl(attachment);
@@ -290,8 +287,8 @@ function LineItemArtworkStrip({
   };
 
   return (
-    <div className="flex items-center gap-1.5">
-      {visibleAttachments.map((attachment) => {
+    <div className="flex flex-wrap items-center gap-1.5">
+      {attachments.map((attachment) => {
         const thumbUrl = getThumbnailUrl(attachment);
         const FileIcon = getFileIcon(attachment.mimeType);
         const hasPreviewUrl = attachment.previewUrl && isValidHttpUrl(attachment.previewUrl);
@@ -345,23 +342,6 @@ function LineItemArtworkStrip({
           </div>
         );
       })}
-      {remainingCount > 0 && (
-        <button
-          type="button"
-          className="h-8 px-2 rounded border border-border/60 bg-muted/30 flex items-center justify-center shrink-0 cursor-pointer hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
-          style={{ cursor: "pointer" }}
-          onClick={(e) => {
-            e.stopPropagation();
-            // Optional: expand line item when clicking +N (nice-to-have)
-            // This would require passing an expand handler, but for now just show it's clickable
-          }}
-          onPointerDownCapture={(e) => e.stopPropagation()}
-          aria-label={`${remainingCount} more file${remainingCount === 1 ? '' : 's'}`}
-          title={`${remainingCount} more file${remainingCount === 1 ? '' : 's'}`}
-        >
-          <span className="text-[10px] font-medium text-muted-foreground">+{remainingCount}</span>
-        </button>
-      )}
     </div>
   );
 }
@@ -677,11 +657,11 @@ export function LineItemsSection({
                     const product = getProduct(products, item.productId);
                     const subtitle = item.variantName || (product as any)?.category || (product as any)?.sku || "";
 
-                    // Extract key options for summary display
-                    const displayOptions = (item.selectedOptions || []).slice(0, 4).map((opt: any) => {
+                    // Extract all options for compact chip display
+                    const displayOptions = (item.selectedOptions || []).map((opt: any) => {
                       let displayValue = '';
                       if (typeof opt.value === 'boolean') {
-                        displayValue = opt.value ? 'Yes' : 'No';
+                        displayValue = opt.value ? ': Yes' : ': No';
                       } else if (opt.value !== undefined && opt.value !== null && opt.value !== '') {
                         displayValue = `: ${opt.value}`;
                       }
@@ -697,7 +677,7 @@ export function LineItemsSection({
                           <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
                             {/* Collapsed Summary Row - Always Visible */}
                             <div className="p-3">
-                              <div className="flex items-start gap-3">
+                              <div className="grid gap-3 items-start" style={{ gridTemplateColumns: readOnly ? '48px 1fr auto' : 'auto 48px 1fr auto' }}>
                                 {/* Drag Handle (edit mode only) */}
                                 {!readOnly && (
                                   <button
@@ -711,17 +691,14 @@ export function LineItemsSection({
                                   </button>
                                 )}
                                 
-                                {/* Thumbnail */}
+                                {/* Thumbnail Column */}
                                 <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
 
-                        {/* Product Info & Details */}
-                        <div className="min-w-0 flex-1 space-y-1.5">
-                          {/* Product Name + Category */}
-                          <div className="flex items-center gap-2 flex-wrap">
+                        {/* Product Info & Details - Compact Middle Column */}
+                        <div className="min-w-0 flex-1">
+                          {/* Product Name + Status */}
+                          <div className="flex items-center gap-2 mb-1">
                             <div className="text-sm font-semibold">{item.productName}</div>
-                            {subtitle && (
-                              <span className="text-xs text-muted-foreground">• {subtitle}</span>
-                            )}
                             {item.status === "draft" && !readOnly && (
                               <Badge variant="secondary" className="text-[10px] py-0">
                                 Draft
@@ -729,8 +706,8 @@ export function LineItemsSection({
                             )}
                           </div>
 
-                          {/* Size + Quantity */}
-                          <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
+                          {/* Compact Meta Row: Size • Qty • Category • Artwork Count */}
+                          <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground mb-1.5">
                             <span className="font-mono">
                               {item.width}" × {item.height}"
                             </span>
@@ -738,29 +715,29 @@ export function LineItemsSection({
                             <span>
                               Qty: <span className="font-semibold text-foreground">{item.quantity}</span>
                             </span>
+                            {subtitle && (
+                              <>
+                                <span>•</span>
+                                <span>{subtitle}</span>
+                              </>
+                            )}
                           </div>
 
-                          {/* Key Options (2-4 shown) */}
+                          {/* Compact Options Chips - Max 2 lines with wrapping */}
                           {displayOptions.length > 0 && (
-                            <div className="flex items-center gap-2 flex-wrap text-xs">
+                            <div className="min-w-0 flex flex-wrap gap-1.5 max-h-[44px] overflow-hidden">
                               {displayOptions.map((opt, idx) => (
-                                <Badge 
-                                  key={idx} 
-                                  variant="outline" 
-                                  className="font-normal text-[10px] px-1.5 py-0 border-border/60"
+                                <span
+                                  key={idx}
+                                  className="px-2 py-0.5 rounded-md text-xs bg-muted/40 text-muted-foreground max-w-[220px] truncate"
                                 >
                                   {opt.display}
-                                </Badge>
-                              ))}
-                              {(item.selectedOptions || []).length > 4 && (
-                                <span className="text-[10px] text-muted-foreground">
-                                  +{(item.selectedOptions || []).length - 4} more
                                 </span>
-                              )}
+                              ))}
                             </div>
                           )}
                           
-                          {/* Artwork strip - shows up to 3 thumbnails +N indicator */}
+                          {/* Artwork strip inline */}
                           <div className="mt-1.5">
                             <LineItemArtworkStrip
                               quoteId={quoteId}
@@ -770,7 +747,7 @@ export function LineItemsSection({
                           </div>
                         </div>
 
-                        {/* Price + Expand Button */}
+                        {/* Price + Expand Button - Right Column */}
                         <div className="flex items-start gap-3 shrink-0">
                           <div className="text-right">
                             <div className="font-mono text-sm font-semibold whitespace-nowrap">{formatMoney(item.linePrice)}</div>

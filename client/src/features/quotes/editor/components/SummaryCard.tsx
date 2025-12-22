@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Save, X, ArrowLeft, Ban } from "lucide-react";
+import { Save, X, ArrowLeft, Ban, Mail } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -17,6 +18,7 @@ import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
+import { ROUTES } from "@/config/routes";
 
 type SummaryCardProps = {
     lineItems: QuoteLineItemDraft[];
@@ -28,6 +30,7 @@ type SummaryCardProps = {
     discountAmount: number;
     deliveryMethod: string;
     selectedCustomer: CustomerWithContacts | undefined;
+    selectedContactId?: string | null;
     canSaveQuote: boolean;
     isSaving: boolean;
     hasUnsavedChanges?: boolean;
@@ -59,6 +62,7 @@ export function SummaryCard({
     discountAmount,
     deliveryMethod,
     selectedCustomer,
+    selectedContactId,
     canSaveQuote,
     isSaving,
     hasUnsavedChanges = false,
@@ -222,10 +226,79 @@ export function SummaryCard({
                 </div>
             </CardContent>
 
+            {/* Customer Info Section */}
+            {selectedCustomer && (
+                <div className="px-4 py-3 border-t border-border/40">
+                    <h3 className="text-sm font-semibold mb-2.5">Customer Info</h3>
+                    <div className="space-y-1.5 text-sm">
+                        {/* Company Name - clickable link */}
+                        {selectedCustomer.companyName && (
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">Company</span>
+                                <Link 
+                                    to={ROUTES.customers.detail(selectedCustomer.id)} 
+                                    className="font-medium hover:underline text-primary"
+                                >
+                                    {selectedCustomer.companyName}
+                                </Link>
+                            </div>
+                        )}
+
+                        {/* Contact Name - derived from selectedContactId */}
+                        {(() => {
+                            const contact = selectedContactId 
+                                ? selectedCustomer.contacts?.find(c => c.id === selectedContactId)
+                                : null;
+                            const contactName = contact 
+                                ? `${contact.firstName} ${contact.lastName}`.trim()
+                                : null;
+                            
+                            return contactName ? (
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Contact</span>
+                                    <span className="font-medium">{contactName}</span>
+                                </div>
+                            ) : null;
+                        })()}
+
+                        {/* Email - from contact if available, else customer */}
+                        {(() => {
+                            const contact = selectedContactId 
+                                ? selectedCustomer.contacts?.find(c => c.id === selectedContactId)
+                                : null;
+                            const email = contact?.email || selectedCustomer.email;
+                            
+                            return email ? (
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Email</span>
+                                    <span className="font-medium font-mono text-xs">{email}</span>
+                                </div>
+                            ) : null;
+                        })()}
+
+                        {/* Phone - from contact if available, else customer */}
+                        {(() => {
+                            const contact = selectedContactId 
+                                ? selectedCustomer.contacts?.find(c => c.id === selectedContactId)
+                                : null;
+                            const phone = contact?.phone || selectedCustomer.phone;
+                            
+                            return phone ? (
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Phone</span>
+                                    <span className="font-medium font-mono text-xs">{phone}</span>
+                                </div>
+                            ) : null;
+                        })()}
+                    </div>
+                </div>
+            )}
+
             <CardFooter className="flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40">
                 {!readOnly ? (
                     <>
-                        {/* Row 1: Save (edit mode only) */}
+                        {/* EDIT MODE */}
+                        {/* Row 1: Save Changes */}
                         <Button
                             className="w-full h-10"
                             onClick={onSave}
@@ -239,7 +312,7 @@ export function SummaryCard({
                                     : "Save Changes"}
                         </Button>
 
-                        {/* Optional Save & Back button (only shown when preference is "stay") */}
+                        {/* Row 2: Save & Back (conditional, only shown when preference is "stay") */}
                         {onSaveAndBack && afterSaveNavigation === "stay" && (
                             <Button
                                 variant="outline"
@@ -252,33 +325,17 @@ export function SummaryCard({
                             </Button>
                         )}
 
-                        {/* Discard button - disabled when quote number exists */}
-                        {showDiscard && (
-                            <TooltipProvider>
-                                <Tooltip>
-                                    <TooltipTrigger asChild>
-                                        <span className="w-full">
-                                            <Button
-                                                variant="outline"
-                                                className="w-full h-10"
-                                                onClick={onDiscard}
-                                                disabled={isSaving || hasQuoteNumber}
-                                            >
-                                                <X className="w-4 h-4 mr-2" />
-                                                Discard
-                                            </Button>
-                                        </span>
-                                    </TooltipTrigger>
-                                    {hasQuoteNumber && (
-                                        <TooltipContent>
-                                            <p className="text-xs">Quote number assigned. Use Cancel Quote to keep an audit trail.</p>
-                                        </TooltipContent>
-                                    )}
-                                </Tooltip>
-                            </TooltipProvider>
-                        )}
+                        {/* Row 3: Email Quote (full-width) */}
+                        <Button
+                            variant="outline"
+                            className="w-full h-10"
+                            disabled
+                        >
+                            <Mail className="w-4 h-4 mr-2" />
+                            Email Quote
+                        </Button>
 
-                        {/* Cancel Quote button - shown for quotes with numbers */}
+                        {/* Row 4: Cancel Quote (conditional, shown for quotes with numbers) */}
                         {showCancelQuote && (
                             <Button
                                 variant="destructive"
@@ -291,23 +348,42 @@ export function SummaryCard({
                             </Button>
                         )}
 
-                        {/* Row 2: Email + Preview (Preview full-width in view mode) */}
+                        {/* Row 5: Small button row - Discard + Preview */}
                         <div className="grid grid-cols-2 gap-2 w-full">
-                            {!readOnly && (
-                                <Button variant="outline" className="w-full" disabled>
-                                    Email Quote
-                                </Button>
+                            {showDiscard && (
+                                <TooltipProvider>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <span className="w-full">
+                                                <Button
+                                                    variant="outline"
+                                                    className="w-full"
+                                                    onClick={onDiscard}
+                                                    disabled={isSaving || hasQuoteNumber}
+                                                >
+                                                    <X className="w-4 h-4 mr-2" />
+                                                    Discard
+                                                </Button>
+                                            </span>
+                                        </TooltipTrigger>
+                                        {hasQuoteNumber && (
+                                            <TooltipContent>
+                                                <p className="text-xs">Quote number assigned. Use Cancel Quote to keep an audit trail.</p>
+                                            </TooltipContent>
+                                        )}
+                                    </Tooltip>
+                                </TooltipProvider>
                             )}
                             <Button
                                 variant="outline"
-                                className={`${readOnly ? "col-span-2" : ""} w-full`}
+                                className={`${!showDiscard ? "col-span-2" : ""} w-full`}
                                 disabled
                             >
                                 Preview
                             </Button>
                         </div>
 
-                        {/* Row 3: Convert (both modes) */}
+                        {/* Row 6: Convert to Order (conditional) */}
                         {showConvertToOrder && (
                             <Button
                                 variant="secondary"
@@ -321,14 +397,19 @@ export function SummaryCard({
                     </>
                 ) : (
                     <>
-                        <Button variant="outline" className="w-full h-10" disabled>
-                            Email Quote
-                        </Button>
+                        {/* VIEW MODE */}
+                        {/* Row 1: Small button row - Email Quote + Preview */}
+                        <div className="grid grid-cols-2 gap-2 w-full">
+                            <Button variant="outline" className="w-full" disabled>
+                                <Mail className="w-4 h-4 mr-2" />
+                                Email Quote
+                            </Button>
+                            <Button variant="outline" className="w-full" disabled>
+                                Preview
+                            </Button>
+                        </div>
 
-                        <Button variant="outline" className="w-full h-10" disabled>
-                            Preview
-                        </Button>
-
+                        {/* Row 2: Convert to Order (primary action, full-width) */}
                         <Button
                             variant="default"
                             className="w-full h-10"
