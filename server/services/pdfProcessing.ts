@@ -220,7 +220,15 @@ export async function processPdfAttachmentDerivedData(args: {
 }): Promise<void> {
   const { orgId, attachmentId, storageKey, storageProvider, mimeType } = args;
 
+  const lowerMimeType = (mimeType ?? '').toLowerCase();
+  const isPdfMime = lowerMimeType.includes('pdf');
+  const isAiCandidate = !isPdfMime && /(illustrator|postscript)/i.test(lowerMimeType);
+
   console.log(`[PdfProcessing] PDF processing started for attachmentId=${attachmentId}, storageKey=${storageKey}, orgId=${orgId}`);
+
+  if (isAiCandidate) {
+    console.log(`[PdfProcessing] AI detected; attempting PDF-compatible processing for attachmentId=${attachmentId}`);
+  }
 
   // Early exit if dependencies are unavailable
   const hasPdfjs = await ensurePdfjs();
@@ -228,6 +236,10 @@ export async function processPdfAttachmentDerivedData(args: {
   const hasSharp = await ensureSharp();
 
   if (!hasPdfjs) {
+    if (isAiCandidate) {
+      console.log(`[PdfProcessing] Skipping ${attachmentId}: pdfjs unavailable (AI processing is best-effort)`);
+      return;
+    }
     console.log(`[PdfProcessing] Skipping ${attachmentId}: pdfjs unavailable`);
     
     // Mark as failed
@@ -285,22 +297,25 @@ export async function processPdfAttachmentDerivedData(args: {
       return;
     }
 
-    // Status should already be set to 'detecting' and 'thumb_pending' by upload route
-    // If not, update it here as a safety measure
-    if (attachment.pageCountStatus !== 'detecting' || attachment.thumbStatus !== 'thumb_pending') {
-      try {
-        await db
-          .update(quoteAttachments)
-          .set({
-            pageCountStatus: 'detecting',
-            thumbStatus: 'thumb_pending',
-            updatedAt: new Date(),
-          })
-          .where(eq(quoteAttachments.id, attachmentId));
-        console.log(`[PdfProcessing] Updated ${attachmentId} status to detecting/pending`);
-      } catch (dbError: any) {
-        console.error(`[PdfProcessing] DB update failed while setting status to detecting for ${attachmentId}:`, dbError?.message || dbError);
-        // Continue anyway - status might already be correct
+    // Status should already be set to 'detecting' and 'thumb_pending' by upload route for PDFs.
+    // For AI attempts, do not change status up-front (fail-soft).
+    if (!isAiCandidate) {
+      // If not, update it here as a safety measure
+      if (attachment.pageCountStatus !== 'detecting' || attachment.thumbStatus !== 'thumb_pending') {
+        try {
+          await db
+            .update(quoteAttachments)
+            .set({
+              pageCountStatus: 'detecting',
+              thumbStatus: 'thumb_pending',
+              updatedAt: new Date(),
+            })
+            .where(eq(quoteAttachments.id, attachmentId));
+          console.log(`[PdfProcessing] Updated ${attachmentId} status to detecting/pending`);
+        } catch (dbError: any) {
+          console.error(`[PdfProcessing] DB update failed while setting status to detecting for ${attachmentId}:`, dbError?.message || dbError);
+          // Continue anyway - status might already be correct
+        }
       }
     }
 
@@ -310,6 +325,10 @@ export async function processPdfAttachmentDerivedData(args: {
     if (!pdfBuffer) {
       const errorMsg = `Failed to download PDF file from storageKey=${storageKey}`;
       console.error(`[PdfProcessing] ${errorMsg}`);
+      if (isAiCandidate) {
+        console.warn('[PdfProcessing] AI not PDF-compatible; skipping thumbnail');
+        return;
+      }
       throw new Error(errorMsg);
     }
     console.log(`[PdfProcessing] Successfully read PDF file, size=${pdfBuffer.length} bytes`);
@@ -325,8 +344,17 @@ export async function processPdfAttachmentDerivedData(args: {
       pdfBuffer instanceof Buffer
         ? new Uint8Array(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.byteLength)
         : (pdfBuffer as Uint8Array);
-    const loadingTask = getDocument({ data: pdfData });
-    const pdfDocument = await loadingTask.promise;
+    let pdfDocument: any;
+    try {
+      const loadingTask = getDocument({ data: pdfData });
+      pdfDocument = await loadingTask.promise;
+    } catch (error: any) {
+      if (isAiCandidate) {
+        console.warn('[PdfProcessing] AI not PDF-compatible; skipping thumbnail');
+        return;
+      }
+      throw error;
+    }
     console.log(`[PdfProcessing] pdfjs getDocument success for ${attachmentId}`);
 
     // Get page count
