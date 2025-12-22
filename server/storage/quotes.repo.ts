@@ -18,7 +18,7 @@ import {
     type InsertQuoteWorkflowState,
     type InsertGlobalVariable,
 } from "@shared/schema";
-import { and, eq, isNull, like, gte, lte, desc, sql, inArray } from "drizzle-orm";
+import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
@@ -283,10 +283,12 @@ export class QuotesRepository {
         }
 
         // Fetch line items for this quote (no status filters)
+        // Order by displayOrder (primary) and id (tiebreaker) for stable ordering
         const lineItems = await this.dbInstance
             .select()
             .from(quoteLineItems)
-            .where(eq(quoteLineItems.quoteId, id));
+            .where(eq(quoteLineItems.quoteId, id))
+            .orderBy(asc(quoteLineItems.displayOrder), asc(quoteLineItems.id));
 
         // Enrich line items with product/variant data
         const lineItemsWithRelations = await Promise.all(

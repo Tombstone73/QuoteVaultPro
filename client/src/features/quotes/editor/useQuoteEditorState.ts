@@ -2269,6 +2269,70 @@ export function useQuoteEditorState() {
         ]
     );
 
+    /**
+     * Persist reordered line items by updating displayOrder via PATCH endpoint.
+     * Only updates items whose displayOrder has actually changed.
+     * Fail-soft: if any PATCH fails, refetch quote and return ok: false.
+     */
+    const reorderLineItemsByKeys = useCallback(
+        async (orderedKeys: string[]): Promise<{ ok: boolean }> => {
+            if (!quoteId) {
+                // No persisted quote yet - fail soft
+                return { ok: true };
+            }
+
+            try {
+                // Map keys to line items
+                const orderedItems = orderedKeys
+                    .map(key => lineItems.find(li => getStableLineItemKey(li) === key))
+                    .filter((li): li is QuoteLineItemDraft => !!li && !!li.id); // Only persist items with real IDs
+
+                if (orderedItems.length === 0) {
+                    return { ok: true };
+                }
+
+                // Build list of updates (only for items where displayOrder changed)
+                const updates: Array<{ id: string; newDisplayOrder: number }> = [];
+                orderedItems.forEach((item, index) => {
+                    const newDisplayOrder = index;
+                    if (item.displayOrder !== newDisplayOrder) {
+                        updates.push({ id: item.id!, newDisplayOrder });
+                    }
+                });
+
+                if (updates.length === 0) {
+                    return { ok: true };
+                }
+
+                // Persist updates sequentially (simplest and safest)
+                for (const { id, newDisplayOrder } of updates) {
+                    await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${id}`, {
+                        displayOrder: newDisplayOrder,
+                    });
+                }
+
+                // Invalidate and refetch quote to sync server state
+                await queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+                
+                return { ok: true };
+            } catch (error) {
+                console.error("[reorderLineItemsByKeys] failed:", error);
+                
+                // Refetch to restore consistency
+                queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+                
+                toast({
+                    title: "Failed to save order",
+                    description: "Line item order could not be saved. Changes have been reverted.",
+                    variant: "destructive",
+                });
+                
+                return { ok: false };
+            }
+        },
+        [quoteId, lineItems, queryClientInstance, toast]
+    );
+
     const discardAllChanges = useCallback(async () => {
         const snap = savedSnapshotRef.current;
         if (!snap) return;
@@ -2305,6 +2369,26 @@ export function useQuoteEditorState() {
         setQuoteTaxRateOverride(snap.quoteTaxRateOverride);
         setLineItems(snap.lineItems.map((li) => ({ ...li })));
     }, [quoteId, lineItems]);
+
+    // ============================================================================
+    // SORTED LINE ITEMS (displayOrder → id tiebreaker)
+    // ============================================================================
+
+    // Always render line items in displayOrder, with id as stable tiebreaker
+    const sortedLineItems = useMemo(() => {
+        return [...lineItems].sort((a, b) => {
+            // Primary: sort by displayOrder ascending
+            const orderA = a.displayOrder ?? 0;
+            const orderB = b.displayOrder ?? 0;
+            if (orderA !== orderB) {
+                return orderA - orderB;
+            }
+            // Tiebreaker: stable sort by id (tempId || id)
+            const idA = a.tempId || a.id || "";
+            const idB = b.tempId || b.id || "";
+            return idA.localeCompare(idB);
+        });
+    }, [lineItems]);
 
     // ============================================================================
     // RETURN: Hook interface
@@ -2348,8 +2432,8 @@ export function useQuoteEditorState() {
         quoteTaxExempt,
         quoteTaxRateOverride,
 
-        // Line items
-        lineItems,
+        // Line items (sorted by displayOrder)
+        lineItems: sortedLineItems,
         draftLineItemId,
         isCreatingDraft,
 
@@ -2478,6 +2562,7 @@ export function useQuoteEditorState() {
             updateLineItemLocal,
             saveLineItem,
             ensureLineItemId,
+            reorderLineItemsByKeys,
             discardAllChanges,
 
             // Quote operations

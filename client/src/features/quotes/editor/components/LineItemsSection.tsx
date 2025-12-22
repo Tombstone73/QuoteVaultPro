@@ -8,7 +8,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image, GripVertical } from "lucide-react";
+import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { Product, ProductOptionItem } from "@shared/schema";
 import type { QuoteLineItemDraft, OptionSelection } from "../types";
 import { apiRequest } from "@/lib/queryClient";
@@ -32,6 +35,7 @@ type LineItemsSectionProps = {
   onSaveLineItem?: (itemKey: string) => Promise<boolean>;
   onDuplicateLineItem: (itemKey: string) => void;
   onRemoveLineItem: (itemKey: string) => void;
+  onReorderLineItems?: (orderedKeys: string[]) => Promise<{ ok: boolean }>;
   ensureQuoteId?: () => Promise<string>;
   ensureLineItemId?: (itemKey: string) => Promise<{ quoteId: string; lineItemId: string }>;
 };
@@ -42,6 +46,32 @@ function getItemKey(item: QuoteLineItemDraft): string {
 
 function getProduct(products: Product[], productId: string) {
   return products.find((p) => p.id === productId) ?? null;
+}
+
+type SortableChildRenderProps = {
+  dragAttributes: Record<string, any> | undefined;
+  dragListeners: Record<string, any> | undefined;
+};
+
+function SortableLineItemWrapper({
+  id,
+  children,
+}: {
+  id: string;
+  children: (props: SortableChildRenderProps) => React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children({ dragAttributes: attributes, dragListeners: listeners })}
+    </div>
+  );
 }
 
 function requiresDimensions(product: Product | null): boolean {
@@ -348,10 +378,68 @@ export function LineItemsSection({
   onSaveLineItem,
   onDuplicateLineItem,
   onRemoveLineItem,
+  onReorderLineItems,
   ensureQuoteId,
   ensureLineItemId,
 }: LineItemsSectionProps) {
   const count = lineItems.filter((li) => li.status !== "canceled").length;
+
+  // TEMP UI-only reorder state (not persisted)
+  const [uiOrderKeys, setUiOrderKeys] = useState<string[] | null>(null);
+  const [isSavingOrder, setIsSavingOrder] = useState(false);
+
+  // Reset UI order when lineItems change
+  useEffect(() => {
+    setUiOrderKeys(null);
+  }, [lineItems]);
+
+  // Derive stable keys and ordered line items
+  const baseKeys = lineItems.map(li => getItemKey(li)).filter(Boolean) as string[];
+  const orderedKeys = uiOrderKeys ?? baseKeys;
+  
+  const orderedLineItems = useMemo(() => {
+    const ordered = orderedKeys
+      .map(k => lineItems.find(li => getItemKey(li) === k))
+      .filter(Boolean) as typeof lineItems;
+    return ordered.length === lineItems.length ? ordered : lineItems;
+  }, [orderedKeys, lineItems]);
+
+  // Configure drag sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  // Handle drag end
+  async function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over) return;
+    if (active.id === over.id) return;
+
+    // Compute new order
+    const current = uiOrderKeys ?? baseKeys;
+    const oldIndex = current.indexOf(active.id as string);
+    const newIndex = current.indexOf(over.id as string);
+    if (oldIndex < 0 || newIndex < 0) return;
+    
+    const nextKeys = arrayMove(current, oldIndex, newIndex);
+    
+    // Update UI immediately
+    setUiOrderKeys(nextKeys);
+
+    // Persist if we have a persisted quote and handler
+    if (quoteId && onReorderLineItems && !readOnly) {
+      setIsSavingOrder(true);
+      const result = await onReorderLineItems(nextKeys);
+      setIsSavingOrder(false);
+      
+      if (result.ok) {
+        // Clear UI order after successful save (let server order drive)
+        setUiOrderKeys(null);
+      }
+      // If failed, uiOrderKeys stays set and will be reset on next lineItems change
+    }
+  }
 
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
@@ -578,36 +666,53 @@ export function LineItemsSection({
             —
           </div>
         ) : (
-          <div className="space-y-2">
-            {lineItems
-              .filter((li) => li.status !== "canceled")
-              .map((item, itemIndex) => {
-                const itemKey = getItemKey(item);
-                const isExpanded = !!itemKey && expandedKey === itemKey;
-                const product = getProduct(products, item.productId);
-                const subtitle = item.variantName || (product as any)?.category || (product as any)?.sku || "";
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={orderedKeys} strategy={verticalListSortingStrategy}>
+              <div className="space-y-2">
+                {orderedLineItems
+                  .filter((li) => li.status !== "canceled")
+                  .map((item, itemIndex) => {
+                    const itemKey = getItemKey(item);
+                    const isExpanded = !!itemKey && expandedKey === itemKey;
+                    const product = getProduct(products, item.productId);
+                    const subtitle = item.variantName || (product as any)?.category || (product as any)?.sku || "";
 
-                // Extract key options for summary display
-                const displayOptions = (item.selectedOptions || []).slice(0, 4).map((opt: any) => {
-                  let displayValue = '';
-                  if (typeof opt.value === 'boolean') {
-                    displayValue = opt.value ? 'Yes' : 'No';
-                  } else if (opt.value !== undefined && opt.value !== null && opt.value !== '') {
-                    displayValue = `: ${opt.value}`;
-                  }
-                  return {
-                    name: opt.optionName,
-                    display: `${opt.optionName}${displayValue}`,
-                  };
-                });
+                    // Extract key options for summary display
+                    const displayOptions = (item.selectedOptions || []).slice(0, 4).map((opt: any) => {
+                      let displayValue = '';
+                      if (typeof opt.value === 'boolean') {
+                        displayValue = opt.value ? 'Yes' : 'No';
+                      } else if (opt.value !== undefined && opt.value !== null && opt.value !== '') {
+                        displayValue = `: ${opt.value}`;
+                      }
+                      return {
+                        name: opt.optionName,
+                        display: `${opt.optionName}${displayValue}`,
+                      };
+                    });
 
-                return (
-                  <div key={itemKey} className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
-                    {/* Collapsed Summary Row - Always Visible */}
-                    <div className="p-3">
-                      <div className="flex items-start gap-3">
-                        {/* Thumbnail */}
-                        <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
+                    return (
+                      <SortableLineItemWrapper key={itemKey} id={itemKey}>
+                        {({ dragAttributes, dragListeners }) => (
+                          <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
+                            {/* Collapsed Summary Row - Always Visible */}
+                            <div className="p-3">
+                              <div className="flex items-start gap-3">
+                                {/* Drag Handle (edit mode only) */}
+                                {!readOnly && (
+                                  <button
+                                    className="mt-1 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded p-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    {...dragAttributes}
+                                    {...dragListeners}
+                                    disabled={isSavingOrder}
+                                    aria-label="Drag to reorder"
+                                  >
+                                    <GripVertical className="h-4 w-4" />
+                                  </button>
+                                )}
+                                
+                                {/* Thumbnail */}
+                                <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
 
                         {/* Product Info & Details */}
                         <div className="min-w-0 flex-1 space-y-1.5">
@@ -862,10 +967,14 @@ export function LineItemsSection({
                         </div>
                       </>
                     )}
-                  </div>
-                );
-              })}
-          </div>
+                          </div>
+                        )}
+                      </SortableLineItemWrapper>
+                    );
+                  })}
+              </div>
+            </SortableContext>
+          </DndContext>
         )}
 
         {/* Add Product (edit mode only) */}
