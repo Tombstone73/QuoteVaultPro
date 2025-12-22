@@ -3426,6 +3426,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const isPdfByName = attachmentFileName.toLowerCase().endsWith('.pdf');
       const isPdf = isPdfByMime || isPdfByName;
 
+      // Best-effort AI detection for PDF-compatible .ai files.
+      // IMPORTANT: Do not treat all postscript as AI (avoid .eps); require .ai extension unless mime is explicitly illustrator.
+      const lowerMimeType = (attachment.mimeType ?? '').toLowerCase();
+      const isAiByName = attachmentFileName.toLowerCase().endsWith('.ai');
+      const isAiByMime = /illustrator/i.test(lowerMimeType) || (/postscript/i.test(lowerMimeType) && isAiByName);
+      const isAi = isAiByName || isAiByMime;
+
       const hasStorageProvider = !!attachment.storageProvider;
       const isNotHttpUrl =
         !!attachment.fileUrl &&
@@ -3441,6 +3448,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         isPdfByMime,
         isPdfByName,
         isPdf,
+        isAiByName,
+        isAiByMime,
+        isAi,
         hasStorageProvider,
         isNotHttpUrl,
         pdfColumnsExist,
@@ -3484,17 +3494,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ? "supabase"
           : null);
       
-      if (isPdf) {
+      if (isPdf || isAi) {
         if (!pdfColumnsExist) {
-          console.warn(`[LineItemFiles:POST] PDF detected but pdf columns missing; skipping processing for attachmentId=${attachment.id}`);
+          console.warn(`[LineItemFiles:POST] PDF/AI detected but pdf columns missing; skipping processing for attachmentId=${attachment.id}`);
         } else if (!normalizedStorageProvider) {
-          console.warn(`[LineItemFiles:POST] PDF detected but storageProvider missing; skipping processing for attachmentId=${attachment.id}`);
+          console.warn(`[LineItemFiles:POST] PDF/AI detected but storageProvider missing; skipping processing for attachmentId=${attachment.id}`);
         } else if (!isNotHttpUrl) {
-          console.warn(`[LineItemFiles:POST] PDF detected but fileUrl is http(s); skipping processing for attachmentId=${attachment.id}`);
+          console.warn(`[LineItemFiles:POST] PDF/AI detected but fileUrl is http(s); skipping processing for attachmentId=${attachment.id}`);
         } else if (!attachment.fileUrl) {
-          console.warn(`[LineItemFiles:POST] PDF detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
+          console.warn(`[LineItemFiles:POST] PDF/AI detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
         } else {
-          console.log(`[LineItemFiles:POST] PDF detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
+          console.log(`[LineItemFiles:POST] PDF/AI detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
           
           res.on("finish", () => {
             setImmediate(() => {

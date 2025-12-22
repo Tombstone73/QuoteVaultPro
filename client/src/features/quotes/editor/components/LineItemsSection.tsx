@@ -121,10 +121,20 @@ type AttachmentForPreview = {
   originalUrl?: string | null;
   previewUrl?: string | null;
   thumbUrl?: string | null;
+  thumbnailUrl?: string | null;
   pageCount?: number | null;
   pages?: Array<{ thumbUrl?: string | null }>;
   lineItemId?: string; // Added for download handler
 };
+
+function getPdfThumbUrl(file: {
+  pages?: Array<{ thumbUrl?: string | null }>;
+  thumbUrl?: string | null;
+  thumbnailUrl?: string | null;
+}): string | null {
+  const url = file.pages?.[0]?.thumbUrl ?? file.thumbUrl ?? file.thumbnailUrl ?? null;
+  return typeof url === "string" && isValidHttpUrl(url) ? url : null;
+}
 
 function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineItemId: string | undefined }) {
   const [imageError, setImageError] = useState(false);
@@ -160,7 +170,7 @@ function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineIt
   
   // Determine image URL - ONLY use signed URLs from server, never construct URLs client-side
   // For images: use thumbUrl if available, fallback to originalUrl (both are signed URLs from server)
-  // For PDFs: use first page thumbUrl if available (signed URL from server)
+  // For PDFs: prefer first page thumbUrl, then fallback to thumbUrl (signed URL from server)
   let imageUrl: string | null = null;
   if (!imageError && first) {
     if (isImage) {
@@ -170,12 +180,8 @@ function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineIt
       if (candidateUrl && typeof candidateUrl === 'string' && candidateUrl.startsWith('http')) {
         imageUrl = candidateUrl;
       }
-    } else if (isPdf && first?.pages?.length > 0) {
-      // Only use signed thumbUrl from first page
-      const candidateUrl = first.pages[0]?.thumbUrl;
-      if (candidateUrl && typeof candidateUrl === 'string' && candidateUrl.startsWith('http')) {
-        imageUrl = candidateUrl;
-      }
+    } else if (isPdf) {
+      imageUrl = getPdfThumbUrl(first);
     }
   }
 
@@ -234,23 +240,13 @@ function LineItemArtworkStrip({
   const remainingCount = attachments.length - 3;
 
   const getThumbnailUrl = (attachment: AttachmentForPreview): string | null => {
-    // Prefer previewUrl, fallback to thumbUrl, then originalUrl
-    if (attachment.previewUrl && isValidHttpUrl(attachment.previewUrl)) {
-      return attachment.previewUrl;
-    }
-    // For PDFs, use first page thumbUrl
-    if (attachment.mimeType === 'application/pdf' && attachment.pages?.[0]?.thumbUrl) {
-      const url = attachment.pages[0].thumbUrl;
-      if (url && isValidHttpUrl(url)) return url;
-    }
-    // For other files, use thumbUrl
-    if (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) {
-      return attachment.thumbUrl;
-    }
-    // Fallback to originalUrl for preview (only if no thumbUrl/previewUrl)
-    if (attachment.originalUrl && isValidHttpUrl(attachment.originalUrl)) {
-      return attachment.originalUrl;
-    }
+    const isPdf = isPdfAttachment(attachment);
+    if (isPdf) return getPdfThumbUrl(attachment);
+
+    // Non-PDF: Prefer previewUrl, fallback to thumbUrl, then originalUrl
+    if (attachment.previewUrl && isValidHttpUrl(attachment.previewUrl)) return attachment.previewUrl;
+    if (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) return attachment.thumbUrl;
+    if (attachment.originalUrl && isValidHttpUrl(attachment.originalUrl)) return attachment.originalUrl;
     return null;
   };
 
@@ -950,24 +946,30 @@ export function LineItemsSection({
             </DialogDescription>
           </DialogHeader>
           {previewFile && (() => {
-            const isPdf = previewFile.mimeType === 'application/pdf';
+            const isPdf = isPdfAttachment(previewFile);
             const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl;
             const hasValidPreview = !isPdf && previewUrl && isValidHttpUrl(previewUrl);
-            const hasValidOriginal = previewFile.originalUrl && isValidHttpUrl(previewFile.originalUrl);
+            const pdfThumbUrl =
+              getPdfThumbUrl(previewFile);
+            const hasPdfThumb = isPdf && typeof pdfThumbUrl === "string" && isValidHttpUrl(pdfThumbUrl);
+            const originalUrl =
+              previewFile.originalUrl ??
+              (previewFile as any).originalURL ??
+              (previewFile as any).url ??
+              null;
+            const canDownloadOriginal = typeof originalUrl === "string" && isValidHttpUrl(originalUrl);
             const fileName = previewFile.originalFilename || previewFile.fileName;
-            // Find the line item ID for this attachment - we need to get it from the attachment's lineItemId
-            // For now, we'll need to pass lineItemId through the preview state or find it another way
-            // Since we don't have lineItemId in the preview state, we'll construct the path differently
-            // Actually, we need to get the lineItemId - let's store it in the preview state
-            // For now, let's use a simpler approach - we'll need to pass more context
-            
+            const lineItemId = previewFile.lineItemId;
+            const filesApiPath = lineItemId
+              ? (quoteId
+                  ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
+                  : `/api/line-items/${lineItemId}/files`)
+              : null;
+            const canDownloadViaApi = typeof filesApiPath === "string" && filesApiPath.length > 0;
+
             const handleDownload = async () => {
               try {
-                const lineItemId = previewFile.lineItemId;
-                if (!lineItemId) return;
-                const filesApiPath = quoteId
-                  ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
-                  : `/api/line-items/${lineItemId}/files`;
+                if (!filesApiPath) return;
                 const proxyUrl = `${filesApiPath}/${previewFile.id}/download/proxy`;
                 const anchor = document.createElement("a");
                 anchor.href = proxyUrl;
@@ -985,22 +987,48 @@ export function LineItemsSection({
             return (
               <div className="space-y-4">
                 {isPdf ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                    <FileText className="w-16 h-16 mb-4 opacity-50" />
-                    <p className="text-sm mb-4">PDF preview not available</p>
-                    {hasValidOriginal && (
-                      <div className="flex flex-col items-center gap-1">
-                        <Button
-                          onClick={handleDownload}
-                          variant="outline"
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          Download PDF
-                        </Button>
-                        <span className="text-xs text-muted-foreground">Downloads original file</span>
-                      </div>
-                    )}
-                  </div>
+                  hasPdfThumb ? (
+                    <div className="flex justify-center bg-muted/30 rounded-lg p-4">
+                      <img
+                        src={pdfThumbUrl!}
+                        alt={fileName}
+                        className="max-w-full max-h-[60vh] object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                      <FileText className="w-16 h-16 mb-4 opacity-50" />
+                      <p className="text-sm mb-4">PDF preview not available</p>
+                      {(canDownloadViaApi || canDownloadOriginal) && (
+                        <div className="flex flex-col items-center gap-1">
+                          <Button
+                            onClick={() => {
+                              if (canDownloadViaApi) {
+                                handleDownload();
+                                return;
+                              }
+                              if (canDownloadOriginal) {
+                                const anchor = document.createElement("a");
+                                anchor.href = originalUrl!;
+                                anchor.download = fileName;
+                                anchor.target = "_blank";
+                                anchor.rel = "noreferrer";
+                                anchor.style.display = "none";
+                                document.body.appendChild(anchor);
+                                anchor.click();
+                                document.body.removeChild(anchor);
+                              }
+                            }}
+                            variant="outline"
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            Download original
+                          </Button>
+                          <span className="text-xs text-muted-foreground">Downloads original file</span>
+                        </div>
+                      )}
+                    </div>
+                  )
                 ) : hasValidPreview ? (
                   <div className="flex justify-center bg-muted/30 rounded-lg p-4">
                     <img 
@@ -1030,14 +1058,30 @@ export function LineItemsSection({
                     )}
                   </div>
                   
-                  {!isPdf && hasValidOriginal && (
+                  {(canDownloadViaApi || canDownloadOriginal) && (
                     <div className="flex flex-col items-end gap-1">
                       <Button
-                        onClick={handleDownload}
+                        onClick={() => {
+                          if (canDownloadViaApi) {
+                            handleDownload();
+                            return;
+                          }
+                          if (canDownloadOriginal) {
+                            const anchor = document.createElement("a");
+                            anchor.href = originalUrl!;
+                            anchor.download = fileName;
+                            anchor.target = "_blank";
+                            anchor.rel = "noreferrer";
+                            anchor.style.display = "none";
+                            document.body.appendChild(anchor);
+                            anchor.click();
+                            document.body.removeChild(anchor);
+                          }
+                        }}
                         variant="outline"
                       >
                         <Download className="w-4 h-4 mr-2" />
-                        Download
+                        Download original
                       </Button>
                       <span className="text-xs text-muted-foreground">Downloads original file</span>
                     </div>
