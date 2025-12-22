@@ -4,9 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Save, X, ArrowLeft } from "lucide-react";
+import { Save, X, ArrowLeft, Ban } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
@@ -29,11 +35,15 @@ type SummaryCardProps = {
     convertToOrderPending?: boolean;
     readOnly?: boolean;
     showConvertToOrder?: boolean;
+    showDiscard?: boolean;
+    quoteNumber?: number | null;
+    quoteStatus?: string | null;
     onSave: () => void;
     onSaveAndBack?: () => void;
     afterSaveNavigation?: AfterSaveNavigation;
     onConvertToOrder: () => void;
     onDiscard: () => void;
+    onCancelQuote?: () => void;
     onDiscountAmountChange: (next: number) => void;
     quoteTaxExempt?: boolean | null;
     quoteTaxRateOverride?: number | null;
@@ -56,11 +66,15 @@ export function SummaryCard({
     convertToOrderPending,
     readOnly = false,
     showConvertToOrder = true,
+    showDiscard = true,
+    quoteNumber,
+    quoteStatus,
     onSave,
     onSaveAndBack,
     afterSaveNavigation = "stay",
     onConvertToOrder,
     onDiscard,
+    onCancelQuote,
     onDiscountAmountChange,
     quoteTaxExempt,
     quoteTaxRateOverride,
@@ -75,6 +89,13 @@ export function SummaryCard({
         : (selectedCustomer?.taxRateOverride != null 
             ? Number(selectedCustomer.taxRateOverride) 
             : effectiveTaxRate);
+    
+    // Determine if quote has a number assigned (fail-soft)
+    const hasQuoteNumber = Boolean(quoteNumber);
+    
+    // Only show Cancel button for quotes with numbers that are drafts
+    const showCancelQuote = hasQuoteNumber && quoteStatus === 'draft' && !readOnly && !!onCancelQuote;
+    
     return (
         <Card className="rounded-lg border border-border/40 bg-card/50">
             <CardContent className="space-y-4 px-4 py-3 pt-4">
@@ -231,15 +252,44 @@ export function SummaryCard({
                             </Button>
                         )}
 
-                        <Button
-                            variant="outline"
-                            className="w-full h-10"
-                            onClick={onDiscard}
-                            disabled={isSaving}
-                        >
-                            <X className="w-4 h-4 mr-2" />
-                            Discard
-                        </Button>
+                        {/* Discard button - disabled when quote number exists */}
+                        {showDiscard && (
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <span className="w-full">
+                                            <Button
+                                                variant="outline"
+                                                className="w-full h-10"
+                                                onClick={onDiscard}
+                                                disabled={isSaving || hasQuoteNumber}
+                                            >
+                                                <X className="w-4 h-4 mr-2" />
+                                                Discard
+                                            </Button>
+                                        </span>
+                                    </TooltipTrigger>
+                                    {hasQuoteNumber && (
+                                        <TooltipContent>
+                                            <p className="text-xs">Quote number assigned. Use Cancel Quote to keep an audit trail.</p>
+                                        </TooltipContent>
+                                    )}
+                                </Tooltip>
+                            </TooltipProvider>
+                        )}
+
+                        {/* Cancel Quote button - shown for quotes with numbers */}
+                        {showCancelQuote && (
+                            <Button
+                                variant="destructive"
+                                className="w-full h-10"
+                                onClick={onCancelQuote}
+                                disabled={isSaving}
+                            >
+                                <Ban className="w-4 h-4 mr-2" />
+                                Cancel Quote
+                            </Button>
+                        )}
 
                         {/* Row 2: Email + Preview (Preview full-width in view mode) */}
                         <div className="grid grid-cols-2 gap-2 w-full">
