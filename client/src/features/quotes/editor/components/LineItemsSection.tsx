@@ -14,6 +14,8 @@ import type { QuoteLineItemDraft, OptionSelection } from "../types";
 import { apiRequest } from "@/lib/queryClient";
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
+import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
+import { setPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
@@ -579,7 +581,7 @@ export function LineItemsSection({
           <div className="space-y-2">
             {lineItems
               .filter((li) => li.status !== "canceled")
-              .map((item) => {
+              .map((item, itemIndex) => {
                 const itemKey = getItemKey(item);
                 const isExpanded = !!itemKey && expandedKey === itemKey;
                 const product = getProduct(products, item.productId);
@@ -848,7 +850,13 @@ export function LineItemsSection({
                               productName={item.productName}
                               defaultExpanded={readOnly ? true : false}
                               ensureQuoteId={!readOnly ? ensureQuoteId : undefined}
-                              ensureLineItemId={!readOnly && ensureLineItemId ? () => ensureLineItemId(itemKey) : undefined}
+                              ensureLineItemId={!readOnly && ensureLineItemId ? () => {
+                                // Save scroll position AND expansion before ensuring (for restoration after route change)
+                                setPendingScrollPosition(window.scrollY);
+                                setPendingExpandedLineItemId(itemKey, itemIndex);
+                                return ensureLineItemId(itemKey);
+                              } : undefined}
+                              lineItemKey={itemKey}
                             />
                           </div>
                         </div>

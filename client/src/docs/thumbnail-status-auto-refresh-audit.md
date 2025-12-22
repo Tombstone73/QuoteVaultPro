@@ -230,3 +230,66 @@ The attachment fetching architecture is **already well-structured for bounded po
 - Multiple UI components automatically benefit from cache updates
 
 **Next step recommendation:** Add `refetchInterval` to the `useQuery` in `LineItemAttachmentsPanel.tsx` with conditional logic that polls only when `thumbStatus === 'thumb_pending'` exists in response array.
+
+---
+
+## Implementation (Step 2)
+
+**Date:** 2025-12-22  
+**Implemented by:** Bounded polling for automatic thumbnail/pageCount status updates
+
+### Files Changed
+1. **`client/src/lib/attachments/attachmentStatus.ts`** (new file)
+   - Fail-soft helper functions for attachment status classification
+   - `isThumbTerminal()` - checks if `thumbStatus` is terminal ('uploaded', 'thumb_ready', 'thumb_failed')
+   - `isPageCountTerminal()` - checks if page count detection is complete (infers from `pageCount` field)
+   - `isAttachmentSettled()` - checks if both thumb and pageCount are terminal
+   - `hasAnyUnsettledAttachment()` - checks if ANY attachment needs polling
+   - All functions fail-soft: missing/undefined statuses treated as terminal to prevent runaway polling
+
+2. **`client/src/components/LineItemAttachmentsPanel.tsx`** (modified)
+   - Added bounded polling via `refetchInterval` to attachments query (lines ~127-178)
+   - Polling interval: **1500ms** (1.5 seconds)
+   - Max duration: **60 seconds** (60,000ms)
+   - Max attempts: **40 attempts**
+   - Guard implementation:
+     - Uses `useRef` to track `pollStartAt` timestamp and `attempts` counter
+     - Resets guard when all attachments settled
+     - Stops polling silently when guard trips (fail-soft)
+     - Logs warning to console when guard trips
+   - Automatic cache sharing: all 4 components using `[filesApiPath]` query key automatically receive updates
+
+### Polling Behavior
+**Starts polling when:**
+- Any attachment has `thumbStatus === 'thumb_pending'`
+- Any PDF attachment is missing `pageCount` (inferred as detecting)
+- Any PDF has `pages` array with per-page `thumbStatus === 'thumb_pending'`
+
+**Stops polling when:**
+- All attachments reach terminal states
+- OR max duration (60s) exceeded
+- OR max attempts (40) exceeded
+- OR component unmounts (React Query behavior)
+
+### Terminal Status Mapping
+**Thumb status:**
+- Terminal: `'uploaded'`, `'thumb_ready'`, `'thumb_failed'`, `null`, `undefined`
+- Non-terminal: `'thumb_pending'`
+
+**Page count:**
+- Terminal: `pageCount` is valid number, OR not a PDF, OR missing (fail-soft)
+- Non-terminal: PDF without `pageCount` (treated as terminal after reasonable time to prevent runaway)
+
+### UI Impact
+All three surfaces automatically update via TanStack Query cache sharing:
+1. **Expanded line item attachments view** (`LineItemAttachmentsPanel`) - direct query
+2. **Line item thumbnail strip** (`LineItemArtworkStrip`) - shared cache via same query key
+3. **Attachment preview modal** - uses parent component's already-loaded data
+
+### Testing Notes
+- Upload PDF/image → see "Generating..." status → within seconds, thumbnail appears without reload
+- Polling stops automatically when processing completes
+- Guard prevents infinite polling if backend processing stalls
+- Multiple line items can poll independently without conflict
+- No UI jitter or runaway requests
+

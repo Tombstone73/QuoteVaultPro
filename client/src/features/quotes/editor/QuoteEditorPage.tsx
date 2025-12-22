@@ -6,12 +6,17 @@ import { Button } from "@/components/ui/button";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import { ROUTES } from "@/config/routes";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard } from "./components/CustomerCard";
 import { FulfillmentCard } from "./components/FulfillmentCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
+import { VoidQuoteDialog } from "@/components/VoidQuoteDialog";
+import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
+import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import type { CustomerSelectRef } from "@/components/CustomerSelect";
 
 type QuoteEditorPageProps = {
@@ -23,6 +28,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const navigate = useNavigate();
     const location = useLocation();
     const { preferences } = useUserPreferences();
+    const { toast } = useToast();
     const state = useQuoteEditorState();
 
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
@@ -33,10 +39,14 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     // Stored as lineItemId (tempId || id) - persists across refetches
     // NOT derived from quote object identity, so it survives quote refetches
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
+    
+    // Track whether we've already attempted restoration (one-shot)
+    const didRestoreRef = useRef<boolean>(false);
 
     // Dialog state (convert is still a dialog for now; core editing stays inline)
     const [showConvertDialog, setShowConvertDialog] = useState(false);
     const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false);
+    const [voidDialogOpen, setVoidDialogOpen] = useState(false);
     const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
 
     // Ref for customer select to enable initial focus
@@ -46,6 +56,9 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
 
     // Ref to store pending transition retry callback for navigation blocking
     const pendingTransitionRef = useRef<(() => void) | null>(null);
+    
+    // Ref to prevent autosave when discard is in progress
+    const discardInProgressRef = useRef<boolean>(false);
 
     // Access navigation context for BrowserRouter-compatible blocking
     const navigationContext = useContext(UNSAFE_NavigationContext);
@@ -89,6 +102,79 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             }
         }
     }, [state.lineItems, expandedKey]);
+
+    // Restore expansion state after route transition (e.g., when uploading artwork creates quote)
+    // This provides seamless UX: line item stays expanded through /quotes/new → /quotes/:id navigation
+    // TIMING CRITICAL: Only runs after quote data is fully loaded
+    useEffect(() => {
+        // Guard 1: One-shot restoration (prevent repeated attempts)
+        if (didRestoreRef.current) return;
+        
+        // Guard 2: Only attempt restoration if we don't already have an expanded item
+        if (expandedKey) return;
+        
+        // Guard 3: Must have a pending restoration
+        const pending = getPendingExpandedLineItemId();
+        if (!pending.key && pending.index === null) return;
+        
+        // Guard 4: Data must be loaded (wait for permanent quote with line items)
+        // This prevents running during /quotes/new phase or before data arrives
+        const dataLoaded = state.quoteId && // Have permanent quote ID
+                          state.lineItems.length > 0 && // Have line items
+                          !state.isInitialQuoteLoading; // Not in initial load
+        
+        if (!dataLoaded) return;
+        
+        // Try to find matching line item by key first
+        let matchingItem = state.lineItems.find(li => {
+            const itemKey = li.tempId || li.id || "";
+            return itemKey === pending.key || li.tempId === pending.key || li.id === pending.key;
+        });
+        
+        // Fallback: If key doesn't match (first-save transition), try index
+        if (!matchingItem && pending.index !== null && pending.index >= 0 && pending.index < state.lineItems.length) {
+            matchingItem = state.lineItems[pending.index];
+        }
+        
+        if (matchingItem) {
+            // Restore expansion to the current key (prefer tempId, fall back to id)
+            const currentKey = matchingItem.tempId || matchingItem.id || "";
+            if (currentKey) {
+                setExpandedKey(currentKey);
+            }
+            // Mark restoration complete and clear storage
+            didRestoreRef.current = true;
+            clearPendingExpandedLineItemId();
+        } else if (state.lineItems.length > 0) {
+            // Data is loaded but target doesn't exist - restoration is invalid
+            // Mark as attempted to prevent retries
+            didRestoreRef.current = true;
+            clearPendingExpandedLineItemId();
+        }
+        // If data not loaded yet, do nothing (will retry when deps change)
+    }, [state.lineItems, state.quoteId, state.isInitialQuoteLoading, expandedKey]);
+
+    // Restore scroll position after route transition
+    // Runs AFTER data is loaded to ensure layout height exists
+    useEffect(() => {
+        const pendingScrollY = getPendingScrollPosition();
+        if (pendingScrollY === null) return;
+        
+        // Data must be loaded before restoring scroll (same guard as expansion restore)
+        const dataLoaded = state.quoteId && 
+                          state.lineItems.length > 0 && 
+                          !state.isInitialQuoteLoading;
+        
+        if (!dataLoaded) return;
+        
+        // Restore scroll position immediately (no smooth scroll - instant)
+        // Use requestAnimationFrame to ensure DOM layout is complete
+        requestAnimationFrame(() => {
+            window.scrollTo(0, pendingScrollY);
+            clearPendingScrollPosition();
+        });
+    }, [state.lineItems, state.quoteId, state.isInitialQuoteLoading]);
+
 
     // Block in-app navigation when there are unsaved changes (BrowserRouter-compatible)
     useEffect(() => {
@@ -225,7 +311,11 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
         // For NEW quotes, always navigate to edit route with the new quoteId
         // (this is required for the quote to be properly loaded)
         if (result.kind === "created") {
-            navigate(ROUTES.quotes.edit(result.quoteId), { replace: true });
+            navigate(ROUTES.quotes.edit(result.quoteId), {
+                replace: true,
+                preventScrollReset: true,
+                state: { quoteId: result.quoteId },
+            });
             return;
         }
 
@@ -265,7 +355,11 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
         
         // CRITICAL: Navigate to the newly created quote so the editor adopts it as canonical.
         // This prevents "Save Changes" from creating a duplicate quote and orphaning attachments.
-        navigate(ROUTES.quotes.edit(result.quoteId), { replace: true });
+        navigate(ROUTES.quotes.edit(result.quoteId), {
+            replace: true,
+            preventScrollReset: true,
+            state: { quoteId: result.quoteId },
+        });
         
         return result.quoteId;
     };
@@ -283,10 +377,91 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
         }
     };
 
+    /**
+     * Handle canceling/voiding a quote (for quotes with numbers)
+     * Opens modal to collect reason, then updates status to 'canceled' to maintain audit trail
+     */
+    const handleCancelQuote = () => {
+        if (!state.quoteId) return;
+        setVoidDialogOpen(true);
+    };
+
+    /**
+     * Confirm void quote with reason
+     */
+    const handleConfirmVoid = async (reason: string) => {
+        if (!state.quoteId) return;
+        
+        try {
+            // Update quote status to 'canceled'
+            await apiRequest("PATCH", `/api/quotes/${state.quoteId}`, {
+                status: "canceled",
+            });
+            
+            toast({
+                title: "Quote voided",
+                description: `Quote has been marked as canceled. Reason: "${reason}" (Note: Reason not saved to database yet - no server support).`,
+            });
+            
+            // Invalidate queries to refresh data
+            await queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
+            await queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+            
+            // Navigate back to quotes list
+            navigate(ROUTES.quotes.list, { replace: true });
+        } catch (error) {
+            console.error("[handleConfirmVoid] Error voiding quote:", error);
+            toast({
+                title: "Error voiding quote",
+                description: error instanceof Error ? error.message : "Failed to void quote",
+                variant: "destructive",
+            });
+            throw error; // Re-throw so dialog can handle it
+        }
+    };
+
     const handleDiscard = async () => {
-        await state.handlers.discardAllChanges();
-        setExpandedKey(null);
-        setEditMode(false);
+        // Prevent any autosave during discard
+        discardInProgressRef.current = true;
+        
+        try {
+            // If quote exists (persisted), delete it from server
+            if (state.quoteId) {
+                const confirmed = window.confirm(
+                    "Discard this draft quote? This will permanently remove the quote and all line items/attachments."
+                );
+                
+                if (!confirmed) {
+                    discardInProgressRef.current = false;
+                    return;
+                }
+                
+                // Call DELETE API
+                await apiRequest("DELETE", `/api/quotes/${state.quoteId}`);
+                
+                toast({
+                    title: "Draft discarded",
+                    description: "Quote has been deleted.",
+                });
+            }
+            
+            // Reset local state (for both persisted and unpersisted quotes)
+            await state.handlers.discardAllChanges();
+            setExpandedKey(null);
+            setEditMode(false);
+            
+            // Navigate back to quotes list
+            navigate(ROUTES.quotes.list, { replace: true });
+        } catch (error) {
+            console.error("[handleDiscard] Error discarding quote:", error);
+            toast({
+                title: "Error discarding draft",
+                description: error instanceof Error ? error.message : "Failed to discard quote",
+                variant: "destructive",
+            });
+        } finally {
+            discardInProgressRef.current = false;
+        }
     };
 
     /**
@@ -559,6 +734,14 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                     </Card>
                 </div>
             )}
+
+            {/* Void Quote Dialog */}
+            <VoidQuoteDialog
+                open={voidDialogOpen}
+                onOpenChange={setVoidDialogOpen}
+                quoteNumber={(state.quote as any)?.quoteNumber}
+                onConfirm={handleConfirmVoid}
+            />
         </div>
     );
 }
