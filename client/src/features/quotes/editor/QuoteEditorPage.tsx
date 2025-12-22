@@ -633,6 +633,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             onSaveLineItem={state.handlers.saveLineItem}
                             onDuplicateLineItem={state.handlers.duplicateLineItem}
                             onRemoveLineItem={state.handlers.removeLineItem}
+                            onReorderLineItems={state.handlers.reorderLineItemsByKeys}
                             ensureQuoteId={ensureQuoteId}
                             ensureLineItemId={state.handlers.ensureLineItemId}
                         />
