@@ -667,6 +667,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             discountAmount={state.discountAmount}
                             deliveryMethod={state.deliveryMethod}
                             selectedCustomer={state.selectedCustomer}
+                            selectedContactId={state.selectedContactId}
                             canSaveQuote={state.canSaveQuote}
                             isSaving={state.isSaving}
                             hasUnsavedChanges={state.hasUnsavedChanges}
