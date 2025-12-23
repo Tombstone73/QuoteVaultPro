@@ -904,6 +904,11 @@ export const quoteLineItems = pgTable("quote_line_items", {
     calculatedCost: number;
   }>>().default(sql`'[]'::jsonb`).notNull(),
   linePrice: decimal("line_price", { precision: 10, scale: 2 }).notNull(),
+  formulaLinePrice: decimal("formula_line_price", { precision: 10, scale: 2 }),
+  priceOverride: jsonb("price_override").$type<{
+    mode: 'unit' | 'total';
+    value: number;
+  } | null>(),
   priceBreakdown: jsonb("price_breakdown").$type<{
     basePrice: number;
     optionsPrice: number;

@@ -2822,6 +2822,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         specsJson: lineItem.specsJson || null,
         selectedOptions: lineItem.selectedOptions || [],
         linePrice: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
+        formulaLinePrice: lineItem.formulaLinePrice != null ? String(parseFloat(lineItem.formulaLinePrice)) : null,
+        priceOverride: lineItem.priceOverride || null,
         priceBreakdown: lineItem.priceBreakdown || {
           basePrice: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
           optionsPrice: 0,
@@ -2865,6 +2867,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         specsJson,
         selectedOptions,
         linePrice,
+        formulaLinePrice,
+        priceOverride,
         priceBreakdown,
         displayOrder,
       } = req.body;
@@ -2897,6 +2901,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         specsJson: specsJson || null,
         selectedOptions: Array.isArray(selectedOptions) ? selectedOptions : [],
         linePrice: Number.isFinite(linePriceNum) && linePriceNum >= 0 ? linePriceNum : 0,
+        formulaLinePrice: formulaLinePrice != null ? String(Number(formulaLinePrice)) : null,
+        priceOverride: priceOverride || null,
         priceBreakdown: effectivePriceBreakdown,
         displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
       };
@@ -2943,6 +2949,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
       if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
       if (lineItem.linePrice !== undefined) updateData.linePrice = parseFloat(lineItem.linePrice);
+      if (lineItem.formulaLinePrice !== undefined) updateData.formulaLinePrice = lineItem.formulaLinePrice != null ? String(parseFloat(lineItem.formulaLinePrice)) : null;
+      if (lineItem.priceOverride !== undefined) updateData.priceOverride = lineItem.priceOverride;
       if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
       if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
       if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
