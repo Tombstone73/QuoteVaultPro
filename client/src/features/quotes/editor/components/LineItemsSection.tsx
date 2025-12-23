@@ -675,9 +675,21 @@ export function LineItemsSection({
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
                         {({ dragAttributes, dragListeners }) => (
                           <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
-                            {/* Collapsed Summary Row - Always Visible */}
-                            <div className="p-3">
-                              <div className="grid gap-3 items-start" style={{ gridTemplateColumns: readOnly ? '48px 1fr auto' : 'auto 48px 1fr auto' }}>
+                            {
+                              // COLLAPSED LINE ITEM — ENTERPRISE POLISH TARGET
+                              // This JSX renders the collapsed (non-expanded) row for a quote line item.
+                              // Layout refinement will occur here.
+                              null
+                            }
+                            <div className="p-2">
+                              <div
+                                className="grid gap-2 items-start"
+                                style={{
+                                  gridTemplateColumns: readOnly
+                                    ? "48px minmax(0,1fr) 132px 36px"
+                                    : "20px 48px minmax(0,1fr) 132px 36px",
+                                }}
+                              >
                                 {/* Drag Handle (edit mode only) */}
                                 {!readOnly && (
                                   <button
@@ -697,8 +709,8 @@ export function LineItemsSection({
                         {/* Product Info & Details - Compact Middle Column */}
                         <div className="min-w-0 flex-1">
                           {/* Product Name + Status */}
-                          <div className="flex items-center gap-2 mb-1">
-                            <div className="text-sm font-semibold">{item.productName}</div>
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <div className="text-[13px] font-semibold leading-4">{item.productName}</div>
                             {item.status === "draft" && !readOnly && (
                               <Badge variant="secondary" className="text-[10px] py-0">
                                 Draft
@@ -707,7 +719,7 @@ export function LineItemsSection({
                           </div>
 
                           {/* Compact Meta Row: Size • Qty • Category • Artwork Count */}
-                          <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground mb-1.5">
+                          <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground mb-1">
                             <span className="font-mono">
                               {item.width}" × {item.height}"
                             </span>
@@ -725,11 +737,11 @@ export function LineItemsSection({
 
                           {/* Compact Options Chips - Max 2 lines with wrapping */}
                           {displayOptions.length > 0 && (
-                            <div className="min-w-0 flex flex-wrap gap-1.5 max-h-[44px] overflow-hidden">
+                            <div className="min-w-0 flex flex-wrap gap-1 max-h-[32px] overflow-hidden">
                               {displayOptions.map((opt, idx) => (
                                 <span
                                   key={idx}
-                                  className="px-2 py-0.5 rounded-md text-xs bg-muted/40 text-muted-foreground max-w-[220px] truncate"
+                                  className="px-1.5 py-0.5 rounded-md text-[10px] bg-muted/30 text-muted-foreground/80 max-w-[220px] truncate"
                                 >
                                   {opt.display}
                                 </span>
@@ -738,7 +750,7 @@ export function LineItemsSection({
                           )}
                           
                           {/* Artwork strip inline */}
-                          <div className="mt-1.5">
+                          <div className="mt-1">
                             <LineItemArtworkStrip
                               quoteId={quoteId}
                               lineItemId={item.id}
@@ -747,28 +759,31 @@ export function LineItemsSection({
                           </div>
                         </div>
 
-                        {/* Price + Expand Button - Right Column */}
-                        <div className="flex items-start gap-3 shrink-0">
-                          <div className="text-right">
-                            <div className="font-mono text-sm font-semibold whitespace-nowrap">{formatMoney(item.linePrice)}</div>
-                            <div className="text-[10px] text-muted-foreground">
+                        {/* Price - Fixed Width Column */}
+                        <div className="flex items-start justify-end gap-2 w-[132px]">
+                          <div className="text-right w-full">
+                            <div className="font-mono text-[13px] font-semibold leading-4 whitespace-nowrap">
+                              {formatMoney(item.linePrice)}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground whitespace-nowrap">
                               {formatMoney(item.linePrice / item.quantity)}/ea
                             </div>
                           </div>
-
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => {
-                              onExpandedKeyChange(isExpanded ? null : itemKey);
-                            }}
-                            aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
-                          >
-                            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                          </Button>
                         </div>
+
+                        {/* Expand Button - Dedicated Column */}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => {
+                            onExpandedKeyChange(isExpanded ? null : itemKey);
+                          }}
+                          aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
+                        >
+                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        </Button>
                       </div>
                     </div>
 
