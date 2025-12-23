@@ -4,3 +4,8 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+
+# Drizzle troubleshooting artifacts
+**/*_snapshot.json
+**/watery_*.sql
+repair-drizzle-tracking.sql
