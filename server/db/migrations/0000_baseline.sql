@@ -1,0 +1,14 @@
+-- Migration: 0000_baseline
+-- Created: 2025-12-23
+-- Purpose: Establish clean Drizzle migration baseline after migration desync recovery
+--
+-- Context:
+-- This is a no-op baseline migration created to re-anchor Drizzle's migration tracking system.
+-- All previous migrations (0005–0021) have been archived to migrations__archive_2025_12_23/
+-- as they were already applied to the production database.
+--
+-- The runtime schema in shared/schema.ts is correct and matches the actual database state.
+-- This baseline allows future migrations to be generated and applied cleanly without
+-- attempting to re-apply historical changes.
+--
+-- NO SQL STATEMENTS IN THIS FILE - THIS IS A BASELINE MARKER ONLY
