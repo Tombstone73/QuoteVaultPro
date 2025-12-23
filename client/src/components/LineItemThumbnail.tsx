@@ -10,6 +10,10 @@ type LineItemThumbnailProps = {
   lineItemId: string | undefined;
   /** Type of parent entity */
   parentType: "quote" | "order";
+  /** Optional: Pass attachments to avoid fetching (prevents N+1 queries) */
+  attachments?: AttachmentData[] | null;
+  /** Optional: Show placeholder only without fetching (for lists) */
+  placeholderOnly?: boolean;
 };
 
 type AttachmentData = {
@@ -42,7 +46,13 @@ function getPdfThumbUrl(attachment: AttachmentData): string | null {
  * Reusable line item thumbnail component for Quote and Order lists.
  * Shows first attachment thumbnail or file icon placeholder.
  */
-export function LineItemThumbnail({ parentId, lineItemId, parentType }: LineItemThumbnailProps) {
+export function LineItemThumbnail({ 
+  parentId, 
+  lineItemId, 
+  parentType,
+  attachments: providedAttachments,
+  placeholderOnly = false
+}: LineItemThumbnailProps) {
   const [imageError, setImageError] = useState(false);
 
   // Build API path based on parent type
@@ -52,18 +62,25 @@ export function LineItemThumbnail({ parentId, lineItemId, parentType }: LineItem
       : `/api/orders/${parentId}/line-items/${lineItemId}/files`
     : `/api/line-items/${lineItemId}/files`;
 
-  const { data: attachments = [] } = useQuery<AttachmentData[]>({
+  // Only fetch if attachments not provided AND not placeholder-only mode
+  const shouldFetch = !providedAttachments && !placeholderOnly && !!lineItemId;
+
+  const { data: fetchedAttachments = [] } = useQuery<AttachmentData[]>({
     queryKey: [filesApiPath],
     queryFn: async () => {
-      if (!lineItemId) return [];
       const response = await fetch(filesApiPath, { credentials: "include" });
       if (!response.ok) return [];
       const json = await response.json();
       return json.data || [];
     },
-    enabled: !!lineItemId,
+    enabled: shouldFetch,
+    // Fail soft: don't log errors to console
+    retry: false,
+    meta: { suppressErrorToast: true },
   });
 
+  // Use provided attachments if available, otherwise use fetched
+  const attachments = providedAttachments ?? fetchedAttachments;
   const first = attachments[0];
 
   // No attachments - show placeholder
