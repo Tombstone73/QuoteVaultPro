@@ -10,6 +10,7 @@ import { useOrders, useUpdateOrder } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
+import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { Page, PageHeader, ContentLayout, FilterPanel, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnStyle, type ColumnDefinition } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 
@@ -625,9 +626,24 @@ export default function Orders() {
                     )}
                     {isVisible("items") && (
                       <TableCell style={getColStyle("items")}>
-                        <span className="text-muted-foreground">
-                          {(Array.isArray(order.lineItems) ? order.lineItems.length : 0)} {(Array.isArray(order.lineItems) ? order.lineItems.length : 0) !== 1 ? 'items' : 'item'}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          {/* Show placeholder thumbnails (no fetching to avoid N+1) */}
+                          <div className="flex items-center gap-1">
+                            {Array.isArray(order.lineItems) && order.lineItems.slice(0, 3).map((lineItem: any, idx: number) => (
+                              <div key={lineItem.id || idx} className="h-8 w-8 shrink-0">
+                                <LineItemThumbnail
+                                  parentId={order.id}
+                                  lineItemId={lineItem.id}
+                                  parentType="order"
+                                  placeholderOnly={true}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <span className="text-muted-foreground text-sm">
+                            {(Array.isArray(order.lineItems) ? order.lineItems.length : 0)} {(Array.isArray(order.lineItems) ? order.lineItems.length : 0) !== 1 ? 'items' : 'item'}
+                          </span>
+                        </div>
                       </TableCell>
                     )}
                     {isVisible("total") && (
