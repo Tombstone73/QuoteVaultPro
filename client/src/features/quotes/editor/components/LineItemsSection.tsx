@@ -88,6 +88,69 @@ function formatMoney(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+/**
+ * Generic option chip extractor for collapsed line item display.
+ * Works with any product's option structure without hardcoded keys.
+ */
+function extractOptionChips(
+  selectedOptions: any[] | undefined | null,
+  maxChips: number = 3
+): { chips: string[]; overflowCount: number } {
+  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) {
+    return { chips: [], overflowCount: 0 };
+  }
+
+  const chips: string[] = [];
+  
+  for (const opt of selectedOptions) {
+    if (!opt || typeof opt !== 'object') continue;
+    
+    // Extract name from common fields
+    const name = opt.optionName || opt.label || opt.name || '';
+    
+    // Extract value from common fields, handle booleans
+    let value = opt.displayValue ?? opt.value;
+    if (typeof value === 'boolean') {
+      value = value ? 'Yes' : 'No';
+    }
+    
+    // Convert to string and trim
+    const nameStr = String(name).trim();
+    const valueStr = value != null ? String(value).trim() : '';
+    
+    // Skip empty/meaningless values
+    if (!nameStr) continue;
+    if (!valueStr || valueStr.toLowerCase() === 'none' || valueStr.toLowerCase() === 'n/a' || valueStr === 'false' || valueStr === 'No') continue;
+    
+    // Build chip string: prefer short value-only when possible
+    let chipText: string;
+    
+    if (valueStr && valueStr !== 'true' && valueStr !== 'Yes') {
+      if (valueStr.length <= 12) {
+        // Short value → use value only
+        chipText = valueStr;
+      } else if (nameStr.length <= 12) {
+        // Long value, short name → use name only
+        chipText = nameStr;
+      } else {
+        // Both long → use name with ellipsis
+        chipText = nameStr.substring(0, 9) + '...';
+      }
+    } else {
+      // Boolean yes or empty → use name only
+      chipText = nameStr.length <= 12 ? nameStr : nameStr.substring(0, 9) + '...';
+    }
+    
+    chips.push(chipText);
+  }
+  
+  const totalCount = chips.length;
+  const displayChips = chips.slice(0, maxChips);
+  const overflowCount = Math.max(0, totalCount - maxChips);
+  
+  return { chips: displayChips, overflowCount };
+}
+
 function buildSelectedOptionsArray(
   productOptions: ProductOptionItem[],
   selections: Record<string, OptionSelection>,
@@ -655,137 +718,106 @@ export function LineItemsSection({
                     const itemKey = getItemKey(item);
                     const isExpanded = !!itemKey && expandedKey === itemKey;
                     const product = getProduct(products, item.productId);
-                    const subtitle = item.variantName || (product as any)?.category || (product as any)?.sku || "";
-
-                    // Extract all options for compact chip display
-                    const displayOptions = (item.selectedOptions || []).map((opt: any) => {
-                      let displayValue = '';
-                      if (typeof opt.value === 'boolean') {
-                        displayValue = opt.value ? ': Yes' : ': No';
-                      } else if (opt.value !== undefined && opt.value !== null && opt.value !== '') {
-                        displayValue = `: ${opt.value}`;
-                      }
-                      return {
-                        name: opt.optionName,
-                        display: `${opt.optionName}${displayValue}`,
-                      };
-                    });
+                    
+                    // Generic option summary (no hardcoded keys)
+                    const { chips: optionChips, overflowCount } = extractOptionChips(item.selectedOptions, 3);
+                    
+                    // Meta indicators (best effort with existing fields)
+                    const hasNote = !!(item.notes || (item.specsJson as any)?.notes);
+                    const hasOverride = !!((item as any).priceOverride || (item as any).manualPrice);
 
                     return (
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
                         {({ dragAttributes, dragListeners }) => (
                           <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
-                            {
-                              // COLLAPSED LINE ITEM — ENTERPRISE POLISH TARGET
-                              // This JSX renders the collapsed (non-expanded) row for a quote line item.
-                              // Layout refinement will occur here.
-                              null
-                            }
-                            <div className="p-2">
-                              <div
-                                className="grid gap-2 items-start"
-                                style={{
-                                  gridTemplateColumns: readOnly
-                                    ? "48px minmax(0,1fr) 132px 36px"
-                                    : "20px 48px minmax(0,1fr) 132px 36px",
-                                }}
-                              >
+                            {/* Collapsed Summary Row - Enterprise Dense Layout */}
+                            <button
+                              type="button"
+                              className="w-full text-left p-2.5 hover:bg-muted/20 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-lg"
+                              onClick={() => {
+                                onExpandedKeyChange(isExpanded ? null : itemKey);
+                              }}
+                              aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
+                            >
+                              <div className="grid gap-2 items-center" style={{ gridTemplateColumns: readOnly ? 'minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' : 'auto minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' }}>
                                 {/* Drag Handle (edit mode only) */}
                                 {!readOnly && (
                                   <button
-                                    className="mt-1 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded p-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    type="button"
+                                    className="cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded p-0.5 disabled:opacity-30 disabled:cursor-not-allowed self-center"
                                     {...dragAttributes}
                                     {...dragListeners}
                                     disabled={isSavingOrder}
                                     aria-label="Drag to reorder"
+                                    onClick={(e) => e.stopPropagation()}
+                                    onPointerDown={(e) => e.stopPropagation()}
                                   >
                                     <GripVertical className="h-4 w-4" />
                                   </button>
                                 )}
                                 
-                                {/* Thumbnail Column */}
-                                <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
+                                {/* Left Zone: Product + Size + Qty */}
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5 mb-0.5">
+                                      <span className="text-sm font-semibold truncate">{item.productName}</span>
+                                      {item.status === "draft" && !readOnly && (
+                                        <Badge variant="secondary" className="text-[10px] py-0 px-1.5 shrink-0">
+                                          Draft
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+                                      <span className="font-mono">{item.width}" × {item.height}"</span>
+                                      <span>·</span>
+                                      <span>Qty {item.quantity}</span>
+                                    </div>
+                                  </div>
+                                </div>
 
-                        {/* Product Info & Details - Compact Middle Column */}
-                        <div className="min-w-0 flex-1">
-                          {/* Product Name + Status */}
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <div className="text-[13px] font-semibold leading-4">{item.productName}</div>
-                            {item.status === "draft" && !readOnly && (
-                              <Badge variant="secondary" className="text-[10px] py-0">
-                                Draft
-                              </Badge>
-                            )}
-                          </div>
+                                {/* Middle Zone: Option Chips (single line, no wrap) */}
+                                <div className="min-w-0 flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
+                                  {optionChips.map((chip, idx) => (
+                                    <span
+                                      key={idx}
+                                      className="px-1.5 py-0.5 rounded text-[11px] bg-muted/40 text-muted-foreground whitespace-nowrap shrink-0"
+                                    >
+                                      {chip}
+                                    </span>
+                                  ))}
+                                  {overflowCount > 0 && (
+                                    <span className="text-[11px] text-muted-foreground/60 shrink-0">
+                                      +{overflowCount}
+                                    </span>
+                                  )}
+                                </div>
 
-                          {/* Compact Meta Row: Size • Qty • Category • Artwork Count */}
-                          <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground mb-1">
-                            <span className="font-mono">
-                              {item.width}" × {item.height}"
-                            </span>
-                            <span>•</span>
-                            <span>
-                              Qty: <span className="font-semibold text-foreground">{item.quantity}</span>
-                            </span>
-                            {subtitle && (
-                              <>
-                                <span>•</span>
-                                <span>{subtitle}</span>
-                              </>
-                            )}
-                          </div>
+                                {/* Right Zone: Price + Expand Icon */}
+                                <div className="flex items-center justify-end gap-2 shrink-0">
+                                  <div className="text-right tabular-nums">
+                                    <div className="font-mono text-sm font-semibold">{formatMoney(item.linePrice)}</div>
+                                    <div className="text-[10px] text-muted-foreground">
+                                      {formatMoney(item.linePrice / item.quantity)}/ea
+                                    </div>
+                                  </div>
+                                  <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform shrink-0", isExpanded && "rotate-90")} />
+                                </div>
+                              </div>
 
-                          {/* Compact Options Chips - Max 2 lines with wrapping */}
-                          {displayOptions.length > 0 && (
-                            <div className="min-w-0 flex flex-wrap gap-1 max-h-[32px] overflow-hidden">
-                              {displayOptions.map((opt, idx) => (
-                                <span
-                                  key={idx}
-                                  className="px-1.5 py-0.5 rounded-md text-[10px] bg-muted/30 text-muted-foreground/80 max-w-[220px] truncate"
-                                >
-                                  {opt.display}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          
-                          {/* Artwork strip inline */}
-                          <div className="mt-1">
-                            <LineItemArtworkStrip
-                              quoteId={quoteId}
-                              lineItemId={item.id}
-                              onPreview={setPreviewFile}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Price - Fixed Width Column */}
-                        <div className="flex items-start justify-end gap-2 w-[132px]">
-                          <div className="text-right w-full">
-                            <div className="font-mono text-[13px] font-semibold leading-4 whitespace-nowrap">
-                              {formatMoney(item.linePrice)}
-                            </div>
-                            <div className="text-[10px] text-muted-foreground whitespace-nowrap">
-                              {formatMoney(item.linePrice / item.quantity)}/ea
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Expand Button - Dedicated Column */}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => {
-                            onExpandedKeyChange(isExpanded ? null : itemKey);
-                          }}
-                          aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
-                        >
-                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                        </Button>
-                      </div>
-                    </div>
+                              {/* Optional Meta Row (only if relevant) */}
+                              {(hasNote || hasOverride) && (
+                                <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
+                                  {hasNote && <span>Note</span>}
+                                  {hasOverride && (
+                                    <>
+                                      {hasNote && <span>·</span>}
+                                      <span>Overridden</span>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </button>
 
                     {/* Expanded Editor - When Expanded (edit mode) OR Read-Only View (for attachments) */}
                     {isExpanded && (
