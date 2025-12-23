@@ -22,6 +22,7 @@ import { setPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
+import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -229,78 +230,6 @@ function getPdfThumbUrl(file: {
 }): string | null {
   const url = file.pages?.[0]?.thumbUrl ?? file.thumbUrl ?? file.thumbnailUrl ?? null;
   return typeof url === "string" && isValidHttpUrl(url) ? url : null;
-}
-
-function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineItemId: string | undefined }) {
-  const [imageError, setImageError] = useState(false);
-  const filesApiPath = quoteId
-    ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
-    : `/api/line-items/${lineItemId}/files`;
-
-  const { data: attachments = [] } = useQuery<any[]>({
-    queryKey: [filesApiPath],
-    queryFn: async () => {
-      if (!lineItemId) return [];
-      const response = await fetch(filesApiPath, { credentials: "include" });
-      if (!response.ok) return [];
-      const json = await response.json();
-      return json.data || [];
-    },
-    enabled: !!lineItemId,
-  });
-
-  const first = attachments[0];
-  
-  // Don't render anything if no attachments
-  if (!first) {
-    return (
-      <div className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0 flex items-center justify-center">
-        <FileText className="h-5 w-5 text-muted-foreground" />
-      </div>
-    );
-  }
-
-  const isImage = first?.mimeType?.startsWith?.("image/");
-  const isPdf = first?.mimeType === "application/pdf" || (first?.fileName || "").toLowerCase().endsWith(".pdf");
-  
-  // Determine image URL - ONLY use signed URLs from server, never construct URLs client-side
-  // For images: use thumbUrl if available, fallback to originalUrl (both are signed URLs from server)
-  // For PDFs: prefer first page thumbUrl, then fallback to thumbUrl (signed URL from server)
-  let imageUrl: string | null = null;
-  if (!imageError && first) {
-    if (isImage) {
-      // Only use signed URLs - thumbUrl or originalUrl (both from server)
-      const candidateUrl = first?.thumbUrl || first?.originalUrl;
-      // Validate URL is actually a string and looks like a URL
-      if (candidateUrl && typeof candidateUrl === 'string' && candidateUrl.startsWith('http')) {
-        imageUrl = candidateUrl;
-      }
-    } else if (isPdf) {
-      imageUrl = getPdfThumbUrl(first);
-    }
-  }
-
-  return (
-    <div className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0">
-      {imageUrl ? (
-        <img 
-          src={imageUrl} 
-          alt="" 
-          className="h-full w-full object-cover"
-          onError={() => setImageError(true)}
-        />
-      ) : (
-        <div className="h-full w-full flex items-center justify-center relative">
-          <FileText className="h-5 w-5 text-muted-foreground" />
-          {isPdf && (
-            <div className="absolute bottom-1 right-1 rounded-sm bg-background/70 px-1 py-0.5 text-[10px] font-semibold text-foreground">
-              PDF
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // Artwork strip component - shows all thumbnails in a wrapping layout
@@ -758,7 +687,7 @@ export function LineItemsSection({
                                 
                                 {/* Left Zone: Product + Size + Qty */}
                                 <div className="flex items-center gap-2 min-w-0">
-                                  <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
+                                  <LineItemThumbnail parentId={quoteId} lineItemId={item.id} parentType="quote" />
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-1.5 mb-0.5">
                                       <span className="text-sm font-semibold truncate">{item.productName}</span>
