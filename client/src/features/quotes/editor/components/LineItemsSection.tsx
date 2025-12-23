@@ -884,30 +884,57 @@ export function LineItemsSection({
                                   )}
                                 </div>
 
-                                {/* Right Zone: Price + Artwork Indicator + Expand Icon */}
-                                <div className="flex items-center justify-end gap-2 shrink-0">
-                                  <div className="text-right tabular-nums">
-                                    <div className="flex items-center justify-end gap-1.5">
-                                      <span className="font-mono text-sm font-semibold">{formatMoney(priceState.effectiveTotal)}</span>
-                                      {priceState.isOverridden && (
-                                        <Badge variant="secondary" className="text-[9px] py-0 px-1 h-4">
-                                          OVR
-                                        </Badge>
-                                      )}
-                                    </div>
-                                    <div className="text-[10px] text-muted-foreground">
-                                      {formatMoney(priceState.effectiveUnit)}/ea
-                                    </div>
+                        {/* Price + Expand Button - Right Column */}
+                        <div className="flex items-start gap-3 shrink-0">
+                          <div className="text-right">
+                            <div className="font-mono text-sm font-semibold whitespace-nowrap">{formatMoney(item.linePrice)}</div>
+                            <div className="text-[10px] text-muted-foreground">
+                              {formatMoney(item.linePrice / item.quantity)}/ea
+                            </div>
+                          </div>
+
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => {
+                              onExpandedKeyChange(isExpanded ? null : itemKey);
+                            }}
+                            aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
+                          >
+                            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                              {/* Optional Meta Row (only if relevant) */}
+                              {(() => {
+                                const metaItems: JSX.Element[] = [];
+                                if (hasNote) metaItems.push(
+                                  <span key="note" className="flex items-center gap-1">
+                                    <StickyNote className="h-3 w-3" />
+                                    <span>Note</span>
+                                  </span>
+                                );
+                                if (hasOverride) metaItems.push(
+                                  <span key="override">Overridden</span>
+                                );
+                                if (metaItems.length === 0) return null;
+                                
+                                return (
+                                  <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
+                                    {metaItems.map((item, idx) => (
+                                      <span key={idx} className="flex items-center">
+                                        {idx > 0 && <span className="mr-2">·</span>}
+                                        {item}
+                                      </span>
+                                    ))}
                                   </div>
-                                  {artworkCount > 0 && (
-                                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground/70">
-                                      <Image className="h-3.5 w-3.5" />
-                                      <span className="tabular-nums">{artworkCount}</span>
-                                    </div>
-                                  )}
-                                  <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform shrink-0", isExpanded && "rotate-90")} />
-                                </div>
-                              </div>
+                                );
+                              })()}
+                            </button>
 
                               {/* Optional Meta Row (only if relevant) */}
                               {(() => {
