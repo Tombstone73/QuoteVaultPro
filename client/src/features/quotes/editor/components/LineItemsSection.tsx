@@ -4,12 +4,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image, GripVertical, StickyNote, DollarSign, RotateCcw } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image, GripVertical } from "lucide-react";
 import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -47,43 +46,6 @@ function getItemKey(item: QuoteLineItemDraft): string {
 
 function getProduct(products: Product[], productId: string) {
   return products.find((p) => p.id === productId) ?? null;
-}
-
-/**
- * Price override helpers - compute effective prices and override state.
- * Uses priceOverride field: { mode: 'unit'|'total', value: number }
- */
-function getPriceOverrideState(item: QuoteLineItemDraft) {
-  const override = (item as any).priceOverride as { mode: 'unit' | 'total'; value: number } | undefined;
-  const isOverridden = !!override && typeof override.value === 'number' && override.value > 0;
-  
-  const calculatedTotal = (item as any).formulaLinePrice ?? item.linePrice ?? 0;
-  const quantity = item.quantity || 1;
-  
-  let effectiveTotal: number;
-  let effectiveUnit: number;
-  
-  if (isOverridden) {
-    if (override!.mode === 'total') {
-      effectiveTotal = override!.value;
-      effectiveUnit = effectiveTotal / quantity;
-    } else {
-      effectiveUnit = override!.value;
-      effectiveTotal = effectiveUnit * quantity;
-    }
-  } else {
-    effectiveTotal = calculatedTotal;
-    effectiveUnit = calculatedTotal / quantity;
-  }
-  
-  return {
-    isOverridden,
-    effectiveTotal,
-    effectiveUnit,
-    calculatedTotal,
-    overrideMode: override?.mode,
-    overrideValue: override?.value,
-  };
 }
 
 type SortableChildRenderProps = {
@@ -124,73 +86,6 @@ function requiresDimensions(product: Product | null): boolean {
 function formatMoney(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;
-}
-
-/**
- * Generic option chip extractor for collapsed line item display.
- * Works with any product's option structure without hardcoded keys.
- * Prioritizes short, scannable text: prefer value-only when short, else name-only.
- */
-function extractOptionChips(
-  selectedOptions: any[] | undefined | null,
-  maxChips: number = 3
-): { chips: string[]; overflowCount: number } {
-  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) {
-    return { chips: [], overflowCount: 0 };
-  }
-
-  const chips: string[] = [];
-  
-  for (const opt of selectedOptions) {
-    if (!opt || typeof opt !== 'object') continue;
-    
-    // Extract name from common fields
-    const name = opt.optionName || opt.label || opt.name || '';
-    
-    // Extract value from common fields, handle booleans
-    let value = opt.displayValue ?? opt.value;
-    if (typeof value === 'boolean') {
-      value = value ? 'Yes' : 'No';
-    }
-    
-    // Convert to string and trim
-    const nameStr = String(name).trim();
-    const valueStr = value != null ? String(value).trim() : '';
-    
-    // Skip empty/meaningless values
-    if (!nameStr) continue;
-    if (!valueStr || valueStr.toLowerCase() === 'none' || valueStr.toLowerCase() === 'n/a' || valueStr === 'false' || valueStr === 'No') continue;
-    
-    // Build chip string with priority rules:
-    // a) If value is short (<=12 chars) and meaningful → use VALUE only
-    // b) If value is long → use NAME only
-    // c) Only use "Name: Value" when BOTH are short
-    let chipText: string;
-    
-    if (valueStr && valueStr !== 'true' && valueStr !== 'Yes') {
-      if (valueStr.length <= 12) {
-        // Short value → use value only
-        chipText = valueStr;
-      } else if (nameStr.length <= 12) {
-        // Long value, short name → use name only
-        chipText = nameStr;
-      } else {
-        // Both long → use name with ellipsis
-        chipText = nameStr.substring(0, 9) + '...';
-      }
-    } else {
-      // Boolean yes or empty → use name only
-      chipText = nameStr.length <= 12 ? nameStr : nameStr.substring(0, 9) + '...';
-    }
-    
-    chips.push(chipText);
-  }
-  
-  const totalCount = chips.length;
-  const displayChips = chips.slice(0, maxChips);
-  const overflowCount = Math.max(0, totalCount - maxChips);
-  
-  return { chips: displayChips, overflowCount };
 }
 
 function buildSelectedOptionsArray(
@@ -345,13 +240,21 @@ function LineItemThumb({ quoteId, lineItemId }: { quoteId: string | null; lineIt
   );
 }
 
-// Hook to fetch attachments for a line item (shared by multiple components)
-function useLineItemAttachments(quoteId: string | null, lineItemId: string | undefined) {
+// Artwork strip component - shows all thumbnails in a wrapping layout
+function LineItemArtworkStrip({ 
+  quoteId, 
+  lineItemId, 
+  onPreview 
+}: { 
+  quoteId: string | null; 
+  lineItemId: string | undefined;
+  onPreview: (attachment: AttachmentForPreview & { lineItemId: string }) => void;
+}) {
   const filesApiPath = quoteId
     ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
     : `/api/line-items/${lineItemId}/files`;
 
-  return useQuery<AttachmentForPreview[]>({
+  const { data: attachments = [] } = useQuery<AttachmentForPreview[]>({
     queryKey: [filesApiPath],
     queryFn: async () => {
       if (!lineItemId) return [];
@@ -362,27 +265,8 @@ function useLineItemAttachments(quoteId: string | null, lineItemId: string | und
     },
     enabled: !!lineItemId,
   });
-}
-
-// Artwork strip component - shows thumbnails with optional limit for collapsed view
-function LineItemArtworkStrip({ 
-  quoteId, 
-  lineItemId, 
-  onPreview,
-  maxVisible
-}: { 
-  quoteId: string | null; 
-  lineItemId: string | undefined;
-  onPreview: (attachment: AttachmentForPreview & { lineItemId: string }) => void;
-  maxVisible?: number; // If set, show only first N thumbs + overflow badge (collapsed mode)
-}) {
-  const { data: attachments = [] } = useLineItemAttachments(quoteId, lineItemId);
 
   if (attachments.length === 0) return null;
-  
-  const isCollapsed = typeof maxVisible === 'number';
-  const visibleAttachments = isCollapsed ? attachments.slice(0, maxVisible) : attachments;
-  const overflowCount = isCollapsed ? Math.max(0, attachments.length - maxVisible) : 0;
 
   const getThumbnailUrl = (attachment: AttachmentForPreview): string | null => {
     const isPdf = isPdfAttachment(attachment);
@@ -403,11 +287,8 @@ function LineItemArtworkStrip({
   };
 
   return (
-    <div className={cn(
-      "flex items-center gap-1.5",
-      isCollapsed ? "overflow-hidden" : "flex-wrap"
-    )}>
-      {visibleAttachments.map((attachment) => {
+    <div className="flex flex-wrap items-center gap-1.5">
+      {attachments.map((attachment) => {
         const thumbUrl = getThumbnailUrl(attachment);
         const FileIcon = getFileIcon(attachment.mimeType);
         const hasPreviewUrl = attachment.previewUrl && isValidHttpUrl(attachment.previewUrl);
@@ -461,11 +342,6 @@ function LineItemArtworkStrip({
           </div>
         );
       })}
-      {overflowCount > 0 && (
-        <span className="text-[11px] text-muted-foreground/60 shrink-0 tabular-nums">
-          +{overflowCount}
-        </span>
-      )}
     </div>
   );
 }
@@ -588,11 +464,6 @@ export function LineItemsSection({
   const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
   const [savedItemKey, setSavedItemKey] = useState<string | null>(null);
   
-  // Price override state
-  const [overrideEnabled, setOverrideEnabled] = useState(false);
-  const [overrideMode, setOverrideMode] = useState<'unit' | 'total'>('total');
-  const [overrideValue, setOverrideValue] = useState<string>("");
-  
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<Record<string, { width: number; height: number; quantity: number; notes: string; selectedOptions: any[] }>>({});
 
@@ -618,18 +489,6 @@ export function LineItemsSection({
     });
     setOptionSelections(selections);
     setCalcError(null);
-    
-    // Initialize override state
-    const override = (expandedItem as any).priceOverride as { mode: 'unit' | 'total'; value: number } | undefined;
-    if (override && typeof override.value === 'number' && override.value > 0) {
-      setOverrideEnabled(true);
-      setOverrideMode(override.mode);
-      setOverrideValue(String(override.value));
-    } else {
-      setOverrideEnabled(false);
-      setOverrideMode('total');
-      setOverrideValue("");
-    }
     
     // Save snapshot for dirty detection
     savedSnapshotRef.current[itemKey] = {
@@ -743,21 +602,15 @@ export function LineItemsSection({
           const price = Number(data?.price);
           if (!Number.isFinite(price)) return;
           if (expandedKey) {
-            // Write override if enabled
-            const overrideData = overrideEnabled && overrideValue && Number.parseFloat(overrideValue) > 0
-              ? { mode: overrideMode, value: Number.parseFloat(overrideValue) }
-              : undefined;
-            
             onUpdateLineItem(expandedKey, {
               linePrice: price,
-              formulaLinePrice: price, // Preserve calculated price
+              formulaLinePrice: price,
               priceBreakdown: data?.priceBreakdown || {
                 ...(expandedItem.priceBreakdown || {}),
                 basePrice: price,
                 total: price,
               },
-              priceOverride: overrideData,
-            } as any);
+            });
           }
         })
         .catch((err: any) => {
@@ -802,166 +655,137 @@ export function LineItemsSection({
                     const itemKey = getItemKey(item);
                     const isExpanded = !!itemKey && expandedKey === itemKey;
                     const product = getProduct(products, item.productId);
-                    
-                    // Generic option summary (no hardcoded keys)
-                    const { chips: optionChips, overflowCount } = extractOptionChips(item.selectedOptions, 3);
-                    
-                    // Price override state
-                    const priceState = getPriceOverrideState(item);
-                    
-                    // Meta indicators (best effort with existing fields)
-                    const hasNote = !!(item.notes || (item.specsJson as any)?.notes);
-                    const hasOverride = priceState.isOverridden;
-                    
-                    // Artwork indicator (fetch count for collapsed view)
-                    const { data: attachments = [] } = useLineItemAttachments(quoteId, item.id);
-                    const artworkCount = attachments.length;
+                    const subtitle = item.variantName || (product as any)?.category || (product as any)?.sku || "";
+
+                    // Extract all options for compact chip display
+                    const displayOptions = (item.selectedOptions || []).map((opt: any) => {
+                      let displayValue = '';
+                      if (typeof opt.value === 'boolean') {
+                        displayValue = opt.value ? ': Yes' : ': No';
+                      } else if (opt.value !== undefined && opt.value !== null && opt.value !== '') {
+                        displayValue = `: ${opt.value}`;
+                      }
+                      return {
+                        name: opt.optionName,
+                        display: `${opt.optionName}${displayValue}`,
+                      };
+                    });
 
                     return (
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
                         {({ dragAttributes, dragListeners }) => (
                           <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
-                            {/* Collapsed Summary Row - Enterprise Dense Layout */}
-                            <button
-                              type="button"
-                              className="w-full text-left p-2.5 hover:bg-muted/20 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-lg"
-                              onClick={() => {
-                                onExpandedKeyChange(isExpanded ? null : itemKey);
-                              }}
-                              aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
-                            >
-                              <div className="grid gap-2 items-center" style={{ gridTemplateColumns: readOnly ? 'minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' : 'auto minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' }}>
+                            {
+                              // COLLAPSED LINE ITEM — ENTERPRISE POLISH TARGET
+                              // This JSX renders the collapsed (non-expanded) row for a quote line item.
+                              // Layout refinement will occur here.
+                              null
+                            }
+                            <div className="p-2">
+                              <div
+                                className="grid gap-2 items-start"
+                                style={{
+                                  gridTemplateColumns: readOnly
+                                    ? "48px minmax(0,1fr) 132px 36px"
+                                    : "20px 48px minmax(0,1fr) 132px 36px",
+                                }}
+                              >
                                 {/* Drag Handle (edit mode only) */}
                                 {!readOnly && (
                                   <button
-                                    type="button"
-                                    className="cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded p-0.5 disabled:opacity-30 disabled:cursor-not-allowed self-center"
+                                    className="mt-1 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded p-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
                                     {...dragAttributes}
                                     {...dragListeners}
                                     disabled={isSavingOrder}
                                     aria-label="Drag to reorder"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onPointerDown={(e) => e.stopPropagation()}
                                   >
                                     <GripVertical className="h-4 w-4" />
                                   </button>
                                 )}
                                 
-                                {/* Left Zone: Product + Size + Qty */}
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-1.5 mb-0.5">
-                                      <span className="text-sm font-semibold truncate">{item.productName}</span>
-                                      {item.status === "draft" && !readOnly && (
-                                        <Badge variant="secondary" className="text-[10px] py-0 px-1.5 shrink-0">
-                                          Draft
-                                        </Badge>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-                                      <span className="font-mono">{item.width}" × {item.height}"</span>
-                                      <span>·</span>
-                                      <span>Qty {item.quantity}</span>
-                                    </div>
-                                  </div>
-                                </div>
+                                {/* Thumbnail Column */}
+                                <LineItemThumb quoteId={quoteId} lineItemId={item.id} />
 
-                                {/* Middle Zone: Option Chips (single line, no wrap) */}
-                                <div className="min-w-0 flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                                  {optionChips.map((chip, idx) => (
-                                    <span
-                                      key={idx}
-                                      className="px-1.5 py-0.5 rounded text-[11px] bg-muted/40 text-muted-foreground whitespace-nowrap shrink-0"
-                                    >
-                                      {chip}
-                                    </span>
-                                  ))}
-                                  {overflowCount > 0 && (
-                                    <span className="text-[11px] text-muted-foreground/60 shrink-0">
-                                      +{overflowCount}
-                                    </span>
-                                  )}
-                                </div>
+                        {/* Product Info & Details - Compact Middle Column */}
+                        <div className="min-w-0 flex-1">
+                          {/* Product Name + Status */}
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <div className="text-[13px] font-semibold leading-4">{item.productName}</div>
+                            {item.status === "draft" && !readOnly && (
+                              <Badge variant="secondary" className="text-[10px] py-0">
+                                Draft
+                              </Badge>
+                            )}
+                          </div>
 
-                        {/* Price + Expand Button - Right Column */}
-                        <div className="flex items-start gap-3 shrink-0">
-                          <div className="text-right">
-                            <div className="font-mono text-sm font-semibold whitespace-nowrap">{formatMoney(item.linePrice)}</div>
-                            <div className="text-[10px] text-muted-foreground">
+                          {/* Compact Meta Row: Size • Qty • Category • Artwork Count */}
+                          <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground mb-1">
+                            <span className="font-mono">
+                              {item.width}" × {item.height}"
+                            </span>
+                            <span>•</span>
+                            <span>
+                              Qty: <span className="font-semibold text-foreground">{item.quantity}</span>
+                            </span>
+                            {subtitle && (
+                              <>
+                                <span>•</span>
+                                <span>{subtitle}</span>
+                              </>
+                            )}
+                          </div>
+
+                          {/* Compact Options Chips - Max 2 lines with wrapping */}
+                          {displayOptions.length > 0 && (
+                            <div className="min-w-0 flex flex-wrap gap-1 max-h-[32px] overflow-hidden">
+                              {displayOptions.map((opt, idx) => (
+                                <span
+                                  key={idx}
+                                  className="px-1.5 py-0.5 rounded-md text-[10px] bg-muted/30 text-muted-foreground/80 max-w-[220px] truncate"
+                                >
+                                  {opt.display}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          
+                          {/* Artwork strip inline */}
+                          <div className="mt-1">
+                            <LineItemArtworkStrip
+                              quoteId={quoteId}
+                              lineItemId={item.id}
+                              onPreview={setPreviewFile}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Price - Fixed Width Column */}
+                        <div className="flex items-start justify-end gap-2 w-[132px]">
+                          <div className="text-right w-full">
+                            <div className="font-mono text-[13px] font-semibold leading-4 whitespace-nowrap">
+                              {formatMoney(item.linePrice)}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground whitespace-nowrap">
                               {formatMoney(item.linePrice / item.quantity)}/ea
                             </div>
                           </div>
-
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => {
-                              onExpandedKeyChange(isExpanded ? null : itemKey);
-                            }}
-                            aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
-                          >
-                            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                          </Button>
                         </div>
+
+                        {/* Expand Button - Dedicated Column */}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => {
+                            onExpandedKeyChange(isExpanded ? null : itemKey);
+                          }}
+                          aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
+                        >
+                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        </Button>
                       </div>
                     </div>
-
-                              {/* Optional Meta Row (only if relevant) */}
-                              {(() => {
-                                const metaItems: JSX.Element[] = [];
-                                if (hasNote) metaItems.push(
-                                  <span key="note" className="flex items-center gap-1">
-                                    <StickyNote className="h-3 w-3" />
-                                    <span>Note</span>
-                                  </span>
-                                );
-                                if (hasOverride) metaItems.push(
-                                  <span key="override">Overridden</span>
-                                );
-                                if (metaItems.length === 0) return null;
-                                
-                                return (
-                                  <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
-                                    {metaItems.map((item, idx) => (
-                                      <span key={idx} className="flex items-center">
-                                        {idx > 0 && <span className="mr-2">·</span>}
-                                        {item}
-                                      </span>
-                                    ))}
-                                  </div>
-                                );
-                              })()}
-                            </button>
-
-                              {/* Optional Meta Row (only if relevant) */}
-                              {(() => {
-                                const metaItems: JSX.Element[] = [];
-                                if (hasNote) metaItems.push(
-                                  <span key="note" className="flex items-center gap-1">
-                                    <StickyNote className="h-3 w-3" />
-                                    <span>Note</span>
-                                  </span>
-                                );
-                                if (hasOverride) metaItems.push(
-                                  <span key="override">Overridden</span>
-                                );
-                                if (metaItems.length === 0) return null;
-                                
-                                return (
-                                  <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
-                                    {metaItems.map((item, idx) => (
-                                      <span key={idx} className="flex items-center">
-                                        {idx > 0 && <span className="mr-2">·</span>}
-                                        {item}
-                                      </span>
-                                    ))}
-                                  </div>
-                                );
-                              })()}
-                            </button>
 
                     {/* Expanded Editor - When Expanded (edit mode) OR Read-Only View (for attachments) */}
                     {isExpanded && (
@@ -1029,22 +853,11 @@ export function LineItemsSection({
 
                             <div className="ml-auto text-right min-h-[60px]">
                               <div className="text-xs text-muted-foreground">Total</div>
-                              <div className="font-mono text-lg font-bold">
-                                {(() => {
-                                  if (!expandedItem) return formatMoney(item.linePrice);
-                                  const state = getPriceOverrideState(expandedItem);
-                                  return formatMoney(state.effectiveTotal);
-                                })()}
-                              </div>
+                              <div className="font-mono text-lg font-bold">{formatMoney(expandedItem?.linePrice ?? item.linePrice)}</div>
                               <div className="h-5 flex items-center justify-end">
                                 {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
                                 {!!calcError && <div className="text-[11px] text-destructive">{calcError}</div>}
-                                {!isCalculating && !calcError && expandedItem && getPriceOverrideState(expandedItem).isOverridden && (
-                                  <div className="text-[11px] text-amber-600">Overridden</div>
-                                )}
-                                {!isCalculating && !calcError && (!expandedItem || !getPriceOverrideState(expandedItem).isOverridden) && (
-                                  <div className="text-[11px] text-transparent">—</div>
-                                )}
+                                {!isCalculating && !calcError && <div className="text-[11px] text-transparent">—</div>}
                               </div>
                             </div>
                           </div>
@@ -1061,120 +874,6 @@ export function LineItemsSection({
                             requiresDimensions={dimsRequired}
                             onOptionSelectionsChange={setOptionSelections}
                           />
-
-                          {/* Notes - Option-like row treatment */}
-                          <div className="mt-3 flex items-start gap-2">
-                            <div className="text-xs text-muted-foreground pt-2 shrink-0">Notes</div>
-                            <Textarea
-                              value={notes}
-                              onChange={(e) => setNotes(e.target.value)}
-                              placeholder="Add note…"
-                              className="min-h-[60px] text-sm resize-y"
-                              disabled={readOnly}
-                              readOnly={readOnly}
-                            />
-                          </div>
-
-                          {/* Price Override - Option-like row treatment */}
-                          {!readOnly && (
-                            <div className="mt-3 rounded-md border border-amber-600/20 bg-amber-600/5 p-2.5">
-                              <div className="flex items-start gap-2">
-                                <div className="text-xs text-muted-foreground pt-2 shrink-0">Price Override</div>
-                                <div className="flex-1 space-y-2">
-                                  {/* Toggle */}
-                                  <div className="flex items-center gap-2">
-                                    <Button
-                                      type="button"
-                                      variant={overrideEnabled ? "default" : "outline"}
-                                      size="sm"
-                                      className="h-7"
-                                      onClick={() => {
-                                        const newEnabled = !overrideEnabled;
-                                        setOverrideEnabled(newEnabled);
-                                        if (!newEnabled && expandedKey) {
-                                          // Clear override
-                                          setOverrideValue("");
-                                          onUpdateLineItem(expandedKey, { priceOverride: undefined } as any);
-                                        }
-                                      }}
-                                    >
-                                      {overrideEnabled ? "Enabled" : "Enable"}
-                                    </Button>
-                                    {overrideEnabled && expandedItem && getPriceOverrideState(expandedItem).calculatedTotal > 0 && (
-                                      <div className="text-xs text-muted-foreground">
-                                        Calculated: {formatMoney(getPriceOverrideState(expandedItem).calculatedTotal)}
-                                      </div>
-                                    )}
-                                  </div>
-                                  
-                                  {/* Override input when enabled */}
-                                  {overrideEnabled && (
-                                    <div className="flex items-center gap-2">
-                                      {/* Mode selector */}
-                                      <div className="flex items-center gap-1 rounded-md border border-border/60 bg-background/40">
-                                        <Button
-                                          type="button"
-                                          variant={overrideMode === 'unit' ? 'default' : 'ghost'}
-                                          size="sm"
-                                          className="h-7 px-2 text-xs"
-                                          onClick={() => setOverrideMode('unit')}
-                                        >
-                                          Unit
-                                        </Button>
-                                        <Button
-                                          type="button"
-                                          variant={overrideMode === 'total' ? 'default' : 'ghost'}
-                                          size="sm"
-                                          className="h-7 px-2 text-xs"
-                                          onClick={() => setOverrideMode('total')}
-                                        >
-                                          Total
-                                        </Button>
-                                      </div>
-                                      
-                                      {/* Value input */}
-                                      <Input
-                                        type="number"
-                                        value={overrideValue}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          setOverrideValue(val);
-                                          const numVal = Number.parseFloat(val);
-                                          if (expandedKey && Number.isFinite(numVal) && numVal > 0) {
-                                            onUpdateLineItem(expandedKey, {
-                                              priceOverride: { mode: overrideMode, value: numVal },
-                                            } as any);
-                                          }
-                                        }}
-                                        placeholder={overrideMode === 'unit' ? 'Price per unit' : 'Total price'}
-                                        className="h-7 w-32 font-mono text-sm"
-                                        min="0"
-                                        step="0.01"
-                                      />
-                                      
-                                      {/* Revert button */}
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-7 px-2"
-                                        onClick={() => {
-                                          setOverrideEnabled(false);
-                                          setOverrideValue("");
-                                          if (expandedKey) {
-                                            onUpdateLineItem(expandedKey, { priceOverride: undefined } as any);
-                                          }
-                                        }}
-                                        title="Revert to calculated"
-                                      >
-                                        <RotateCcw className="h-3.5 w-3.5" />
-                                      </Button>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          )}
 
                           {/* Bottom actions - Edit mode only */}
                           {!readOnly && (
@@ -1236,25 +935,12 @@ export function LineItemsSection({
                       </div>
                         )}
                         
-                        {/* Artwork - Option-like row treatment */}
+                        {/* Artwork Panel - Always visible when expanded (edit or view mode) */}
                         <div className="px-3 pb-3">
-                          <div className={cn("rounded-md border border-border/40 p-2.5", !readOnly && "bg-muted/20")}>
-                            {/* Artwork as inline option row: label · thumbnails */}
-                            <div className="flex items-start gap-2 mb-2">
-                              <div className="text-xs text-muted-foreground pt-1 shrink-0">Artwork</div>
-                              <div className="min-w-0 flex-1">
-                                <LineItemArtworkStrip
-                                  quoteId={quoteId}
-                                  lineItemId={item.id}
-                                  onPreview={setPreviewFile}
-                                  maxVisible={undefined}
-                                />
-                                {artworkCount === 0 && (
-                                  <div className="text-xs text-muted-foreground/60">No artwork uploaded</div>
-                                )}
-                              </div>
+                          <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="text-sm font-medium">Artwork</div>
                             </div>
-                            {/* Upload/manage panel inline as editor portion */}
                             <LineItemAttachmentsPanel
                               quoteId={quoteId}
                               lineItemId={item.id}
