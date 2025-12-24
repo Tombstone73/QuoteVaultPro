@@ -23,6 +23,7 @@ import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
+import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -442,7 +443,10 @@ export function LineItemsSection({
     [products, expandedItem]
   );
   const expandedProductOptions = useMemo(
-    () => ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [],
+    () => {
+      const base = ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [];
+      return injectDerivedMaterialOptionIntoProductOptions(expandedProduct, base);
+    },
     [expandedProduct]
   );
 
@@ -646,6 +650,7 @@ export function LineItemsSection({
                   .map((item, itemIndex) => {
                     const itemKey = getItemKey(item);
                     const isExpanded = !!itemKey && expandedKey === itemKey;
+                    const contentId = itemKey ? `line-item-${itemKey}-details` : undefined;
                     const product = getProduct(products, item.productId);
                     
                     // Generic option summary (no hardcoded keys)
@@ -666,6 +671,8 @@ export function LineItemsSection({
                               onClick={() => {
                                 onExpandedKeyChange(isExpanded ? null : itemKey);
                               }}
+                              aria-expanded={isExpanded}
+                              aria-controls={contentId}
                               aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
                             >
                               <div className="grid gap-2 items-center" style={{ gridTemplateColumns: readOnly ? 'minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' : 'auto minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' }}>
@@ -748,11 +755,9 @@ export function LineItemsSection({
                               )}
                             </button>
 
-                    {/* Expanded Editor - When Expanded (edit mode) OR Read-Only View (for attachments) */}
-                    {isExpanded && (
-                      <>
-                        {!readOnly && (
-                      <div className="px-3 pb-3">
+                            {/* Expanded Editor - When Expanded (edit mode OR view mode) */}
+                            {isExpanded && (
+                      <div id={contentId} className="px-3 pb-3">
                         <div className="rounded-md border border-border/40 bg-muted/20 p-3 min-h-[400px]">
                           {/* Top editing row */}
                           <div className="flex flex-wrap items-end gap-3">
@@ -825,101 +830,101 @@ export function LineItemsSection({
 
                           <Separator className="my-3" />
 
-                          {/* Finishing / options */}
-                          <ProductOptionsPanel
-                            productOptions={expandedProductOptions}
-                            optionSelections={optionSelections}
-                            width={widthText}
-                            height={heightText}
-                            quantity={String(qtyNum)}
-                            requiresDimensions={dimsRequired}
-                            onOptionSelectionsChange={setOptionSelections}
-                          />
+                          {/* Options (left) + Artwork (right) */}
+                          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
+                            <div className="min-w-0">
+                              {/* Finishing / options */}
+                              <ProductOptionsPanel
+                                product={expandedProduct}
+                                productOptions={expandedProductOptions}
+                                optionSelections={optionSelections}
+                                onOptionSelectionsChange={setOptionSelections}
+                              />
 
-                          {/* Bottom actions - Edit mode only */}
-                          {!readOnly && (
-                            <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
-                              <div className="flex items-center gap-2">
-                                {onSaveLineItem && isDirty && (
-                                  <Button
-                                    type="button"
-                                    variant="default"
-                                    size="sm"
-                                    className="h-8"
-                                    onClick={handleSaveItem}
-                                    disabled={savingItemKey === itemKey || isCalculating}
-                                  >
-                                    {savingItemKey === itemKey ? (
-                                      <>
-                                        <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                                        Saving…
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Save className="w-3.5 h-3.5 mr-1.5" />
-                                        Save Item
-                                      </>
+                              {/* Bottom actions - Edit mode only */}
+                              {!readOnly && (
+                                <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
+                                  <div className="flex items-center gap-2">
+                                    {onSaveLineItem && isDirty && (
+                                      <Button
+                                        type="button"
+                                        variant="default"
+                                        size="sm"
+                                        className="h-8"
+                                        onClick={handleSaveItem}
+                                        disabled={savingItemKey === itemKey || isCalculating}
+                                      >
+                                        {savingItemKey === itemKey ? (
+                                          <>
+                                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                            Saving…
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Save className="w-3.5 h-3.5 mr-1.5" />
+                                            Save Item
+                                          </>
+                                        )}
+                                      </Button>
                                     )}
-                                  </Button>
-                                )}
-                                {onSaveLineItem && !isDirty && savedItemKey === itemKey && (
-                                  <div className="flex items-center gap-1.5 text-xs text-green-600">
-                                    <Check className="w-3.5 h-3.5" />
-                                    Saved
+                                    {onSaveLineItem && !isDirty && savedItemKey === itemKey && (
+                                      <div className="flex items-center gap-1.5 text-xs text-green-600">
+                                        <Check className="w-3.5 h-3.5" />
+                                        Saved
+                                      </div>
+                                    )}
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-8"
+                                      onClick={() => onDuplicateLineItem(itemKey)}
+                                    >
+                                      Duplicate Item
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-8 text-destructive hover:text-destructive"
+                                      onClick={() => onRemoveLineItem(itemKey)}
+                                    >
+                                      Remove Item
+                                    </Button>
                                   </div>
-                                )}
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-8"
-                                  onClick={() => onDuplicateLineItem(itemKey)}
-                                >
-                                  Duplicate Item
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-8 text-destructive hover:text-destructive"
-                                  onClick={() => onRemoveLineItem(itemKey)}
-                                >
-                                  Remove Item
-                                </Button>
-                              </div>
-                              {isDirty && (
-                                <div className="text-xs text-amber-600">Unsaved</div>
+                                  {isDirty && (
+                                    <div className="text-xs text-amber-600">Unsaved</div>
+                                  )}
+                                </div>
                               )}
                             </div>
-                          )}
-                        </div>
-                      </div>
-                        )}
-                        
-                        {/* Artwork Panel - Always visible when expanded (edit or view mode) */}
-                        <div className="px-3 pb-3">
-                          <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="text-sm font-medium">Artwork</div>
+
+                            {/* Artwork panel (right on desktop, stacks below on small) */}
+                            <div className="min-w-0 lg:w-[360px] lg:shrink-0">
+                              <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="text-sm font-medium">Artwork</div>
+                                </div>
+                                <LineItemAttachmentsPanel
+                                  quoteId={quoteId}
+                                  lineItemId={item.id}
+                                  productName={item.productName}
+                                  defaultExpanded={readOnly ? true : false}
+                                  ensureQuoteId={!readOnly ? ensureQuoteId : undefined}
+                                  ensureLineItemId={!readOnly && ensureLineItemId ? () => {
+                                    // Save scroll position AND expansion before ensuring (for restoration after route change)
+                                    setPendingScrollPosition(window.scrollY);
+                                    setPendingExpandedLineItemId(itemKey, itemIndex);
+                                    return ensureLineItemId(itemKey);
+                                  } : undefined}
+                                  lineItemKey={itemKey}
+                                />
+                              </div>
                             </div>
-                            <LineItemAttachmentsPanel
-                              quoteId={quoteId}
-                              lineItemId={item.id}
-                              productName={item.productName}
-                              defaultExpanded={readOnly ? true : false}
-                              ensureQuoteId={!readOnly ? ensureQuoteId : undefined}
-                              ensureLineItemId={!readOnly && ensureLineItemId ? () => {
-                                // Save scroll position AND expansion before ensuring (for restoration after route change)
-                                setPendingScrollPosition(window.scrollY);
-                                setPendingExpandedLineItemId(itemKey, itemIndex);
-                                return ensureLineItemId(itemKey);
-                              } : undefined}
-                              lineItemKey={itemKey}
-                            />
                           </div>
                         </div>
-                      </>
-                    )}
+                      </div>
+                            )}
                           </div>
                         )}
                       </SortableLineItemWrapper>

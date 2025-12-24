@@ -43,6 +43,7 @@ import VendorDetailPage from "@/pages/vendor-detail";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
 import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 import ProductsPage from "@/pages/products";
+import ProductEditorPage from "@/pages/ProductEditorPage";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -121,6 +122,9 @@ function Router() {
 
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />
+
+        <Route path="/products/new" element={<ProductEditorPage />} />
+        <Route path="/products/:productId/edit" element={<ProductEditorPage />} />
 
         {/* Settings routes - nested under SettingsLayout */}
         <Route path="/settings" element={<SettingsLayout />}>

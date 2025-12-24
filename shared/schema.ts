@@ -294,6 +294,38 @@ export type ProductOptionItem = {
   percentBase?: "media" | "line"; // For percent_of_base mode: "media" = percent of media cost only, "line" = percent of full line (default)
   defaultSelected?: boolean; // Controls whether this option is selected by default on new line items
   sortOrder?: number; // Controls display order in calculator/quote UI
+  // Grouping metadata (stored in optionsJson)
+  groupKey?: string; // internal, stable group key (e.g., "finish_opt")
+  groupLabel?: string; // customer-facing group label (e.g., "Finishing Options")
+  group?: string; // legacy group string (backward compatibility)
+  // UI/editor metadata (stored in optionsJson)
+  required?: boolean;
+  defaultValue?: string | number | boolean;
+  choices?: Array<{ value: string; label: string }>;
+  ui?: {
+    visible?: boolean;
+    showPrice?: boolean;
+  };
+  layout?: {
+    layoutSpan?: 1 | 2 | 3;
+    minWidth?: number;
+  };
+  children?: Array<{
+    label: string;
+    type: "boolean" | "number" | "select" | "segmented" | "text";
+    selectionKey: string;
+    defaultValue?: string | number | boolean;
+    required?: boolean;
+    choices?: Array<{ value: string; label: string }>;
+    visibleWhen?:
+      | { key: string; when: "truthy" }
+      | { key: string; when: "equals"; value: string | number | boolean };
+    layout?: {
+      layoutSpan?: 1 | 2 | 3;
+      minWidth?: number;
+    };
+    inline?: boolean;
+  }>;
   config?: {
     kind: "grommets" | "sides" | "thickness" | "hems" | "pole_pockets" | "generic";
     // For grommets
@@ -424,6 +456,49 @@ const productOptionItemSchema = z.object({
   percentBase: z.enum(["media", "line"]).optional(),
   defaultSelected: z.boolean().optional(),
   sortOrder: z.number().optional(),
+  groupKey: z.string().optional(),
+  groupLabel: z.string().optional(),
+  group: z.string().optional(),
+  required: z.boolean().optional(),
+  defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  choices: z.array(z.object({ value: z.string(), label: z.string() })).optional(),
+  ui: z
+    .object({
+      visible: z.boolean().optional(),
+      showPrice: z.boolean().optional(),
+    })
+    .optional(),
+  layout: z
+    .object({
+      layoutSpan: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+      minWidth: z.number().optional(),
+    })
+    .optional(),
+  children: z
+    .array(
+      z.object({
+        label: z.string(),
+        type: z.enum(["boolean", "number", "select", "segmented", "text"]),
+        selectionKey: z.string(),
+        defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
+        required: z.boolean().optional(),
+        choices: z.array(z.object({ value: z.string(), label: z.string() })).optional(),
+        visibleWhen: z
+          .union([
+            z.object({ key: z.string(), when: z.literal("truthy") }),
+            z.object({ key: z.string(), when: z.literal("equals"), value: z.union([z.string(), z.number(), z.boolean()]) }),
+          ])
+          .optional(),
+        layout: z
+          .object({
+            layoutSpan: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+            minWidth: z.number().optional(),
+          })
+          .optional(),
+        inline: z.boolean().optional(),
+      })
+    )
+    .optional(),
   config: z
     .object({
       kind: z.enum(["grommets", "sides", "thickness", "hems", "pole_pockets", "generic"]).default("generic"),
