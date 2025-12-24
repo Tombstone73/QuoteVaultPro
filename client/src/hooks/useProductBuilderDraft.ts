@@ -1,0 +1,70 @@
+import { useMemo, useState } from "react";
+import { useWatch, type FieldValues, type UseFormReturn } from "react-hook-form";
+import type { Material } from "@/hooks/useMaterials";
+import type { PricingFormula } from "@/hooks/usePricingFormulas";
+
+export type ProductBuilderPricingPreviewInputs = {
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
+};
+
+export type UseProductBuilderDraftArgs<TFormValues extends FieldValues> = {
+  form: UseFormReturn<TFormValues>;
+  materials?: Material[];
+  pricingFormulas?: PricingFormula[];
+};
+
+export type ProductBuilderDraftState<TFormValues extends FieldValues> = {
+  form: UseFormReturn<TFormValues>;
+
+  // Draft snapshots for page-based builder + split preview.
+  productDraft: TFormValues;
+  optionsDraft: unknown;
+
+  // Reference data.
+  materials?: Material[];
+  materialsById: Map<string, Material>;
+  pricingFormulas?: PricingFormula[];
+
+  // Local-only preview inputs. Not persisted.
+  pricingPreviewInputs: ProductBuilderPricingPreviewInputs;
+  setPricingPreviewInputs: (next: ProductBuilderPricingPreviewInputs) => void;
+};
+
+export function useProductBuilderDraft<TFormValues extends FieldValues>({
+  form,
+  materials,
+  pricingFormulas,
+}: UseProductBuilderDraftArgs<TFormValues>): ProductBuilderDraftState<TFormValues> {
+  // react-hook-form typing can get tricky with generic useWatch; keep this hook permissive.
+  const productDraft = useWatch({ control: form.control }) as TFormValues;
+  const optionsDraft = useWatch({ control: form.control, name: "optionsJson" as any });
+
+  const materialsById = useMemo(() => {
+    const map = new Map<string, Material>();
+    for (const material of materials ?? []) map.set(material.id, material);
+    return map;
+  }, [materials]);
+
+  const [pricingPreviewInputs, setPricingPreviewInputs] = useState<ProductBuilderPricingPreviewInputs>({
+    widthIn: 24,
+    heightIn: 24,
+    quantity: 1,
+  });
+
+  // TODO(ProductBuilderPage): The split-screen pricing preview panel should subscribe to
+  // `productDraft` + `optionsDraft` and recompute live as the draft changes.
+  // Important: do NOT rely on modal open/close lifecycle for resetting this state.
+
+  return {
+    form,
+    productDraft,
+    optionsDraft,
+    materials,
+    materialsById,
+    pricingFormulas,
+    pricingPreviewInputs,
+    setPricingPreviewInputs,
+  };
+}

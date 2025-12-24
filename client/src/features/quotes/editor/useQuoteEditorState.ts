@@ -8,6 +8,7 @@ import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { ROUTES } from "@/config/routes";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem, Organization } from "@shared/schema";
+import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { QuoteLineItemDraft, Address, OptionSelection } from "./types";
 
 type QuoteEditorRouteParams = {
@@ -334,7 +335,8 @@ export function useQuoteEditorState() {
     }, [selectedProduct]);
 
     const productOptions = useMemo(() => {
-        return (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
+        const base = (selectedProduct?.optionsJson as ProductOptionItem[] | undefined) || [];
+        return injectDerivedMaterialOptionIntoProductOptions(selectedProduct, base);
     }, [selectedProduct]);
 
     const hasAttachmentOption = useMemo(
@@ -858,7 +860,7 @@ export function useQuoteEditorState() {
 
     useEffect(() => {
         if (!draftLineItemId || !quoteId || !selectedProduct) return;
-        const productOptionsForSync = (selectedProduct.optionsJson as ProductOptionItem[] | undefined) || [];
+        const productOptionsForSync = productOptions;
         const selectedOptionsArray: Array<{
             optionId: string;
             optionName: string;
@@ -908,7 +910,7 @@ export function useQuoteEditorState() {
         });
 
         patchDraftLineItem({ selectedOptions: selectedOptionsArray });
-    }, [draftLineItemId, quoteId, optionSelections, selectedProduct, requiresDimensions, width, height, quantity, patchDraftLineItem]);
+    }, [draftLineItemId, quoteId, optionSelections, selectedProduct, productOptions, requiresDimensions, width, height, quantity, patchDraftLineItem]);
 
     // ============================================================================
     // AUTO-CALCULATE PRICE

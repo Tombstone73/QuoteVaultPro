@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -73,6 +74,7 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
 
 export default function ProductsPage() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -235,26 +237,7 @@ export default function ProductsPage() {
   ) || [];
 
   const handleEditProduct = (product: Product) => {
-    setEditingProduct(product);
-    editProductForm.reset({
-      name: product.name,
-      description: product.description || "",
-      category: product.category || "",
-      pricingFormula: product.pricingFormula || "sqft * p * q",
-      pricingMode: product.pricingMode || "area",
-      pricingProfileKey: product.pricingProfileKey || "default",
-      pricingProfileConfig: product.pricingProfileConfig as FlatGoodsConfig | null,
-      pricingFormulaId: product.pricingFormulaId || null,
-      isService: product.isService || false,
-      primaryMaterialId: product.primaryMaterialId || null,
-      optionsJson: product.optionsJson || [],
-      storeUrl: product.storeUrl || "",
-      showStoreLink: product.showStoreLink ?? true,
-      isActive: product.isActive ?? true,
-      productTypeId: product.productTypeId || undefined,
-      requiresProductionJob: product.requiresProductionJob ?? true,
-      isTaxable: product.isTaxable ?? true,
-    });
+    navigate(`/products/${product.id}/edit`);
   };
 
   // Handle duplicating a product - opens Add dialog pre-filled with source product data
@@ -339,7 +322,7 @@ export default function ProductsPage() {
               {searchTerm ? "Try adjusting your search term" : "Get started by adding your first product"}
             </p>
             {!searchTerm && (
-              <Button onClick={() => setIsAddDialogOpen(true)}>
+              <Button onClick={() => navigate("/products/new")}>
                 <Plus className="h-4 w-4 mr-2" />
                 Add Product
               </Button>

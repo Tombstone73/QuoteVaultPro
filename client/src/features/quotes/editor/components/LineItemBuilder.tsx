@@ -256,12 +256,9 @@ export function LineItemBuilder({
                 {/* Product Options */}
                 {selectedProduct && productOptions.length > 0 && (
                     <ProductOptionsPanel
+                        product={selectedProduct}
                         productOptions={productOptions}
                         optionSelections={optionSelections}
-                        width={width}
-                        height={height}
-                        quantity={quantity}
-                        requiresDimensions={requiresDimensions}
                         onOptionSelectionsChange={onOptionSelectionsChange}
                     />
                 )}

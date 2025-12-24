@@ -20,6 +20,12 @@ export type ProductOptionItem = {
   priceMode: "flat" | "per_qty" | "per_sqft"; // Changed naming convention
   amount?: number;
   defaultSelected?: boolean; // NEW: auto-select on product selection
+  ui?: {
+    /** If false, the option is hidden in the Quote UI (still impacts pricing/state). Default true. */
+    visible?: boolean;
+    /** If false, hide the option's price pill (e.g. +$x.xx) in the Quote UI. Default true. */
+    showPrice?: boolean;
+  };
   config?: { // NEW: nested configuration object
     kind?: "grommets" | "sides" | "generic";
     // Grommets fields
@@ -33,6 +39,30 @@ export type ProductOptionItem = {
     doublePriceMultiplier?: number; // e.g., 1.6 (160%)
   };
 };
+```
+
+#### Quick sanity example: hide a pricing-affecting option in Quote UI
+
+If you want an option to still affect pricing but not appear in the Quote editor UI, add `ui.visible=false`.
+To also hide its price pill, add `ui.showPrice=false`.
+
+Example (Material option hidden):
+
+```json
+{
+  "id": "opt_material",
+  "label": "Material",
+  "type": "select",
+  "priceMode": "flat",
+  "amount": 15,
+  "defaultSelected": true,
+  "choices": ["13oz Matte", "18oz Gloss"],
+  "defaultValue": "13oz Matte",
+  "ui": {
+    "visible": false,
+    "showPrice": false
+  }
+}
 ```
 
 #### Zod Schema Updates
