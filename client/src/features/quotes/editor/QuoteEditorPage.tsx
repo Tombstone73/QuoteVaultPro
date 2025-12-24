@@ -14,6 +14,7 @@ import { CustomerCard } from "./components/CustomerCard";
 import { FulfillmentCard } from "./components/FulfillmentCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
+import { CustomerInfoFooter } from "./components/CustomerInfoFooter";
 import { VoidQuoteDialog } from "@/components/VoidQuoteDialog";
 import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
@@ -656,36 +657,43 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             onCopyCustomerAddress={state.handlers.handleCopyCustomerAddress}
                         />
 
-                        {/* Quote Summary */}
-                        <SummaryCard
-                            lineItems={state.lineItems}
-                            products={state.products}
-                            subtotal={state.subtotal}
-                            taxAmount={state.taxAmount}
-                            grandTotal={state.grandTotal}
-                            effectiveTaxRate={state.effectiveTaxRate}
-                            discountAmount={state.discountAmount}
-                            deliveryMethod={state.deliveryMethod}
-                            selectedCustomer={state.selectedCustomer}
-                            selectedContactId={state.selectedContactId}
-                            canSaveQuote={state.canSaveQuote}
-                            isSaving={state.isSaving}
-                            hasUnsavedChanges={state.hasUnsavedChanges}
-                            readOnly={readOnly}
-                            onSave={handleSave}
-                            onSaveAndBack={preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack}
-                            afterSaveNavigation={preferences.afterSaveNavigation}
-                            onConvertToOrder={() => setShowConvertDialog(true)}
-                            canConvertToOrder={state.canConvertToOrder}
-                            convertToOrderPending={state.convertToOrderHook?.isPending}
-                            showConvertToOrder={!editMode && !!state.quoteId}
-                            onDiscard={handleDiscard}
-                            onDiscountAmountChange={state.handlers.setDiscountAmount}
-                            quoteTaxExempt={state.quoteTaxExempt}
-                            quoteTaxRateOverride={state.quoteTaxRateOverride}
-                            onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
-                            onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
-                        />
+                        <div className="space-y-6">
+                            {/* Quote Summary */}
+                            <SummaryCard
+                                lineItems={state.lineItems}
+                                products={state.products}
+                                subtotal={state.subtotal}
+                                taxAmount={state.taxAmount}
+                                grandTotal={state.grandTotal}
+                                effectiveTaxRate={state.effectiveTaxRate}
+                                discountAmount={state.discountAmount}
+                                deliveryMethod={state.deliveryMethod}
+                                selectedCustomer={state.selectedCustomer}
+                                selectedContactId={state.selectedContactId}
+                                canSaveQuote={state.canSaveQuote}
+                                isSaving={state.isSaving}
+                                hasUnsavedChanges={state.hasUnsavedChanges}
+                                readOnly={readOnly}
+                                onSave={handleSave}
+                                onSaveAndBack={preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack}
+                                afterSaveNavigation={preferences.afterSaveNavigation}
+                                onConvertToOrder={() => setShowConvertDialog(true)}
+                                canConvertToOrder={state.canConvertToOrder}
+                                convertToOrderPending={state.convertToOrderHook?.isPending}
+                                showConvertToOrder={!editMode && !!state.quoteId}
+                                onDiscard={handleDiscard}
+                                onDiscountAmountChange={state.handlers.setDiscountAmount}
+                                quoteTaxExempt={state.quoteTaxExempt}
+                                quoteTaxRateOverride={state.quoteTaxRateOverride}
+                                onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
+                                onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
+                            />
+
+                            <CustomerInfoFooter
+                                selectedCustomer={state.selectedCustomer}
+                                selectedContactId={state.selectedContactId}
+                            />
+                        </div>
                     </div>
                 </div>
             </div>
