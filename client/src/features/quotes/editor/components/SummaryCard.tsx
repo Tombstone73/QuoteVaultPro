@@ -1,5 +1,4 @@
-import { useState, useMemo } from "react";
-import { Link } from "react-router-dom";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +17,6 @@ import type { Product } from "@shared/schema";
 import type { QuoteLineItemDraft } from "../types";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { AfterSaveNavigation } from "@/hooks/useUserPreferences";
-import { ROUTES } from "@/config/routes";
 
 type SummaryCardProps = {
     lineItems: QuoteLineItemDraft[];
@@ -225,109 +223,6 @@ export function SummaryCard({
                     <span className="text-3xl font-bold font-mono tracking-tight">${grandTotal.toFixed(2)}</span>
                 </div>
             </CardContent>
-
-            {/* Customer Info Section - Enterprise Dense (No Labels) */}
-            {(() => {
-                if (!selectedCustomer) return null;
-
-                // Resolve selected contact from selectedContactId
-                const selectedContact = selectedContactId
-                    ? selectedCustomer.contacts?.find(c => c.id === selectedContactId)
-                    : null;
-
-                // Derive customer info with fail-soft fallbacks
-                const companyName = selectedCustomer.companyName || null;
-                const contactName = selectedContact
-                    ? `${selectedContact.firstName || ''} ${selectedContact.lastName || ''}`.trim() || null
-                    : null;
-
-                // Email: prefer contact, fallback to customer
-                const email = selectedContact?.email || selectedCustomer.email || null;
-
-                // Phone: prefer contact, fallback to customer
-                const phone = selectedContact?.phone || selectedCustomer.phone || null;
-
-                // Address: prefer contact address if available, otherwise customer shipping address
-                let addressLine1 = '';
-                let addressLine2 = '';
-
-                if (selectedContact?.street1) {
-                    // Use contact address
-                    addressLine1 = [selectedContact.street1, selectedContact.street2]
-                        .filter(Boolean)
-                        .join(', ');
-                    addressLine2 = [
-                        selectedContact.city,
-                        selectedContact.state,
-                        selectedContact.postalCode
-                    ]
-                        .filter(Boolean)
-                        .join(', ');
-                } else if (selectedCustomer.shippingStreet1) {
-                    // Fallback to customer shipping address
-                    addressLine1 = [selectedCustomer.shippingStreet1, selectedCustomer.shippingStreet2]
-                        .filter(Boolean)
-                        .join(', ');
-                    addressLine2 = [
-                        selectedCustomer.shippingCity,
-                        selectedCustomer.shippingState,
-                        selectedCustomer.shippingPostalCode
-                    ]
-                        .filter(Boolean)
-                        .join(', ');
-                } else if (selectedCustomer.billingStreet1) {
-                    // Last resort: customer billing address
-                    addressLine1 = [selectedCustomer.billingStreet1, selectedCustomer.billingStreet2]
-                        .filter(Boolean)
-                        .join(', ');
-                    addressLine2 = [
-                        selectedCustomer.billingCity,
-                        selectedCustomer.billingState,
-                        selectedCustomer.billingPostalCode
-                    ]
-                        .filter(Boolean)
-                        .join(', ');
-                }
-
-                // Only render section if at least company name exists
-                if (!companyName) return null;
-
-                return (
-                    <div className="mt-3 pt-3 border-t border-border/40 px-4 space-y-0.5 text-[12px] leading-4">
-                        {/* Line 1: Company Name (clickable) */}
-                        <div>
-                            <Link
-                                to={ROUTES.customers.detail(selectedCustomer.id)}
-                                className="font-medium hover:underline text-foreground"
-                            >
-                                {companyName}
-                            </Link>
-                        </div>
-
-                        {/* Line 2: Contact Name */}
-                        {contactName && (
-                            <div className="text-muted-foreground">{contactName}</div>
-                        )}
-
-                        {/* Line 3-4: Address (only if present) */}
-                        {addressLine1 && (
-                            <div className="text-muted-foreground">{addressLine1}</div>
-                        )}
-                        {addressLine2 && (
-                            <div className="text-muted-foreground">{addressLine2}</div>
-                        )}
-
-                        {/* Line 5: Email · Phone (inline if both exist) */}
-                        {(email || phone) && (
-                            <div className="text-muted-foreground">
-                                {email && <span className="font-mono">{email}</span>}
-                                {email && phone && <span> · </span>}
-                                {phone && <span className="font-mono">{phone}</span>}
-                            </div>
-                        )}
-                    </div>
-                );
-            })()}
 
             <CardFooter className="flex flex-col gap-2.5 pt-0 px-4 pb-4 border-t border-border/40">
                 {!readOnly ? (

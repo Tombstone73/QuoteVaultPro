@@ -1,10 +1,10 @@
-import { forwardRef, useState } from "react";
+import { forwardRef, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Calendar, Tag, X } from "lucide-react";
+import { Calendar, X } from "lucide-react";
 import { CustomerSelect, type CustomerWithContacts, type CustomerSelectRef } from "@/components/CustomerSelect";
 
 type CustomerCardProps = {
@@ -52,6 +52,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     onRemoveTag,
 }, ref) => {
     const [tagInput, setTagInput] = useState("");
+    const tagInputRef = useRef<HTMLInputElement | null>(null);
     const contactLabel = (() => {
         const c = contacts?.find((x: any) => x.id === selectedContactId);
         if (!c) return "—";
@@ -66,11 +67,28 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
         return "—";
     })();
 
-    const handleTagKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key === "Enter" && tagInput.trim()) {
-            e.preventDefault();
-            onAddTag?.(tagInput.trim());
+    const commitTagInput = (raw: string) => {
+        const parts = raw
+            .split(",")
+            .map(s => s.trim())
+            .filter(Boolean);
+
+        if (parts.length === 0) {
             setTagInput("");
+            return;
+        }
+
+        for (const t of parts) {
+            onAddTag?.(t);
+        }
+        setTagInput("");
+    };
+
+    const handleTagKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        const isCommitKey = e.key === "Enter" || e.key === "," || e.key === "Comma";
+        if (isCommitKey) {
+            e.preventDefault();
+            commitTagInput(tagInput);
         } else if (e.key === "Backspace" && tagInput === "" && tags.length > 0) {
             // Remove last tag when backspace is pressed on empty input
             e.preventDefault();
@@ -167,50 +185,43 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
 
                 {/* Tags section - only show if handlers are provided (tags are functional) */}
                 {onAddTag && onRemoveTag && (
-                    <div className="space-y-1.5">
-                        <Label className="text-xs text-muted-foreground flex items-center gap-2">
-                            <Tag className="h-3.5 w-3.5" />
-                            Tags
-                        </Label>
-                        {readOnly ? (
-                            <div className="flex flex-wrap gap-1.5">
-                                {tags.length === 0 ? (
-                                    <span className="text-xs text-muted-foreground">—</span>
-                                ) : (
-                                    tags.map((t) => (
-                                        <Badge key={t} variant="secondary" className="text-[11px] py-0">
-                                            {t}
-                                        </Badge>
-                                    ))
+                    <div
+                        className="min-h-9 rounded-md bg-muted/30 border border-border/50 px-2 py-1 flex flex-wrap items-center gap-1.5 cursor-text focus-within:ring-1 focus-within:ring-ring/20"
+                        onClick={() => tagInputRef.current?.focus()}
+                        role="group"
+                        aria-label="Tags"
+                    >
+                        {tags.map((t) => (
+                            <Badge key={t} variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center gap-1">
+                                {t}
+                                {!readOnly && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onRemoveTag(t)}
+                                        className="ml-1 hover:bg-secondary/80 rounded-full p-1"
+                                        aria-label={`Remove tag ${t}`}
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
                                 )}
-                            </div>
+                            </Badge>
+                        ))}
+
+                        {readOnly ? (
+                            tags.length === 0 ? (
+                                <span className="text-xs text-muted-foreground">—</span>
+                            ) : null
                         ) : (
-                            <>
-                                <div className="flex flex-wrap gap-1.5 mb-1.5">
-                                    {tags.length > 0 && (
-                                        tags.map((t) => (
-                                            <Badge key={t} variant="secondary" className="text-[11px] py-0 flex items-center gap-1">
-                                                {t}
-                                                <button
-                                                    type="button"
-                                                    onClick={() => onRemoveTag(t)}
-                                                    className="ml-1 hover:bg-secondary/80 rounded-full p-0.5"
-                                                    aria-label={`Remove tag ${t}`}
-                                                >
-                                                    <X className="h-3 w-3" />
-                                                </button>
-                                            </Badge>
-                                        ))
-                                    )}
-                                </div>
-                                <Input
+                            <Badge variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center">
+                                <input
+                                    ref={tagInputRef}
                                     value={tagInput}
                                     onChange={(e) => setTagInput(e.target.value)}
                                     onKeyDown={handleTagKeyDown}
-                                    placeholder="Add tag (Enter)"
-                                    className="h-8 text-xs"
+                                    placeholder="Add Tag"
+                                    className="w-[7rem] min-w-[7rem] bg-transparent outline-none text-xs font-semibold placeholder:text-muted-foreground/70"
                                 />
-                            </>
+                            </Badge>
                         )}
                     </div>
                 )}
