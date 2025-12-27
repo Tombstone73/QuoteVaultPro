@@ -32,7 +32,7 @@ const SplitWorkspace: React.FC<SplitWorkspaceProps> = ({ left, right, rightTitle
   };
 
   return (
-    <div className="h-dvh overflow-hidden flex flex-col">
+    <div className="h-full min-h-0 overflow-hidden flex flex-col">
       {header ? <div className="shrink-0 border-b border-border bg-background/80 backdrop-blur">{header}</div> : null}
 
       <div className="flex flex-1 min-h-0">

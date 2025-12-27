@@ -28,6 +28,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { PRICING_PROFILES, type PricingProfileKey, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
+import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 
 
 // Required field indicator component
@@ -166,6 +167,9 @@ export default function ProductsPage() {
   const addPricingFormulaId = addProductForm.watch("pricingFormulaId");
   const editPricingFormulaId = editProductForm.watch("pricingFormulaId");
 
+  const addHasInvalidChoiceValues = optionsHaveInvalidChoices(addProductForm.watch("optionsJson"));
+  const editHasInvalidChoiceValues = optionsHaveInvalidChoices(editProductForm.watch("optionsJson"));
+
   const addProductMutation = useMutation({
     mutationFn: async (data: InsertProduct) => {
       // Clean up empty optionsJson
@@ -287,7 +291,7 @@ export default function ProductsPage() {
             Manage products and pricing used for quotes and orders
           </p>
         </div>
-        <Button onClick={() => setIsAddDialogOpen(true)}>
+        <Button onClick={() => navigate("/products/new")}>
           <Plus className="h-4 w-4 mr-2" />
           Add Product
         </Button>
@@ -1113,10 +1117,13 @@ export default function ProductsPage() {
                 <Button type="button" variant="outline" onClick={() => setIsAddDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={addProductMutation.isPending}>
+                <Button type="submit" disabled={addProductMutation.isPending || addHasInvalidChoiceValues}>
                   {addProductMutation.isPending ? "Adding..." : "Add Product"}
                 </Button>
               </DialogFooter>
+              {addHasInvalidChoiceValues ? (
+                <div className="text-xs text-destructive">Fix empty choice values before saving.</div>
+              ) : null}
             </form>
           </Form>
         </DialogContent>
@@ -1836,10 +1843,13 @@ export default function ProductsPage() {
                 <Button type="button" variant="outline" onClick={() => setEditingProduct(null)}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={updateProductMutation.isPending}>
+                <Button type="submit" disabled={updateProductMutation.isPending || editHasInvalidChoiceValues}>
                   {updateProductMutation.isPending ? "Saving..." : "Save Changes"}
                 </Button>
               </DialogFooter>
+              {editHasInvalidChoiceValues ? (
+                <div className="text-xs text-destructive">Fix empty choice values before saving.</div>
+              ) : null}
             </form>
           </Form>
         </DialogContent>

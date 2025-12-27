@@ -27,6 +27,7 @@ import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOp
 
 type LineItemsSectionProps = {
   quoteId: string | null;
+  customerId?: string | null;
   readOnly: boolean;
   lineItems: QuoteLineItemDraft[];
   products: Product[];
@@ -341,6 +342,7 @@ function LineItemArtworkStrip({
 
 export function LineItemsSection({
   quoteId,
+  customerId,
   readOnly,
   lineItems,
   products,
@@ -592,6 +594,8 @@ export function LineItemsSection({
         height: heightNum,
         quantity: qtyNum,
         selectedOptions: optionSelections,
+        customerId,
+        quoteId,
       })
         .then((r) => r.json())
         .then((data) => {
@@ -622,6 +626,8 @@ export function LineItemsSection({
       qtyNum,
       optionSelections,
       expandedKey,
+      customerId,
+      quoteId,
     ],
     400
   );

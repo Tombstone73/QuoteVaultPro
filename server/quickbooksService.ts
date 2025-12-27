@@ -357,6 +357,12 @@ export async function processPullCustomers(jobId: string): Promise<void> {
   try {
     console.log(`[QB Pull Customers] Starting job ${jobId}`);
 
+    const connection = await getActiveConnection();
+    if (!connection) {
+      throw new Error('QuickBooks not connected');
+    }
+    const organizationId = connection.organizationId || DEFAULT_ORGANIZATION_ID;
+
     // Update job status to processing
     await db
       .update(accountingSyncJobs)
@@ -383,18 +389,28 @@ export async function processPullCustomers(jobId: string): Promise<void> {
           .from(customers)
           .where(
             or(
-              eq(customers.externalAccountingId, qbCustomer.Id),
-              localData.email ? eq(customers.email, localData.email) : sql`false`
+              and(eq(customers.organizationId, organizationId), eq(customers.externalAccountingId, qbCustomer.Id)),
+              localData.email ? and(eq(customers.organizationId, organizationId), eq(customers.email, localData.email)) : sql`false`
             )
           )
           .limit(1);
 
         if (existing) {
+          const overrides: Record<string, boolean> = (existing as any).qbFieldOverrides || {};
+          const filteredLocalData: any = { ...localData };
+          // QB wins by default, unless overridden.
+          if (overrides.email) delete filteredLocalData.email;
+          if (overrides.phone) delete filteredLocalData.phone;
+          if (overrides.website) delete filteredLocalData.website;
+          if (overrides.billingAddress) delete filteredLocalData.billingAddress;
+          if (overrides.shippingAddress) delete filteredLocalData.shippingAddress;
+          if (overrides.notes) delete filteredLocalData.notes;
+
           // Update existing customer
           await db
             .update(customers)
             .set({
-              ...localData,
+              ...filteredLocalData,
               updatedAt: new Date(),
             })
             .where(eq(customers.id, existing.id));
@@ -405,7 +421,7 @@ export async function processPullCustomers(jobId: string): Promise<void> {
             ...localData,
             customerType: 'business',
             status: 'active',
-            organizationId: DEFAULT_ORGANIZATION_ID,
+            organizationId,
           } as any);
           console.log(`[QB Pull Customers] Created customer: ${localData.companyName}`);
         }

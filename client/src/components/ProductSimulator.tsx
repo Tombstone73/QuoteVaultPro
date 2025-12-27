@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import type { ProductBuilderDraftState } from "@/hooks/useProductBuilderDraft";
 import type { OptionSelection } from "@/features/quotes/editor/types";
@@ -7,7 +8,23 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Badge } from "./ui/badge";
 
-type PricingPreviewState = "idle" | "computing" | "success" | "error";
+type PricingPreviewState = "idle" | "loading" | "success" | "error";
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState<T>(value);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(t);
+  }, [value, delayMs]);
+
+  return debounced;
+}
+
+function formulaNeedsP(formula: string): boolean {
+  const f = String(formula || "");
+  return /\b(p|pricePerSqft|unitPrice|price)\b/.test(f);
+}
 
 const ProductSimulator = ({
   draft,
@@ -19,104 +36,123 @@ const ProductSimulator = ({
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const { productDraft, pricingPreviewInputs, setPricingPreviewInputs } = draft;
 
-  const [pricingState, setPricingState] = useState<PricingPreviewState>("idle");
-  const [pricingError, setPricingError] = useState<string | null>(null);
-  const [pricingResult, setPricingResult] = useState<any>(null);
-
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const requestIdRef = useRef(0);
-  const debounceTimerRef = useRef<number | null>(null);
-
   const options = (productDraft as any)?.optionsJson || [];
 
-  const inputsHash = useMemo(() => {
-    return JSON.stringify({
-      productId: (productDraft as any)?.id ?? null,
-      width: pricingPreviewInputs.widthIn,
-      height: pricingPreviewInputs.heightIn,
-      quantity: pricingPreviewInputs.quantity,
-      selectedOptions: optionSelections,
-    });
-  }, [productDraft, pricingPreviewInputs.widthIn, pricingPreviewInputs.heightIn, pricingPreviewInputs.quantity, optionSelections]);
+  const widthNumRaw = Number(pricingPreviewInputs.widthIn);
+  const heightNumRaw = Number(pricingPreviewInputs.heightIn);
+  const quantityNumRaw = Number(pricingPreviewInputs.quantity);
 
-  useEffect(() => {
-    if (debounceTimerRef.current) {
-      window.clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
+  const widthNum = Number.isFinite(widthNumRaw) ? widthNumRaw : 0;
+  const heightNum = Number.isFinite(heightNumRaw) ? heightNumRaw : 0;
+  const quantityNum = Number.isFinite(quantityNumRaw) ? quantityNumRaw : 0;
+
+  const pricingProfileKey = String((productDraft as any)?.pricingProfileKey || "").trim();
+  const pricingFormula = String((productDraft as any)?.pricingFormula || "").trim();
+  const primaryMaterialIdRaw = (productDraft as any)?.primaryMaterialId;
+  const primaryMaterialId = typeof primaryMaterialIdRaw === "string" && primaryMaterialIdRaw.trim() ? primaryMaterialIdRaw : null;
+
+  const needsP = formulaNeedsP(pricingFormula);
+
+  const selectionSignature = useMemo(() => {
+    try {
+      return JSON.stringify(optionSelections);
+    } catch {
+      return "{}";
     }
+  }, [optionSelections]);
 
-    // No product id (new/unsaved) => can't hit compute endpoint
-    const productId = (productDraft as any)?.id as string | undefined;
-    if (!productId) {
-      setPricingState("idle");
-      setPricingError(null);
-      return;
+  const draftSignature = useMemo(() => {
+    // Keep this minimal: only fields that affect pricing computation.
+    const p: any = productDraft as any;
+    try {
+      return JSON.stringify({
+        pricingProfileKey: p?.pricingProfileKey ?? null,
+        pricingFormula: p?.pricingFormula ?? null,
+        pricingFormulaId: p?.pricingFormulaId ?? null,
+        pricingProfileConfig: p?.pricingProfileConfig ?? null,
+        primaryMaterialId: p?.primaryMaterialId ?? null,
+        useNestingCalculator: p?.useNestingCalculator ?? null,
+        sheetWidth: p?.sheetWidth ?? null,
+        sheetHeight: p?.sheetHeight ?? null,
+        materialType: p?.materialType ?? null,
+        minPricePerItem: p?.minPricePerItem ?? null,
+        optionsJson: p?.optionsJson ?? null,
+      });
+    } catch {
+      return "{}";
     }
+  }, [productDraft]);
 
-    const widthNum = Number(pricingPreviewInputs.widthIn) || 0;
-    const heightNum = Number(pricingPreviewInputs.heightIn) || 0;
-    const quantityNum = Number(pricingPreviewInputs.quantity) || 0;
+  const canSimulate =
+    Boolean(pricingProfileKey) &&
+    Boolean(pricingFormula) &&
+    Number.isFinite(widthNum) &&
+    widthNum > 0 &&
+    Number.isFinite(heightNum) &&
+    heightNum > 0 &&
+    Number.isFinite(quantityNum) &&
+    quantityNum > 0 &&
+    (!needsP || Boolean(primaryMaterialId));
 
-    // Keep behavior fail-soft: if inputs are incomplete, don't compute.
-    if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
-      setPricingState("idle");
-      setPricingError(null);
-      return;
-    }
+  const cantSimulateReason = useMemo(() => {
+    if (!pricingProfileKey) return "Select a pricing profile to preview pricing.";
+    if (!pricingFormula) return "Enter a pricing formula to preview pricing.";
+    if (!Number.isFinite(widthNum) || widthNum <= 0) return "Enter a width and height to preview pricing.";
+    if (!Number.isFinite(heightNum) || heightNum <= 0) return "Enter a width and height to preview pricing.";
+    if (!Number.isFinite(quantityNum) || quantityNum <= 0) return "Enter a quantity to preview pricing.";
+    if (needsP && !primaryMaterialId) return "Select a primary material (SqFt pricing) to preview pricing.";
+    return "Enter size + qty to preview pricing.";
+  }, [pricingProfileKey, pricingFormula, widthNum, heightNum, quantityNum, needsP, primaryMaterialId]);
 
-    // Debounce compute
-    debounceTimerRef.current = window.setTimeout(() => {
-      // Cancel previous request
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+  const debouncedInputs = useDebouncedValue(
+    {
+      width: widthNum,
+      height: heightNum,
+      quantity: quantityNum,
+      selectionSignature,
+      draftSignature,
+    },
+    250
+  );
 
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-      requestIdRef.current += 1;
-      const requestId = requestIdRef.current;
+  const pricingQuery = useQuery({
+    queryKey: [
+      "productPricingSim",
+      // Saved product id if present; otherwise stable "draft" bucket.
+      String((productDraft as any)?.id ?? "draft"),
+      pricingProfileKey,
+      pricingFormula,
+      primaryMaterialId ?? "no_material",
+      debouncedInputs.width,
+      debouncedInputs.height,
+      debouncedInputs.quantity,
+      debouncedInputs.selectionSignature,
+      debouncedInputs.draftSignature,
+    ],
+    enabled: canSimulate,
+    placeholderData: (prev) => prev,
+    queryFn: async () => {
+      const response = await apiRequest("POST", "/api/quotes/calculate", {
+        productId: (productDraft as any)?.id ?? undefined,
+        productDraft,
+        width: debouncedInputs.width,
+        height: debouncedInputs.height,
+        quantity: debouncedInputs.quantity,
+        selectedOptions: optionSelections,
+      });
+      return await response.json();
+    },
+  });
 
-      setPricingState("computing");
-      // Keep last known result visible; clear error only on success
-
-      apiRequest(
-        "POST",
-        "/api/quotes/calculate",
-        {
-          productId,
-          width: widthNum,
-          height: heightNum,
-          quantity: quantityNum,
-          selectedOptions: optionSelections,
-        },
-        { signal: controller.signal }
-      )
-        .then((r) => r.json())
-        .then((data) => {
-          if (requestId !== requestIdRef.current) return;
-          setPricingResult(data);
-          setPricingError(null);
-          setPricingState("success");
-        })
-        .catch((err: any) => {
-          if (err instanceof Error && err.name === "AbortError") return;
-          if (requestId !== requestIdRef.current) return;
-          setPricingError(err instanceof Error ? err.message : "Calculation failed");
-          setPricingState("error");
-        });
-    }, 300);
-
-    return () => {
-      if (debounceTimerRef.current) {
-        window.clearTimeout(debounceTimerRef.current);
-        debounceTimerRef.current = null;
-      }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inputsHash]);
+  const pricingState: PricingPreviewState = !canSimulate
+    ? "idle"
+    : pricingQuery.isFetching
+      ? "loading"
+      : pricingQuery.isError
+        ? "error"
+        : pricingQuery.data
+          ? "success"
+          : "loading";
 
   if (!productDraft) {
     return <div>Loading...</div>;
@@ -193,18 +229,30 @@ const ProductSimulator = ({
       <div className="space-y-2">
         <div className="text-sm">
           <span className="font-medium">Pricing:</span>{" "}
-          {pricingState === "computing" ? "Computing…" : pricingState === "idle" ? "Idle" : "Ready"}
+          {!canSimulate
+            ? "—"
+            : pricingState === "loading"
+              ? "Calculating…"
+              : pricingState === "error"
+                ? "Error"
+                : "Ready"}
         </div>
 
-        {pricingError ? (
-          <div className="text-sm text-destructive">{pricingError}</div>
+        {!canSimulate ? (
+          <div className="text-sm text-muted-foreground">{cantSimulateReason}</div>
         ) : null}
 
-        {pricingResult ? (
+        {pricingQuery.isError ? (
+          <div className="text-sm text-destructive">
+            Pricing error: {pricingQuery.error instanceof Error ? pricingQuery.error.message : "Calculation failed"}
+          </div>
+        ) : null}
+
+        {pricingQuery.data ? (
           <div className="text-sm">
             <div className="font-medium">Result</div>
             <pre className="mt-1 max-h-48 overflow-auto rounded border border-border/40 bg-card/50 p-2 text-xs">
-              {JSON.stringify(pricingResult, null, 2)}
+              {JSON.stringify(pricingQuery.data, null, 2)}
             </pre>
           </div>
         ) : null}

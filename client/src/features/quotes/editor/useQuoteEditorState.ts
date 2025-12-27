@@ -203,10 +203,13 @@ export function useQuoteEditorState() {
     const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
     const [isCalculating, setIsCalculating] = useState(false);
     const [calcError, setCalcError] = useState<string | null>(null);
+    const [pricingStale, setPricingStale] = useState(false);
+    const [isRepricingLineItems, setIsRepricingLineItems] = useState(false);
     const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
     const calcRequestIdRef = useRef(0);
     const lastCalcInputsHashRef = useRef<string | null>(null);
+    const repricingRequestIdRef = useRef(0);
 
     // ============================================================================
     // OPTION SELECTION STATE
@@ -865,6 +868,7 @@ export function useQuoteEditorState() {
             optionId: string;
             optionName: string;
             value: string | number | boolean;
+            note?: string;
             setupCost: number;
             calculatedCost: number;
         }> = [];
@@ -904,6 +908,7 @@ export function useQuoteEditorState() {
                 optionId: option.id,
                 optionName: option.label,
                 value: selection.value,
+                note: typeof (selection as any).note === "string" ? (selection as any).note : undefined,
                 setupCost,
                 calculatedCost,
             });
@@ -969,6 +974,8 @@ export function useQuoteEditorState() {
             height: heightNum,
             quantity: quantityNum,
             options: buildSelectedOptionsPayload(),
+            customerId: selectedCustomerId,
+            quoteId,
         });
 
         setIsCalculating(true);
@@ -986,6 +993,8 @@ export function useQuoteEditorState() {
                     height: heightNum,
                     quantity: quantityNum,
                     selectedOptions: buildSelectedOptionsPayload(),
+                    customerId: selectedCustomerId,
+                    quoteId,
                 },
                 { signal: controller.signal }
             );
@@ -1019,7 +1028,78 @@ export function useQuoteEditorState() {
                 setIsCalculating(false);
             }
         }
-    }, [selectedProductId, selectedVariantId, width, height, quantity, requiresDimensions, buildSelectedOptionsPayload]);
+    }, [selectedProductId, selectedVariantId, width, height, quantity, requiresDimensions, buildSelectedOptionsPayload, selectedCustomerId, quoteId]);
+
+    const repriceExistingLineItemsForCustomer = useCallback(async (nextCustomerId: string | null) => {
+        const itemsToReprice = lineItems.filter((li) => li.status !== "canceled" && !li.priceOverridden);
+        if (!nextCustomerId || itemsToReprice.length === 0) {
+            setPricingStale(false);
+            return;
+        }
+
+        const requestId = (repricingRequestIdRef.current += 1);
+        setPricingStale(true);
+        setIsRepricingLineItems(true);
+
+        try {
+            const results = await Promise.all(
+                itemsToReprice.map(async (li) => {
+                    const key = getStableLineItemKey(li);
+                    const response = await apiRequest("POST", "/api/quotes/calculate", {
+                        productId: li.productId,
+                        variantId: li.variantId,
+                        width: li.width,
+                        height: li.height,
+                        quantity: li.quantity,
+                        selectedOptions: li.selectedOptions,
+                        customerId: nextCustomerId,
+                        quoteId,
+                    });
+                    const data = await response.json();
+                    const price = Number(data?.price);
+                    if (!Number.isFinite(price)) return { key, ok: false as const };
+                    return { key, ok: true as const, price, priceBreakdown: data?.priceBreakdown };
+                })
+            );
+
+            if (requestId !== repricingRequestIdRef.current) return;
+
+            const byKey = new Map<string, { price: number; priceBreakdown: any }>();
+            for (const r of results) {
+                if (r.ok) byKey.set(r.key, { price: r.price, priceBreakdown: r.priceBreakdown });
+            }
+
+            setLineItems((prev) =>
+                prev.map((li) => {
+                    if (li.status === "canceled" || li.priceOverridden) return li;
+                    const key = getStableLineItemKey(li);
+                    const hit = byKey.get(key);
+                    if (!hit) return li;
+                    return {
+                        ...li,
+                        linePrice: hit.price,
+                        formulaLinePrice: hit.price,
+                        priceBreakdown:
+                            hit.priceBreakdown ||
+                            ({
+                                ...(li.priceBreakdown || {}),
+                                basePrice: hit.price,
+                                total: hit.price,
+                            } as any),
+                    };
+                })
+            );
+
+            setPricingStale(false);
+        } catch {
+            if (requestId !== repricingRequestIdRef.current) return;
+            setPricingStale(true);
+        } finally {
+            if (requestId === repricingRequestIdRef.current) {
+                setIsRepricingLineItems(false);
+            }
+        }
+    }, [lineItems, quoteId]);
 
     // ============================================================================
     // EFFECT: Debounced auto-calculation
@@ -1067,6 +1147,7 @@ export function useQuoteEditorState() {
             optionId: string;
             optionName: string;
             value: string | number | boolean;
+            note?: string;
             setupCost: number;
             calculatedCost: number;
         }> = [];
@@ -1104,6 +1185,7 @@ export function useQuoteEditorState() {
                 optionId: option.id,
                 optionName: option.label,
                 value: selection.value,
+                note: typeof (selection as any).note === "string" ? (selection as any).note : undefined,
                 setupCost,
                 calculatedCost,
             });
@@ -2473,6 +2555,10 @@ export function useQuoteEditorState() {
         canDuplicateQuote,
         hasUnsavedChanges,
 
+        // Pricing status
+        pricingStale,
+        isRepricingLineItems,
+
         // Handlers
         handlers: {
             // Customer
@@ -2480,6 +2566,7 @@ export function useQuoteEditorState() {
                 setSelectedCustomerId(customerId);
                 setSelectedCustomer(customer);
                 setSelectedContactId(contactId || null);
+                void repriceExistingLineItemsForCustomer(customerId);
                 // Pre-fill shipping address from customer if ship is selected
                 if (customer && deliveryMethod === 'ship') {
                     setShippingAddress({

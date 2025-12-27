@@ -39,6 +39,82 @@ const isAdminOrOwner = (req: any, res: any, next: any) => {
   }
   return res.status(403).json({ message: "Access denied. Admin or Owner role required." });
 };
+
+// =============================
+// Import Job Helpers
+// =============================
+type ImportApplyMode = "MERGE_RESPECT_OVERRIDES" | "MERGE_AND_SET_OVERRIDES";
+
+const parseCsvOrThrow = (csvData: unknown) => {
+  if (!csvData || typeof csvData !== "string") {
+    throw Object.assign(new Error("CSV data is required"), { statusCode: 400 });
+  }
+
+  const parseResult = Papa.parse(csvData, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (header: string) => header.trim(),
+  });
+
+  if (parseResult.errors.length > 0) {
+    const err = Object.assign(new Error("CSV parsing failed"), { statusCode: 400, errors: parseResult.errors });
+    throw err;
+  }
+
+  const rows = parseResult.data as Record<string, string>[];
+  if (!rows || rows.length === 0) {
+    throw Object.assign(new Error("CSV must contain at least one data row"), { statusCode: 400 });
+  }
+
+  return rows;
+};
+
+const parseBool = (v: unknown) => {
+  if (v == null) return undefined;
+  const s = String(v).trim().toLowerCase();
+  if (s === "") return undefined;
+  if (["true", "1", "yes", "y"].includes(s)) return true;
+  if (["false", "0", "no", "n"].includes(s)) return false;
+  return undefined;
+};
+
+const parseNum = (v: unknown) => {
+  if (v == null) return undefined;
+  const s = String(v).trim();
+  if (s === "") return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+const parseTaxRateOverride = (v: unknown) => {
+  const n = parseNum(v);
+  if (n == null) return undefined;
+  // Allow 8.25 to mean 8.25%
+  if (n > 1) return n / 100;
+  return n;
+};
+
+const pickOverrideFiltered = (existing: any, patch: any) => {
+  const overrides: Record<string, boolean> = (existing?.qbFieldOverrides as any) || {};
+  const result: any = {};
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v === undefined) continue;
+    if (overrides[k]) continue;
+    result[k] = v;
+  }
+  return result;
+};
+
+const buildOverridePatch = (incoming: any) => {
+  const next: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(incoming || {})) {
+    if (v === undefined || v === null) continue;
+    // If caller sent empty strings for text fields, treat as not provided.
+    if (typeof v === "string" && v.trim() === "") continue;
+    next[k] = true;
+  }
+  return next;
+};
 import {
   insertProductSchema,
   updateProductSchema,
@@ -56,6 +132,7 @@ import {
   insertCompanySettingsSchema,
   updateCompanySettingsSchema,
   insertCustomerSchema,
+  insertCustomerSchemaRefined,
   updateCustomerSchema,
   insertCustomerContactSchema,
   updateCustomerContactSchema,
@@ -988,24 +1065,95 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const productId = String(req.params.id);
+
       const parsedData = updateProductSchema.parse(req.body);
+
       const productData: any = {};
       Object.entries(parsedData).forEach(([k, v]) => {
         // Convert empty strings to null for optional fields, but preserve strings for required fields like description
-        if (k === 'description' || k === 'name') {
-          productData[k] = v ?? '';
+        if (k === "description" || k === "name") {
+          productData[k] = v ?? "";
         } else {
-          productData[k] = v === '' ? null : v;
+          productData[k] = v === "" ? null : v;
         }
       });
-      const product = await storage.updateProduct(organizationId, req.params.id, productData as UpdateProduct);
+
+      // Guard: do not attempt an update with no fields.
+      if (Object.keys(productData).length === 0) {
+        return res.status(400).json({ success: false, message: "No fields to update" });
+      }
+
+      // Validate optionsJson is JSON-safe + enforce a reasonable size limit.
+      if (Object.prototype.hasOwnProperty.call(productData, "optionsJson")) {
+        const optionsJson = productData.optionsJson;
+        if (optionsJson != null) {
+          let jsonText: string;
+          try {
+            jsonText = JSON.stringify(optionsJson);
+          } catch {
+            return res.status(400).json({ success: false, message: "optionsJson must be valid JSON" });
+          }
+
+          // Size guard (prevents accidentally storing transient UI state).
+          if (jsonText.length > 250_000) {
+            return res.status(400).json({ success: false, message: "optionsJson is too large" });
+          }
+
+          // Round-trip to ensure it can be serialized safely.
+          try {
+            productData.optionsJson = JSON.parse(jsonText);
+          } catch {
+            return res.status(400).json({ success: false, message: "optionsJson must be valid JSON" });
+          }
+        }
+      }
+
+      const product = await storage.updateProduct(organizationId, productId, productData as UpdateProduct);
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: fromZodError(error).message });
+        return res.status(400).json({ success: false, message: fromZodError(error).message, errors: error.errors });
       }
-      console.error("Error updating product:", error);
-      res.status(500).json({ message: "Failed to update product" });
+
+      const errorId = (() => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const anyCrypto: any = globalThis.crypto;
+          if (anyCrypto?.randomUUID) return anyCrypto.randomUUID();
+        } catch {
+          // ignore
+        }
+        return `err_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      })();
+
+      const productId = String(req.params.id);
+      const bodyKeys = req?.body && typeof req.body === "object" ? Object.keys(req.body) : [];
+
+      let optionsPreview: { length: number; preview: string } | null = null;
+      try {
+        if (req?.body && typeof req.body === "object" && "optionsJson" in req.body) {
+          const text = JSON.stringify((req.body as any).optionsJson);
+          optionsPreview = { length: text?.length ?? 0, preview: String(text || "").slice(0, 500) };
+        }
+      } catch {
+        optionsPreview = { length: -1, preview: "<unstringifiable>" };
+      }
+
+      const anyErr: any = error as any;
+      console.error("[PATCH /api/products/:id] Failed to update product", {
+        errorId,
+        productId,
+        organizationId: getRequestOrganizationId(req) ?? undefined,
+        bodyKeys,
+        optionsPreview,
+        errorMessage: anyErr?.message,
+        errorCode: anyErr?.code,
+        errorDetail: anyErr?.detail,
+        errorConstraint: anyErr?.constraint,
+      });
+
+      res.status(500).json({ success: false, message: "Failed to update product", errorId });
     }
   });
 
@@ -1353,21 +1501,162 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const { productId, variantId, width, height, quantity, selectedOptions = {} } = req.body;
+      const {
+        productId,
+        variantId,
+        width,
+        height,
+        quantity,
+        selectedOptions: selectedOptionsRaw = {},
+        productDraft,
+        customerTier,
+        customerId: customerIdRaw,
+        quoteId,
+      } = req.body;
 
-      if (!productId || width == null || height == null || quantity == null) {
+      type PricingTier = "default" | "wholesale" | "retail";
+      const parseOptionalNumber = (value: any): number | null => {
+        if (value === null || value === undefined) return null;
+        const num = typeof value === "number" ? value : parseFloat(String(value));
+        return Number.isFinite(num) ? num : null;
+      };
+
+      const normalizeSelectedOptions = (input: any): Record<string, any> => {
+        if (!input) return {};
+        if (Array.isArray(input)) {
+          const out: Record<string, any> = {};
+          for (const opt of input) {
+            if (!opt || typeof opt !== "object") continue;
+            const optionId = String((opt as any).optionId ?? "");
+            if (!optionId) continue;
+            const value = (opt as any).value;
+            const selection: any = typeof value === "object" && value !== null ? value : { value };
+            if (typeof (opt as any).note === "string") selection.note = (opt as any).note;
+            if (typeof (opt as any).grommetsLocation === "string") selection.grommetsLocation = (opt as any).grommetsLocation;
+            if (typeof (opt as any).customPlacementNote === "string") selection.customPlacementNote = (opt as any).customPlacementNote;
+            if (typeof (opt as any).hemsType === "string") selection.hemsType = (opt as any).hemsType;
+            if (typeof (opt as any).polePocket === "string") selection.polePocket = (opt as any).polePocket;
+            if (typeof (opt as any).grommetsSpacingCount === "number") selection.grommetsSpacingCount = (opt as any).grommetsSpacingCount;
+            if (typeof (opt as any).grommetsPerSign === "number") selection.grommetsPerSign = (opt as any).grommetsPerSign;
+            if (typeof (opt as any).grommetsSpacingInches === "number") selection.grommetsSpacingInches = (opt as any).grommetsSpacingInches;
+            out[optionId] = selection;
+          }
+          return out;
+        }
+        if (typeof input === "object") return input as Record<string, any>;
+        return {};
+      };
+
+      const selectedOptions = normalizeSelectedOptions(selectedOptionsRaw);
+
+      const resolveMaterialPricePerSqft = (material: any, tier: PricingTier): number | null => {
+        if (!material) return null;
+        const unit = String(material.unitOfMeasure || "").toLowerCase();
+        if (unit !== "sqft") return null;
+
+        const retail = parseOptionalNumber(material.retailBaseRate);
+        const wholesale = parseOptionalNumber(material.wholesaleBaseRate);
+        const base = parseOptionalNumber(material.costPerUnit);
+
+        let chosen: number | null = null;
+        if (tier === "wholesale") chosen = wholesale ?? retail ?? base;
+        else if (tier === "retail") chosen = retail ?? wholesale ?? base;
+        else chosen = retail ?? wholesale ?? base;
+
+        if (!chosen || !Number.isFinite(chosen) || chosen <= 0) return null;
+        return chosen;
+      };
+
+      const hasInlineDraft = !!productDraft && typeof productDraft === "object";
+      if ((!productId && !hasInlineDraft) || width == null || height == null || quantity == null) {
         return res.status(400).json({ message: "Missing required fields" });
       }
 
-      const product = await storage.getProductById(organizationId, productId);
-      if (!product) {
-        return res.status(404).json({ message: "Product not found" });
+      const mergeDefined = <T extends Record<string, any>>(base: T, patch: any): T => {
+        if (!patch || typeof patch !== "object") return base;
+        const out: any = { ...base };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === undefined) continue;
+          out[k] = v;
+        }
+        return out as T;
+      };
+
+      let product: any = null;
+      if (productId) {
+        product = await storage.getProductById(organizationId, productId);
+        if (!product) {
+          return res.status(404).json({ message: "Product not found" });
+        }
+        // If caller provides a draft overlay (Product Builder), simulate against draft values.
+        if (productDraft && typeof productDraft === "object") {
+          product = mergeDefined(product, productDraft);
+        }
+      } else {
+        // Draft-only simulation (new/unsaved product in Product Builder)
+        product = mergeDefined(
+          {
+            id: "draft",
+            name: "Draft Product",
+            pricingProfileKey: "default",
+            pricingProfileConfig: null,
+            pricingFormulaId: null,
+            pricingFormula: "",
+            primaryMaterialId: null,
+            useNestingCalculator: false,
+            sheetWidth: null,
+            sheetHeight: null,
+            materialType: "sheet",
+            minPricePerItem: null,
+            optionsJson: [],
+          } as any,
+          productDraft
+        );
+      }
+
+      // Optional customer tier support (for wholesale/retail pricing overrides)
+      // Server-authoritative tier resolution priority:
+      // 1) customerId (from request)
+      // 2) quoteId -> quote.customerId
+      // 3) customerTier (legacy client hint; lowest priority)
+      let effectiveTier: PricingTier = "default";
+      let tierSource: "customerId" | "quoteId" | "customerTier" | "default" = "default";
+
+      const customerId = typeof customerIdRaw === "string" && customerIdRaw.trim() ? customerIdRaw : null;
+      let effectiveCustomerId: string | null = customerId;
+
+      if (!effectiveCustomerId && typeof quoteId === "string" && quoteId.trim()) {
+        try {
+          const q = await storage.getQuoteById(organizationId, quoteId);
+          const qCustomerId = (q as any)?.customerId;
+          if (typeof qCustomerId === "string" && qCustomerId.trim()) {
+            effectiveCustomerId = qCustomerId;
+          }
+        } catch {
+          // Fail-soft: quote lookup is optional for this endpoint
+        }
+      }
+
+      if (effectiveCustomerId) {
+        try {
+          const customer = await storage.getCustomerById(organizationId, effectiveCustomerId);
+          const tier = customer?.pricingTier;
+          if (tier === "wholesale" || tier === "retail" || tier === "default") {
+            effectiveTier = tier;
+            tierSource = effectiveCustomerId === customerId ? "customerId" : "quoteId";
+          }
+        } catch {
+          // Fail-soft: tiered pricing is optional for this endpoint
+        }
+      } else if (customerTier === "wholesale" || customerTier === "retail" || customerTier === "default") {
+        effectiveTier = customerTier;
+        tierSource = "customerTier";
       }
 
       // Fetch product variant if provided
       let variant = null;
       let variantName = null;
-      if (variantId) {
+      if (variantId && productId) {
         const variants = await storage.getProductVariants(productId);
         variant = variants.find(v => v.id === variantId) ?? null;
         if (variant) {
@@ -1428,21 +1717,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calculate square footage (may be 0 for qty_only/fee profiles)
       const sqft = requiresDimensions ? (widthNum * heightNum) / 144 : 0;
 
-      // Build formula context with dimensions, quantity, variant base price, and global variables
+      // Build formula context with dimensions, quantity, variant base price, material pricing, and global variables
       const basePricePerSqft = variant ? parseFloat(variant.basePricePerSqft) : 0;
+
+      // Resolve p (price per sqft) from Primary Material when available; fall back to variant base price.
+      let primaryMaterial: any = null;
+      if (product.primaryMaterialId) {
+        try {
+          primaryMaterial = await storage.getMaterialById(organizationId, product.primaryMaterialId);
+        } catch {
+          primaryMaterial = null;
+        }
+      }
+
+      const materialPricePerSqft = resolveMaterialPricePerSqft(primaryMaterial, effectiveTier);
+      const resolvedPricePerSqft = materialPricePerSqft ?? (Number.isFinite(basePricePerSqft) && basePricePerSqft > 0 ? basePricePerSqft : null);
+
       const formulaContext: Record<string, number> = {
         width: widthNum,
         height: heightNum,
         quantity: quantityNum,
+        qty: quantityNum,
         sqft,
         basePricePerSqft,
         // Single-letter aliases for convenience
         w: widthNum,
         h: heightNum,
         q: quantityNum,
-        p: basePricePerSqft, // price per sqft alias
         ...globalVarsContext,
       };
+
+      // Canonical pricing variable aliases
+      if (resolvedPricePerSqft !== null) {
+        formulaContext.p = resolvedPricePerSqft;
+        formulaContext.pricePerSqft = resolvedPricePerSqft;
+        formulaContext.unitPrice = resolvedPricePerSqft;
+        formulaContext.price = resolvedPricePerSqft;
+      }
+
+      if (process.env.NODE_ENV === "development") {
+        console.log("[FORMULA CONTEXT]", {
+          productId,
+          variantId: variantId ?? null,
+          tier: effectiveTier,
+          tierSource,
+          customerId: effectiveCustomerId,
+          materialId: product.primaryMaterialId ?? null,
+          resolvedPricePerSqft,
+          ctxKeys: Object.keys(formulaContext).sort(),
+        });
+      }
 
       // Initialize calculation context for cross-option communication
       let calculationContext: Record<string, any> = {};
@@ -1657,6 +1981,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
           try {
             const formula = product.pricingFormula;
             console.log(`[PRICING DEBUG] Formula: ${formula}`);
+
+            // Graceful failure: if formula references p but we cannot resolve it, return a clear error.
+            const needsP = /\b(p|pricePerSqft|unitPrice|price)\b/.test(formula);
+            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p")) {
+              return res
+                .status(400)
+                .send(
+                  'Missing price per SqFt (p). Select a Primary Material with Unit "sqft" and a sell rate (retail/wholesale/base), or set a variant base price.'
+                );
+            }
+
+            if (process.env.NODE_ENV === "development") {
+              console.log("[FORMULA EVAL]", { formula, ctxKeys: Object.keys(formulaContext).sort() });
+            }
             basePrice = evaluate(formula, formulaContext);
 
             // Validate base price is a finite number
@@ -1673,7 +2011,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Fetch product options and calculate option costs
       // SUPPORT BOTH: old productOptions table AND new optionsJson field
-      const productOptions = await storage.getProductOptions(productId);
+      const productOptions = productId ? await storage.getProductOptions(productId) : [];
       const productOptionsJson = ((product.optionsJson as unknown) as PricingOptionJson[]) || [];
 
       let optionsPrice = 0;
@@ -4609,6 +4947,627 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // =============================
+  // Customer CSV Import/Export
+  // =============================
+  app.get("/api/customers/csv-template", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const templateData = [
+        {
+          'Customer ID': '',
+          'Company Name': 'Acme Printing',
+          'Customer Type': 'business',
+          Email: 'billing@acme.com',
+          Phone: '555-555-5555',
+          Website: 'https://acme.com',
+          'Billing Street 1': '123 Main St',
+          'Billing Street 2': '',
+          'Billing City': 'Dallas',
+          'Billing State': 'TX',
+          'Billing Postal Code': '75001',
+          'Billing Country': 'US',
+          'Shipping Street 1': '123 Main St',
+          'Shipping Street 2': '',
+          'Shipping City': 'Dallas',
+          'Shipping State': 'TX',
+          'Shipping Postal Code': '75001',
+          'Shipping Country': 'US',
+          'Tax ID': '',
+          'Credit Limit': '0',
+          'Pricing Tier': 'default',
+          'Default Discount %': '',
+          'Default Markup %': '',
+          'Default Margin %': '',
+          'Product Visibility Mode': 'default',
+          'Is Tax Exempt': 'false',
+          'Tax Rate Override': '',
+          'Tax Exempt Reason': '',
+          'Tax Exempt Certificate Ref': '',
+          'Is Active': 'true',
+          Status: 'active',
+          Notes: '',
+          'External Accounting ID': '',
+        },
+      ];
+
+      const csv = Papa.unparse(templateData);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="customer-import-template.csv"');
+      res.send(csv);
+    } catch (error) {
+      console.error('Error generating customer CSV template:', error);
+      res.status(500).json({ message: 'Failed to generate CSV template' });
+    }
+  });
+
+  app.get("/api/customers/export", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      const customers = await storage.getAllCustomers(organizationId, {});
+
+      const exportData = customers.map((customer: any) => ({
+        'Customer ID': customer.id,
+        'Company Name': customer.companyName || '',
+        'Customer Type': customer.customerType || '',
+        Email: customer.email || '',
+        Phone: customer.phone || '',
+        Website: customer.website || '',
+        'Billing Street 1': customer.billingStreet1 || '',
+        'Billing Street 2': customer.billingStreet2 || '',
+        'Billing City': customer.billingCity || '',
+        'Billing State': customer.billingState || '',
+        'Billing Postal Code': customer.billingPostalCode || '',
+        'Billing Country': customer.billingCountry || '',
+        'Shipping Street 1': customer.shippingStreet1 || '',
+        'Shipping Street 2': customer.shippingStreet2 || '',
+        'Shipping City': customer.shippingCity || '',
+        'Shipping State': customer.shippingState || '',
+        'Shipping Postal Code': customer.shippingPostalCode || '',
+        'Shipping Country': customer.shippingCountry || '',
+        'Tax ID': customer.taxId || '',
+        'Credit Limit': customer.creditLimit ?? '',
+        'Pricing Tier': customer.pricingTier || 'default',
+        'Default Discount %': customer.defaultDiscountPercent ?? '',
+        'Default Markup %': customer.defaultMarkupPercent ?? '',
+        'Default Margin %': customer.defaultMarginPercent ?? '',
+        'Product Visibility Mode': customer.productVisibilityMode || 'default',
+        'Is Tax Exempt': customer.isTaxExempt ? 'true' : 'false',
+        'Tax Rate Override': customer.taxRateOverride ?? '',
+        'Tax Exempt Reason': customer.taxExemptReason || '',
+        'Tax Exempt Certificate Ref': customer.taxExemptCertificateRef || '',
+        'Is Active': customer.isActive === false ? 'false' : 'true',
+        Status: customer.status || '',
+        Notes: customer.notes || '',
+        'External Accounting ID': customer.externalAccountingId || '',
+      }));
+
+      const csv = Papa.unparse(exportData);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="customers.csv"');
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting customers:', error);
+      res.status(500).json({ message: 'Failed to export customers' });
+    }
+  });
+
+  app.post("/api/customers/import", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      const { csvData, dryRun } = req.body as { csvData?: unknown; dryRun?: unknown };
+      if (!csvData || typeof csvData !== 'string') {
+        return res.status(400).json({ message: 'CSV data is required' });
+      }
+
+      const parseResult = Papa.parse(csvData, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header: string) => header.trim(),
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.error('Customer CSV parsing errors:', parseResult.errors);
+        return res.status(400).json({
+          message: 'CSV parsing failed',
+          errors: parseResult.errors.map((e) => e.message),
+        });
+      }
+
+      const rows = parseResult.data as Record<string, string>[];
+      if (rows.length === 0) {
+        return res.status(400).json({ message: 'CSV must contain at least one data row' });
+      }
+
+      const parseBool = (v: unknown) => {
+        if (v == null) return undefined;
+        const s = String(v).trim().toLowerCase();
+        if (s === '') return undefined;
+        if (['true', '1', 'yes', 'y'].includes(s)) return true;
+        if (['false', '0', 'no', 'n'].includes(s)) return false;
+        return undefined;
+      };
+
+      const parseNum = (v: unknown) => {
+        if (v == null) return undefined;
+        const s = String(v).trim();
+        if (s === '') return undefined;
+        const n = Number(s);
+        return Number.isFinite(n) ? n : undefined;
+      };
+
+      const parseTaxRateOverride = (v: unknown) => {
+        const n = parseNum(v);
+        if (n == null) return undefined;
+        // Allow 8.25 to mean 8.25%.
+        if (n > 1) return n / 100;
+        return n;
+      };
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      const rowErrors: Array<{ row: number; message: string }> = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+
+        const customerId = (row['Customer ID'] || row['ID'] || '').trim();
+        const companyName = (row['Company Name'] || '').trim();
+        if (!companyName) {
+          skipped++;
+          continue;
+        }
+
+        const payload: any = {
+          companyName,
+          customerType: (row['Customer Type'] || '').trim() || undefined,
+          email: (row['Email'] || row['email'] || '').trim() || undefined,
+          phone: (row['Phone'] || '').trim() || undefined,
+          website: (row['Website'] || '').trim() || undefined,
+
+          billingStreet1: (row['Billing Street 1'] || '').trim() || undefined,
+          billingStreet2: (row['Billing Street 2'] || '').trim() || undefined,
+          billingCity: (row['Billing City'] || '').trim() || undefined,
+          billingState: (row['Billing State'] || '').trim() || undefined,
+          billingPostalCode: (row['Billing Postal Code'] || '').trim() || undefined,
+          billingCountry: (row['Billing Country'] || '').trim() || undefined,
+
+          shippingStreet1: (row['Shipping Street 1'] || '').trim() || undefined,
+          shippingStreet2: (row['Shipping Street 2'] || '').trim() || undefined,
+          shippingCity: (row['Shipping City'] || '').trim() || undefined,
+          shippingState: (row['Shipping State'] || '').trim() || undefined,
+          shippingPostalCode: (row['Shipping Postal Code'] || '').trim() || undefined,
+          shippingCountry: (row['Shipping Country'] || '').trim() || undefined,
+
+          taxId: (row['Tax ID'] || '').trim() || undefined,
+          creditLimit: parseNum(row['Credit Limit']),
+          pricingTier: (row['Pricing Tier'] || '').trim() || undefined,
+          defaultDiscountPercent: parseNum(row['Default Discount %']),
+          defaultMarkupPercent: parseNum(row['Default Markup %']),
+          defaultMarginPercent: parseNum(row['Default Margin %']),
+          productVisibilityMode: (row['Product Visibility Mode'] || '').trim() || undefined,
+
+          isTaxExempt: parseBool(row['Is Tax Exempt']),
+          taxRateOverride: parseTaxRateOverride(row['Tax Rate Override']),
+          taxExemptReason: (row['Tax Exempt Reason'] || '').trim() || undefined,
+          taxExemptCertificateRef: (row['Tax Exempt Certificate Ref'] || '').trim() || undefined,
+
+          isActive: parseBool(row['Is Active']),
+          status: (row['Status'] || '').trim() || undefined,
+          notes: (row['Notes'] || '').trim() || undefined,
+
+          externalAccountingId: (row['External Accounting ID'] || '').trim() || undefined,
+        };
+
+        try {
+          if (customerId) {
+            // Update
+            const parsedUpdate = updateCustomerSchema.parse(payload);
+            if (parsedUpdate.isTaxExempt && !parsedUpdate.taxExemptReason) {
+              throw new Error('Tax exempt reason is required when marking customer as tax exempt');
+            }
+            if (!dryRun) {
+              await storage.updateCustomer(organizationId, customerId, parsedUpdate);
+            }
+            updated++;
+          } else {
+            // Create
+            const parsedCreate = insertCustomerSchemaRefined.parse(payload);
+            if (!dryRun) {
+              await storage.createCustomerWithPrimaryContact(organizationId, {
+                customer: parsedCreate,
+                primaryContact: null,
+              });
+            }
+            created++;
+          }
+        } catch (err: any) {
+          const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Unknown error');
+          rowErrors.push({ row: i + 2, message }); // +2 because header row is 1
+        }
+      }
+
+      res.json({
+        message: dryRun ? 'Customer import validated' : 'Customers imported successfully',
+        imported: { created, updated, skipped },
+        errors: rowErrors,
+      });
+    } catch (error) {
+      console.error('Error importing customers:', error);
+      res.status(500).json({ message: 'Failed to import customers' });
+    }
+  });
+
+  // =============================
+  // Enterprise Import Jobs (Validate → Apply)
+  // =============================
+  app.post('/api/import/jobs/validate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      const schema = z.object({
+        resource: z.enum(['customers', 'materials', 'products']),
+        csvData: z.string().min(1),
+        applyMode: z.enum(['MERGE_RESPECT_OVERRIDES', 'MERGE_AND_SET_OVERRIDES']).optional(),
+        sourceFilename: z.string().optional(),
+      });
+
+      const parsed = schema.parse(req.body);
+      const rows = parseCsvOrThrow(parsed.csvData);
+      const userId = getUserId(req.user);
+
+      const applyMode: ImportApplyMode = parsed.applyMode ?? 'MERGE_RESPECT_OVERRIDES';
+      const job = await storage.createImportJob({
+        organizationId,
+        resource: parsed.resource,
+        applyMode,
+        createdByUserId: userId ?? null,
+        sourceFilename: parsed.sourceFilename ?? null,
+        summaryJson: null,
+      });
+
+      let validCount = 0;
+      let invalidCount = 0;
+      let skippedCount = 0;
+
+      const jobRows: Array<{ rowNumber: number; status: any; rawJson: any; normalizedJson?: any; error?: string | null }> = [];
+
+      if (parsed.resource === 'customers') {
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          const rowNumber = i + 2;
+
+          const companyName = (row['Company Name'] || '').trim();
+          if (!companyName) {
+            skippedCount++;
+            jobRows.push({ rowNumber, status: 'skipped', rawJson: row, error: 'Missing Company Name' });
+            continue;
+          }
+
+          const normalized: any = {
+            companyName,
+            customerType: (row['Customer Type'] || '').trim() || undefined,
+            email: (row['Email'] || row['email'] || '').trim() || undefined,
+            phone: (row['Phone'] || '').trim() || undefined,
+            website: (row['Website'] || '').trim() || undefined,
+
+            billingStreet1: (row['Billing Street 1'] || '').trim() || undefined,
+            billingStreet2: (row['Billing Street 2'] || '').trim() || undefined,
+            billingCity: (row['Billing City'] || '').trim() || undefined,
+            billingState: (row['Billing State'] || '').trim() || undefined,
+            billingPostalCode: (row['Billing Postal Code'] || '').trim() || undefined,
+            billingCountry: (row['Billing Country'] || '').trim() || undefined,
+
+            shippingStreet1: (row['Shipping Street 1'] || '').trim() || undefined,
+            shippingStreet2: (row['Shipping Street 2'] || '').trim() || undefined,
+            shippingCity: (row['Shipping City'] || '').trim() || undefined,
+            shippingState: (row['Shipping State'] || '').trim() || undefined,
+            shippingPostalCode: (row['Shipping Postal Code'] || '').trim() || undefined,
+            shippingCountry: (row['Shipping Country'] || '').trim() || undefined,
+
+            taxId: (row['Tax ID'] || '').trim() || undefined,
+            creditLimit: parseNum(row['Credit Limit']),
+            pricingTier: (row['Pricing Tier'] || '').trim() || undefined,
+            defaultDiscountPercent: parseNum(row['Default Discount %']),
+            defaultMarkupPercent: parseNum(row['Default Markup %']),
+            defaultMarginPercent: parseNum(row['Default Margin %']),
+            productVisibilityMode: (row['Product Visibility Mode'] || '').trim() || undefined,
+
+            isTaxExempt: parseBool(row['Is Tax Exempt']),
+            taxRateOverride: parseTaxRateOverride(row['Tax Rate Override']),
+            taxExemptReason: (row['Tax Exempt Reason'] || '').trim() || undefined,
+            taxExemptCertificateRef: (row['Tax Exempt Certificate Ref'] || '').trim() || undefined,
+
+            isActive: parseBool(row['Is Active']),
+            status: (row['Status'] || '').trim() || undefined,
+            notes: (row['Notes'] || '').trim() || undefined,
+
+            externalAccountingId: (row['External Accounting ID'] || '').trim() || undefined,
+          };
+
+          // Identifiers used on apply
+          const identifiers = {
+            customerId: (row['Customer ID'] || row['ID'] || '').trim() || undefined,
+          };
+
+          try {
+            // Use refined schema to validate create-like payload (strongest validation).
+            insertCustomerSchemaRefined.parse(normalized);
+            validCount++;
+            jobRows.push({ rowNumber, status: 'valid', rawJson: row, normalizedJson: { identifiers, ...normalized }, error: null });
+          } catch (err: any) {
+            invalidCount++;
+            const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Invalid row');
+            jobRows.push({ rowNumber, status: 'invalid', rawJson: row, normalizedJson: { identifiers, ...normalized }, error: message });
+          }
+        }
+      } else if (parsed.resource === 'materials') {
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          const rowNumber = i + 2;
+          const name = (row['Name'] || '').trim();
+          const sku = (row['SKU'] || '').trim();
+          const type = (row['Type'] || '').trim();
+          const unitOfMeasure = (row['Unit Of Measure'] || '').trim();
+
+          if (!name || !sku || !type || !unitOfMeasure) {
+            skippedCount++;
+            jobRows.push({ rowNumber, status: 'skipped', rawJson: row, error: 'Missing required fields (Name, SKU, Type, Unit Of Measure)' });
+            continue;
+          }
+
+          const normalized: any = {
+            name,
+            sku,
+            type,
+            category: (row['Category'] || '').trim() || undefined,
+            unitOfMeasure,
+            width: parseNum(row['Width']),
+            height: parseNum(row['Height']),
+            thickness: parseNum(row['Thickness']),
+            thicknessUnit: (row['Thickness Unit'] || '').trim() || undefined,
+            color: (row['Color'] || '').trim() || undefined,
+            costPerUnit: parseNum(row['Cost Per Unit']),
+            wholesaleBaseRate: parseNum(row['Wholesale Base Rate']),
+            wholesaleMinCharge: parseNum(row['Wholesale Min Charge']),
+            retailBaseRate: parseNum(row['Retail Base Rate']),
+            retailMinCharge: parseNum(row['Retail Min Charge']),
+            stockQuantity: parseNum(row['Stock Quantity']),
+            minStockAlert: parseNum(row['Min Stock Alert']),
+            isActive: parseBool(row['Is Active']),
+            preferredVendorId: (row['Preferred Vendor ID'] || '').trim() || undefined,
+            vendorSku: (row['Vendor SKU'] || '').trim() || undefined,
+            vendorCostPerUnit: parseNum(row['Vendor Cost Per Unit']),
+            rollLengthFt: parseNum(row['Roll Length Ft']),
+            costPerRoll: parseNum(row['Cost Per Roll']),
+            edgeWasteInPerSide: parseNum(row['Edge Waste In Per Side']),
+            leadWasteFt: parseNum(row['Lead Waste Ft']),
+            tailWasteFt: parseNum(row['Tail Waste Ft']),
+          };
+
+          const identifiers = {
+            materialId: (row['Material ID'] || row['ID'] || '').trim() || undefined,
+          };
+
+          try {
+            insertMaterialSchema.parse(normalized);
+            validCount++;
+            jobRows.push({ rowNumber, status: 'valid', rawJson: row, normalizedJson: { identifiers, ...normalized }, error: null });
+          } catch (err: any) {
+            invalidCount++;
+            const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Invalid row');
+            jobRows.push({ rowNumber, status: 'invalid', rawJson: row, normalizedJson: { identifiers, ...normalized }, error: message });
+          }
+        }
+      } else {
+        // Products: use existing endpoints for now; create a job with a clear message.
+        invalidCount = rows.length;
+        for (let i = 0; i < rows.length; i++) {
+          jobRows.push({ rowNumber: i + 2, status: 'invalid', rawJson: rows[i], error: 'Products import via Import Jobs not implemented yet. Use /api/products/import.' });
+        }
+      }
+
+      await storage.addImportJobRows(organizationId, job.id, jobRows);
+
+      const summary = {
+        totalRows: rows.length,
+        valid: validCount,
+        invalid: invalidCount,
+        skipped: skippedCount,
+      };
+
+      await storage.updateImportJobStatus(organizationId, job.id, {
+        status: 'validated',
+        applyMode,
+        summaryJson: summary,
+      });
+
+      const invalidRows = jobRows.filter((r) => r.status === 'invalid').slice(0, 100);
+
+      res.json({
+        success: true,
+        data: {
+          job: { ...job, summaryJson: summary, applyMode },
+          summary,
+          invalidPreview: invalidRows.map((r) => ({ rowNumber: r.rowNumber, error: r.error })),
+        },
+      });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error?.statusCode === 400) {
+        return res.status(400).json({ message: error.message, errors: (error.errors || []).map((e: any) => e.message) });
+      }
+      console.error('Error validating import job:', error);
+      res.status(500).json({ message: 'Failed to validate import job' });
+    }
+  });
+
+  app.get('/api/import/jobs/:id', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+      const job = await storage.getImportJob(organizationId, req.params.id);
+      if (!job) return res.status(404).json({ message: 'Import job not found' });
+      const rows = await storage.listImportJobRows(organizationId, job.id, { limit: 200 });
+      res.json({ success: true, data: { job, rows } });
+    } catch (error) {
+      console.error('Error fetching import job:', error);
+      res.status(500).json({ message: 'Failed to fetch import job' });
+    }
+  });
+
+  app.post('/api/import/jobs/:id/apply', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      const bodySchema = z.object({
+        applyMode: z.enum(['MERGE_RESPECT_OVERRIDES', 'MERGE_AND_SET_OVERRIDES']).optional(),
+      });
+      const body = bodySchema.parse(req.body ?? {});
+
+      const job = await storage.getImportJob(organizationId, req.params.id);
+      if (!job) return res.status(404).json({ message: 'Import job not found' });
+
+      const applyMode: ImportApplyMode = (body.applyMode ?? (job.applyMode as any) ?? 'MERGE_RESPECT_OVERRIDES');
+      const rows = await storage.listImportJobRows(organizationId, job.id, { limit: 5000 });
+
+      const validRows = rows.filter((r: any) => r.status === 'valid');
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      const appliedRowIds: string[] = [];
+      const applyErrors: Array<{ rowNumber: number; error: string }> = [];
+
+      if (job.resource === 'customers') {
+        for (const r of validRows) {
+          const normalized = (r.normalizedJson || {}) as any;
+          const identifiers = normalized.identifiers || {};
+          const customerId = (identifiers.customerId || '').trim();
+
+          try {
+            // Build patch from normalized data.
+            const { identifiers: _ident, ...customerPatchRaw } = normalized;
+
+            // Ensure we only send fields allowed by update schema.
+            const parsedUpdate = updateCustomerSchema.parse(customerPatchRaw);
+
+            let existing: any = null;
+            if (customerId) {
+              existing = await storage.getCustomerById(organizationId, customerId);
+            } else if (parsedUpdate.externalAccountingId) {
+              const list = await storage.getAllCustomers(organizationId, { search: undefined });
+              existing = (list as any[]).find((c) => c.externalAccountingId === parsedUpdate.externalAccountingId) ?? null;
+            } else if (parsedUpdate.email) {
+              const list = await storage.getAllCustomers(organizationId, { search: parsedUpdate.email });
+              existing = (list as any[]).find((c) => c.email === parsedUpdate.email) ?? null;
+            }
+
+            if (existing) {
+              let patchToApply: any = parsedUpdate;
+
+              if (applyMode === 'MERGE_RESPECT_OVERRIDES') {
+                patchToApply = pickOverrideFiltered(existing, parsedUpdate);
+              }
+
+              if (applyMode === 'MERGE_AND_SET_OVERRIDES') {
+                const nextOverrides = {
+                  ...(existing.qbFieldOverrides || {}),
+                  ...buildOverridePatch(parsedUpdate),
+                };
+                patchToApply = { ...parsedUpdate, qbFieldOverrides: nextOverrides };
+              }
+
+              await storage.updateCustomer(organizationId, existing.id, patchToApply);
+              updated++;
+            } else {
+              const parsedCreate = insertCustomerSchemaRefined.parse(customerPatchRaw);
+              const createdResult = await storage.createCustomerWithPrimaryContact(organizationId, {
+                customer: parsedCreate,
+                primaryContact: null,
+              });
+              created++;
+
+              if (applyMode === 'MERGE_AND_SET_OVERRIDES') {
+                const nextOverrides = buildOverridePatch(parsedCreate);
+                await storage.updateCustomer(organizationId, (createdResult as any).customer?.id ?? (createdResult as any).id, {
+                  qbFieldOverrides: nextOverrides,
+                });
+              }
+            }
+
+            appliedRowIds.push(r.id);
+          } catch (err: any) {
+            const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Apply failed');
+            applyErrors.push({ rowNumber: r.rowNumber, error: message });
+          }
+        }
+      } else if (job.resource === 'materials') {
+        for (const r of validRows) {
+          const normalized = (r.normalizedJson || {}) as any;
+          const identifiers = normalized.identifiers || {};
+          const materialId = (identifiers.materialId || '').trim();
+
+          try {
+            const { identifiers: _ident, ...materialPatchRaw } = normalized;
+
+            if (materialId) {
+              const parsedUpdate = updateMaterialSchema.parse(materialPatchRaw);
+              await storage.updateMaterial(organizationId, materialId, parsedUpdate);
+              updated++;
+            } else {
+              const parsedCreate = insertMaterialSchema.parse(materialPatchRaw);
+              const { organizationId: _orgId, ...materialData } =
+                parsedCreate as typeof parsedCreate & { organizationId?: string };
+              await storage.createMaterial(organizationId, materialData);
+              created++;
+            }
+
+            appliedRowIds.push(r.id);
+          } catch (err: any) {
+            const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Apply failed');
+            applyErrors.push({ rowNumber: r.rowNumber, error: message });
+          }
+        }
+      } else {
+        skipped = validRows.length;
+      }
+
+      await storage.markImportRowsApplied(organizationId, appliedRowIds);
+      await storage.updateImportJobStatus(organizationId, job.id, {
+        status: applyErrors.length > 0 ? 'error' : 'applied',
+        applyMode,
+        summaryJson: {
+          ...(job.summaryJson as any),
+          applied: { created, updated, skipped, appliedRows: appliedRowIds.length, errors: applyErrors.length },
+        },
+      });
+
+      res.json({
+        success: true,
+        data: {
+          jobId: job.id,
+          applyMode,
+          results: { created, updated, skipped, appliedRows: appliedRowIds.length, errors: applyErrors },
+        },
+      });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      console.error('Error applying import job:', error);
+      res.status(500).json({ message: 'Failed to apply import job' });
+    }
+  });
+
   // Customer Contacts routes
   app.get("/api/customers/:customerId/contacts", isAuthenticated, async (req, res) => {
     try {
@@ -5186,6 +6145,227 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (err) {
       console.error('Error listing materials', err);
       res.status(500).json({ error: 'Failed to list materials' });
+    }
+  });
+
+  // =============================
+  // Materials CSV Import/Export
+  // =============================
+  app.get('/api/materials/csv-template', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const templateData = [
+        {
+          'Material ID': '',
+          Name: '13oz Vinyl',
+          SKU: 'VINYL-13OZ',
+          Type: 'roll',
+          Category: 'Vinyl',
+          'Unit Of Measure': 'sqft',
+          Width: '54',
+          Height: '',
+          Thickness: '',
+          'Thickness Unit': 'mil',
+          Color: 'White',
+          'Cost Per Unit': '0.2500',
+          'Wholesale Base Rate': '',
+          'Wholesale Min Charge': '',
+          'Retail Base Rate': '',
+          'Retail Min Charge': '',
+          'Stock Quantity': '0',
+          'Min Stock Alert': '0',
+          'Is Active': 'true',
+          'Preferred Vendor ID': '',
+          'Vendor SKU': '',
+          'Vendor Cost Per Unit': '',
+          'Roll Length Ft': '150',
+          'Cost Per Roll': '225.00',
+          'Edge Waste In Per Side': '0',
+          'Lead Waste Ft': '0',
+          'Tail Waste Ft': '0',
+        },
+      ];
+
+      const csv = Papa.unparse(templateData);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="material-import-template.csv"');
+      res.send(csv);
+    } catch (error) {
+      console.error('Error generating material CSV template:', error);
+      res.status(500).json({ error: 'Failed to generate CSV template' });
+    }
+  });
+
+  app.get('/api/materials/export', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+      const list = await storage.getAllMaterials(organizationId);
+
+      const exportData = (list || []).map((m: any) => ({
+        'Material ID': m.id,
+        Name: m.name || '',
+        SKU: m.sku || '',
+        Type: m.type || '',
+        Category: m.category || '',
+        'Unit Of Measure': m.unitOfMeasure || '',
+        Width: m.width ?? '',
+        Height: m.height ?? '',
+        Thickness: m.thickness ?? '',
+        'Thickness Unit': m.thicknessUnit ?? '',
+        Color: m.color ?? '',
+        'Cost Per Unit': m.costPerUnit ?? '',
+        'Wholesale Base Rate': m.wholesaleBaseRate ?? '',
+        'Wholesale Min Charge': m.wholesaleMinCharge ?? '',
+        'Retail Base Rate': m.retailBaseRate ?? '',
+        'Retail Min Charge': m.retailMinCharge ?? '',
+        'Stock Quantity': m.stockQuantity ?? '',
+        'Min Stock Alert': m.minStockAlert ?? '',
+        'Is Active': m.isActive === false ? 'false' : 'true',
+        'Preferred Vendor ID': m.preferredVendorId ?? '',
+        'Vendor SKU': m.vendorSku ?? '',
+        'Vendor Cost Per Unit': m.vendorCostPerUnit ?? '',
+        'Roll Length Ft': m.rollLengthFt ?? '',
+        'Cost Per Roll': m.costPerRoll ?? '',
+        'Edge Waste In Per Side': m.edgeWasteInPerSide ?? '',
+        'Lead Waste Ft': m.leadWasteFt ?? '',
+        'Tail Waste Ft': m.tailWasteFt ?? '',
+      }));
+
+      const csv = Papa.unparse(exportData);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="materials.csv"');
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting materials:', error);
+      res.status(500).json({ error: 'Failed to export materials' });
+    }
+  });
+
+  app.post('/api/materials/import', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+      const { csvData, dryRun } = req.body as { csvData?: unknown; dryRun?: unknown };
+      if (!csvData || typeof csvData !== 'string') {
+        return res.status(400).json({ error: 'CSV data is required' });
+      }
+
+      const parseResult = Papa.parse(csvData, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header: string) => header.trim(),
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.error('Material CSV parsing errors:', parseResult.errors);
+        return res.status(400).json({
+          error: 'CSV parsing failed',
+          errors: parseResult.errors.map((e) => e.message),
+        });
+      }
+
+      const rows = parseResult.data as Record<string, string>[];
+      if (rows.length === 0) {
+        return res.status(400).json({ error: 'CSV must contain at least one data row' });
+      }
+
+      const parseBool = (v: unknown) => {
+        if (v == null) return undefined;
+        const s = String(v).trim().toLowerCase();
+        if (s === '') return undefined;
+        if (['true', '1', 'yes', 'y'].includes(s)) return true;
+        if (['false', '0', 'no', 'n'].includes(s)) return false;
+        return undefined;
+      };
+
+      const parseNum = (v: unknown) => {
+        if (v == null) return undefined;
+        const s = String(v).trim();
+        if (s === '') return undefined;
+        const n = Number(s);
+        return Number.isFinite(n) ? n : undefined;
+      };
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      const rowErrors: Array<{ row: number; message: string }> = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+
+        const materialId = (row['Material ID'] || row['ID'] || '').trim();
+        const name = (row['Name'] || '').trim();
+        const sku = (row['SKU'] || '').trim();
+        const type = (row['Type'] || '').trim();
+        const unitOfMeasure = (row['Unit Of Measure'] || '').trim();
+
+        // Minimal gate to avoid Zod spam on empty lines.
+        if (!name || !sku || !type || !unitOfMeasure) {
+          skipped++;
+          continue;
+        }
+
+        const payload: any = {
+          name,
+          sku,
+          type,
+          category: (row['Category'] || '').trim() || undefined,
+          unitOfMeasure,
+          width: parseNum(row['Width']),
+          height: parseNum(row['Height']),
+          thickness: parseNum(row['Thickness']),
+          thicknessUnit: (row['Thickness Unit'] || '').trim() || undefined,
+          color: (row['Color'] || '').trim() || undefined,
+          costPerUnit: parseNum(row['Cost Per Unit']),
+          wholesaleBaseRate: parseNum(row['Wholesale Base Rate']),
+          wholesaleMinCharge: parseNum(row['Wholesale Min Charge']),
+          retailBaseRate: parseNum(row['Retail Base Rate']),
+          retailMinCharge: parseNum(row['Retail Min Charge']),
+          stockQuantity: parseNum(row['Stock Quantity']),
+          minStockAlert: parseNum(row['Min Stock Alert']),
+          isActive: parseBool(row['Is Active']),
+          preferredVendorId: (row['Preferred Vendor ID'] || '').trim() || undefined,
+          vendorSku: (row['Vendor SKU'] || '').trim() || undefined,
+          vendorCostPerUnit: parseNum(row['Vendor Cost Per Unit']),
+          rollLengthFt: parseNum(row['Roll Length Ft']),
+          costPerRoll: parseNum(row['Cost Per Roll']),
+          edgeWasteInPerSide: parseNum(row['Edge Waste In Per Side']),
+          leadWasteFt: parseNum(row['Lead Waste Ft']),
+          tailWasteFt: parseNum(row['Tail Waste Ft']),
+        };
+
+        try {
+          if (materialId) {
+            const parsedUpdate = updateMaterialSchema.parse(payload);
+            if (!dryRun) {
+              await storage.updateMaterial(organizationId, materialId, parsedUpdate);
+            }
+            updated++;
+          } else {
+            const parsedCreate = insertMaterialSchema.parse(payload);
+            const { organizationId: _orgId, ...materialData } =
+              parsedCreate as typeof parsedCreate & { organizationId?: string };
+            if (!dryRun) {
+              await storage.createMaterial(organizationId, materialData);
+            }
+            created++;
+          }
+        } catch (err: any) {
+          const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Unknown error');
+          rowErrors.push({ row: i + 2, message });
+        }
+      }
+
+      res.json({
+        message: dryRun ? 'Material import validated' : 'Materials imported successfully',
+        imported: { created, updated, skipped },
+        errors: rowErrors,
+      });
+    } catch (error) {
+      console.error('Error importing materials:', error);
+      res.status(500).json({ error: 'Failed to import materials' });
     }
   });
 

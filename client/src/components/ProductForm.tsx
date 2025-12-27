@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
 import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEditor";
+import { Plus } from "lucide-react";
+import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -40,6 +42,7 @@ export const ProductForm = ({
   formId?: string;
 }) => {
   const addPricingProfileKey = form.watch("pricingProfileKey");
+  const [addGroupSignal, setAddGroupSignal] = React.useState<number | null>(null);
 
   return (
     <form
@@ -272,7 +275,15 @@ export const ProductForm = ({
             name="primaryMaterialId"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Primary Material</FormLabel>
+                <div className="flex items-center justify-between gap-3">
+                  <FormLabel>Primary Material</FormLabel>
+                  <CreateMaterialDialog
+                    onCreated={(material) => {
+                      form.setValue("primaryMaterialId", material.id, { shouldDirty: true });
+                    }}
+                    triggerClassName="h-auto px-0"
+                  />
+                </div>
                 <Select
                   onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
                   value={field.value || "__none__"}
@@ -303,12 +314,23 @@ export const ProductForm = ({
 
       {/* #options */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Options & Add-ons</CardTitle>
-          <CardDescription>Configure selectable add-ons and finishing.</CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div className="space-y-1">
+            <CardTitle className="text-base">Options & Add-ons</CardTitle>
+            <CardDescription>Configure selectable add-ons and finishing.</CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setAddGroupSignal(Date.now())}
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Option Group
+          </Button>
         </CardHeader>
         <CardContent>
-          <ProductOptionsEditor form={form} fieldName="optionsJson" />
+          <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
         </CardContent>
       </Card>
 
