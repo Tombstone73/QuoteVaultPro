@@ -18,35 +18,69 @@ type MaterialWithTierPricing = Material & {
   retailMinCharge?: string | null;
 };
 
-const materialSchema = z.object({
+const optionalNumber = (schema: z.ZodNumber) =>
+  z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    schema.optional()
+  );
+
+const materialSchema = z
+  .object({
   name: z.string().min(1, "Name required"),
   sku: z.string().min(1, "SKU required"),
   type: z.enum(["sheet", "roll", "ink", "consumable"]),
   unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
   costPerUnit: z.coerce.number().nonnegative(),
   // Tiered pricing fields
-  wholesaleBaseRate: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
-  wholesaleMinCharge: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
-  retailBaseRate: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
-  retailMinCharge: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
+  wholesaleBaseRate: optionalNumber(z.coerce.number().nonnegative()),
+  wholesaleMinCharge: optionalNumber(z.coerce.number().nonnegative()),
+  retailBaseRate: optionalNumber(z.coerce.number().nonnegative()),
+  retailMinCharge: optionalNumber(z.coerce.number().nonnegative()),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
-  width: z.coerce.number().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
-  height: z.coerce.number().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
-  thickness: z.coerce.number().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v).optional(),
+  width: optionalNumber(z.coerce.number().nonnegative()),
+  height: optionalNumber(z.coerce.number().nonnegative()),
+  thickness: optionalNumber(z.coerce.number().nonnegative()),
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   color: z.string().optional(),
   specsJson: z.string().optional(), // JSON string editable
   preferredVendorId: z.string().optional().or(z.literal("")).transform(v=> v? v: undefined),
   vendorSku: z.string().optional(),
-  vendorCostPerUnit: z.coerce.number().nonnegative().optional(),
+  vendorCostPerUnit: optionalNumber(z.coerce.number().nonnegative()),
   // Roll-specific fields
-  rollLengthFt: z.coerce.number().positive().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
-  costPerRoll: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
-  edgeWasteInPerSide: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
-  leadWasteFt: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
-  tailWasteFt: z.coerce.number().nonnegative().optional().or(z.nan()).transform(v=> isNaN(v as any)? undefined : v),
-});
+  rollLengthFt: optionalNumber(z.coerce.number().positive()),
+  costPerRoll: optionalNumber(z.coerce.number().positive()),
+  edgeWasteInPerSide: optionalNumber(z.coerce.number().nonnegative()),
+  leadWasteFt: optionalNumber(z.coerce.number().nonnegative()),
+  tailWasteFt: optionalNumber(z.coerce.number().nonnegative()),
+})
+  .superRefine((data, ctx) => {
+    if (data.type !== "roll") return;
+
+    const isPos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
+
+    if (!isPos(data.width)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["width"],
+        message: "Roll width is required",
+      });
+    }
+    if (!isPos(data.rollLengthFt)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rollLengthFt"],
+        message: "Roll length is required",
+      });
+    }
+    if (!isPos(data.costPerRoll)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["costPerRoll"],
+        message: "Vendor roll cost is required",
+      });
+    }
+  });
 
 export type MaterialFormValues = z.infer<typeof materialSchema>;
 
@@ -178,6 +212,18 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
   // Watch type to conditionally show roll fields
   const materialType = form.watch("type");
   const isRoll = materialType === "roll";
+
+  // When switching away from Roll, clear roll-only values so they cannot block saving.
+  useEffect(() => {
+    if (isRoll) return;
+    form.setValue("rollLengthFt", undefined, { shouldDirty: true });
+    form.setValue("costPerRoll", undefined, { shouldDirty: true });
+    form.setValue("edgeWasteInPerSide", undefined, { shouldDirty: true });
+    form.setValue("leadWasteFt", undefined, { shouldDirty: true });
+    form.setValue("tailWasteFt", undefined, { shouldDirty: true });
+    form.clearErrors(["rollLengthFt", "costPerRoll", "edgeWasteInPerSide", "leadWasteFt", "tailWasteFt"]);
+    // Note: do NOT clear `width` because it is used for both roll width and sheet width.
+  }, [isRoll, form]);
 
   // Calculate roll derived values in real-time
   const rollWidth = form.watch("width");

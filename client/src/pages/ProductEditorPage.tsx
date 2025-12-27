@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ChevronRight, RotateCcw, Save } from "lucide-react";
+import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -161,6 +162,8 @@ const ProductEditorPage = () => {
     return "Save Changes";
   }, [form.formState.isDirty, saveMutation.isPending]);
 
+  const hasInvalidChoiceValues = optionsHaveInvalidChoices(form.watch("optionsJson"));
+
   if (isLoading) {
     return <div>Loading...</div>;
   }
@@ -215,6 +218,14 @@ const ProductEditorPage = () => {
           <Button
             type="button"
             variant="outline"
+            onClick={() => navigate("/products")}
+            disabled={saveMutation.isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
             onClick={handleDiscard}
             disabled={!form.formState.isDirty}
           >
@@ -224,13 +235,16 @@ const ProductEditorPage = () => {
           <Button
             type="submit"
             form="product-editor-form"
-            disabled={saveMutation.isPending}
+            disabled={saveMutation.isPending || hasInvalidChoiceValues}
           >
             <Save className="h-4 w-4 mr-2" />
             {saveLabel}
           </Button>
         </div>
       </div>
+      {hasInvalidChoiceValues ? (
+        <div className="mt-2 text-xs text-destructive">Fix empty choice values before saving.</div>
+      ) : null}
     </div>
   );
 

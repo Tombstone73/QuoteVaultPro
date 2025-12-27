@@ -17,6 +17,7 @@ import { SharedRepository } from "./shared.repo";
 import { CustomersRepository } from "./customers.repo";
 import { QuotesRepository } from "./quotes.repo";
 import { OrdersRepository } from "./orders.repo";
+import { ImportRepository } from "./import.repo";
 
 // Instantiate all repositories
 const auditRepo = new AuditRepository(db);
@@ -27,6 +28,7 @@ const sharedRepo = new SharedRepository(db);
 const customersRepo = new CustomersRepository(db);
 const quotesRepo = new QuotesRepository(db);
 const ordersRepo = new OrdersRepository(db);
+const importRepo = new ImportRepository(db);
 
 // =============================
 // Audit Repository Exports
@@ -177,6 +179,17 @@ export const deleteEmailSettings = sharedRepo.deleteEmailSettings.bind(sharedRep
 export const getCompanySettings = sharedRepo.getCompanySettings.bind(sharedRepo);
 export const createCompanySettings = sharedRepo.createCompanySettings.bind(sharedRepo);
 export const updateCompanySettings = sharedRepo.updateCompanySettings.bind(sharedRepo);
+
+// =============================
+// Import Repository Exports
+// =============================
+export const createImportJob = importRepo.createJob.bind(importRepo);
+export const addImportJobRows = importRepo.addJobRows.bind(importRepo);
+export const getImportJob = importRepo.getJob.bind(importRepo);
+export const listImportJobs = importRepo.listJobs.bind(importRepo);
+export const listImportJobRows = importRepo.listJobRows.bind(importRepo);
+export const updateImportJobStatus = importRepo.updateJobStatus.bind(importRepo);
+export const markImportRowsApplied = importRepo.markRowsApplied.bind(importRepo);
 
 // =============================
 // Customers Repository Exports
@@ -379,6 +392,15 @@ export const storage = {
     getCompanySettings,
     createCompanySettings,
     updateCompanySettings,
+
+    // Import Jobs
+    createImportJob,
+    addImportJobRows,
+    getImportJob,
+    listImportJobs,
+    listImportJobRows,
+    updateImportJobStatus,
+    markImportRowsApplied,
 
     // Customers
     getAllCustomers,

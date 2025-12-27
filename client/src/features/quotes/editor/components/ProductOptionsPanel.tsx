@@ -8,12 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ProductOptionItem } from "@shared/schema";
-import type { ProductOptionUiChild, ProductOptionUiDefinition } from "@shared/productOptionUi";
+import type { ProductOptionUiChild, ProductOptionUiChoice, ProductOptionUiDefinition } from "@shared/productOptionUi";
 import {
+    applyOptionDefaultsToSelections,
     getMissingRequiredOptionLabels,
     injectDerivedMaterialOptionIntoProductOptions,
     normalizeProductOptionItemsToUiDefinitions,
 } from "@shared/productOptionUi";
+import { choiceValueIsValid } from "@/lib/optionChoiceValidation";
 import type { OptionSelection } from "../types";
 import { formatOptionPriceLabel } from "../utils";
 import { cn } from "@/lib/utils";
@@ -45,62 +47,36 @@ function formatGroupHeader(groupName: string): string {
     return groupName;
 }
 
-function applyChildDefaultsForDefinition(def: ProductOptionUiDefinition, base: OptionSelection): OptionSelection {
-    const children = def.children;
-    if (!children || children.length === 0) return base;
-    const next: any = { ...base };
-    for (const child of children) {
-        if (child.defaultValue == null) continue;
-        if (next[child.selectionKey] == null || next[child.selectionKey] === "") {
-            next[child.selectionKey] = child.defaultValue;
-        }
-    }
-    return next as OptionSelection;
-}
-
-function getDefaultSelectionForHiddenOption(def: ProductOptionUiDefinition): OptionSelection | null {
-    // Only apply defaults for hidden options. If there is no default, don't create a selection.
-    // This preserves existing behavior for optional toggles where "off" is represented by no selection.
-    if (def.type === "boolean") {
-        const v = def.defaultValue;
-        if (v === true) return applyChildDefaultsForDefinition(def, { value: true } as OptionSelection);
-        return null;
-    }
-
-    if (def.type === "select" || def.type === "segmented") {
-        const v = def.defaultValue;
-        if (typeof v === "string" && v.trim() !== "") {
-            return applyChildDefaultsForDefinition(def, { value: v } as OptionSelection);
-        }
-        const onlyChoice = def.choices?.length === 1 ? def.choices[0]?.value : null;
-        if (onlyChoice) return applyChildDefaultsForDefinition(def, { value: onlyChoice } as OptionSelection);
-        return null;
-    }
-
-    if (def.type === "number") {
-        const v = def.defaultValue;
-        if (typeof v === "number") return applyChildDefaultsForDefinition(def, { value: v } as OptionSelection);
-        return null;
-    }
-
-    if (def.type === "text") {
-        const v = def.defaultValue;
-        if (typeof v === "string" && v.trim() !== "") {
-            return applyChildDefaultsForDefinition(def, { value: v } as OptionSelection);
-        }
-        return null;
-    }
-
-    return null;
-}
 
 function optionIsMissingRequired(def: ProductOptionUiDefinition, selection: OptionSelection | undefined): boolean {
     if (!def.required) return false;
-    const val = selection?.value;
-    if (def.type === "select" || def.type === "segmented") return val == null || String(val).trim() === "";
+    const rawVal = selection?.value;
+
+    if (def.type === "select" || def.type === "segmented") {
+        const effectiveVal = rawVal ?? def.defaultValue;
+        const missingValue = effectiveVal == null || String(effectiveVal).trim() === "";
+        if (missingValue) return true;
+
+        const selectedValue = String(effectiveVal);
+        const selectedChoice = (def.choices ?? []).find((c) => c.value === selectedValue);
+        if (selectedChoice?.requiresNote) {
+            const note = selection?.note;
+            return note == null || String(note).trim() === "";
+        }
+
+        return false;
+    }
+
+    const val = rawVal;
     if (def.type === "number") return val == null;
     if (def.type === "boolean") return !val;
     return val == null || String(val).trim() === "";
+}
+
+function findSelectedChoiceForValue(choices: ProductOptionUiChoice[] | undefined, value: unknown): ProductOptionUiChoice | null {
+    const v = value == null ? "" : String(value);
+    if (!Array.isArray(choices) || v.trim() === "") return null;
+    return choices.find((c) => c.value === v) ?? null;
 }
 
 type OptionTileProps = {
@@ -196,7 +172,7 @@ const OptionRow = memo(function OptionRow({
         }
 
         if (child.type === "select" || child.type === "segmented") {
-            const choices = child.choices ?? [];
+            const choices = (child.choices ?? []).filter((c) => choiceValueIsValid(c));
             if (child.type === "segmented" && choices.length > 0) {
                 return (
                     <div key={child.selectionKey} className="flex items-center gap-1.5">
@@ -366,6 +342,11 @@ const OptionRow = memo(function OptionRow({
     if (ui.type === "segmented") {
         const choices = ui.choices ?? [];
         const current = selection?.value ?? ui.defaultValue ?? choices[0]?.value ?? "";
+        const selectedChoice = findSelectedChoiceForValue(choices, current);
+        const requiresNote = !!selectedChoice?.requiresNote;
+        const noteLabel = (selectedChoice?.noteLabel || "Details").trim() || "Details";
+        const notePlaceholder = selectedChoice?.notePlaceholder || "";
+        const noteIsInvalid = ui.required && requiresNote && (selection?.note == null || String(selection.note).trim() === "");
         return (
             <div className={rowClass}>
                 <div className="flex items-start gap-2 min-w-0">
@@ -388,7 +369,8 @@ const OptionRow = memo(function OptionRow({
                                 size="sm"
                                 className="h-8 px-2"
                                 onClick={() => {
-                                    const next = applyChildDefaults({ value: c.value } as OptionSelection);
+                                    const base = { ...(selection as any), value: c.value } as OptionSelection;
+                                    const next = applyChildDefaults(base);
                                     onSetSelection(ui.id, next);
                                 }}
                             >
@@ -396,6 +378,29 @@ const OptionRow = memo(function OptionRow({
                             </Button>
                         ))}
                     </div>
+
+                    {requiresNote ? (
+                        <div className="w-full">
+                            <div className="text-[11px] text-muted-foreground mb-1">{noteLabel}</div>
+                            <Textarea
+                                value={typeof selection?.note === "string" ? selection.note : ""}
+                                placeholder={notePlaceholder}
+                                onChange={(e) => {
+                                    const currentSelection = selection ?? (applyChildDefaults({ value: current } as OptionSelection) as OptionSelection);
+                                    onSetSelection(ui.id, {
+                                        ...(currentSelection as any),
+                                        note: e.target.value,
+                                    });
+                                }}
+                                rows={2}
+                                className={cn("text-xs", noteIsInvalid && "border-destructive/40")}
+                            />
+                            {noteIsInvalid ? (
+                                <div className="mt-1 text-xs text-destructive">Please enter details</div>
+                            ) : null}
+                        </div>
+                    ) : null}
+
                     {renderChildren()}
                 </div>
             </div>
@@ -440,8 +445,13 @@ const OptionRow = memo(function OptionRow({
     }
 
     // select (including required selects)
-    const choices = ui.choices ?? [];
+    const choices = (ui.choices ?? []).filter((c) => choiceValueIsValid(c));
     const current = selection?.value ?? ui.defaultValue ?? "";
+    const selectedChoice = findSelectedChoiceForValue(choices, current);
+    const requiresNote = !!selectedChoice?.requiresNote;
+    const noteLabel = (selectedChoice?.noteLabel || "Details").trim() || "Details";
+    const notePlaceholder = selectedChoice?.notePlaceholder || "";
+    const noteIsInvalid = ui.required && requiresNote && (selection?.note == null || String(selection.note).trim() === "");
     return (
         <div className={rowClass}>
             <div className="flex items-start gap-2 min-w-0">
@@ -459,7 +469,8 @@ const OptionRow = memo(function OptionRow({
                 <Select
                     value={typeof current === "string" ? current : String(current ?? "")}
                     onValueChange={(val) => {
-                        const next = applyChildDefaults({ value: val } as OptionSelection);
+                        const base = { ...(selection as any), value: val } as OptionSelection;
+                        const next = applyChildDefaults(base);
                         onSetSelection(ui.id, next);
                     }}
                 >
@@ -476,6 +487,28 @@ const OptionRow = memo(function OptionRow({
                         ))}
                     </SelectContent>
                 </Select>
+
+                {requiresNote ? (
+                    <div className="w-full">
+                        <div className="text-[11px] text-muted-foreground mb-1">{noteLabel}</div>
+                        <Textarea
+                            value={typeof selection?.note === "string" ? selection.note : ""}
+                            placeholder={notePlaceholder}
+                            onChange={(e) => {
+                                const currentSelection = selection ?? (applyChildDefaults({ value: current } as OptionSelection) as OptionSelection);
+                                onSetSelection(ui.id, {
+                                    ...(currentSelection as any),
+                                    note: e.target.value,
+                                });
+                            }}
+                            rows={2}
+                            className={cn("text-xs", noteIsInvalid && "border-destructive/40")}
+                        />
+                        {noteIsInvalid ? (
+                            <div className="mt-1 text-xs text-destructive">Please enter details</div>
+                        ) : null}
+                    </div>
+                ) : null}
                 {renderChildren()}
             </div>
         </div>
@@ -527,45 +560,12 @@ export const ProductOptionsPanel = memo(function ProductOptionsPanel({
         });
     }, [onOptionSelectionsChange, optionSelections]);
 
-    // Hidden options must not be rendered, but should still have defaults applied
-    // (so they can influence pricing and persist selections) without changing pricing logic.
+    // Apply product-defined defaults for ALL options (visible + hidden) without overwriting
+    // any existing selection values (including false/0).
     useEffect(() => {
-        let changed = false;
-        const nextSelections: Record<string, OptionSelection> = {};
-
-        for (const def of uiOptions) {
-            if (def.ui?.visible !== false) continue;
-            if (optionSelections[def.id]) continue;
-
-            const defaultSel = getDefaultSelectionForHiddenOption(def);
-            if (defaultSel) {
-                nextSelections[def.id] = defaultSel;
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            onOptionSelectionsChange({
-                ...optionSelections,
-                ...nextSelections,
-            });
-        }
-    }, [uiOptions, optionSelections, onOptionSelectionsChange]);
-
-    // Special-case derived Material option: if injected and required, apply a default selection
-    // so it persists through the existing selectedOptions flow.
-    useEffect(() => {
-        const materialDef = uiOptions.find((d) => d.id === "material" && d.type === "select");
-        if (!materialDef) return;
-        if (optionSelections["material"]) return;
-
-        const fallback = materialDef.defaultValue ?? materialDef.choices?.[0]?.value;
-        if (typeof fallback !== "string" || fallback.trim() === "") return;
-
-        onOptionSelectionsChange({
-            ...optionSelections,
-            material: applyChildDefaultsForDefinition(materialDef, { value: fallback } as OptionSelection),
-        });
+        const { selections, changed } = applyOptionDefaultsToSelections(uiOptions, optionSelections as any);
+        if (!changed) return;
+        onOptionSelectionsChange(selections as any);
     }, [uiOptions, optionSelections, onOptionSelectionsChange]);
 
     const missingRequiredLabels = useMemo(() => {

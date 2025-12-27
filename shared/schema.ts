@@ -293,6 +293,14 @@ export type ProductOptionItem = {
   amount?: number;
   percentBase?: "media" | "line"; // For percent_of_base mode: "media" = percent of media cost only, "line" = percent of full line (default)
   defaultSelected?: boolean; // Controls whether this option is selected by default on new line items
+  /** Preferred boolean default for checkbox/toggle. Backward compatible with defaultSelected. */
+  defaultChecked?: boolean;
+  /** Preferred numeric default for quantity options. */
+  defaultQty?: number;
+  /** Optional quantity constraints (UI/runtime). */
+  min?: number;
+  max?: number;
+  step?: number;
   sortOrder?: number; // Controls display order in calculator/quote UI
   // Grouping metadata (stored in optionsJson)
   groupKey?: string; // internal, stable group key (e.g., "finish_opt")
@@ -301,7 +309,15 @@ export type ProductOptionItem = {
   // UI/editor metadata (stored in optionsJson)
   required?: boolean;
   defaultValue?: string | number | boolean;
-  choices?: Array<{ value: string; label: string }>;
+  choices?: Array<{
+    /** Stable identifier for editor + drag/drop. Stored in optionsJson (no DB schema change). */
+    id?: string;
+    value: string;
+    label: string;
+    requiresNote?: boolean;
+    noteLabel?: string;
+    notePlaceholder?: string;
+  }>;
   ui?: {
     visible?: boolean;
     showPrice?: boolean;
@@ -316,7 +332,15 @@ export type ProductOptionItem = {
     selectionKey: string;
     defaultValue?: string | number | boolean;
     required?: boolean;
-    choices?: Array<{ value: string; label: string }>;
+    choices?: Array<{
+      /** Stable identifier for editor + drag/drop. Stored in optionsJson (no DB schema change). */
+      id?: string;
+      value: string;
+      label: string;
+      requiresNote?: boolean;
+      noteLabel?: string;
+      notePlaceholder?: string;
+    }>;
     visibleWhen?:
       | { key: string; when: "truthy" }
       | { key: string; when: "equals"; value: string | number | boolean };
@@ -455,13 +479,29 @@ const productOptionItemSchema = z.object({
   amount: z.number().optional(),
   percentBase: z.enum(["media", "line"]).optional(),
   defaultSelected: z.boolean().optional(),
+  defaultChecked: z.boolean().optional(),
+  defaultQty: z.number().optional(),
+  min: z.number().optional(),
+  max: z.number().optional(),
+  step: z.number().optional(),
   sortOrder: z.number().optional(),
   groupKey: z.string().optional(),
   groupLabel: z.string().optional(),
   group: z.string().optional(),
   required: z.boolean().optional(),
   defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
-  choices: z.array(z.object({ value: z.string(), label: z.string() })).optional(),
+  choices: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        value: z.string(),
+        label: z.string(),
+        requiresNote: z.boolean().optional(),
+        noteLabel: z.string().optional(),
+        notePlaceholder: z.string().optional(),
+      })
+    )
+    .optional(),
   ui: z
     .object({
       visible: z.boolean().optional(),
@@ -482,7 +522,18 @@ const productOptionItemSchema = z.object({
         selectionKey: z.string(),
         defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
         required: z.boolean().optional(),
-        choices: z.array(z.object({ value: z.string(), label: z.string() })).optional(),
+        choices: z
+          .array(
+            z.object({
+              id: z.string().optional(),
+              value: z.string(),
+              label: z.string(),
+              requiresNote: z.boolean().optional(),
+              noteLabel: z.string().optional(),
+              notePlaceholder: z.string().optional(),
+            })
+          )
+          .optional(),
         visibleWhen: z
           .union([
             z.object({ key: z.string(), when: z.literal("truthy") }),
@@ -975,6 +1026,7 @@ export const quoteLineItems = pgTable("quote_line_items", {
     optionId: string;
     optionName: string;
     value: string | number | boolean;
+    note?: string;
     setupCost: number;
     calculatedCost: number;
   }>>().default(sql`'[]'::jsonb`).notNull(),
@@ -1484,6 +1536,11 @@ export const customers = pgTable("customers", {
 
   // QuickBooks sync
   externalAccountingId: varchar("external_accounting_id", { length: 64 }),
+  /**
+   * Per-field override flags to prevent external (e.g. QuickBooks) pulls from overwriting Titan values.
+   * v1: JSONB map of fieldName -> true.
+   */
+  qbFieldOverrides: jsonb("qb_field_overrides").$type<Record<string, boolean>>(),
   syncStatus: varchar("sync_status", { length: 20 }),
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: false }),
@@ -1526,6 +1583,7 @@ export const insertCustomerSchema = createInsertSchema(customers).omit({
   shippingState: z.string().max(100).optional(),
   shippingPostalCode: z.string().max(20).optional(),
   shippingCountry: z.string().max(100).optional(),
+  qbFieldOverrides: z.record(z.boolean()).optional().nullable(),
 });
 
 // Base schema for updates (before refinement)
@@ -1551,6 +1609,51 @@ export const updateCustomerSchema = baseCustomerSchema.partial();
 export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
 export type UpdateCustomer = z.infer<typeof updateCustomerSchema>;
 export type Customer = typeof customers.$inferSelect;
+
+// ==================== Data Import / Export Jobs ====================
+
+export const importResourceEnum = pgEnum('import_resource', ['customers', 'materials', 'products']);
+export const importJobStatusEnum = pgEnum('import_job_status', ['validated', 'applied', 'error']);
+export const importApplyModeEnum = pgEnum('import_apply_mode', ['MERGE_RESPECT_OVERRIDES', 'MERGE_AND_SET_OVERRIDES']);
+export const importRowStatusEnum = pgEnum('import_row_status', ['valid', 'invalid', 'applied', 'skipped', 'error']);
+
+export const importJobs = pgTable('import_jobs', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  resource: importResourceEnum('resource').notNull(),
+  status: importJobStatusEnum('status').notNull().default('validated'),
+  applyMode: importApplyModeEnum('apply_mode').notNull().default('MERGE_RESPECT_OVERRIDES'),
+  sourceFilename: varchar('source_filename', { length: 255 }),
+  createdByUserId: varchar('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  summaryJson: jsonb('summary_json'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('import_jobs_organization_id_idx').on(table.organizationId),
+  index('import_jobs_resource_status_idx').on(table.resource, table.status),
+  index('import_jobs_created_at_idx').on(table.createdAt),
+]);
+
+export const importJobRows = pgTable('import_job_rows', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  jobId: varchar('job_id').notNull().references(() => importJobs.id, { onDelete: 'cascade' }),
+  rowNumber: integer('row_number').notNull(),
+  status: importRowStatusEnum('status').notNull().default('valid'),
+  rawJson: jsonb('raw_json'),
+  normalizedJson: jsonb('normalized_json'),
+  error: text('error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('import_job_rows_organization_id_idx').on(table.organizationId),
+  index('import_job_rows_job_id_idx').on(table.jobId),
+  index('import_job_rows_status_idx').on(table.status),
+]);
+
+export type ImportJob = typeof importJobs.$inferSelect;
+export type InsertImportJob = typeof importJobs.$inferInsert;
+export type ImportJobRow = typeof importJobRows.$inferSelect;
+export type InsertImportJobRow = typeof importJobRows.$inferInsert;
 
 // Customer Visible Products - Junction table for portal product visibility
 export const customerVisibleProducts = pgTable("customer_visible_products", {
@@ -1834,6 +1937,7 @@ export const orderLineItems = pgTable("order_line_items", {
     optionId: string;
     optionName: string;
     value: string | number | boolean;
+    note?: string;
     setupCost: number;
     calculatedCost: number;
   }>>().default(sql`'[]'::jsonb`).notNull(),
@@ -2560,7 +2664,7 @@ export const materials = pgTable("materials", {
   index("materials_preferred_vendor_id_idx").on(table.preferredVendorId),
 ]);
 
-export const insertMaterialSchema = createInsertSchema(materials).omit({
+const materialBaseSchema = createInsertSchema(materials).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
@@ -2570,22 +2674,117 @@ export const insertMaterialSchema = createInsertSchema(materials).omit({
   unitOfMeasure: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]),
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
   costPerUnit: z.coerce.number().nonnegative(),
+  // Numeric/decimal fields: accept strings from forms, treat "" and NaN as undefined.
+  width: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
+  height: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
+  thickness: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
+  vendorCostPerUnit: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
   // Tiered pricing fields
-  wholesaleBaseRate: z.coerce.number().nonnegative().optional().nullable(),
-  wholesaleMinCharge: z.coerce.number().nonnegative().optional().nullable(),
-  retailBaseRate: z.coerce.number().nonnegative().optional().nullable(),
-  retailMinCharge: z.coerce.number().nonnegative().optional().nullable(),
+  wholesaleBaseRate: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
+  wholesaleMinCharge: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
+  retailBaseRate: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
+  retailMinCharge: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
   stockQuantity: z.coerce.number().nonnegative().default(0),
   minStockAlert: z.coerce.number().nonnegative().default(0),
   // Roll-specific fields
-  rollLengthFt: z.coerce.number().positive().optional().nullable(),
-  costPerRoll: z.coerce.number().nonnegative().optional().nullable(),
-  edgeWasteInPerSide: z.coerce.number().nonnegative().optional().nullable(),
-  leadWasteFt: z.coerce.number().nonnegative().default(0).optional().nullable(),
-  tailWasteFt: z.coerce.number().nonnegative().default(0).optional().nullable(),
+  rollLengthFt: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().positive().optional().nullable()
+  ),
+  costPerRoll: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().positive().optional().nullable()
+  ),
+  edgeWasteInPerSide: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().optional().nullable()
+  ),
+  leadWasteFt: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().default(0).optional().nullable()
+  ),
+  tailWasteFt: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().nonnegative().default(0).optional().nullable()
+  ),
 });
 
-export const updateMaterialSchema = insertMaterialSchema.partial();
+export const insertMaterialSchema = materialBaseSchema.superRefine((data, ctx) => {
+  if (data.type !== "roll") return;
+
+  const width = (data as any).width;
+  const rollLengthFt = (data as any).rollLengthFt;
+  const costPerRoll = (data as any).costPerRoll;
+
+  const isPos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
+
+  if (!isPos(width)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["width"],
+      message: "Roll width is required",
+    });
+  }
+  if (!isPos(rollLengthFt)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["rollLengthFt"],
+      message: "Roll length is required",
+    });
+  }
+  if (!isPos(costPerRoll)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["costPerRoll"],
+      message: "Vendor roll cost is required",
+    });
+  }
+});
+
+export const updateMaterialSchema = materialBaseSchema.partial().superRefine((data, ctx) => {
+  // For PATCH: only enforce roll requiredness when the payload explicitly sets type to roll.
+  if ((data as any).type !== "roll") return;
+
+  const width = (data as any).width;
+  const rollLengthFt = (data as any).rollLengthFt;
+  const costPerRoll = (data as any).costPerRoll;
+
+  const isPos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
+
+  if (!isPos(width)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["width"], message: "Roll width is required" });
+  }
+  if (!isPos(rollLengthFt)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rollLengthFt"], message: "Roll length is required" });
+  }
+  if (!isPos(costPerRoll)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["costPerRoll"], message: "Vendor roll cost is required" });
+  }
+});
 
 export type InsertMaterial = z.infer<typeof insertMaterialSchema>;
 export type UpdateMaterial = z.infer<typeof updateMaterialSchema>;

@@ -297,6 +297,7 @@ export default function QuoteDetail() {
                             <span key={opt.optionId} className="mr-2">
                               {opt.optionName}
                               {typeof opt.value !== 'boolean' && `: ${opt.value}`}
+                              {typeof opt.note === 'string' && opt.note.trim() !== '' && ` (${opt.note.trim()})`}
                             </span>
                           ))}
                         </div>

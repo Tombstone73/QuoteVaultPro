@@ -228,7 +228,8 @@ export class SharedRepository {
     }
 
     async updateProduct(organizationId: string, id: string, productData: Omit<UpdateProduct, 'organizationId'>): Promise<Product> {
-        const cleanProductData: any = { updatedAt: new Date().toISOString() };
+        // Drizzle timestamp columns expect a JS Date (not an ISO string).
+        const cleanProductData: any = { updatedAt: new Date() };
         Object.entries(productData).forEach(([k, v]) => {
             if (k === 'variantLabel' && v === null) {
                 // Reset to default value when null

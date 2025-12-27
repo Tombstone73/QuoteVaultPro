@@ -29,6 +29,7 @@ type SummaryCardProps = {
     deliveryMethod: string;
     selectedCustomer: CustomerWithContacts | undefined;
     selectedContactId?: string | null;
+    pricingStale?: boolean;
     canSaveQuote: boolean;
     isSaving: boolean;
     hasUnsavedChanges?: boolean;
@@ -61,6 +62,7 @@ export function SummaryCard({
     deliveryMethod,
     selectedCustomer,
     selectedContactId,
+    pricingStale = false,
     canSaveQuote,
     isSaving,
     hasUnsavedChanges = false,
@@ -219,7 +221,14 @@ export function SummaryCard({
 
                 {/* Grand Total - emphasized */}
                 <div className="flex justify-between items-baseline pt-2 pb-2">
-                    <span className="text-base font-semibold">Grand Total</span>
+                    <div className="flex items-center gap-2">
+                        <span className="text-base font-semibold">Grand Total</span>
+                        {pricingStale && (
+                            <Badge variant="outline" className="text-[10px]">
+                                Totals out of date
+                            </Badge>
+                        )}
+                    </div>
                     <span className="text-3xl font-bold font-mono tracking-tight">${grandTotal.toFixed(2)}</span>
                 </div>
             </CardContent>

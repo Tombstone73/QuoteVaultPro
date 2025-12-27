@@ -43,6 +43,8 @@ export type Address = {
 
 export type OptionSelection = {
   value: string | number | boolean;
+  /** Per-option free-text note for choices marked requiresNote. */
+  note?: string;
   grommetsLocation?: string;
   grommetsSpacingCount?: number;
   grommetsPerSign?: number;

@@ -229,6 +229,7 @@ export function LineItemsTable({
                                                         {item.selectedOptions.slice(0, 6).map((opt: any, idx: number) => (
                                                             <Badge key={idx} variant="outline" className="text-[11px] py-0">
                                                                 {opt.optionName}
+                                                                {typeof opt.note === "string" && opt.note.trim() !== "" ? "*" : ""}
                                                             </Badge>
                                                         ))}
                                                         {item.selectedOptions.length > 6 && (
@@ -236,6 +237,16 @@ export function LineItemsTable({
                                                                 +{item.selectedOptions.length - 6}
                                                             </Badge>
                                                         )}
+                                                    </div>
+                                                )}
+
+                                                {item.selectedOptions && item.selectedOptions.some((o: any) => typeof o?.note === "string" && o.note.trim() !== "") && (
+                                                    <div className="text-xs text-muted-foreground truncate">
+                                                        {item.selectedOptions
+                                                            .filter((o: any) => typeof o?.note === "string" && o.note.trim() !== "")
+                                                            .slice(0, 2)
+                                                            .map((o: any) => `${o.optionName}: ${String(o.note).trim()}`)
+                                                            .join(" • ")}
                                                     </div>
                                                 )}
 

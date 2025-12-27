@@ -624,6 +624,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                         {/* Line Items Section */}
                         <LineItemsSection
                             quoteId={state.quoteId}
+                            customerId={state.selectedCustomerId}
                             readOnly={readOnly}
                             lineItems={state.lineItems}
                             products={state.products}
@@ -670,6 +671,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                                 deliveryMethod={state.deliveryMethod}
                                 selectedCustomer={state.selectedCustomer}
                                 selectedContactId={state.selectedContactId}
+                                pricingStale={state.pricingStale}
                                 canSaveQuote={state.canSaveQuote}
                                 isSaving={state.isSaving}
                                 hasUnsavedChanges={state.hasUnsavedChanges}

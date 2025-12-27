@@ -3,6 +3,19 @@ import type { ProductOptionItem } from "./schema";
 
 export type ProductOptionUiType = "boolean" | "number" | "select" | "segmented" | "text";
 
+export type ProductOptionUiChoice = {
+  /** Stable identifier for editor/DnD (optional for backward compatibility). */
+  id?: string;
+  value: string;
+  label: string;
+  /** When true, the selected choice requires an additional free-text note on the line item. */
+  requiresNote?: boolean;
+  /** Optional label for the note field (defaults to "Details" in the renderer). */
+  noteLabel?: string;
+  /** Optional placeholder for the note field. */
+  notePlaceholder?: string;
+};
+
 export type ProductOptionUiLayoutHints = {
   layoutSpan?: 1 | 2 | 3;
   minWidth?: number;
@@ -18,7 +31,7 @@ export type ProductOptionUiChild = {
   selectionKey: string;
   defaultValue?: string | number | boolean;
   required?: boolean;
-  choices?: Array<{ value: string; label: string }>;
+  choices?: ProductOptionUiChoice[];
   visibleWhen?: ProductOptionUiVisibility;
   layout?: ProductOptionUiLayoutHints;
   inline?: boolean;
@@ -41,10 +54,32 @@ export type ProductOptionUiDefinition = {
   ui?: ProductOptionUiFlags;
   required?: boolean;
   defaultValue?: string | number | boolean;
-  choices?: Array<{ value: string; label: string }>;
+  choices?: ProductOptionUiChoice[];
   layout?: ProductOptionUiLayoutHints;
   children?: ProductOptionUiChild[];
 };
+
+export type ProductOptionSelectionsMap = Record<string, { value: unknown; [key: string]: unknown } | undefined>;
+
+const productOptionUiChoiceSchema: z.ZodType<ProductOptionUiChoice> = z.object({
+  id: z.string().optional(),
+  value: z.string(),
+  label: z.string(),
+  requiresNote: z.boolean().optional(),
+  noteLabel: z.string().optional(),
+  notePlaceholder: z.string().optional(),
+});
+
+function stableChoiceIdFromSeed(seed: string): string {
+  // Deterministic, low-collision id for legacy data. This is NOT used for editor-created choices.
+  // Keeps normalization stable across reloads when `id` is missing.
+  let hash = 5381;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 33) ^ seed.charCodeAt(i);
+  }
+  // Force unsigned 32-bit and base36-encode.
+  return `ch_${(hash >>> 0).toString(36)}`;
+}
 
 const productOptionUiChildSchema: z.ZodType<ProductOptionUiChild> = z.object({
   label: z.string(),
@@ -52,7 +87,7 @@ const productOptionUiChildSchema: z.ZodType<ProductOptionUiChild> = z.object({
   selectionKey: z.string(),
   defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
   required: z.boolean().optional(),
-  choices: z.array(z.object({ value: z.string(), label: z.string() })).optional(),
+  choices: z.array(productOptionUiChoiceSchema).optional(),
   visibleWhen: z
     .union([
       z.object({ key: z.string(), when: z.literal("truthy") }),
@@ -81,7 +116,7 @@ export const productOptionUiDefinitionSchema: z.ZodType<ProductOptionUiDefinitio
     .optional(),
   required: z.boolean().optional(),
   defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
-  choices: z.array(z.object({ value: z.string(), label: z.string() })).optional(),
+  choices: z.array(productOptionUiChoiceSchema).optional(),
   layout: z
     .object({
       layoutSpan: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
@@ -91,18 +126,20 @@ export const productOptionUiDefinitionSchema: z.ZodType<ProductOptionUiDefinitio
   children: z.array(productOptionUiChildSchema).optional(),
 });
 
-function toChoiceArray(values: unknown): Array<{ value: string; label: string }> | undefined {
+function toChoiceArray(values: unknown): ProductOptionUiChoice[] | undefined {
   if (!Array.isArray(values)) return undefined;
 
-  const out: Array<{ value: string; label: string }> = [];
-  for (const v of values) {
+  const out: ProductOptionUiChoice[] = [];
+  for (let idx = 0; idx < values.length; idx++) {
+    const v = values[idx];
     if (typeof v === "string") {
       const s = v.trim();
-      if (s) out.push({ value: s, label: s });
+      if (s) out.push({ id: stableChoiceIdFromSeed(`s:${idx}:${s}`), value: s, label: s });
       continue;
     }
     if (v && typeof v === "object") {
       const anyV: any = v;
+      const rawId = typeof anyV.id === "string" ? anyV.id : undefined;
       const rawValue =
         (typeof anyV.value === "string" && anyV.value) ||
         (typeof anyV.id === "string" && anyV.id) ||
@@ -115,13 +152,22 @@ function toChoiceArray(values: unknown): Array<{ value: string; label: string }>
         rawValue;
       const valueStr = String(rawValue || "").trim();
       const labelStr = String(rawLabel || "").trim();
-      if (valueStr) out.push({ value: valueStr, label: labelStr || valueStr });
+      if (valueStr) {
+      out.push({
+        id: rawId && rawId.trim() ? rawId.trim() : stableChoiceIdFromSeed(`o:${idx}:${valueStr}|${labelStr}`),
+          value: valueStr,
+          label: labelStr || valueStr,
+          requiresNote: typeof anyV.requiresNote === "boolean" ? anyV.requiresNote : undefined,
+          noteLabel: typeof anyV.noteLabel === "string" ? anyV.noteLabel : undefined,
+          notePlaceholder: typeof anyV.notePlaceholder === "string" ? anyV.notePlaceholder : undefined,
+        });
+      }
     }
   }
 
   // de-dupe by value, preserve first label
   const seen = new Set<string>();
-  const deduped: Array<{ value: string; label: string }> = [];
+  const deduped: ProductOptionUiChoice[] = [];
   for (const c of out) {
     if (seen.has(c.value)) continue;
     seen.add(c.value);
@@ -241,13 +287,22 @@ export function getSelectionValueForOption(
 export function getMissingRequiredOptionLabels(
   items: ProductOptionItem[],
   selections:
-    | Record<string, { value: unknown } | undefined>
-    | Array<{ optionId: string; value: unknown }>
+    | Record<string, { value: unknown; note?: unknown } | undefined>
+    | Array<{ optionId: string; value: unknown; note?: unknown }>
     | null
     | undefined
 ): string[] {
   const ui = normalizeProductOptionItemsToUiDefinitions(items);
   const missing: string[] = [];
+
+  const getSelectionNoteForOption = (optionId: string): unknown => {
+    if (!selections) return undefined;
+    if (Array.isArray(selections)) {
+      const match = selections.find((s) => s?.optionId === optionId);
+      return (match as any)?.note;
+    }
+    return (selections as any)[optionId]?.note;
+  };
 
   for (const def of ui) {
     if (!def.required) continue;
@@ -261,7 +316,23 @@ export function getMissingRequiredOptionLabels(
             ? !val
             : val == null || String(val).trim() === "";
 
-    if (isMissing) missing.push(def.label);
+    if (isMissing) {
+      missing.push(def.label);
+      continue;
+    }
+
+    // If the required option is a select/segmented and the selected choice requires a note,
+    // then the note is required too.
+    if ((def.type === "select" || def.type === "segmented") && Array.isArray(def.choices)) {
+      const selected = String(val ?? "");
+      const choice = def.choices.find((c) => c.value === selected);
+      if (choice?.requiresNote) {
+        const note = getSelectionNoteForOption(def.id);
+        if (note == null || String(note).trim() === "") {
+          missing.push(def.label);
+        }
+      }
+    }
   }
 
   return missing;
@@ -430,6 +501,8 @@ export function normalizeProductOptionItemsToUiDefinitions(
 
       // Base control types
       if (opt.type === "quantity") {
+        const rawDefaultQty = (opt as any).defaultQty;
+        const defaultQty = typeof rawDefaultQty === "number" && Number.isFinite(rawDefaultQty) ? rawDefaultQty : undefined;
         return {
           id: opt.id,
           label: opt.label,
@@ -437,7 +510,7 @@ export function normalizeProductOptionItemsToUiDefinitions(
           group: groupKey,
           ui: uiFlags,
           required: coerceBoolean((opt as any).required) ?? false,
-          defaultValue: 0,
+          defaultValue: defaultQty,
           layout: baseLayout,
           children: children.length > 0 ? children : undefined,
         };
@@ -464,6 +537,14 @@ export function normalizeProductOptionItemsToUiDefinitions(
       }
 
       // checkbox + generic toggle => boolean
+      const rawDefaultChecked = (opt as any).defaultChecked;
+      const rawLegacyDefaultSelected = (opt as any).defaultSelected;
+      const defaultChecked =
+        typeof rawDefaultChecked === "boolean"
+          ? rawDefaultChecked
+          : typeof rawLegacyDefaultSelected === "boolean"
+            ? rawLegacyDefaultSelected
+            : undefined;
       return {
         id: opt.id,
         label: opt.label,
@@ -471,9 +552,98 @@ export function normalizeProductOptionItemsToUiDefinitions(
         group: groupKey,
         ui: uiFlags,
         required: coerceBoolean((opt as any).required) ?? false,
-        defaultValue: opt.defaultSelected ?? false,
+        // Only treat boolean defaults as "enabled by default" when explicitly true.
+        // Leaving this undefined preserves existing behavior where "off" is represented by no selection.
+        defaultValue: defaultChecked === true ? true : undefined,
         layout: baseLayout,
         children: children.length > 0 ? children : undefined,
       };
     });
+}
+
+function applyChildDefaultsForDefinition(def: ProductOptionUiDefinition, base: Record<string, unknown>): Record<string, unknown> {
+  const children = def.children;
+  if (!children || children.length === 0) return base;
+  const next: Record<string, unknown> = { ...base };
+  for (const child of children) {
+    if (child.defaultValue == null) continue;
+    const existing = next[child.selectionKey];
+    if (existing == null || existing === "") {
+      next[child.selectionKey] = child.defaultValue;
+    }
+  }
+  return next;
+}
+
+function selectionIsMissingForDefinition(def: ProductOptionUiDefinition, selection: { value?: unknown } | undefined): boolean {
+  if (!selection) return true;
+  const rawVal = (selection as any).value;
+  if (rawVal == null) return true;
+  // Empty string counts as missing for text/select types.
+  if ((def.type === "select" || def.type === "segmented" || def.type === "text") && typeof rawVal === "string") {
+    return rawVal.trim() === "";
+  }
+  // Note: false and 0 are valid selections and must NOT be treated as missing.
+  return false;
+}
+
+function getDefaultSelectionForDefinition(def: ProductOptionUiDefinition): Record<string, unknown> | null {
+  const v = def.defaultValue;
+
+  if (def.type === "boolean") {
+    // Preserve legacy semantics: only create a selection when default is explicitly ON.
+    if (v === true) {
+      return applyChildDefaultsForDefinition(def, { value: true });
+    }
+    return null;
+  }
+
+  if (def.type === "select" || def.type === "segmented") {
+    const raw = typeof v === "string" ? v.trim() : "";
+    if (!raw) return null;
+    const choices = def.choices ?? [];
+    if (choices.length > 0 && !choices.some((c) => c.value === raw)) return null;
+    return applyChildDefaultsForDefinition(def, { value: raw });
+  }
+
+  if (def.type === "number") {
+    if (typeof v !== "number" || !Number.isFinite(v)) return null;
+    const sanitized = Math.max(0, v);
+    return applyChildDefaultsForDefinition(def, { value: sanitized });
+  }
+
+  if (def.type === "text") {
+    const raw = typeof v === "string" ? v.trim() : "";
+    if (!raw) return null;
+    return applyChildDefaultsForDefinition(def, { value: raw });
+  }
+
+  return null;
+}
+
+/**
+ * Apply product-defined defaults to an optionSelections map.
+ *
+ * Rules:
+ * - Only applies when the selection for that option is missing.
+ * - Never overwrites an existing selection value (including false/0).
+ * - For boolean options, only creates a selection when default is explicitly ON.
+ */
+export function applyOptionDefaultsToSelections(
+  defs: ProductOptionUiDefinition[],
+  selections: ProductOptionSelectionsMap | null | undefined
+): { selections: ProductOptionSelectionsMap; changed: boolean } {
+  const base: ProductOptionSelectionsMap = selections ? { ...selections } : {};
+  let changed = false;
+
+  for (const def of defs) {
+    const existing = base[def.id];
+    if (!selectionIsMissingForDefinition(def, existing as any)) continue;
+    const defaultSel = getDefaultSelectionForDefinition(def);
+    if (!defaultSel) continue;
+    base[def.id] = defaultSel as any;
+    changed = true;
+  }
+
+  return { selections: base, changed };
 }

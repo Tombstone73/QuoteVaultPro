@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -59,6 +61,19 @@ export default function SettingsIntegrations() {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const [isSyncing, setIsSyncing] = useState(false);
+
+  const [importResource, setImportResource] = useState<'customers' | 'materials'>('customers');
+  const [importApplyMode, setImportApplyMode] = useState<'MERGE_RESPECT_OVERRIDES' | 'MERGE_AND_SET_OVERRIDES'>('MERGE_RESPECT_OVERRIDES');
+  const [importCsvText, setImportCsvText] = useState<string>('');
+  const [importFilename, setImportFilename] = useState<string>('');
+  const [lastImportJobId, setLastImportJobId] = useState<string>('');
+
+  const handleImportFile = async (file: File | null) => {
+    if (!file) return;
+    setImportFilename(file.name);
+    const text = await file.text();
+    setImportCsvText(text);
+  };
 
   // Check for OAuth callback params
   const urlParams = new URLSearchParams(window.location.search);
@@ -154,6 +169,57 @@ export default function SettingsIntegrations() {
   const handleSync = (direction: 'pull' | 'push', resources: string[]) => {
     syncMutation.mutate({ direction, resources });
   };
+
+  const validateImportMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/import/jobs/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resource: importResource,
+          csvData: importCsvText,
+          applyMode: importApplyMode,
+          sourceFilename: importFilename || undefined,
+        }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.message || 'Failed to validate import');
+      return data;
+    },
+    onSuccess: (data: any) => {
+      const jobId = data?.data?.job?.id;
+      if (jobId) setLastImportJobId(jobId);
+      toast({ title: 'Validated', description: `Import validated (${data?.data?.summary?.valid ?? 0} valid, ${data?.data?.summary?.invalid ?? 0} invalid)` });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const applyImportMutation = useMutation({
+    mutationFn: async () => {
+      if (!lastImportJobId) throw new Error('Validate an import first');
+      const response = await fetch(`/api/import/jobs/${lastImportJobId}/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ applyMode: importApplyMode }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.message || 'Failed to apply import');
+      return data;
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: 'Applied',
+        description: `Created ${data?.data?.results?.created ?? 0}, updated ${data?.data?.results?.updated ?? 0}, errors ${data?.data?.results?.errors?.length ?? 0}`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    },
+  });
 
   // Trigger manual job processing
   const triggerMutation = useMutation({
@@ -336,6 +402,154 @@ export default function SettingsIntegrations() {
               </p>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Data Import / Export */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Upload className="w-5 h-5" />
+                Data Import / Export
+              </CardTitle>
+              <CardDescription>
+                CSV validate → apply workflow. Import apply modes control how QuickBooks field overrides are handled.
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-3">
+            <Button variant="outline" asChild>
+              <a href="/api/customers/csv-template" target="_blank" rel="noreferrer">
+                <Download className="w-4 h-4 mr-2" />
+                Customer Template
+              </a>
+            </Button>
+            <Button variant="outline" asChild>
+              <a href="/api/customers/export" target="_blank" rel="noreferrer">
+                <Download className="w-4 h-4 mr-2" />
+                Export Customers
+              </a>
+            </Button>
+            <Button variant="outline" asChild>
+              <a href="/api/materials/csv-template" target="_blank" rel="noreferrer">
+                <Download className="w-4 h-4 mr-2" />
+                Material Template
+              </a>
+            </Button>
+            <Button variant="outline" asChild>
+              <a href="/api/materials/export" target="_blank" rel="noreferrer">
+                <Download className="w-4 h-4 mr-2" />
+                Export Materials
+              </a>
+            </Button>
+          </div>
+
+          <Separator />
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Resource</p>
+              <Select value={importResource} onValueChange={(v: any) => setImportResource(v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="customers">Customers</SelectItem>
+                  <SelectItem value="materials">Materials</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Apply Mode</p>
+              <Select value={importApplyMode} onValueChange={(v: any) => setImportApplyMode(v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="MERGE_RESPECT_OVERRIDES">Merge (respect QB overrides)</SelectItem>
+                  <SelectItem value="MERGE_AND_SET_OVERRIDES">Merge (set QB overrides)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                “Set overrides” marks imported fields as Titan-authoritative for future QuickBooks pulls.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">CSV File</p>
+              <Input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) => handleImportFile(e.target.files?.[0] ?? null)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {importFilename ? `Loaded: ${importFilename}` : 'Choose a CSV file to validate'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={() => validateImportMutation.mutate()}
+              disabled={!importCsvText || validateImportMutation.isPending}
+            >
+              {validateImportMutation.isPending ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4 mr-2" />
+              )}
+              Validate
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => applyImportMutation.mutate()}
+              disabled={!lastImportJobId || applyImportMutation.isPending}
+            >
+              {applyImportMutation.isPending ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 mr-2" />
+              )}
+              Apply
+            </Button>
+            {lastImportJobId ? (
+              <Button variant="outline" asChild>
+                <a href={`/api/import/jobs/${lastImportJobId}`} target="_blank" rel="noreferrer">
+                  View Job JSON
+                </a>
+              </Button>
+            ) : null}
+          </div>
+
+          {validateImportMutation.data?.data?.invalidPreview?.length ? (
+            <div className="border rounded-md">
+              <div className="px-4 py-3 border-b">
+                <p className="font-medium">Validation Errors (preview)</p>
+                <p className="text-sm text-muted-foreground">Showing up to 100 invalid rows</p>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Row</TableHead>
+                    <TableHead>Error</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {validateImportMutation.data.data.invalidPreview.map((e: any, idx: number) => (
+                    <TableRow key={idx}>
+                      <TableCell className="font-mono">{e.rowNumber}</TableCell>
+                      <TableCell className="text-sm">{e.error}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
