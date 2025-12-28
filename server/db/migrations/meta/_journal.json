@@ -1,1 +1,10 @@
-{"version":"6","dialect":"pg","entries":[]}
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    { "idx": 0, "version": "7", "when": 0, "tag": "0000_baseline", "breakpoints": true },
+    { "idx": 1, "version": "7", "when": 0, "tag": "0001_add_quote_attachment_pages", "breakpoints": true },
+    { "idx": 2, "version": "7", "when": 0, "tag": "0002_import_jobs_and_customer_qb_overrides", "breakpoints": true },
+    { "idx": 3, "version": "7", "when": 0, "tag": "0003_fix_missing_customer_qb_field_overrides", "breakpoints": true }
+  ]
+}
