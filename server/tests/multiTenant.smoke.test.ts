@@ -22,6 +22,8 @@ import {
   organizations, 
   userOrganizations, 
   customers, 
+  products,
+  productVariants,
   quotes, 
   orders
 } from '@shared/schema';
@@ -89,6 +91,11 @@ function createTestApp(): Express {
     const userId = req.headers['x-test-user-id'];
     const userRole = req.headers['x-test-user-role'] || 'employee';
     const orgId = req.headers['x-test-org-id'];
+
+    // Map test org header to the header that tenantContext actually reads
+    if (orgId) {
+      req.headers['x-organization-id'] = orgId;
+    }
     
     if (userId) {
       req.user = {
@@ -196,14 +203,28 @@ function createTestApp(): Express {
   // -------------------------------------------------------------------------
   
   // Mock portal authentication - uses customer token
-  const mockPortalAuth = (req: any, res: Response, next: NextFunction) => {
+  const mockPortalAuth = async (req: any, res: Response, next: NextFunction) => {
     const customerId = req.headers['x-portal-customer-id'];
-    if (customerId) {
-      req.portalCustomerId = customerId as string;
-      req.isAuthenticated = () => true;
-      return next();
+    if (!customerId) {
+      return res.status(401).json({ message: 'Portal authentication required' });
     }
-    return res.status(401).json({ message: 'Portal authentication required' });
+
+    // portalContext requires req.user.id, and will resolve the customer by userId or email.
+    // In tests we only have a customerId header, so look up the customer and provide a user with that email.
+    const customerRows = await db
+      .select({ email: customers.email })
+      .from(customers)
+      .where(eq(customers.id, customerId as string))
+      .limit(1);
+
+    if (customerRows.length === 0) {
+      return res.status(401).json({ message: 'Portal authentication required' });
+    }
+
+    req.portalCustomerId = customerId as string;
+    req.user = { id: `portal:${customerId}`, email: customerRows[0].email };
+    req.isAuthenticated = () => true;
+    return next();
   };
   
   // GET /api/portal/my-quotes - Portal user's quotes
@@ -309,6 +330,9 @@ let quoteOrg2: TestQuote;
 let orderOrg1: TestOrder;
 let orderOrg2: TestOrder;
 
+let orderProductOrg1: { productId: string; variantId: string };
+let orderProductOrg2: { productId: string; variantId: string };
+
 let testApp: Express;
 
 // ============================================================================
@@ -387,19 +411,60 @@ beforeAll(async () => {
   
   // Create test customers
   const customer1 = await storage.createCustomer(org1.id, {
-    companyName: 'Customer Alpha',
-    email: `customer1-${timestamp}@test.com`,
-    status: 'active'
-  });
+  companyName: "Customer Alpha",
+  email: "alpha@example.com",
+  status: "active",
+
+  pricingTier: "default",
+  productVisibilityMode: "default",
+  isTaxExempt: false,
+  taxRateOverride: null,
+});
   
   const customer2 = await storage.createCustomer(org2.id, {
-    companyName: 'Customer Beta',
-    email: `customer2-${timestamp}@test.com`,
-    status: 'active'
-  });
+  companyName: "Customer Beta",
+  email: "beta@example.com",
+  status: "active",
+
+  pricingTier: "default",
+  productVisibilityMode: "default",
+  isTaxExempt: false,
+  taxRateOverride: null,
+});
   
   customerOrg1 = { id: customer1.id, companyName: customer1.companyName, orgId: org1.id };
   customerOrg2 = { id: customer2.id, companyName: customer2.companyName, orgId: org2.id };
+
+  // Create a minimal product + variant per org so orders can include valid line items
+  const [product1] = await db.insert(products).values({
+    organizationId: org1.id,
+    name: `Test Product Org1 ${timestamp}`,
+    description: 'Test product for multi-tenant smoke tests',
+  }).returning();
+  const [variant1] = await db.insert(productVariants).values({
+    productId: product1.id,
+    name: 'Default',
+    basePricePerSqft: '1.0000',
+    isDefault: true,
+    displayOrder: 0,
+    isActive: true,
+  }).returning();
+  orderProductOrg1 = { productId: product1.id, variantId: variant1.id };
+
+  const [product2] = await db.insert(products).values({
+    organizationId: org2.id,
+    name: `Test Product Org2 ${timestamp}`,
+    description: 'Test product for multi-tenant smoke tests',
+  }).returning();
+  const [variant2] = await db.insert(productVariants).values({
+    productId: product2.id,
+    name: 'Default',
+    basePricePerSqft: '1.0000',
+    isDefault: true,
+    displayOrder: 0,
+    isActive: true,
+  }).returning();
+  orderProductOrg2 = { productId: product2.id, variantId: variant2.id };
   
   // Create test quotes
   const quote1 = await storage.createQuote(org1.id, {
@@ -424,14 +489,40 @@ beforeAll(async () => {
     customerId: customerOrg1.id,
     status: 'pending',
     createdByUserId: userOrg1.id,
-    lineItems: []
+    lineItems: [
+      {
+        status: "queued",
+        productType: "print",
+        productId: orderProductOrg1.productId,
+        productVariantId: orderProductOrg1.variantId,
+        description: 'Test Item',
+        quantity: 1,
+        unitPrice: 1,
+        totalPrice: 1,
+        taxAmount: "0",
+        isTaxableSnapshot: true,
+      },
+    ]
   });
   
   const order2 = await storage.createOrder(org2.id, {
     customerId: customerOrg2.id,
     status: 'pending',
     createdByUserId: userOrg2.id,
-    lineItems: []
+    lineItems: [
+      {
+        status: "queued",
+        productType: "print",
+        productId: orderProductOrg2.productId,
+        productVariantId: orderProductOrg2.variantId,
+        description: 'Test Item',
+        quantity: 1,
+        unitPrice: 1,
+        totalPrice: 1,
+        taxAmount: "0",
+        isTaxableSnapshot: true,
+      },
+    ]
   });
   
   orderOrg1 = { id: order1.id, customerId: order1.customerId!, orgId: org1.id };
@@ -556,7 +647,18 @@ describe('TEST 1: Core Organization Isolation', () => {
       .send({
         customerId: customerOrg1.id,
         status: 'pending',
-        lineItems: []
+        lineItems: [
+          {
+            productId: orderProductOrg1.productId,
+            productVariantId: orderProductOrg1.variantId,
+            description: 'Test Item',
+            quantity: 1,
+            unitPrice: 1,
+            totalPrice: 1,
+            taxAmount: "0",
+            isTaxableSnapshot: true,
+          },
+        ]
       })
       .expect(201);
     
@@ -770,23 +872,14 @@ describe('TEST 4: Cross-Tenant Security', () => {
     
     // User from Org1 with Org2's context
     // In the real app, this would be blocked by middleware that validates org membership
-    // Here we're testing that the data returned is correctly scoped to the requested org
+    // Here we assert the request is forbidden to prevent cross-tenant access
     const response = await request(testApp)
       .get('/api/orders')
       .set('x-test-user-id', userOrg1.id)
       .set('x-test-org-id', org2.id)
-      .expect(200);
-    
-    const orderList = response.body;
-    
-    // All orders should be from org2 (the requested org)
-    for (const order of orderList) {
-      expect(order.organizationId).toBe(org2.id);
-    }
-    
-    // Should NOT contain org1 orders
-    const wrongOrder = orderList.find((o: any) => o.organizationId === org1.id);
-    expect(wrongOrder).toBeUndefined();
+      .expect(403);
+
+    expect(response.body).toHaveProperty('message');
   });
   
   test('Unauthenticated requests are rejected', async () => {

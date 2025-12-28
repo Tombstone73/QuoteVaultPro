@@ -1,0 +1,13 @@
+{
+  "version": "6",
+  "dialect": "pg",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1766881286537,
+      "tag": "0000_fix_missing_customer_qb_field_overrides",
+      "breakpoints": true
+    }
+  ]
+}
