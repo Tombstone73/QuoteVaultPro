@@ -100,7 +100,13 @@ export default function SettingsIntegrations() {
   // Fetch sync jobs
   const { data: jobsData, isLoading: isLoadingJobs } = useQuery<{ jobs: SyncJob[] }>({
     queryKey: ["/api/integrations/quickbooks/jobs"],
-    refetchInterval: 5000, // Poll every 5 seconds
+    enabled: qbStatus?.connected === true,
+    refetchInterval: (query) => {
+      const data = query.state.data as { jobs: SyncJob[] } | undefined;
+      const jobs = data?.jobs ?? [];
+      const hasActiveJob = jobs.some((job) => job.status === 'pending' || job.status === 'processing');
+      return hasActiveJob ? 3000 : 20000;
+    },
   });
 
   // Connect to QuickBooks
