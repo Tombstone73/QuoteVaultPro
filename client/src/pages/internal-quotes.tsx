@@ -44,6 +44,7 @@ import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { QuoteWorkflowBadge } from "@/components/QuoteWorkflowBadge";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import {
   Page,
   PageHeader,
@@ -58,17 +59,21 @@ import {
   type ColumnState,
 } from "@/components/titan";
 import type { QuoteWithRelations, Product } from "@shared/schema";
+import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 
 type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "label";
 
 type QuoteRow = QuoteWithRelations & {
   label?: string | null;
+  previewThumbnails?: string[];
+  thumbsCount?: number;
 };
 
 // Column definitions for quotes table
 const QUOTE_COLUMNS: ColumnDefinition[] = [
   { key: "quoteNumber", label: "Quote #", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
   { key: "label", label: "Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
+  { key: "thumbnails", label: "Preview", defaultVisible: true, defaultWidth: 140, minWidth: 120, maxWidth: 200 },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150 },
   { key: "date", label: "Date", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
@@ -98,6 +103,7 @@ function NewQuoteButton() {
 export default function InternalQuotes() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { preferences, isLoading: prefsLoading } = useOrgPreferences();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -105,6 +111,7 @@ export default function InternalQuotes() {
   const [searchProduct, setSearchProduct] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [statusFilter, setStatusFilter] = useState<QuoteWorkflowState | "all">("all");
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
   const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
   const [orderDueDate, setOrderDueDate] = useState("");
@@ -128,6 +135,9 @@ export default function InternalQuotes() {
   // Check if user is internal staff
   const isInternalUser =
     user && ["admin", "owner", "manager", "employee"].includes(user.role || "");
+  
+  // Check if approval workflow is enabled
+  const requireApproval = preferences?.quotes?.requireApproval || false;
   
   // Helper to get column width style
   const getColStyle = (key: string) => {
@@ -216,10 +226,21 @@ export default function InternalQuotes() {
     hasError: !!error,
   });
 
-  // Sorted quotes
-  const sortedQuotes = useMemo(() => {
+  // Filter and sort quotes
+  const filteredAndSortedQuotes = useMemo(() => {
     if (!quotesList.length) return [];
-    return [...quotesList].sort((a: QuoteRow, b: QuoteRow) => {
+    
+    // Apply status filter
+    let filtered = quotesList;
+    if (statusFilter !== "all") {
+      filtered = quotesList.filter((q: QuoteRow) => {
+        const state = useQuoteWorkflowState(q);
+        return state === statusFilter;
+      });
+    }
+    
+    // Sort filtered results
+    return [...filtered].sort((a: QuoteRow, b: QuoteRow) => {
       let comparison = 0;
       switch (sortKey) {
         case "date":
@@ -265,7 +286,7 @@ export default function InternalQuotes() {
       }
       return sortDirection === "asc" ? comparison : -comparison;
     });
-  }, [quotes, sortKey, sortDirection]);
+  }, [quotesList, sortKey, sortDirection, statusFilter]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -363,6 +384,48 @@ export default function InternalQuotes() {
                   </span>
                 )}
               </div>
+            )}
+          </TableCell>
+        );
+      
+      case "thumbnails":
+        return (
+          <TableCell 
+            style={getColStyle("thumbnails")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {quote.previewThumbnails && quote.previewThumbnails.length > 0 ? (
+              <div className="flex items-center gap-1">
+                {quote.previewThumbnails.slice(0, 3).map((thumbKey, idx) => (
+                  <div
+                    key={idx}
+                    className="w-10 h-10 rounded border border-border bg-muted overflow-hidden hover:ring-2 hover:ring-primary cursor-pointer"
+                    title={`Preview ${idx + 1}`}
+                  >
+                    <img
+                      src={`/objects/${thumbKey}`}
+                      alt={`Thumbnail ${idx + 1}`}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      onError={(e) => {
+                        // Fallback to file icon on error
+                        e.currentTarget.style.display = 'none';
+                        const parent = e.currentTarget.parentElement;
+                        if (parent) {
+                          parent.innerHTML = '<div class="w-full h-full flex items-center justify-center"><svg class="w-5 h-5 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg></div>';
+                        }
+                      }}
+                    />
+                  </div>
+                ))}
+                {quote.thumbsCount && quote.thumbsCount > 3 && (
+                  <span className="text-xs text-muted-foreground">
+                    +{quote.thumbsCount - 3}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span className="text-xs text-muted-foreground">—</span>
             )}
           </TableCell>
         );
@@ -743,6 +806,89 @@ export default function InternalQuotes() {
           />
         </div>
 
+        {/* Status Filter Chips (only for internal users) */}
+        {isInternalUser && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-muted-foreground">Status:</span>
+            <Button
+              variant={statusFilter === "all" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStatusFilter("all")}
+            >
+              All
+            </Button>
+            <Button
+              variant={statusFilter === "draft" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStatusFilter("draft")}
+            >
+              Draft
+            </Button>
+            {requireApproval && (
+              <Button
+                variant={statusFilter === "pending_approval" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStatusFilter("pending_approval")}
+              >
+                Pending Approval
+              </Button>
+            )}
+            <Button
+              variant={statusFilter === "sent" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStatusFilter("sent")}
+            >
+              Sent
+            </Button>
+            <Button
+              variant={statusFilter === "approved" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStatusFilter("approved")}
+            >
+              Approved
+            </Button>
+            <Button
+              variant={statusFilter === "converted" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setStatusFilter("converted")}
+            >
+              Converted
+            </Button>
+          </div>
+        )}
+        
+        {/* Approval Indicators (only when requireApproval is enabled) */}
+        {/* Note: Org-level approval means ALL drafts need approval before sending */}
+        {isInternalUser && requireApproval && (() => {
+          // Compute workflow states once for efficiency
+          const draftCount = quotesList.filter((q: QuoteRow) => {
+            const state = useQuoteWorkflowState(q);
+            return state === "draft";
+          }).length;
+          
+          const pendingApprovalCount = quotesList.filter((q: QuoteRow) => {
+            const state = useQuoteWorkflowState(q);
+            return state === "pending_approval";
+          }).length;
+          
+          return (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              {draftCount > 0 && (
+                <div className="flex items-center gap-1.5 text-amber-600">
+                  <div className="w-2 h-2 rounded-full bg-amber-500" />
+                  <span>{draftCount} needs approval</span>
+                </div>
+              )}
+              {pendingApprovalCount > 0 && (
+                <div className="flex items-center gap-1.5 text-blue-600">
+                  <div className="w-2 h-2 rounded-full bg-blue-500" />
+                  <span>{pendingApprovalCount} pending approval</span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Quotes List */}
         <DataCard
           title="Internal Quotes"
@@ -801,7 +947,7 @@ export default function InternalQuotes() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sortedQuotes.map((quote) => (
+                  {filteredAndSortedQuotes.map((quote) => (
                     <TableRow
                       key={quote.id}
                       className="cursor-pointer hover:bg-muted/50"

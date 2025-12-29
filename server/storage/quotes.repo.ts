@@ -2,6 +2,7 @@ import { db } from "../db";
 import {
     quotes,
     quoteLineItems,
+    quoteAttachments,
     quoteWorkflowStates,
     users,
     customers,
@@ -627,7 +628,7 @@ export class QuotesRepository {
                 .orderBy(desc(quotes.createdAt));
 
             // Fetch user and line items for each quote
-            return await Promise.all(
+            const quotesWithRelations = await Promise.all(
                 userQuotes.map(async ({ quote, customerCompanyName }) => {
                     const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
 
@@ -670,7 +671,88 @@ export class QuotesRepository {
                         lineItems: lineItemsWithRelations,
                     };
                 })
-            ).then(results => results.filter(r => r !== null) as QuoteWithRelations[]);
+            );
+            
+            // Filter out null results from product filtering
+            const validQuotes = quotesWithRelations.filter(r => r !== null) as QuoteWithRelations[];
+            
+            // Fetch preview thumbnails for all quotes in a single query (avoid N+1)
+            const quoteIds = validQuotes.map(q => q.id);
+            let previewData: Map<string, { thumbnails: string[]; totalCount: number }> = new Map();
+            
+            // Defense-in-depth: only query attachments if we have valid quoteIds
+            // This prevents empty IN() clauses which could bypass orgId filters
+            if (quoteIds.length > 0) {
+                // Query for up to 3 thumbnails per quote
+                const attachmentsQuery = await this.dbInstance
+                    .select({
+                        quoteId: quoteAttachments.quoteId,
+                        thumbKey: quoteAttachments.thumbKey,
+                        previewKey: quoteAttachments.previewKey,
+                        fileName: quoteAttachments.fileName,
+                    })
+                    .from(quoteAttachments)
+                    .where(
+                        and(
+                            inArray(quoteAttachments.quoteId, quoteIds),
+                            eq(quoteAttachments.organizationId, organizationId),
+                            sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                        )
+                    )
+                    .orderBy(quoteAttachments.createdAt);
+                
+                // Group attachments by quoteId and take max 3 per quote
+                const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
+                for (const att of attachmentsQuery) {
+                    if (!groupedAttachments.has(att.quoteId)) {
+                        groupedAttachments.set(att.quoteId, []);
+                    }
+                    const group = groupedAttachments.get(att.quoteId)!;
+                    if (group.length < 3) {
+                        group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
+                    }
+                }
+                
+                // Count total attachments per quote
+                const countQuery = await this.dbInstance
+                    .select({
+                        quoteId: quoteAttachments.quoteId,
+                        count: sql<number>`count(*)::int`,
+                    })
+                    .from(quoteAttachments)
+                    .where(
+                        and(
+                            inArray(quoteAttachments.quoteId, quoteIds),
+                            eq(quoteAttachments.organizationId, organizationId),
+                            sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                        )
+                    )
+                    .groupBy(quoteAttachments.quoteId);
+                
+                const countMap = new Map<string, number>();
+                for (const row of countQuery) {
+                    countMap.set(row.quoteId, row.count);
+                }
+                
+                // Build preview data map
+                for (const quoteIdKey of Array.from(groupedAttachments.keys())) {
+                    const attachments = groupedAttachments.get(quoteIdKey)!;
+                    const thumbnails = attachments
+                        .map((att: { thumbKey: string | null; previewKey: string | null; fileName: string }) => att.previewKey || att.thumbKey)
+                        .filter((key: string | null): key is string => !!key);
+                    previewData.set(quoteIdKey, {
+                        thumbnails,
+                        totalCount: countMap.get(quoteIdKey) || 0,
+                    });
+                }
+            }
+            
+            // Enrich quotes with preview data
+            return validQuotes.map(quote => ({
+                ...quote,
+                previewThumbnails: previewData.get(quote.id)?.thumbnails || [],
+                thumbsCount: previewData.get(quote.id)?.totalCount || 0,
+            }));
         } catch (error: any) {
             console.error("[getUserQuotes] PG error message:", error?.message);
             console.error("[getUserQuotes] PG full error:", error);
