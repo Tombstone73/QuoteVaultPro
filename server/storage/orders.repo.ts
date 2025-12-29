@@ -11,6 +11,7 @@ import {
     products,
     productVariants,
     quotes,
+    quoteAttachments,
     quoteLineItems,
     jobs,
     jobStatusLog,
@@ -33,7 +34,7 @@ import {
     type CustomerContact,
     type InsertJobStatusLog,
 } from "@shared/schema";
-import { eq, and, or, ilike, gte, lte, desc, sql } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, sql, isNull } from "drizzle-orm";
 
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
@@ -195,6 +196,88 @@ export class OrdersRepository {
                 createdByUserId: data.createdByUserId,
             };
             const [order] = await tx.insert(orders).values(orderInsert).returning();
+
+            // If this order is being created from a quote, carry forward quote-level (non-line-item) attachments.
+            // This is done inside the same transaction so conversion is atomic.
+            let inheritedFromQuoteNumber: string | null = null;
+            let inheritedQuoteAttachmentIds: string[] = [];
+            let createdOrderAttachmentIds: string[] = [];
+
+            if (data.quoteId) {
+                const [quoteRow] = await tx
+                    .select({ quoteNumber: quotes.quoteNumber })
+                    .from(quotes)
+                    .where(and(eq(quotes.id, data.quoteId), eq(quotes.organizationId, organizationId)));
+                inheritedFromQuoteNumber = quoteRow?.quoteNumber != null ? String(quoteRow.quoteNumber) : null;
+
+                const quoteLevelAttachments = await tx
+                    .select()
+                    .from(quoteAttachments)
+                    .where(
+                        and(
+                            eq(quoteAttachments.quoteId, data.quoteId),
+                            eq(quoteAttachments.organizationId, organizationId),
+                            isNull(quoteAttachments.quoteLineItemId)
+                        )
+                    );
+
+                if (quoteLevelAttachments.length > 0) {
+                    inheritedQuoteAttachmentIds = quoteLevelAttachments.map((a) => a.id);
+                    const orderAttachmentInserts: typeof orderAttachments.$inferInsert[] = quoteLevelAttachments.map((a) => ({
+                        orderId: order.id,
+                        orderLineItemId: null,
+                        quoteId: data.quoteId,
+                        uploadedByUserId: a.uploadedByUserId ?? null,
+                        uploadedByName: a.uploadedByName ?? null,
+                        fileName: a.fileName,
+                        fileUrl: a.fileUrl,
+                        fileSize: a.fileSize ?? null,
+                        mimeType: a.mimeType ?? null,
+                        description: a.description ?? null,
+                        originalFilename: a.originalFilename ?? null,
+                        storedFilename: a.storedFilename ?? null,
+                        relativePath: a.relativePath ?? null,
+                        storageProvider: (a.storageProvider as any) ?? undefined,
+                        extension: a.extension ?? null,
+                        sizeBytes: a.sizeBytes ?? null,
+                        checksum: a.checksum ?? null,
+                        thumbnailRelativePath: a.thumbnailRelativePath ?? null,
+                        thumbnailGeneratedAt: a.thumbnailGeneratedAt ?? null,
+                        thumbKey: a.thumbKey ?? null,
+                        previewKey: a.previewKey ?? null,
+                        // role/side/isPrimary use defaults on order_attachments
+                    }));
+
+                    const inserted = await tx.insert(orderAttachments).values(orderAttachmentInserts).returning({ id: orderAttachments.id });
+                    createdOrderAttachmentIds = inserted.map((r) => r.id);
+
+                    // Add provenance entry so it's clear these files were inherited from the quote.
+                    const [userRow] = await tx
+                        .select({ firstName: users.firstName, lastName: users.lastName, email: users.email })
+                        .from(users)
+                        .where(eq(users.id, data.createdByUserId));
+                    const userName = userRow
+                        ? `${userRow.firstName || ''} ${userRow.lastName || ''}`.trim() || userRow.email
+                        : null;
+
+                    await tx.insert(orderAuditLog).values({
+                        orderId: order.id,
+                        userId: data.createdByUserId,
+                        userName,
+                        actionType: 'file_inherited',
+                        fromStatus: null,
+                        toStatus: null,
+                        note: `Inherited ${quoteLevelAttachments.length} attachment(s) from quote ${inheritedFromQuoteNumber || data.quoteId}`,
+                        metadata: {
+                            inheritedFromQuoteId: data.quoteId,
+                            inheritedFromQuoteNumber,
+                            quoteAttachmentIds: inheritedQuoteAttachmentIds,
+                            orderAttachmentIds: createdOrderAttachmentIds,
+                        },
+                    } as any);
+                }
+            }
+
             const lineItemsData = data.lineItems.map((li) => {
                 const unit = li.unitPrice;
                 return {

@@ -3456,6 +3456,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const files = await db.select().from(quoteAttachments)
         .where(and(
           eq(quoteAttachments.quoteId, req.params.id),
+          isNull(quoteAttachments.quoteLineItemId),
           eq(quoteAttachments.organizationId, organizationId)
         ))
         .orderBy(desc(quoteAttachments.createdAt));
@@ -3528,12 +3529,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!fileUrl) {
           return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
         }
+
+        // Determine storage provider for object-key style uploads (e.g., Supabase uploads/<uuid>)
+        // - If Supabase configured and fileUrl is NOT http(s), treat it as Supabase object key
+        // - If fileUrl is http(s), treat it as external legacy URL
+        // - Otherwise, assume local fallback
+        let storageProvider: string | undefined;
+        if (isSupabaseConfigured() && fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
+          storageProvider = 'supabase';
+        } else if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+          storageProvider = undefined;
+        } else {
+          storageProvider = 'local';
+        }
+
         attachmentData = {
           ...attachmentData,
           fileName,
           fileUrl,
           fileSize: fileSize || null,
           mimeType: mimeType || null,
+          originalFilename: originalFilename || fileName || null,
+          storageProvider,
+          bucket: 'titan-private',
         };
       }
       
@@ -3586,6 +3604,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await db.delete(quoteAttachments)
         .where(and(
           eq(quoteAttachments.id, req.params.fileId),
+          eq(quoteAttachments.quoteId, req.params.id),
+          isNull(quoteAttachments.quoteLineItemId),
           eq(quoteAttachments.organizationId, organizationId)
         ));
       
@@ -3593,6 +3613,486 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting quote file:", error);
       res.status(500).json({ error: "Failed to delete quote file" });
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Quote Attachments (quote-level; NOT line-item artwork)
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // Start background cleanup for temp chunked uploads (fail-soft)
+  try {
+    const { startUploadCleanupTimerOnce } = await import('./services/chunkedUploads');
+    startUploadCleanupTimerOnce();
+  } catch {
+    // fail-soft
+  }
+
+  // Chunked uploads (server-managed; used for large quote attachments)
+  app.post("/api/uploads/init", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { filename, mimeType, size, purpose, quoteId } = req.body || {};
+      if (!filename || typeof filename !== 'string') return res.status(400).json({ error: 'filename is required' });
+      if (!mimeType || typeof mimeType !== 'string') return res.status(400).json({ error: 'mimeType is required' });
+      if (size == null || Number.isNaN(Number(size))) return res.status(400).json({ error: 'size is required' });
+      if (purpose !== 'quote-attachment') return res.status(400).json({ error: 'Unsupported purpose' });
+      if (!quoteId || typeof quoteId !== 'string') return res.status(400).json({ error: 'quoteId is required for quote-attachment' });
+
+      // Validate quote belongs to org
+      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      const { createUploadSession } = await import('./services/chunkedUploads');
+      const session = await createUploadSession({
+        organizationId,
+        createdByUserId: userId,
+        purpose: 'quote-attachment',
+        quoteId,
+        filename,
+        mimeType,
+        sizeBytes: Number(size),
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          uploadId: session.uploadId,
+          chunkSizeBytes: session.chunkSizeBytes,
+          totalChunks: session.totalChunks,
+          expiresAt: session.expiresAt,
+        },
+      });
+    } catch (error) {
+      console.error('[Uploads:Init] Error:', error);
+      return res.status(500).json({ error: 'Failed to initialize upload' });
+    }
+  });
+
+  app.put("/api/uploads/:uploadId/chunks/:chunkIndex", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { uploadId, chunkIndex } = req.params;
+      const idx = Number(chunkIndex);
+      if (!uploadId) return res.status(400).json({ error: 'uploadId is required' });
+      if (!Number.isInteger(idx) || idx < 0) return res.status(400).json({ error: 'Invalid chunkIndex' });
+
+      const { loadUploadSessionMeta, writeUploadChunkFromStream, saveUploadSessionMeta } = await import('./services/chunkedUploads');
+      const meta = await loadUploadSessionMeta(uploadId);
+      if (meta.organizationId !== organizationId) return res.status(404).json({ error: 'Upload session not found' });
+      if (idx >= meta.totalChunks) return res.status(400).json({ error: 'chunkIndex out of bounds' });
+
+      // Stream chunk directly to disk (no base64, no buffering the whole file in memory).
+      await writeUploadChunkFromStream({ uploadId, chunkIndex: idx, stream: req });
+
+      if (meta.status === 'initiated') {
+        meta.status = 'uploading';
+        await saveUploadSessionMeta(uploadId, meta);
+      }
+
+      return res.json({ success: true, data: { received: true } });
+    } catch (error) {
+      console.error('[Uploads:Chunk] Error:', error);
+      return res.status(500).json({ error: 'Failed to upload chunk' });
+    }
+  });
+
+  app.post("/api/uploads/:uploadId/finalize", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { uploadId } = req.params;
+      const { quoteId } = req.body || {};
+      if (!uploadId) return res.status(400).json({ error: 'uploadId is required' });
+      if (!quoteId || typeof quoteId !== 'string') return res.status(400).json({ error: 'quoteId is required' });
+
+      // Validate quote belongs to org
+      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      const { finalizeUploadSession } = await import('./services/chunkedUploads');
+      const finalized = await finalizeUploadSession({ uploadId, organizationId, quoteId });
+
+      return res.json({
+        success: true,
+        data: {
+          fileId: finalized.fileId,
+          filename: finalized.filename,
+          mimeType: finalized.mimeType,
+          size: finalized.sizeBytes,
+          checksum: finalized.checksum,
+        },
+      });
+    } catch (error: any) {
+      console.error('[Uploads:Finalize] Error:', error);
+      return res.status(500).json({ error: error?.message || 'Failed to finalize upload' });
+    }
+  });
+
+  // List quote-level attachments
+  app.get("/api/quotes/:quoteId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      // Validate quote belongs to org (prevents cross-tenant access)
+      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: "Quote not found" });
+
+      const files = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.quoteId, quoteId),
+          isNull(quoteAttachments.quoteLineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .orderBy(desc(quoteAttachments.createdAt));
+
+      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      return res.json({ success: true, data: enrichedFiles });
+    } catch (error) {
+      console.error("[QuoteAttachments:GET] Error:", error);
+      return res.status(500).json({ error: "Failed to fetch quote attachments" });
+    }
+  });
+
+  // Upload/link a quote-level attachment (expects storage key from /api/objects/upload)
+  app.post("/api/quotes/:quoteId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const {
+        // Chunked upload (preferred for large files)
+        uploadId,
+        // Atomic upload contract (preferred)
+        files,
+        description,
+        // Legacy link-only contract (fallback)
+        fileName,
+        fileUrl,
+        fileSize,
+        mimeType,
+      } = req.body;
+
+      // Validate quote belongs to org
+      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: "Quote not found" });
+
+      // Chunked upload link: finalize happens via /api/uploads/:uploadId/finalize.
+      // This endpoint links a finalized upload into quote_attachments.
+      if (uploadId && typeof uploadId === 'string') {
+        const { loadUploadSessionMeta, saveUploadSessionMeta, deleteUploadSession } = await import('./services/chunkedUploads');
+        const meta = await loadUploadSessionMeta(uploadId);
+        if (meta.organizationId !== organizationId) return res.status(404).json({ error: 'Upload not found' });
+        if (meta.purpose !== 'quote-attachment') return res.status(400).json({ error: 'Invalid upload purpose' });
+        if (meta.status !== 'finalized' || !meta.relativePath) return res.status(400).json({ error: 'Upload not finalized' });
+        if (meta.quoteId && meta.quoteId !== quoteId) return res.status(400).json({ error: 'Upload quoteId mismatch' });
+
+        const attachmentInsert: any = {
+          quoteId,
+          quoteLineItemId: null,
+          organizationId,
+          uploadedByUserId: userId,
+          uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+          description: description || null,
+          bucket: 'titan-private',
+          fileName: meta.originalFilename,
+          fileUrl: meta.relativePath,
+          fileSize: meta.sizeBytes,
+          mimeType: meta.mimeType,
+          originalFilename: meta.originalFilename,
+          storedFilename: meta.storedFilename || null,
+          relativePath: meta.relativePath,
+          storageProvider: 'local',
+          extension: meta.extension || null,
+          sizeBytes: meta.sizeBytes,
+          checksum: meta.checksum || null,
+        };
+
+        const [created] = await db.insert(quoteAttachments).values(attachmentInsert).returning();
+
+        // Mark linked and remove temp session metadata (permanent file remains in uploads root).
+        meta.linkedAt = new Date().toISOString();
+        await saveUploadSessionMeta(uploadId, meta);
+        await deleteUploadSession(uploadId);
+
+        const enriched = await enrichAttachmentWithUrls(created);
+        return res.json({ success: true, data: [enriched] });
+      }
+
+      // Preferred: atomic upload+link in a single request.
+      // Body format:
+      // { files: [{ originalFilename, mimeType, sizeBytes, fileBufferBase64 }], description? }
+      if (Array.isArray(files) && files.length > 0) {
+        const { SupabaseStorageService, isSupabaseConfigured: _isSupabaseConfigured } = await import('./supabaseStorage');
+        const {
+          processUploadedFile,
+          generateStoredFilename,
+          generateRelativePath,
+          computeChecksum,
+          getFileExtension,
+          deleteFile: deleteLocalFile,
+        } = await import('./utils/fileStorage.js');
+
+        const uploadedKeys: Array<{ provider: 'supabase' | 'local'; key: string }> = [];
+
+        try {
+          const inserted = await db.transaction(async (tx) => {
+            const results: any[] = [];
+
+            for (const f of files) {
+              const originalFilename = (f?.originalFilename ?? f?.fileName ?? '').toString();
+              const fileBufferBase64 = (f?.fileBufferBase64 ?? f?.fileBuffer ?? '').toString();
+              const fileMimeType = (f?.mimeType ?? 'application/octet-stream').toString();
+
+              if (!originalFilename) {
+                throw new Error('originalFilename is required');
+              }
+              if (!fileBufferBase64) {
+                throw new Error(`fileBufferBase64 is required for ${originalFilename}`);
+              }
+
+              const buffer = Buffer.from(fileBufferBase64, 'base64');
+
+              let attachmentInsert: any = {
+                quoteId,
+                quoteLineItemId: null,
+                organizationId,
+                uploadedByUserId: userId,
+                uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                description: description || null,
+                bucket: 'titan-private',
+              };
+
+              if (_isSupabaseConfigured()) {
+                const storedFilename = generateStoredFilename(originalFilename);
+                const relativePath = generateRelativePath({
+                  organizationId,
+                  resourceType: 'quote',
+                  resourceId: quoteId,
+                  storedFilename,
+                });
+                const checksum = computeChecksum(buffer);
+                const extension = getFileExtension(originalFilename);
+                const sizeBytes = buffer.length;
+
+                const supabase = new SupabaseStorageService();
+                const uploaded = await supabase.uploadFile(relativePath, buffer, fileMimeType);
+                uploadedKeys.push({ provider: 'supabase', key: uploaded.path });
+
+                attachmentInsert = {
+                  ...attachmentInsert,
+                  fileName: originalFilename,
+                  fileUrl: uploaded.path,
+                  fileSize: sizeBytes,
+                  mimeType: fileMimeType,
+                  originalFilename,
+                  storedFilename,
+                  relativePath,
+                  storageProvider: 'supabase',
+                  extension,
+                  sizeBytes,
+                  checksum,
+                };
+              } else {
+                const fileMetadata = await processUploadedFile({
+                  originalFilename,
+                  buffer,
+                  mimeType: fileMimeType,
+                  organizationId,
+                  resourceType: 'quote',
+                  resourceId: quoteId,
+                });
+                uploadedKeys.push({ provider: 'local', key: fileMetadata.relativePath });
+
+                attachmentInsert = {
+                  ...attachmentInsert,
+                  fileName: originalFilename,
+                  fileUrl: fileMetadata.relativePath,
+                  fileSize: fileMetadata.sizeBytes,
+                  mimeType: fileMimeType,
+                  originalFilename: fileMetadata.originalFilename,
+                  storedFilename: fileMetadata.storedFilename,
+                  relativePath: fileMetadata.relativePath,
+                  storageProvider: 'local',
+                  extension: fileMetadata.extension,
+                  sizeBytes: fileMetadata.sizeBytes,
+                  checksum: fileMetadata.checksum,
+                };
+              }
+
+              const [created] = await tx.insert(quoteAttachments).values(attachmentInsert).returning();
+              results.push(created);
+            }
+
+            return results;
+          });
+
+          return res.json({ success: true, data: inserted });
+        } catch (error: any) {
+          // Best-effort cleanup of uploaded blobs on failure
+          try {
+            if (_isSupabaseConfigured()) {
+              const supabase = new SupabaseStorageService();
+              await Promise.all(
+                uploadedKeys
+                  .filter((k) => k.provider === 'supabase')
+                  .map((k) => supabase.deleteFile(k.key))
+              );
+            }
+            await Promise.all(
+              uploadedKeys
+                .filter((k) => k.provider === 'local')
+                .map((k) => deleteLocalFile(k.key).catch(() => false))
+            );
+          } catch {
+            // fail-soft cleanup
+          }
+
+          console.error('[QuoteAttachments:POST] Atomic upload failed:', error);
+          return res.status(500).json({ error: error?.message || 'Failed to upload attachments' });
+        }
+      }
+
+      // Fallback: link-only (legacy) contract
+      if (!fileName) return res.status(400).json({ error: "fileName is required" });
+      if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
+
+      let storageProvider: string | undefined;
+      if (isSupabaseConfigured() && fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
+        storageProvider = 'supabase';
+      } else if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+        storageProvider = undefined;
+      } else {
+        storageProvider = 'local';
+      }
+
+      const attachmentData: any = {
+        quoteId,
+        quoteLineItemId: null,
+        organizationId,
+        uploadedByUserId: userId,
+        uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        fileName,
+        originalFilename: fileName,
+        fileUrl,
+        fileSize: fileSize || null,
+        mimeType: mimeType || null,
+        description: description || null,
+        bucket: 'titan-private',
+        storageProvider,
+      };
+
+      const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+      return res.json({ success: true, data: attachment });
+    } catch (error) {
+      console.error("[QuoteAttachments:POST] Error:", error);
+      return res.status(500).json({ error: "Failed to attach file to quote" });
+    }
+  });
+
+  // Download proxy for quote-level attachment
+  // Streams file with correct filename and content-type.
+  app.get('/api/quotes/:quoteId/attachments/:attachmentId/download/proxy', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, attachmentId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      // Validate quote belongs to org
+      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      const [attachment] = await db.select().from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, attachmentId),
+          eq(quoteAttachments.quoteId, quoteId),
+          isNull(quoteAttachments.quoteLineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!attachment) return res.status(404).json({ error: 'Attachment not found' });
+
+      const resolvedName = attachment.originalFilename || attachment.fileName;
+      res.setHeader('Content-Disposition', `attachment; filename="${resolvedName}"`);
+      res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
+
+      if (isSupabaseConfigured() && (attachment.storageProvider === 'supabase' || (attachment.fileUrl || '').startsWith('uploads/'))) {
+        const { SupabaseStorageService } = await import('./supabaseStorage');
+        const supabaseService = new SupabaseStorageService();
+        const signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
+        const fileResponse = await fetch(signedUrl);
+        if (!fileResponse.ok) throw new Error('Failed to fetch file from storage');
+        const buffer = await fileResponse.arrayBuffer();
+        return res.send(Buffer.from(buffer));
+      }
+
+      // Local storage fallback
+      const { resolveLocalStoragePath } = await import('./services/localStoragePath');
+      const fs = await import('fs');
+      const absPath = resolveLocalStoragePath(attachment.fileUrl);
+      const stream = fs.createReadStream(absPath);
+      stream.on('error', (err) => {
+        console.error('[QuoteAttachments:DOWNLOAD:PROXY] Local stream error:', err);
+        if (!res.headersSent) res.status(404).json({ error: 'File not found' });
+      });
+      return stream.pipe(res);
+    } catch (error: any) {
+      console.error('[QuoteAttachments:DOWNLOAD:PROXY] Error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to download file' });
+    }
+  });
+
+  // Remove/unlink a quote-level attachment
+  app.delete("/api/quotes/:quoteId/attachments/:attachmentId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId, attachmentId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      // Validate quote belongs to org
+      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: "Quote not found" });
+
+      await db.delete(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, attachmentId),
+          eq(quoteAttachments.quoteId, quoteId),
+          isNull(quoteAttachments.quoteLineItemId),
+          eq(quoteAttachments.organizationId, organizationId)
+        ));
+
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("[QuoteAttachments:DELETE] Error:", error);
+      return res.status(500).json({ error: "Failed to delete quote attachment" });
     }
   });
 
