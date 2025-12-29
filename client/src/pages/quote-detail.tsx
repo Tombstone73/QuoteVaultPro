@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
+import { TimelinePanel } from "@/components/TimelinePanel";
 import type { QuoteWithRelations } from "@shared/schema";
 
 type QuoteDetailRouteParams = {
@@ -30,6 +31,7 @@ export default function QuoteDetail() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isRevising, setIsRevising] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(false);
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
@@ -239,101 +241,128 @@ export default function QuoteDetail() {
 
       <ContentLayout className="space-y-4">
         {/* Quote Info Cards */}
-        <div className="grid md:grid-cols-3 gap-4">
-          <DataCard
-            title="Bill To"
-            className="bg-titan-bg-card border-titan-border-subtle"
-          >
-            <div className="space-y-1 text-titan-sm">
-              {quote.billToName ? (
-                <>
-                  <div className="font-medium text-titan-text-primary">{quote.billToName}</div>
-                  {quote.billToCompany && (
-                    <div className="text-titan-text-secondary">{quote.billToCompany}</div>
-                  )}
-                  {quote.billToAddress1 && (
-                    <div className="text-titan-text-secondary">{quote.billToAddress1}</div>
-                  )}
-                  {quote.billToAddress2 && (
-                    <div className="text-titan-text-secondary">{quote.billToAddress2}</div>
-                  )}
-                  {(quote.billToCity || quote.billToState || quote.billToPostalCode) && (
-                    <div className="text-titan-text-secondary">
-                      {quote.billToCity && `${quote.billToCity}, `}
-                      {quote.billToState && `${quote.billToState} `}
-                      {quote.billToPostalCode}
-                    </div>
-                  )}
-                  {quote.billToPhone && (
-                    <div className="text-titan-text-secondary">{quote.billToPhone}</div>
-                  )}
-                  {quote.billToEmail && (
-                    <div className="text-titan-text-secondary">{quote.billToEmail}</div>
-                  )}
-                </>
-              ) : (
-                <div className="text-titan-text-muted">
-                  {quote.customerName || '—'}
+        <div className="grid lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 grid md:grid-cols-2 gap-4">
+            <DataCard
+              title="Ship To"
+              className="bg-titan-bg-card border-titan-border-subtle"
+            >
+              <div className="space-y-1 text-titan-sm">
+                {quote.shipToName ? (
+                  <>
+                    <div className="font-medium text-titan-text-primary">{quote.shipToName}</div>
+                    {quote.shipToCompany && (
+                      <div className="text-titan-text-secondary">{quote.shipToCompany}</div>
+                    )}
+                    {quote.shipToAddress1 && (
+                      <div className="text-titan-text-secondary">{quote.shipToAddress1}</div>
+                    )}
+                    {quote.shipToAddress2 && (
+                      <div className="text-titan-text-secondary">{quote.shipToAddress2}</div>
+                    )}
+                    {(quote.shipToCity || quote.shipToState || quote.shipToPostalCode) && (
+                      <div className="text-titan-text-secondary">
+                        {quote.shipToCity && `${quote.shipToCity}, `}
+                        {quote.shipToState && `${quote.shipToState} `}
+                        {quote.shipToPostalCode}
+                      </div>
+                    )}
+                    {quote.shippingMethod && (
+                      <div className="mt-2">
+                        <Badge variant="outline" className="border-titan-border text-titan-text-secondary">
+                          {quote.shippingMethod}
+                        </Badge>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-titan-text-muted">—</div>
+                )}
+              </div>
+            </DataCard>
+
+            <DataCard
+              title="Quote Information"
+              className="bg-titan-bg-card border-titan-border-subtle"
+            >
+              <div className="space-y-2 text-titan-sm">
+                <div>
+                  <span className="text-titan-text-muted">Created by: </span>
+                  <span className="text-titan-text-primary">
+                    {quote.user ? `${quote.user.firstName || ''} ${quote.user.lastName || ''}`.trim() || quote.user.email : '—'}
+                  </span>
                 </div>
-              )}
-            </div>
-          </DataCard>
-
-          <DataCard
-            title="Ship To"
-            className="bg-titan-bg-card border-titan-border-subtle"
-          >
-            <div className="space-y-1 text-titan-sm">
-              {quote.shipToName ? (
-                <>
-                  <div className="font-medium text-titan-text-primary">{quote.shipToName}</div>
-                  {quote.shipToCompany && (
-                    <div className="text-titan-text-secondary">{quote.shipToCompany}</div>
-                  )}
-                  {quote.shipToAddress1 && (
-                    <div className="text-titan-text-secondary">{quote.shipToAddress1}</div>
-                  )}
-                  {quote.shipToAddress2 && (
-                    <div className="text-titan-text-secondary">{quote.shipToAddress2}</div>
-                  )}
-                  {(quote.shipToCity || quote.shipToState || quote.shipToPostalCode) && (
-                    <div className="text-titan-text-secondary">
-                      {quote.shipToCity && `${quote.shipToCity}, `}
-                      {quote.shipToState && `${quote.shipToState} `}
-                      {quote.shipToPostalCode}
-                    </div>
-                  )}
-                  {quote.shippingMethod && (
-                    <div className="mt-2">
-                      <Badge variant="outline" className="border-titan-border text-titan-text-secondary">
-                        {quote.shippingMethod}
-                      </Badge>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="text-titan-text-muted">—</div>
-              )}
-            </div>
-          </DataCard>
-
-          <DataCard
-            title="Quote Information"
-            className="bg-titan-bg-card border-titan-border-subtle"
-          >
-            <div className="space-y-2 text-titan-sm">
-              <div>
-                <span className="text-titan-text-muted">Created by: </span>
-                <span className="text-titan-text-primary">
-                  {quote.user ? `${quote.user.firstName || ''} ${quote.user.lastName || ''}`.trim() || quote.user.email : '—'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-titan-text-muted">Source: </span>
+                  <QuoteSourceBadge source={quote.source} />
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-titan-text-muted">Source: </span>
-                <QuoteSourceBadge source={quote.source} />
+            </DataCard>
+          </div>
+
+          <div className="space-y-4">
+            <DataCard
+              title="Bill To"
+              className="bg-titan-bg-card border-titan-border-subtle"
+            >
+              <div className="space-y-1 text-titan-sm">
+                {quote.billToName ? (
+                  <>
+                    <div className="font-medium text-titan-text-primary">{quote.billToName}</div>
+                    {quote.billToCompany && (
+                      <div className="text-titan-text-secondary">{quote.billToCompany}</div>
+                    )}
+                    {quote.billToAddress1 && (
+                      <div className="text-titan-text-secondary">{quote.billToAddress1}</div>
+                    )}
+                    {quote.billToAddress2 && (
+                      <div className="text-titan-text-secondary">{quote.billToAddress2}</div>
+                    )}
+                    {(quote.billToCity || quote.billToState || quote.billToPostalCode) && (
+                      <div className="text-titan-text-secondary">
+                        {quote.billToCity && `${quote.billToCity}, `}
+                        {quote.billToState && `${quote.billToState} `}
+                        {quote.billToPostalCode}
+                      </div>
+                    )}
+                    {quote.billToPhone && (
+                      <div className="text-titan-text-secondary">{quote.billToPhone}</div>
+                    )}
+                    {quote.billToEmail && (
+                      <div className="text-titan-text-secondary">{quote.billToEmail}</div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-titan-text-muted">{quote.customerName || '—'}</div>
+                )}
               </div>
-            </div>
-          </DataCard>
+            </DataCard>
+
+            {quote?.id && (
+              <div className="mt-4">
+                <DataCard
+                  title="Timeline"
+                  noPadding={!timelineOpen}
+                  headerActions={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+                      onClick={() => setTimelineOpen((v) => !v)}
+                    >
+                      {timelineOpen ? "Hide" : "Show"}
+                    </Button>
+                  }
+                  className="bg-titan-bg-card border-titan-border-subtle"
+                >
+                  {timelineOpen ? (
+                    <TimelinePanel quoteId={quote.id} orderId={convertedToOrderId ?? undefined} limit={100} />
+                  ) : null}
+                </DataCard>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Line Items */}
