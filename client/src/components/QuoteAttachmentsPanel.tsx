@@ -26,7 +26,7 @@ function formatFileSize(bytes: number | null | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function QuoteAttachmentsPanel({ quoteId }: { quoteId: string }) {
+export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: string; locked?: boolean }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,6 +36,9 @@ export function QuoteAttachmentsPanel({ quoteId }: { quoteId: string }) {
   >([]);
 
   const attachmentsApiPath = `/api/quotes/${quoteId}/attachments`;
+
+  const isLocked = locked;
+  const lockedHint = 'Approved quotes are locked. Revise to change.';
 
   const downloadProxyUrl = (attachmentId: string) =>
     `/api/quotes/${quoteId}/attachments/${attachmentId}/download/proxy`;
@@ -155,6 +158,11 @@ export function QuoteAttachmentsPanel({ quoteId }: { quoteId: string }) {
   };
 
   const handleUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (isLocked) {
+      toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
     if (!e.target.files || e.target.files.length === 0) return;
 
     const filesToUpload = Array.from(e.target.files);
@@ -241,17 +249,20 @@ export function QuoteAttachmentsPanel({ quoteId }: { quoteId: string }) {
           className="hidden"
           multiple
           onChange={handleUpload}
-          disabled={isUploading}
+          disabled={isUploading || isLocked}
         />
 
-        <div className="text-xs text-titan-text-muted">Add POs, instructions, tax forms, etc.</div>
+        <div className="text-xs text-titan-text-muted" title={isLocked ? lockedHint : undefined}>
+          {isLocked ? lockedHint : 'Add POs, instructions, tax forms, etc.'}
+        </div>
 
         <Button
           variant="outline"
           size="sm"
           className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
           onClick={() => fileInputRef.current?.click()}
-          disabled={isUploading}
+          disabled={isUploading || isLocked}
+          title={isLocked ? lockedHint : 'Upload'}
         >
           {isUploading ? (
             <>
@@ -323,7 +334,8 @@ export function QuoteAttachmentsPanel({ quoteId }: { quoteId: string }) {
                     size="sm"
                     className="h-8 w-8 p-0 text-destructive hover:text-destructive"
                     onClick={() => handleRemove(a.id)}
-                    title="Remove"
+                    title={isLocked ? lockedHint : 'Remove'}
+                    disabled={isLocked}
                   >
                     <X className="w-4 h-4" />
                   </Button>

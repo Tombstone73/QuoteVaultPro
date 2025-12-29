@@ -11,7 +11,7 @@
  */
 
 import { db } from "../db";
-import { quoteAttachments, orderAttachments } from "@shared/schema";
+import { quoteAttachments } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { readFile } from "../utils/fileStorage";
@@ -177,6 +177,13 @@ export async function generateImageDerivatives(
   organizationId: string,
   fileName?: string | null
 ): Promise<void> {
+  // NOTE: Some deployments do not have derivative columns (e.g. order_attachments.thumb_key).
+  // Until schema parity is ensured, skip order attachment derivatives to avoid runtime SQL errors.
+  if (attachmentType === 'order') {
+    console.log(`[ThumbnailGenerator] Skipping ${attachmentId}: order derivatives disabled (schema mismatch protection)`);
+    return;
+  }
+
   // Early exit if sharp is unavailable
   const hasSharp = await ensureSharp();
   if (!hasSharp) {
@@ -186,11 +193,17 @@ export async function generateImageDerivatives(
 
   try {
     // Load attachment row to check idempotency and get fileName if needed
-    const table = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
     const [attachment] = await db
-      .select()
-      .from(table)
-      .where(eq(table.id, attachmentId))
+      .select({
+        id: quoteAttachments.id,
+        fileUrl: quoteAttachments.fileUrl,
+        fileName: quoteAttachments.fileName,
+        originalFilename: quoteAttachments.originalFilename,
+        thumbKey: quoteAttachments.thumbKey,
+        previewKey: quoteAttachments.previewKey,
+      })
+      .from(quoteAttachments)
+      .where(eq(quoteAttachments.id, attachmentId))
       .limit(1);
 
     if (!attachment) {
@@ -199,7 +212,7 @@ export async function generateImageDerivatives(
     }
 
     // Use fileName from attachment if not provided (for filename-based detection)
-    const effectiveFileName = fileName || (attachment as any).originalFilename || (attachment as any).fileName || null;
+    const effectiveFileName = fileName || attachment.originalFilename || attachment.fileName || null;
 
     // Check supported type using effective fileName (supports both mimeType and filename-based detection)
     if (!isSupportedImageType(mimeType, effectiveFileName)) {
@@ -265,28 +278,16 @@ export async function generateImageDerivatives(
     }
 
     // Update database with derivative keys (all-or-nothing)
-    if (attachmentType === 'quote') {
-      await db
-        .update(quoteAttachments)
-        .set({
-          thumbKey,
-          previewKey,
-          thumbStatus: 'thumb_ready',
-          thumbError: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(quoteAttachments.id, attachmentId));
-    } else {
-      // Order attachments: update thumbKey/previewKey
-      await db
-        .update(orderAttachments)
-        .set({
-          thumbKey,
-          previewKey,
-          updatedAt: new Date(),
-        })
-        .where(eq(orderAttachments.id, attachmentId));
-    }
+    await db
+      .update(quoteAttachments)
+      .set({
+        thumbKey,
+        previewKey,
+        thumbStatus: 'thumb_ready',
+        thumbError: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(quoteAttachments.id, attachmentId));
 
     console.log(`[ThumbnailGenerator] Successfully generated derivatives for ${attachmentId}`);
   } catch (error: any) {
