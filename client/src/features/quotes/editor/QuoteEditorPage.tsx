@@ -33,9 +33,27 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const { toast } = useToast();
     const state = useQuoteEditorState();
 
+    const isApprovedLocked = (state.quote as any)?.status === 'approved';
+    const lockedHint = 'Approved quotes are locked. Revise to change.';
+    const lockToastShownRef = useRef(false);
+
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
     const [editMode, setEditMode] = useState(mode !== "view");
     const readOnly = !editMode;
+
+    // Enforce enterprise locking: approved quotes are view-only
+    useEffect(() => {
+        if (!isApprovedLocked) return;
+
+        if (editMode) {
+            setEditMode(false);
+        }
+
+        if (!lockToastShownRef.current) {
+            lockToastShownRef.current = true;
+            toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
+        }
+    }, [isApprovedLocked, editMode, toast]);
 
     // Expanded line item (accordion) state
     // Stored as lineItemId (tempId || id) - persists across refetches
@@ -587,11 +605,24 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                     isDuplicatingQuote={state.isDuplicatingQuote}
                     status={(state.quote as any)?.status}
                     editMode={editMode}
-                    editModeDisabled={state.isSaving}
+                    editModeDisabled={state.isSaving || isApprovedLocked}
                     onBack={handleBack}
                     onDuplicateQuote={state.handlers.duplicateQuote}
-                    onEditModeChange={(next) => setEditMode(next)}
+                    onEditModeChange={(next) => {
+                        if (isApprovedLocked) {
+                            toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
+                            setEditMode(false);
+                            return;
+                        }
+                        setEditMode(next);
+                    }}
                 />
+
+                {isApprovedLocked && (
+                    <div className="mt-2 text-xs text-muted-foreground" title={lockedHint}>
+                        {lockedHint}
+                    </div>
+                )}
 
                 {/* Two-column layout: Left (Customer + Line Items) | Right (Summary) */}
                 <div className="grid gap-6 mt-6 lg:grid-cols-[1fr_400px]">
@@ -666,7 +697,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                                     <CardTitle className="text-xs font-medium text-muted-foreground">Attachments</CardTitle>
                                 </CardHeader>
                                 <CardContent>
-                                    <QuoteAttachmentsPanel quoteId={state.quoteId} />
+                                    <QuoteAttachmentsPanel quoteId={state.quoteId} locked={isApprovedLocked} />
                                 </CardContent>
                             </Card>
                         )}

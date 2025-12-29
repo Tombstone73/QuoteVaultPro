@@ -283,6 +283,9 @@ export default function InternalQuotes() {
 
   // Render cell content based on column key
   const renderCell = (quote: QuoteRow, columnKey: string) => {
+    const isApprovedLocked = (quote as any)?.status === "approved";
+    const lockedHint = "Approved quotes are locked. Revise to change.";
+
     switch (columnKey) {
       case "quoteNumber":
         return (
@@ -311,13 +314,15 @@ export default function InternalQuotes() {
                     if (e.key === 'Enter') handleSaveLabel(quote.id);
                     if (e.key === 'Escape') handleCancelLabelEdit();
                   }}
+                  disabled={isApprovedLocked}
                 />
                 <Button
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
-                  disabled={updateLabelMutation.isPending && editingQuoteId === quote.id}
+                  disabled={(updateLabelMutation.isPending && editingQuoteId === quote.id) || isApprovedLocked}
                   onClick={() => handleSaveLabel(quote.id)}
+                  title={isApprovedLocked ? lockedHint : undefined}
                 >
                   {updateLabelMutation.isPending && editingQuoteId === quote.id ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -331,14 +336,22 @@ export default function InternalQuotes() {
               </div>
             ) : (
               <div 
-                className="cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
-                onClick={() => handleStartLabelEdit(quote.id, quote.label || "")}
+                className={
+                  isApprovedLocked
+                    ? "px-2 py-1 rounded opacity-70 cursor-not-allowed"
+                    : "cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
+                }
+                onClick={() => {
+                  if (isApprovedLocked) return;
+                  handleStartLabelEdit(quote.id, quote.label || "");
+                }}
+                title={isApprovedLocked ? lockedHint : "Edit label"}
               >
                 {quote.label ? (
                   <span className="text-sm">{quote.label}</span>
                 ) : (
                   <span className="text-muted-foreground text-sm italic">
-                    Click to add...
+                    {isApprovedLocked ? "—" : "Click to add..."}
                   </span>
                 )}
               </div>
@@ -433,7 +446,8 @@ export default function InternalQuotes() {
                 size="sm"
                 variant="outline"
                 onClick={() => navigate(ROUTES.quotes.edit(quote.id))}
-                title="Edit quote"
+                disabled={isApprovedLocked}
+                title={isApprovedLocked ? lockedHint : "Edit quote"}
               >
                 <Edit className="h-4 w-4" />
               </Button>
@@ -470,8 +484,12 @@ export default function InternalQuotes() {
       });
 
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || "Failed to update quote");
+        const json = await response.json().catch(() => null);
+        const message =
+          (json && (json.error || json.message)) ||
+          (await response.text().catch(() => "")) ||
+          "Failed to update quote";
+        throw new Error(message);
       }
       return response.json();
     },

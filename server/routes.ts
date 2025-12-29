@@ -410,6 +410,24 @@ async function snapshotCustomerData(
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // Quote locking (enterprise rule): APPROVED quotes are immutable
+  // ────────────────────────────────────────────────────────────────────────────
+  const QUOTE_LOCKED_STATUS = 'approved';
+  const QUOTE_LOCKED_MESSAGE = 'Quote is approved and locked. Revise to make changes.';
+
+  const isQuoteLocked = (quote: any): boolean => {
+    return !!quote && quote.status === QUOTE_LOCKED_STATUS;
+  };
+
+  const assertQuoteEditable = (res: any, quote: any): boolean => {
+    if (isQuoteLocked(quote)) {
+      res.status(409).json({ error: QUOTE_LOCKED_MESSAGE });
+      return false;
+    }
+    return true;
+  };
+
   app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
       const userId = getUserId(req.user);
@@ -2919,6 +2937,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Quote not found" });
       }
 
+      if (!assertQuoteEditable(res, existing)) return;
+
       // Prevent clearing customerId or saving without line items
       if (customerId === null || customerId === undefined && !existing.customerId) {
         return res.status(400).json({ message: "Customer is required to save a quote." });
@@ -3013,6 +3033,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Quote not found" });
       }
 
+      if (!assertQuoteEditable(res, existing)) return;
+
       await storage.deleteQuote(organizationId, id);
       res.json({ success: true });
     } catch (error) {
@@ -3054,6 +3076,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { notes } = req.body;
       const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) return res.status(404).json({ message: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
       let state = await storage.getQuoteWorkflowState(id);
       if (!state) {
         state = await storage.createQuoteWorkflowState({ quoteId: id, status: 'change_requested', staffNotes: notes || null });
@@ -3079,6 +3103,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) return res.status(404).json({ message: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
       let state = await storage.getQuoteWorkflowState(id);
       if (!state) {
         state = await storage.createQuoteWorkflowState({ quoteId: id, status: 'staff_approved', approvedByStaffUserId: getUserId(req.user) });
@@ -3105,6 +3131,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { reason } = req.body;
       const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) return res.status(404).json({ message: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
       let state = await storage.getQuoteWorkflowState(id);
       if (!state) {
         state = await storage.createQuoteWorkflowState({ quoteId: id, status: 'rejected', rejectionReason: reason || null, rejectedByUserId: getUserId(req.user) });
@@ -3134,6 +3162,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
+
+      if (!assertQuoteEditable(res, quote)) return;
 
       // Allow placeholder line items (productId can be null for newly created items awaiting product selection)
       // This enables the "create first, then edit" workflow where artwork can be attached immediately
@@ -3274,6 +3304,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Quote not found" });
       }
 
+      if (!assertQuoteEditable(res, quote)) return;
+
       const updateData: any = {};
       const allowedStatus = ["draft", "active", "canceled"];
       if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
@@ -3316,6 +3348,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
+
+      if (!assertQuoteEditable(res, quote)) return;
 
       await storage.deleteLineItem(lineItemId);
       res.json({ success: true });
@@ -3477,6 +3511,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
+
+      // Validate quote belongs to org (prevents cross-tenant access)
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
+        .where(and(eq(quotes.id, req.params.id), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
       
       const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename } = req.body;
       
@@ -3600,6 +3642,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      // Validate quote belongs to org (prevents cross-tenant access)
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
+        .where(and(eq(quotes.id, req.params.id), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
       
       await db.delete(quoteAttachments)
         .where(and(
@@ -3644,10 +3694,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!quoteId || typeof quoteId !== 'string') return res.status(400).json({ error: 'quoteId is required for quote-attachment' });
 
       // Validate quote belongs to org
-      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
         .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
         .limit(1);
       if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
 
       const { createUploadSession } = await import('./services/chunkedUploads');
       const session = await createUploadSession({
@@ -3720,10 +3772,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!quoteId || typeof quoteId !== 'string') return res.status(400).json({ error: 'quoteId is required' });
 
       // Validate quote belongs to org
-      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
         .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
         .limit(1);
       if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
 
       const { finalizeUploadSession } = await import('./services/chunkedUploads');
       const finalized = await finalizeUploadSession({ uploadId, organizationId, quoteId });
@@ -3795,10 +3849,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } = req.body;
 
       // Validate quote belongs to org
-      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
         .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
         .limit(1);
       if (!quote) return res.status(404).json({ error: "Quote not found" });
+
+      if (!assertQuoteEditable(res, quote)) return;
 
       // Chunked upload link: finalize happens via /api/uploads/:uploadId/finalize.
       // This endpoint links a finalized upload into quote_attachments.
@@ -4075,11 +4131,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
-      // Validate quote belongs to org
-      const [quote] = await db.select({ id: quotes.id }).from(quotes)
+      // Validate quote belongs to org (prevents cross-tenant access)
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
         .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
         .limit(1);
       if (!quote) return res.status(404).json({ error: "Quote not found" });
+
+      if (!assertQuoteEditable(res, quote)) return;
 
       await db.delete(quoteAttachments)
         .where(and(
@@ -4181,6 +4239,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
+
+      // Validate quote belongs to org and enforce lock before any attachment writes
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
       
       const { fileName, fileUrl, fileSize, mimeType, description } = req.body;
       
@@ -4803,6 +4869,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { quoteId, lineItemId, fileId } = req.params;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      // Validate quote belongs to org and enforce lock before any attachment deletes
+      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+
+      if (!assertQuoteEditable(res, quote)) return;
       
       console.log(`[LineItemFiles:DELETE] quoteId=${quoteId}, lineItemId=${lineItemId}, fileId=${fileId}`);
       
@@ -7519,7 +7593,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const [attachment] = await db
         .insert(orderAttachments)
         .values(attachmentData as typeof orderAttachments.$inferInsert)
-        .returning();
+        .returning({
+          id: orderAttachments.id,
+          orderId: orderAttachments.orderId,
+          orderLineItemId: orderAttachments.orderLineItemId,
+          quoteId: orderAttachments.quoteId,
+          uploadedByUserId: orderAttachments.uploadedByUserId,
+          uploadedByName: orderAttachments.uploadedByName,
+          fileName: orderAttachments.fileName,
+          fileUrl: orderAttachments.fileUrl,
+          fileSize: orderAttachments.fileSize,
+          mimeType: orderAttachments.mimeType,
+          description: orderAttachments.description,
+          originalFilename: orderAttachments.originalFilename,
+          storedFilename: orderAttachments.storedFilename,
+          relativePath: orderAttachments.relativePath,
+          storageProvider: orderAttachments.storageProvider,
+          extension: orderAttachments.extension,
+          sizeBytes: orderAttachments.sizeBytes,
+          checksum: orderAttachments.checksum,
+          thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+          thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
+          role: orderAttachments.role,
+          side: orderAttachments.side,
+          isPrimary: orderAttachments.isPrimary,
+          thumbnailUrl: orderAttachments.thumbnailUrl,
+          createdAt: orderAttachments.createdAt,
+          updatedAt: orderAttachments.updatedAt,
+        });
 
       await storage.createOrderAuditLog({
         orderId: req.params.id,

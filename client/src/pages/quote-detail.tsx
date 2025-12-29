@@ -115,6 +115,9 @@ export default function QuoteDetail() {
     );
   }
 
+  const isApprovedLocked = (quote as any)?.status === 'approved';
+  const lockedHint = 'Approved quotes are locked. Revise to change.';
+
   return (
     <Page>
       <PageHeader
@@ -135,12 +138,24 @@ export default function QuoteDetail() {
         actions={
           <div className="flex items-center gap-2">
             <QuoteSourceBadge source={quote.source} />
-            {isInternalUser && quote.source === 'internal' && (
+            {isInternalUser && quote.source === 'internal' && !isApprovedLocked && (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => navigate(ROUTES.quotes.edit(quote.id))}
                 className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+              >
+                <Edit className="w-4 h-4 mr-2" />
+                Edit Quote
+              </Button>
+            )}
+            {isInternalUser && quote.source === 'internal' && isApprovedLocked && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled
+                title={lockedHint}
+                className="border-titan-border text-titan-text-secondary rounded-titan-md"
               >
                 <Edit className="w-4 h-4 mr-2" />
                 Edit Quote
@@ -167,6 +182,11 @@ export default function QuoteDetail() {
                 <Package className="w-4 h-4 mr-2" />
                 View Order
               </Button>
+            )}
+            {isApprovedLocked && (
+              <span className="text-xs text-titan-text-muted" title={lockedHint}>
+                {lockedHint}
+              </span>
             )}
           </div>
         }
@@ -332,7 +352,7 @@ export default function QuoteDetail() {
           title="Attachments"
           className="bg-titan-bg-card border-titan-border-subtle"
         >
-          <QuoteAttachmentsPanel quoteId={quote.id} />
+          <QuoteAttachmentsPanel quoteId={quote.id} locked={isApprovedLocked} />
         </DataCard>
 
         {/* Totals */}

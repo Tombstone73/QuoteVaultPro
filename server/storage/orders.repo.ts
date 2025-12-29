@@ -36,6 +36,35 @@ import {
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull } from "drizzle-orm";
 
+const ORDER_ATTACHMENT_SAFE_SELECT = {
+    id: orderAttachments.id,
+    orderId: orderAttachments.orderId,
+    orderLineItemId: orderAttachments.orderLineItemId,
+    quoteId: orderAttachments.quoteId,
+    uploadedByUserId: orderAttachments.uploadedByUserId,
+    uploadedByName: orderAttachments.uploadedByName,
+    fileName: orderAttachments.fileName,
+    fileUrl: orderAttachments.fileUrl,
+    fileSize: orderAttachments.fileSize,
+    mimeType: orderAttachments.mimeType,
+    description: orderAttachments.description,
+    originalFilename: orderAttachments.originalFilename,
+    storedFilename: orderAttachments.storedFilename,
+    relativePath: orderAttachments.relativePath,
+    storageProvider: orderAttachments.storageProvider,
+    extension: orderAttachments.extension,
+    sizeBytes: orderAttachments.sizeBytes,
+    checksum: orderAttachments.checksum,
+    thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+    thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
+    role: orderAttachments.role,
+    side: orderAttachments.side,
+    isPrimary: orderAttachments.isPrimary,
+    thumbnailUrl: orderAttachments.thumbnailUrl,
+    createdAt: orderAttachments.createdAt,
+    updatedAt: orderAttachments.updatedAt,
+} as const;
+
 export class OrdersRepository {
     constructor(private readonly dbInstance = db) { }
 
@@ -243,8 +272,6 @@ export class OrdersRepository {
                         checksum: a.checksum ?? null,
                         thumbnailRelativePath: a.thumbnailRelativePath ?? null,
                         thumbnailGeneratedAt: a.thumbnailGeneratedAt ?? null,
-                        thumbKey: a.thumbKey ?? null,
-                        previewKey: a.previewKey ?? null,
                         // role/side/isPrimary use defaults on order_attachments
                     }));
 
@@ -546,30 +573,51 @@ export class OrdersRepository {
 
     // Order attachments operations
     async getOrderAttachments(orderId: string): Promise<OrderAttachment[]> {
-        return await this.dbInstance
-            .select()
+        const rows = await this.dbInstance
+            .select(ORDER_ATTACHMENT_SAFE_SELECT)
             .from(orderAttachments)
             .where(eq(orderAttachments.orderId, orderId))
             .orderBy(desc(orderAttachments.createdAt));
+
+        // Keep response shape stable even when derivative columns are not in DB.
+        return rows.map((r) => ({
+            ...(r as any),
+            thumbKey: null,
+            previewKey: null,
+        })) as any;
     }
 
     async createOrderAttachment(attachment: InsertOrderAttachment): Promise<OrderAttachment> {
-        const [newAttachment] = await this.dbInstance.insert(orderAttachments).values(attachment).returning();
-        return newAttachment;
+        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeInsert } = attachment as any;
+        const [newAttachment] = await this.dbInstance
+            .insert(orderAttachments)
+            .values(safeInsert)
+            .returning(ORDER_ATTACHMENT_SAFE_SELECT);
+
+        return ({
+            ...(newAttachment as any),
+            thumbKey: null,
+            previewKey: null,
+        }) as any;
     }
 
     async updateOrderAttachment(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment> {
+        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeUpdates } = updates as any;
         const [updated] = await this.dbInstance
             .update(orderAttachments)
-            .set(updates)
+            .set(safeUpdates)
             .where(eq(orderAttachments.id, id))
-            .returning();
+            .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
         if (!updated) {
             throw new Error(`Order attachment ${id} not found`);
         }
 
-        return updated;
+        return ({
+            ...(updated as any),
+            thumbKey: null,
+            previewKey: null,
+        }) as any;
     }
 
     async deleteOrderAttachment(id: string): Promise<void> {
@@ -580,7 +628,7 @@ export class OrdersRepository {
     async listOrderFiles(orderId: string): Promise<(OrderAttachment & { uploadedByUser?: User | null })[]> {
         const files = await this.dbInstance
             .select({
-                file: orderAttachments,
+                file: ORDER_ATTACHMENT_SAFE_SELECT,
                 user: users,
             })
             .from(orderAttachments)
@@ -589,9 +637,11 @@ export class OrdersRepository {
             .orderBy(desc(orderAttachments.createdAt));
 
         return files.map(f => ({
-            ...f.file,
+            ...(f.file as any),
+            thumbKey: null,
+            previewKey: null,
             uploadedByUser: f.user || null,
-        }));
+        })) as any;
     }
 
     async attachFileToOrder(data: InsertOrderAttachment): Promise<OrderAttachment> {
@@ -610,8 +660,17 @@ export class OrdersRepository {
                 );
         }
 
-        const [newAttachment] = await this.dbInstance.insert(orderAttachments).values(data).returning();
-        return newAttachment;
+        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeInsert } = data as any;
+        const [newAttachment] = await this.dbInstance
+            .insert(orderAttachments)
+            .values(safeInsert)
+            .returning(ORDER_ATTACHMENT_SAFE_SELECT);
+
+        return ({
+            ...(newAttachment as any),
+            thumbKey: null,
+            previewKey: null,
+        }) as any;
     }
 
     async updateOrderFileMeta(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment> {
@@ -619,7 +678,7 @@ export class OrdersRepository {
         if (updates.isPrimary) {
             // Get the current file to know its orderId, role, side
             const [currentFile] = await this.dbInstance
-                .select()
+                .select(ORDER_ATTACHMENT_SAFE_SELECT)
                 .from(orderAttachments)
                 .where(eq(orderAttachments.id, id));
 
@@ -642,17 +701,22 @@ export class OrdersRepository {
             }
         }
 
+        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeUpdates } = updates as any;
         const [updated] = await this.dbInstance
             .update(orderAttachments)
-            .set(updates)
+            .set(safeUpdates)
             .where(eq(orderAttachments.id, id))
-            .returning();
+            .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
         if (!updated) {
             throw new Error(`Order file ${id} not found`);
         }
 
-        return updated;
+        return ({
+            ...(updated as any),
+            thumbKey: null,
+            previewKey: null,
+        }) as any;
     }
 
     async detachOrderFile(id: string): Promise<void> {
@@ -664,8 +728,8 @@ export class OrdersRepository {
         back?: OrderAttachment | null;
         other: OrderAttachment[];
     }> {
-        const files = await this.dbInstance
-            .select()
+        const rows = await this.dbInstance
+            .select(ORDER_ATTACHMENT_SAFE_SELECT)
             .from(orderAttachments)
             .where(
                 and(
@@ -674,6 +738,12 @@ export class OrdersRepository {
                 )
             )
             .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt));
+
+        const files = rows.map((r) => ({
+            ...(r as any),
+            thumbKey: null,
+            previewKey: null,
+        })) as any as OrderAttachment[];
 
         const front = files.find(f => f.side === 'front' && f.isPrimary) || files.find(f => f.side === 'front') || null;
         const back = files.find(f => f.side === 'back' && f.isPrimary) || files.find(f => f.side === 'back') || null;
