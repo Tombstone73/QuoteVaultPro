@@ -19,6 +19,7 @@ import { VoidQuoteDialog } from "@/components/VoidQuoteDialog";
 import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
+import { TimelinePanel } from "@/components/TimelinePanel";
 import type { CustomerSelectRef } from "@/components/CustomerSelect";
 
 type QuoteEditorPageProps = {
@@ -35,6 +36,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
 
     const isApprovedLocked = (state.quote as any)?.status === 'approved';
     const lockedHint = 'Approved quotes are locked. Revise to change.';
+    const convertedToOrderId = (state.quote as any)?.convertedToOrderId ?? null;
     const lockToastShownRef = useRef(false);
 
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
@@ -68,6 +70,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false);
     const [voidDialogOpen, setVoidDialogOpen] = useState(false);
     const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
+    const [timelineOpen, setTimelineOpen] = useState(false);
 
     // Ref for customer select to enable initial focus
     const customerSelectRef = useRef<CustomerSelectRef>(null);
@@ -739,6 +742,31 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                                 selectedCustomer={state.selectedCustomer}
                                 selectedContactId={state.selectedContactId}
                             />
+
+                            <Card className="rounded-lg border border-border/40 bg-card/30">
+                                <CardContent className="p-4">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="text-[11px] font-medium text-muted-foreground">Timeline</div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setTimelineOpen(v => !v)}
+                                            className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4"
+                                        >
+                                            {timelineOpen ? "Hide" : "Show"}
+                                        </button>
+                                    </div>
+
+                                    {timelineOpen ? (
+                                        <div className="mt-3">
+                                            <TimelinePanel
+                                                quoteId={state.quoteId ?? undefined}
+                                                orderId={convertedToOrderId ?? undefined}
+                                                limit={100}
+                                            />
+                                        </div>
+                                    ) : null}
+                                </CardContent>
+                            </Card>
                         </div>
                     </div>
                 </div>

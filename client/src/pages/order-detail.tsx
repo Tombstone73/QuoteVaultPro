@@ -42,6 +42,7 @@ import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
+import { TimelinePanel } from "@/components/TimelinePanel";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -1091,6 +1092,15 @@ export default function OrderDetail() {
 
           {/* Sidebar */}
           <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Timeline</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <TimelinePanel orderId={order.id} quoteId={order.quoteId ?? undefined} />
+              </CardContent>
+            </Card>
+
             {/* Bill To */}
             <Card>
               <CardHeader>
