@@ -41,6 +41,8 @@ import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
+import { QuoteWorkflowBadge } from "@/components/QuoteWorkflowBadge";
+import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 import { useAuth } from "@/hooks/useAuth";
 import {
   Page,
@@ -67,6 +69,7 @@ type QuoteRow = QuoteWithRelations & {
 const QUOTE_COLUMNS: ColumnDefinition[] = [
   { key: "quoteNumber", label: "Quote #", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
   { key: "label", label: "Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
+  { key: "status", label: "Status", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150 },
   { key: "date", label: "Date", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "items", label: "Items", defaultVisible: true, defaultWidth: 80, minWidth: 60, maxWidth: 120, sortable: true },
@@ -283,8 +286,13 @@ export default function InternalQuotes() {
 
   // Render cell content based on column key
   const renderCell = (quote: QuoteRow, columnKey: string) => {
-    const isApprovedLocked = (quote as any)?.status === "approved";
-    const lockedHint = "Approved quotes are locked. Revise to change.";
+    const workflowState = useQuoteWorkflowState(quote);
+    const isApprovedLocked = workflowState === 'approved' || workflowState === 'converted';
+    const lockedHint = workflowState === 'approved'
+      ? "Approved quotes are locked. Revise to change."
+      : workflowState === 'converted'
+      ? "This quote has been converted to an order."
+      : "";
 
     switch (columnKey) {
       case "quoteNumber":
@@ -383,6 +391,14 @@ export default function InternalQuotes() {
             ) : (
               <span className="text-muted-foreground">—</span>
             )}
+          </TableCell>
+        );
+      
+      case "status":
+        const workflowState = useQuoteWorkflowState(quote);
+        return (
+          <TableCell style={getColStyle("status")}>
+            {workflowState && <QuoteWorkflowBadge state={workflowState} />}
           </TableCell>
         );
       

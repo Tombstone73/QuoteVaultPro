@@ -16,6 +16,9 @@ import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-d
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
 import { TimelinePanel } from "@/components/TimelinePanel";
+import { QuoteWorkflowBadge } from "@/components/QuoteWorkflowBadge";
+import { QuoteWorkflowActions } from "@/components/QuoteWorkflowActions";
+import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 import type { QuoteWithRelations } from "@shared/schema";
 
 type QuoteDetailRouteParams = {
@@ -63,6 +66,9 @@ export default function QuoteDetail() {
   // Some deployments return a `convertedToOrderId` field; keep this optional in the UI without changing backend types.
   const convertedToOrderId =
     (quote as (QuoteWithRelations & { convertedToOrderId?: string | null }) | undefined)?.convertedToOrderId ?? null;
+
+  // Get effective workflow state
+  const workflowState = useQuoteWorkflowState(quote);
 
   const convertToOrder = useConvertQuoteToOrder(quoteId);
   const [showConvertDialog, setShowConvertDialog] = useState(false);
@@ -118,8 +124,12 @@ export default function QuoteDetail() {
     );
   }
 
-  const isApprovedLocked = (quote as any)?.status === 'approved';
-  const lockedHint = 'Approved quotes are locked. Revise to change.';
+  const isApprovedLocked = workflowState === 'approved' || workflowState === 'converted';
+  const lockedHint = workflowState === 'approved' 
+    ? 'Approved quotes are locked. Revise to change.'
+    : workflowState === 'converted'
+    ? 'This quote has been converted to an order.'
+    : '';
 
   const handleReviseQuote = async () => {
     if (!quote?.id || isRevising) return;
@@ -173,6 +183,7 @@ export default function QuoteDetail() {
         }
         actions={
           <div className="flex items-center gap-2">
+            {workflowState && <QuoteWorkflowBadge state={workflowState} />}
             <QuoteSourceBadge source={quote.source} />
             {isInternalUser && quote.source === 'internal' && !isApprovedLocked && (
               <Button
@@ -240,6 +251,28 @@ export default function QuoteDetail() {
       />
 
       <ContentLayout className="space-y-4">
+        {/* Workflow Actions */}
+        {isInternalUser && workflowState && (
+          <DataCard className="bg-titan-bg-card border-titan-border-subtle">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-titan-sm font-medium text-titan-text-primary">Workflow Actions</h3>
+                <p className="text-titan-xs text-titan-text-muted mt-0.5">
+                  Manage quote status and transitions
+                </p>
+              </div>
+              <QuoteWorkflowActions
+                quoteId={quote.id}
+                currentState={workflowState}
+                hasOrder={!!convertedToOrderId}
+                onTransitionComplete={() => {
+                  queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+                }}
+              />
+            </div>
+          </DataCard>
+        )}
+
         {/* Quote Info Cards */}
         <div className="grid lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 grid md:grid-cols-2 gap-4">
