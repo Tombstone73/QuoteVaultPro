@@ -4,8 +4,8 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables } from "@shared/schema";
-import { eq, desc, and, isNull } from "drizzle-orm";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs } from "@shared/schema";
+import { eq, desc, and, isNull, asc } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
@@ -3143,6 +3143,308 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error rejecting quote:', error);
       res.status(500).json({ message: 'Failed to reject quote' });
+    }
+  });
+
+  // Revise an approved quote: clone into a new editable draft
+  app.post("/api/quotes/:id/revise", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ message: "Not authenticated" });
+
+      const userRole = req.user?.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+      const sourceQuoteId = req.params.id;
+
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || 'Unknown';
+
+      const result = await db.transaction(async (tx) => {
+        const whereParts = [
+          eq(quotes.id, sourceQuoteId),
+          eq(quotes.organizationId, organizationId),
+        ];
+        if (!isInternalUser) {
+          whereParts.push(eq(quotes.userId, userId));
+        }
+
+        const sourceQuote = await tx
+          .select()
+          .from(quotes)
+          .where(and(...whereParts))
+          .limit(1)
+          .then((rows) => rows[0]);
+
+        if (!sourceQuote) {
+          throw Object.assign(new Error('Quote not found'), { statusCode: 404 });
+        }
+
+        if (String((sourceQuote as any).status) !== QUOTE_LOCKED_STATUS) {
+          throw Object.assign(new Error('Only approved quotes can be revised.'), { statusCode: 409 });
+        }
+
+        // Get or auto-initialize next quote number (same logic as createQuote)
+        let quoteNumberVar = await tx
+          .select()
+          .from(globalVariables)
+          .where(and(
+            eq(globalVariables.name, 'next_quote_number'),
+            eq(globalVariables.organizationId, organizationId)
+          ))
+          .limit(1)
+          .then((rows) => rows[0]);
+
+        if (!quoteNumberVar) {
+          const [createdVar] = await tx
+            .insert(globalVariables)
+            .values({
+              organizationId,
+              name: 'next_quote_number',
+              value: '1000',
+              description: 'Next quote number sequence (auto-initialized)',
+              category: 'numbering',
+              isActive: true,
+            })
+            .returning();
+          quoteNumberVar = createdVar;
+        }
+
+        const parsed = parseInt(String(quoteNumberVar.value), 10);
+        const nextQuoteNumber = Number.isFinite(parsed) ? parsed : 1000;
+
+        const [newQuote] = await tx
+          .insert(quotes)
+          .values({
+            organizationId,
+            quoteNumber: nextQuoteNumber,
+            label: sourceQuote.label,
+            userId: sourceQuote.userId,
+            status: 'draft' as any,
+            customerId: sourceQuote.customerId,
+            contactId: sourceQuote.contactId,
+            customerName: sourceQuote.customerName,
+            source: sourceQuote.source,
+            subtotal: sourceQuote.subtotal,
+            taxRate: sourceQuote.taxRate,
+            taxAmount: sourceQuote.taxAmount,
+            taxableSubtotal: sourceQuote.taxableSubtotal,
+            marginPercentage: sourceQuote.marginPercentage,
+            discountAmount: sourceQuote.discountAmount,
+            totalPrice: sourceQuote.totalPrice,
+
+            billToName: sourceQuote.billToName,
+            billToCompany: sourceQuote.billToCompany,
+            billToAddress1: sourceQuote.billToAddress1,
+            billToAddress2: sourceQuote.billToAddress2,
+            billToCity: sourceQuote.billToCity,
+            billToState: sourceQuote.billToState,
+            billToPostalCode: sourceQuote.billToPostalCode,
+            billToCountry: sourceQuote.billToCountry,
+            billToPhone: sourceQuote.billToPhone,
+            billToEmail: sourceQuote.billToEmail,
+
+            shippingMethod: sourceQuote.shippingMethod,
+            shippingMode: sourceQuote.shippingMode,
+            shipToName: sourceQuote.shipToName,
+            shipToCompany: sourceQuote.shipToCompany,
+            shipToAddress1: sourceQuote.shipToAddress1,
+            shipToAddress2: sourceQuote.shipToAddress2,
+            shipToCity: sourceQuote.shipToCity,
+            shipToState: sourceQuote.shipToState,
+            shipToPostalCode: sourceQuote.shipToPostalCode,
+            shipToCountry: sourceQuote.shipToCountry,
+            shipToPhone: sourceQuote.shipToPhone,
+            shipToEmail: sourceQuote.shipToEmail,
+            carrier: sourceQuote.carrier,
+            carrierAccountNumber: sourceQuote.carrierAccountNumber,
+            shippingInstructions: sourceQuote.shippingInstructions,
+
+            requestedDueDate: sourceQuote.requestedDueDate,
+            validUntil: sourceQuote.validUntil,
+
+            convertedToOrderId: null,
+          } as any)
+          .returning();
+
+        await tx
+          .update(globalVariables)
+          .set({
+            value: String(nextQuoteNumber + 1),
+            updatedAt: new Date(),
+          })
+          .where(eq(globalVariables.id, quoteNumberVar.id));
+
+        // Copy line items (preserve ordering)
+        const sourceLineItems = await tx
+          .select()
+          .from(quoteLineItems)
+          .where(and(
+            eq(quoteLineItems.quoteId, sourceQuoteId),
+          ))
+          .orderBy(asc(quoteLineItems.displayOrder), asc(quoteLineItems.createdAt));
+
+        const lineItemIdMap = new Map<string, string>();
+
+        for (const li of sourceLineItems) {
+          const [createdLi] = await tx
+            .insert(quoteLineItems)
+            .values({
+              quoteId: newQuote.id,
+              status: (li.status as any) ?? 'active',
+              productId: li.productId,
+              productName: li.productName,
+              variantId: li.variantId,
+              variantName: li.variantName,
+              productType: li.productType,
+              width: li.width,
+              height: li.height,
+              quantity: li.quantity,
+              specsJson: li.specsJson,
+              selectedOptions: li.selectedOptions as any,
+              linePrice: li.linePrice,
+              formulaLinePrice: (li as any).formulaLinePrice ?? null,
+              priceOverride: (li as any).priceOverride ?? null,
+              priceBreakdown: li.priceBreakdown as any,
+              materialUsages: (li as any).materialUsages ?? [],
+              taxAmount: (li as any).taxAmount ?? '0',
+              isTaxableSnapshot: (li as any).isTaxableSnapshot ?? true,
+              displayOrder: li.displayOrder,
+              isTemporary: false,
+              createdByUserId: li.createdByUserId ?? null,
+            } as any)
+            .returning();
+
+          lineItemIdMap.set(li.id, createdLi.id);
+        }
+
+        // Copy attachments (quote-level + line-item). Also copy attachment pages for PDF thumbnails.
+        const sourceAttachments = await tx
+          .select()
+          .from(quoteAttachments)
+          .where(and(
+            eq(quoteAttachments.quoteId, sourceQuoteId),
+            eq(quoteAttachments.organizationId, organizationId),
+          ))
+          .orderBy(asc(quoteAttachments.createdAt));
+
+        const attachmentIdMap = new Map<string, string>();
+
+        for (const att of sourceAttachments) {
+          const mappedLineItemId = att.quoteLineItemId
+            ? (lineItemIdMap.get(att.quoteLineItemId) ?? null)
+            : null;
+
+          if (att.quoteLineItemId && !mappedLineItemId) {
+            throw Object.assign(new Error('Attachment references a line item that could not be mapped.'), { statusCode: 500 });
+          }
+
+          const [createdAtt] = await tx
+            .insert(quoteAttachments)
+            .values({
+              quoteId: newQuote.id,
+              quoteLineItemId: mappedLineItemId,
+              organizationId,
+              uploadedByUserId: att.uploadedByUserId,
+              uploadedByName: att.uploadedByName,
+
+              fileName: att.fileName,
+              fileUrl: att.fileUrl,
+              fileSize: att.fileSize,
+              mimeType: att.mimeType,
+              description: att.description,
+
+              originalFilename: att.originalFilename,
+              storedFilename: att.storedFilename,
+              relativePath: att.relativePath,
+              storageProvider: att.storageProvider,
+              extension: att.extension,
+              sizeBytes: att.sizeBytes,
+              checksum: att.checksum,
+
+              thumbnailRelativePath: att.thumbnailRelativePath,
+              thumbnailGeneratedAt: att.thumbnailGeneratedAt,
+              thumbStatus: att.thumbStatus,
+              thumbKey: att.thumbKey,
+              previewKey: att.previewKey,
+              thumbError: att.thumbError,
+
+              pageCount: att.pageCount,
+              pageCountStatus: att.pageCountStatus,
+              pageCountError: att.pageCountError,
+              pageCountUpdatedAt: att.pageCountUpdatedAt,
+
+              bucket: att.bucket,
+              updatedAt: new Date(),
+            } as any)
+            .returning();
+
+          attachmentIdMap.set(att.id, createdAtt.id);
+
+          // Copy PDF thumbnail pages if present
+          const sourcePages = await tx
+            .select()
+            .from(quoteAttachmentPages)
+            .where(and(
+              eq(quoteAttachmentPages.attachmentId, att.id),
+              eq(quoteAttachmentPages.organizationId, organizationId),
+            ))
+            .orderBy(asc(quoteAttachmentPages.pageIndex));
+
+          for (const p of sourcePages) {
+            await tx
+              .insert(quoteAttachmentPages)
+              .values({
+                organizationId,
+                attachmentId: createdAtt.id,
+                pageIndex: p.pageIndex,
+                thumbStatus: p.thumbStatus,
+                thumbKey: p.thumbKey,
+                previewKey: p.previewKey,
+                thumbError: p.thumbError,
+                updatedAt: new Date(),
+              } as any);
+          }
+        }
+
+        // Provenance via audit logs (both quotes)
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName,
+          actionType: 'CREATE',
+          entityType: 'quote',
+          entityId: newQuote.id,
+          entityName: newQuote.quoteNumber != null ? String(newQuote.quoteNumber) : undefined,
+          description: `Created as revision of quote ${sourceQuote.quoteNumber ?? ''}`.trim(),
+          newValues: { sourceQuoteId: sourceQuote.id, sourceQuoteNumber: sourceQuote.quoteNumber },
+        } as any);
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName,
+          actionType: 'UPDATE',
+          entityType: 'quote',
+          entityId: sourceQuote.id,
+          entityName: sourceQuote.quoteNumber != null ? String(sourceQuote.quoteNumber) : undefined,
+          description: `Revised to quote ${newQuote.quoteNumber ?? ''}`.trim(),
+          newValues: { revisedQuoteId: newQuote.id, revisedQuoteNumber: newQuote.quoteNumber },
+        } as any);
+
+        return {
+          id: newQuote.id,
+          quoteNumber: newQuote.quoteNumber,
+        };
+      });
+
+      return res.json(result);
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      const message = error?.message || 'Failed to revise quote';
+      console.error('[Quote:Revise] Error:', error);
+      return res.status(status).json({ message });
     }
   });
 

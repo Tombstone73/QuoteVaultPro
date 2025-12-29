@@ -29,6 +29,7 @@ export default function QuoteDetail() {
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [isRevising, setIsRevising] = useState(false);
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
@@ -118,6 +119,39 @@ export default function QuoteDetail() {
   const isApprovedLocked = (quote as any)?.status === 'approved';
   const lockedHint = 'Approved quotes are locked. Revise to change.';
 
+  const handleReviseQuote = async () => {
+    if (!quote?.id || isRevising) return;
+    setIsRevising(true);
+    try {
+      const response = await fetch(`/api/quotes/${quote.id}/revise`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(json?.message || json?.error || 'Failed to revise quote');
+      }
+      const newQuoteId = json?.id;
+      if (!newQuoteId) {
+        throw new Error('Server did not return a new quote id');
+      }
+      queryClient.invalidateQueries({ queryKey: ['/api/quotes'] });
+      toast({
+        title: 'Revision created',
+        description: json?.quoteNumber ? `Created Quote #${json.quoteNumber}` : 'New draft quote created.',
+      });
+      navigate(ROUTES.quotes.detail(newQuoteId));
+    } catch (err: any) {
+      toast({
+        title: 'Could not revise quote',
+        description: err?.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsRevising(false);
+    }
+  };
+
   return (
     <Page>
       <PageHeader
@@ -159,6 +193,17 @@ export default function QuoteDetail() {
               >
                 <Edit className="w-4 h-4 mr-2" />
                 Edit Quote
+              </Button>
+            )}
+            {isInternalUser && isApprovedLocked && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleReviseQuote}
+                disabled={isRevising}
+                className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+              >
+                {isRevising ? 'Revising...' : 'Revise Quote'}
               </Button>
             )}
             {quote.status !== 'canceled' && !convertedToOrderId && (
