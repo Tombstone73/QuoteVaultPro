@@ -94,8 +94,8 @@ export const ALLOWED_TRANSITIONS: Record<QuoteWorkflowState, QuoteWorkflowState[
   draft: ['sent', 'rejected'],
   sent: ['approved', 'rejected', 'expired', 'draft'], // Can return to draft for edits
   approved: [], // TERMINAL: Approved quotes are locked (use "Revise" to clone)
-  rejected: ['draft'], // Can revive a rejected quote
-  expired: ['sent', 'draft'], // Can resend or edit expired quote (internal override)
+  rejected: [], // TERMINAL: Use "Revise Quote" to create new draft
+  expired: [], // TERMINAL: Use "Revise Quote" to create new draft
   converted: [], // TERMINAL: Order already created (informational only)
 };
 
@@ -218,12 +218,7 @@ export function getAvailableActions(state: QuoteWorkflowState, hasOrder: boolean
         });
         break;
       case 'draft':
-        actions.push({
-          action: 'reopen',
-          label: 'Reopen as Draft',
-          targetState: 'draft',
-          description: 'Return this quote to draft status for editing',
-        });
+        // REMOVED: Terminal states cannot be mutated (use Revise Quote to clone)
         break;
       case 'expired':
         // Expiration is automatic, not a manual action
