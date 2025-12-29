@@ -14,6 +14,7 @@ import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/compone
 import { useToast } from "@/hooks/use-toast";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
+import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
 import type { QuoteWithRelations } from "@shared/schema";
 
 type QuoteDetailRouteParams = {
@@ -324,6 +325,14 @@ export default function QuoteDetail() {
               </TableBody>
             </Table>
           </div>
+        </DataCard>
+
+        {/* Attachments (compact; between Notes and Totals) */}
+        <DataCard
+          title="Attachments"
+          className="bg-titan-bg-card border-titan-border-subtle"
+        >
+          <QuoteAttachmentsPanel quoteId={quote.id} />
         </DataCard>
 
         {/* Totals */}

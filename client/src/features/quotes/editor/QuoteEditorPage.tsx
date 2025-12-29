@@ -18,6 +18,7 @@ import { CustomerInfoFooter } from "./components/CustomerInfoFooter";
 import { VoidQuoteDialog } from "@/components/VoidQuoteDialog";
 import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
+import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
 import type { CustomerSelectRef } from "@/components/CustomerSelect";
 
 type QuoteEditorPageProps = {
@@ -657,6 +658,18 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             onQuoteNotesChange={state.handlers.setQuoteNotes}
                             onCopyCustomerAddress={state.handlers.handleCopyCustomerAddress}
                         />
+
+                        {/* Attachments (between Notes and Totals) */}
+                        {!!state.quoteId && (
+                            <Card>
+                                <CardHeader className="pb-3">
+                                    <CardTitle className="text-xs font-medium text-muted-foreground">Attachments</CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                    <QuoteAttachmentsPanel quoteId={state.quoteId} />
+                                </CardContent>
+                            </Card>
+                        )}
 
                         <div className="space-y-6">
                             {/* Quote Summary */}
