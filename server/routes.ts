@@ -17,6 +17,21 @@ import * as syncWorker from "./workers/syncProcessor";
 import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
 import { getProfile, profileRequiresDimensions, type FlatGoodsConfig, type RollMaterialConfig, flatGoodsCalculator, buildFlatGoodsInput } from "@shared/pricingProfiles";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "./quoteOrderPricing";
+import { 
+  getEffectiveWorkflowState, 
+  isValidTransition, 
+  getTransitionBlockReason, 
+  workflowStateToDb,
+  isQuoteLocked,
+  DB_TO_WORKFLOW,
+  WORKFLOW_TO_DB,
+  type QuoteStatusDB,
+  type QuoteWorkflowState,
+  type TransitionRequest,
+  transitionRequestSchema,
+  APPROVED_LOCK_MESSAGE,
+  CONVERTED_LOCK_MESSAGE,
+} from "@shared/quoteWorkflow";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -411,18 +426,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Quote locking (enterprise rule): APPROVED quotes are immutable
+  // Quote Workflow (enterprise rule): Formal state machine enforcement
   // ────────────────────────────────────────────────────────────────────────────
-  const QUOTE_LOCKED_STATUS = 'approved';
-  const QUOTE_LOCKED_MESSAGE = 'Quote is approved and locked. Revise to make changes.';
-
-  const isQuoteLocked = (quote: any): boolean => {
-    return !!quote && quote.status === QUOTE_LOCKED_STATUS;
+  
+  /**
+   * Get effective workflow state for a quote
+   */
+  const getQuoteWorkflowState = (quote: any): QuoteWorkflowState => {
+    const dbStatus = quote.status as QuoteStatusDB;
+    const validUntil = quote.validUntil;
+    const hasOrder = !!quote.convertedToOrderId;
+    return getEffectiveWorkflowState(dbStatus, validUntil, hasOrder);
   };
 
+  /**
+   * Check if quote is locked (immutable)
+   */
+  const isQuoteLockedFn = (quote: any): boolean => {
+    const state = getQuoteWorkflowState(quote);
+    return isQuoteLocked(state);
+  };
+
+  /**
+   * Assert quote is editable, return false and send error response if locked
+   */
   const assertQuoteEditable = (res: any, quote: any): boolean => {
-    if (isQuoteLocked(quote)) {
-      res.status(409).json({ error: QUOTE_LOCKED_MESSAGE });
+    const state = getQuoteWorkflowState(quote);
+    if (isQuoteLocked(state)) {
+      const message = state === 'approved' ? APPROVED_LOCK_MESSAGE : CONVERTED_LOCK_MESSAGE;
+      res.status(409).json({ error: message });
+      return false;
+    }
+    return true;
+  };
+
+  /**
+   * Validate status transition, return false and send error if invalid
+   */
+  const assertValidTransition = (res: any, quote: any, newDbStatus: QuoteStatusDB): boolean => {
+    const currentState = getQuoteWorkflowState(quote);
+    const targetState = DB_TO_WORKFLOW[newDbStatus];
+    
+    if (!isValidTransition(currentState, targetState)) {
+      const reason = getTransitionBlockReason(currentState, targetState);
+      res.status(403).json({ error: reason });
       return false;
     }
     return true;
@@ -2939,6 +2986,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!assertQuoteEditable(res, existing)) return;
 
+      // If status is being changed, validate the transition
+      if (status !== undefined && status !== existing.status) {
+        if (!assertValidTransition(res, existing, status)) return;
+      }
+
       // Prevent clearing customerId or saving without line items
       if (customerId === null || customerId === undefined && !existing.customerId) {
         return res.status(400).json({ message: "Customer is required to save a quote." });
@@ -3015,6 +3067,99 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error updating quote:", error);
       res.status(500).json({ message: "Failed to update quote" });
+    }
+  });
+
+  // Explicit status transition endpoint (POST /api/quotes/:id/transition)
+  // Used for workflow actions like "Send", "Approve", "Reject", etc.
+  app.post("/api/quotes/:id/transition", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ message: "User not authenticated" });
+      
+      const { id: quoteId } = req.params;
+      
+      // Validate request body
+      const validationResult = transitionRequestSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        return res.status(400).json({ 
+          error: "Invalid transition request", 
+          details: validationResult.error.errors 
+        });
+      }
+      
+      const { toState, reason, overrideExpired } = validationResult.data;
+      
+      // Get existing quote
+      const quote = await storage.getQuoteById(organizationId, quoteId);
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+      
+      // Get current workflow state
+      const currentState = getQuoteWorkflowState(quote);
+      
+      // Validate transition
+      if (!isValidTransition(currentState, toState)) {
+        const reason = getTransitionBlockReason(currentState, toState);
+        return res.status(403).json({ error: reason });
+      }
+      
+      // Convert workflow state to DB enum
+      let newDbStatus: QuoteStatusDB;
+      try {
+        newDbStatus = workflowStateToDb(toState);
+      } catch (error) {
+        return res.status(400).json({ 
+          error: `Cannot transition to derived state "${toState}"` 
+        });
+      }
+      
+      // Special handling for expiration override
+      if (currentState === 'expired' && !overrideExpired) {
+        return res.status(403).json({ 
+          error: "This quote has expired. Set overrideExpired=true to proceed." 
+        });
+      }
+      
+      // Update quote status
+      const updatedQuote = await storage.updateQuote(organizationId, quoteId, { 
+        status: newDbStatus as any
+      });
+      
+      // Create timeline event
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+          actionType: 'UPDATE',
+          entityType: 'quote',
+          entityId: quoteId,
+          entityName: quote.quoteNumber?.toString() || quoteId,
+          description: `Changed status from ${DB_TO_WORKFLOW[quote.status as QuoteStatusDB]} to ${toState}${reason ? ': ' + reason : ''}`,
+          oldValues: { status: quote.status },
+          newValues: { status: newDbStatus },
+        });
+      } catch (timelineError) {
+        console.error('[TRANSITION] Failed to create timeline event:', timelineError);
+        // Continue - don't fail the transition if timeline creation fails
+      }
+      
+      res.json({ 
+        success: true, 
+        data: {
+          quote: updatedQuote,
+          previousState: currentState,
+          newState: toState,
+          newDbStatus: newDbStatus,
+        }
+      });
+    } catch (error) {
+      console.error("Error transitioning quote status:", error);
+      res.status(500).json({ message: "Failed to transition quote status" });
     }
   });
 
@@ -3181,7 +3326,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           throw Object.assign(new Error('Quote not found'), { statusCode: 404 });
         }
 
-        if (String((sourceQuote as any).status) !== QUOTE_LOCKED_STATUS) {
+        // Only approved quotes (DB status 'active') can be revised
+        if (String((sourceQuote as any).status) !== 'active') {
           throw Object.assign(new Error('Only approved quotes can be revised.'), { statusCode: 409 });
         }
 
