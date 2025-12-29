@@ -5,6 +5,7 @@
 
 import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { Button } from "@/components/ui/button";
 import { 
   Dialog,
@@ -43,6 +44,8 @@ const ACTION_ICONS = {
   approve: CheckCircle,
   reject: XCircle,
   reopen: FileEdit,
+  request_approval: Send,
+  return_to_draft: FileEdit,
 };
 
 export function QuoteWorkflowActions({ 
@@ -54,14 +57,17 @@ export function QuoteWorkflowActions({
 }: QuoteWorkflowActionsProps) {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { preferences, isLoading: prefsLoading } = useOrgPreferences();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<ReturnType<typeof getAvailableActions>[0] | null>(null);
   const [reason, setReason] = useState("");
   const [isApproveAndSending, setIsApproveAndSending] = useState(false);
   
-  // Check if user can approve quotes
-  const isInternalUser = user && ['owner', 'admin', 'manager', 'employee'].includes(user.role || '');
+  // Check if user can approve quotes (case-insensitive role check)
+  const userRole = (user?.role || '').toLowerCase();
+  const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+  const requireApproval = preferences?.quotes?.requireApproval || false;
 
   const transitionMutation = useMutation({
     mutationFn: async ({ 
@@ -115,9 +121,41 @@ export function QuoteWorkflowActions({
     },
   });
 
-  const availableActions = getAvailableActions(currentState, hasOrder);
+  let availableActions = getAvailableActions(currentState, hasOrder);
+  
+  // Show Approve & Send only for approvers when in draft or pending_approval
+  const showApproveAndSend = requireApproval && 
+    (currentState === 'draft' || currentState === 'pending_approval') && 
+    isInternalUser;
+  
+  // Filter actions based on requireApproval preference and user permissions
+  if (requireApproval) {
+    if (currentState === 'draft') {
+      if (!isInternalUser) {
+        // Non-approvers: only show request_approval action
+        availableActions = availableActions.filter(action => action.action === 'request_approval');
+      } else {
+        // Approvers: can approve directly or request approval (remove request_approval for cleaner UX)
+        availableActions = availableActions.filter(action => action.action !== 'request_approval');
+      }
+    } else if (currentState === 'pending_approval') {
+      if (!isInternalUser) {
+        // Non-approvers: can only return to draft
+        availableActions = availableActions.filter(action => action.action === 'return_to_draft');
+      }
+      // Approvers see approve/reject from getAvailableActions
+    }
+  } else {
+    // No approval required: remove request_approval action
+    availableActions = availableActions.filter(action => action.action !== 'request_approval');
+  }
+  
+  // Always filter out actions user doesn't have permission for
+  if (!isInternalUser) {
+    availableActions = availableActions.filter(action => action.action !== 'approve');
+  }
 
-  if (availableActions.length === 0) {
+  if (availableActions.length === 0 && !showApproveAndSend && !(requireApproval && currentState === 'draft')) {
     return null;
   }
 
@@ -196,14 +234,18 @@ export function QuoteWorkflowActions({
   };
 
   const Icon = pendingAction ? ACTION_ICONS[pendingAction.action as keyof typeof ACTION_ICONS] : null;
-
-  // Show Approve & Send button only for draft quotes when user can approve
-  const showApproveAndSend = currentState === 'draft' && isInternalUser;
   
   return (
     <>
-      <div className={`flex flex-wrap gap-2 ${className || ''}`}>
-        {availableActions.map((action) => {
+      <div className="space-y-2">
+        {requireApproval && currentState === 'pending_approval' && !isInternalUser && (
+          <div className="text-sm text-muted-foreground p-2 bg-muted/50 rounded-md">
+            ⏳ <strong>Pending Approval</strong> — Waiting for authorized user to approve.
+          </div>
+        )}
+        
+        <div className={`flex flex-wrap gap-2 ${className || ''}`}>
+          {availableActions.map((action) => {
           const ActionIcon = ACTION_ICONS[action.action as keyof typeof ACTION_ICONS];
           return (
             <Button
@@ -240,6 +282,7 @@ export function QuoteWorkflowActions({
             {isApproveAndSending ? "Processing..." : "Approve & Send"}
           </Button>
         )}
+        </div>
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

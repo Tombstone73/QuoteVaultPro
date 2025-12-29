@@ -13,6 +13,7 @@ import Home from "@/pages/home";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
 import InternalQuotes from "@/pages/internal-quotes";
+import ApprovalsPage from "@/pages/ApprovalsPage";
 import Admin from "@/pages/admin";
 import AdminUsers from "@/pages/admin-users";
 import UserManagement from "@/pages/user-management";
@@ -78,6 +79,7 @@ function Router() {
         <Route path={ROUTES.quotes.detail(":id")} element={<QuoteEditorPage mode="view" />} />
         <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />
+        <Route path="/approvals" element={<ApprovalsPage />} />
 
         {/* Admin routes */}
         <Route path="/admin/users" element={<AdminUsers />} />

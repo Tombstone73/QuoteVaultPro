@@ -29,7 +29,7 @@ export const organizationTypeEnum = pgEnum('organization_type', ['internal', 'ex
 export const organizationStatusEnum = pgEnum('organization_status', ['active', 'suspended', 'trial', 'canceled']);
 
 // Quote status enum
-export const quoteStatusEnum = pgEnum('quote_status', ['draft', 'pending', 'active', 'canceled']);
+export const quoteStatusEnum = pgEnum('quote_status', ['draft', 'pending_approval', 'pending', 'active', 'canceled']);
 
 // Organizations table - top-level tenant container
 export const organizations = pgTable("organizations", {

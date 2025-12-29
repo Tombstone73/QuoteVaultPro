@@ -4,9 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Save, X, ArrowLeft, Ban, Mail } from "lucide-react";
+import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 import {
     Tooltip,
     TooltipContent,
@@ -51,6 +52,15 @@ type SummaryCardProps = {
     quoteTaxRateOverride?: number | null;
     onQuoteTaxExemptChange?: (exempt: boolean | null) => void;
     onQuoteTaxRateOverrideChange?: (rate: number | null) => void;
+    workflowState?: QuoteWorkflowState;
+    requireApproval?: boolean;
+    isInternalUser?: boolean;
+    onApprove?: () => void;
+    onApproveAndSend?: () => void;
+    onRequestApproval?: () => void;
+    isApproving?: boolean;
+    isApprovingAndSending?: boolean;
+    isRequestingApproval?: boolean;
 };
 
 export function SummaryCard({
@@ -84,6 +94,15 @@ export function SummaryCard({
     quoteTaxRateOverride,
     onQuoteTaxExemptChange,
     onQuoteTaxRateOverrideChange,
+    workflowState,
+    requireApproval = false,
+    isInternalUser = false,
+    onApprove,
+    onApproveAndSend,
+    onRequestApproval,
+    isApproving = false,
+    isApprovingAndSending = false,
+    isRequestingApproval = false,
 }: SummaryCardProps) {
     const [showTaxOverride, setShowTaxOverride] = useState(false);
     const safeDiscount = Number.isFinite(discountAmount) ? Math.max(0, discountAmount) : 0;
@@ -98,7 +117,25 @@ export function SummaryCard({
     const hasQuoteNumber = Boolean(quoteNumber);
     
     // Only show Cancel button for quotes with numbers that are drafts
-    const showCancelQuote = hasQuoteNumber && quoteStatus === 'draft' && !readOnly && !!onCancelQuote;
+    const showCancelQuote = hasQuoteNumber && quoteStatus === 'draft' && onCancelQuote;
+
+    // Approval workflow logic (independent of Edit Mode)
+    const isDraft = workflowState === 'draft';
+    const isPendingApproval = workflowState === 'pending_approval';
+    const isSent = workflowState === 'sent';
+    
+    // Draft state with approval required
+    const showRequestApproval = requireApproval && isDraft && !isInternalUser;
+    const showApprovalActions = requireApproval && (isDraft || isPendingApproval) && isInternalUser;
+    
+    // Pending approval state for non-approvers
+    const showPendingApprovalHint = requireApproval && isPendingApproval && !isInternalUser;
+    
+    // Draft state for non-approvers
+    const showApprovalRequiredHint = requireApproval && isDraft && !isInternalUser;
+    
+    // Hide Email Quote in draft/pending_approval when approval required
+    const hideEmailInDraft = requireApproval && (isDraft || isPendingApproval);
     
     return (
         <Card className="rounded-lg border border-border/40 bg-card/50">
@@ -264,15 +301,73 @@ export function SummaryCard({
                             </Button>
                         )}
 
-                        {/* Row 3: Email Quote (full-width) */}
-                        <Button
-                            variant="outline"
-                            className="w-full h-10"
-                            disabled
-                        >
-                            <Mail className="w-4 h-4 mr-2" />
-                            Email Quote
-                        </Button>
+                        {/* Row 3: Approval Workflow Actions */}
+                        {showApprovalActions ? (
+                            // Approvers see Approve + Approve & Send buttons
+                            <>
+                                <Button
+                                    variant="default"
+                                    className="w-full h-10"
+                                    onClick={onApprove}
+                                    disabled={isApproving || isApprovingAndSending || isSaving}
+                                >
+                                    {isApproving ? (
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                    ) : (
+                                        <CheckCircle className="w-4 h-4 mr-2" />
+                                    )}
+                                    {isApproving ? "Approving…" : "Approve"}
+                                </Button>
+                                <Button
+                                    variant="default"
+                                    className="w-full h-10"
+                                    onClick={onApproveAndSend}
+                                    disabled={isApproving || isApprovingAndSending || isSaving}
+                                >
+                                    {isApprovingAndSending ? (
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                    ) : (
+                                        <CheckCircle className="w-4 h-4 mr-2" />
+                                    )}
+                                    {isApprovingAndSending ? "Approving & Sending…" : "Approve & Send"}
+                                </Button>
+                            </>
+                        ) : showRequestApproval ? (
+                            // Non-approvers in draft state see Request Approval button
+                            <>
+                                <Button
+                                    variant="default"
+                                    className="w-full h-10"
+                                    onClick={onRequestApproval}
+                                    disabled={isRequestingApproval || isSaving}
+                                >
+                                    {isRequestingApproval ? (
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                    ) : (
+                                        <CheckCircle className="w-4 h-4 mr-2" />
+                                    )}
+                                    {isRequestingApproval ? "Requesting…" : "Request Approval"}
+                                </Button>
+                                <div className="w-full p-2 text-xs text-muted-foreground bg-muted/50 rounded-md border border-border/40">
+                                    💡 This quote requires approval before it can be sent to the customer.
+                                </div>
+                            </>
+                        ) : showPendingApprovalHint ? (
+                            // Non-approvers in pending_approval state see disabled state
+                            <div className="w-full p-3 text-sm text-muted-foreground bg-muted/50 rounded-md border border-border/40">
+                                ⏳ <strong>Pending Approval</strong> — Waiting for an authorized user to approve this quote.
+                            </div>
+                        ) : !hideEmailInDraft ? (
+                            // Email Quote button (for sent/approved states or when approval not required)
+                            <Button
+                                variant="outline"
+                                className="w-full h-10"
+                                disabled
+                            >
+                                <Mail className="w-4 h-4 mr-2" />
+                                Email Quote
+                            </Button>
+                        ) : null}
 
                         {/* Row 4: Cancel Quote (conditional, shown for quotes with numbers) */}
                         {showCancelQuote && (

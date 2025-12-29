@@ -5,7 +5,7 @@ import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
 import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates } from "@shared/schema";
-import { eq, desc, and, isNull, asc, inArray, or } from "drizzle-orm";
+import { eq, desc, and, isNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
@@ -2966,6 +2966,117 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Pending approvals endpoint - for approvers only
+  app.get("/api/quotes/pending-approvals", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      const userRole = (req.user.role || '').toLowerCase();
+      const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+      
+      if (!isApprover) {
+        return res.status(403).json({ error: "Only internal users can view pending approvals" });
+      }
+
+      // Query quotes with status='pending_approval' for this organization
+      const pendingQuotes = await db
+        .select({
+          id: quotes.id,
+          quoteNumber: quotes.quoteNumber,
+          customerName: quotes.customerName,
+          customerId: quotes.customerId,
+          contactId: quotes.contactId,
+          totalPrice: quotes.totalPrice,
+          createdAt: quotes.createdAt,
+          userId: quotes.userId,
+          status: quotes.status,
+          // Customer details
+          customerCompanyName: customers.companyName,
+          // Contact details
+          contactFirstName: customerContacts.firstName,
+          contactLastName: customerContacts.lastName,
+          contactEmail: customerContacts.email,
+        })
+        .from(quotes)
+        .leftJoin(customers, eq(quotes.customerId, customers.id))
+        .leftJoin(customerContacts, eq(quotes.contactId, customerContacts.id))
+        .where(
+          and(
+            eq(quotes.organizationId, organizationId),
+            eq(quotes.status, 'pending_approval')
+          )
+        )
+        .orderBy(desc(quotes.createdAt));
+
+      // Get quote IDs for audit log lookup
+      const quoteIds = pendingQuotes.map(q => q.id);
+      
+      // Query audit logs to find who requested approval (most recent transition to pending_approval)
+      const approvalRequestLogs = quoteIds.length > 0
+        ? await db
+            .select({
+              entityId: auditLogs.entityId,
+              userId: auditLogs.userId,
+              userName: auditLogs.userName,
+              createdAt: auditLogs.createdAt,
+            })
+            .from(auditLogs)
+            .where(
+              and(
+                eq(auditLogs.organizationId, organizationId),
+                eq(auditLogs.entityType, 'quote'),
+                inArray(auditLogs.entityId, quoteIds),
+                sql`${auditLogs.description} LIKE '%to pending_approval%'`
+              )
+            )
+            .orderBy(desc(auditLogs.createdAt))
+        : [];
+      
+      // Create map of quoteId -> requester info (use most recent transition)
+      const requestersMap = new Map<string, { userId: string | null; userName: string | null; requestedAt: Date }>();
+      for (const log of approvalRequestLogs) {
+        if (log.entityId && !requestersMap.has(log.entityId)) {
+          requestersMap.set(log.entityId, {
+            userId: log.userId,
+            userName: log.userName,
+            requestedAt: log.createdAt,
+          });
+        }
+      }
+
+      // Format response
+      const formattedQuotes = pendingQuotes.map(q => {
+        const requester = requestersMap.get(q.id);
+        return {
+          id: q.id,
+          quoteNumber: q.quoteNumber,
+          customerName: q.customerName || q.customerCompanyName || 'Unknown',
+          customerId: q.customerId,
+          contactName: q.contactFirstName && q.contactLastName 
+            ? `${q.contactFirstName} ${q.contactLastName}`.trim()
+            : null,
+          contactEmail: q.contactEmail,
+          totalPrice: q.totalPrice,
+          createdAt: q.createdAt,
+          updatedAt: requester?.requestedAt || q.createdAt,
+          requestedBy: requester?.userName || requester?.userId || 'Unknown',
+          requestedAt: requester?.requestedAt || q.createdAt,
+          status: q.status,
+        };
+      });
+
+      res.json({
+        success: true,
+        data: formattedQuotes,
+        count: formattedQuotes.length,
+      });
+    } catch (error) {
+      console.error("Error fetching pending approvals:", error);
+      res.status(500).json({ error: "Failed to fetch pending approvals" });
+    }
+  });
+
   app.get("/api/quotes", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -3153,6 +3264,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Helper: Get organization preferences
+  async function getOrgPreferences(organizationId: string): Promise<any> {
+    try {
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      
+      if (!org) return {};
+      return (org.settings as any)?.preferences || {};
+    } catch (error) {
+      console.error('[getOrgPreferences] Error:', error);
+      return {};
+    }
+  }
+
   // Explicit status transition endpoint (POST /api/quotes/:id/transition)
   // Used for workflow actions like "Send", "Approve", "Reject", etc.
   app.post("/api/quotes/:id/transition", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -3178,6 +3306,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const { toState, reason, overrideExpired } = validationResult.data;
       
+      // Get organization preferences
+      const preferences = await getOrgPreferences(organizationId);
+      const requireApproval = preferences?.quotes?.requireApproval || false;
+      
       // Permission gate: Only internal users can approve quotes
       if (toState === 'approved' && !isInternalUser) {
         return res.status(403).json({ 
@@ -3193,6 +3325,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Get current workflow state
       const currentState = getQuoteWorkflowState(quote);
+      
+      // Enforce requireApproval preference: Block draft → sent if approval is required
+      if (requireApproval && currentState === 'draft' && toState === 'sent') {
+        return res.status(403).json({ 
+          error: 'Quote approval is required before sending. Ask an authorized user to approve, or use Approve & Send.' 
+        });
+      }
       
       // Validate transition
       if (!isValidTransition(currentState, toState)) {

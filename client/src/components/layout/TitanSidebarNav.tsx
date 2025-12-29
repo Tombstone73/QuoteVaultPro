@@ -26,8 +26,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { useQuery } from "@tanstack/react-query";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
 
 // ============================================================
@@ -40,6 +43,12 @@ export type NavItemConfig = {
   icon: LucideIcon;
   path: string;
   roles?: string[];
+  badge?: boolean; // If true, fetch badge count from query
+  badgeQuery?: string; // Query key for badge count
+  conditional?: {
+    requireApproval?: boolean; // Only show if org preference requireApproval=true
+    approverOnly?: boolean; // Only show for internal users
+  };
 };
 
 export type NavSectionConfig = {
@@ -57,6 +66,18 @@ export const NAV_CONFIG: NavSectionConfig[] = [
       { id: "customers", name: "Customers", icon: Users, path: ROUTES.customers.list },
       { id: "contacts", name: "Contacts", icon: Contact2, path: ROUTES.contacts.list },
       { id: "quotes", name: "Quotes", icon: FileText, path: ROUTES.quotes.list },
+      { 
+        id: "approvals", 
+        name: "Approvals", 
+        icon: ClipboardList, 
+        path: "/approvals",
+        badge: true,
+        badgeQuery: "/api/quotes/pending-approvals",
+        conditional: {
+          requireApproval: true,
+          approverOnly: true,
+        },
+      },
       { id: "orders", name: "Orders", icon: ShoppingCart, path: ROUTES.orders.list },
     ],
   },
@@ -103,18 +124,41 @@ export const NAV_CONFIG: NavSectionConfig[] = [
   },
 ];
 
-// Filter nav items by user role
-function filterNavByRole(sections: NavSectionConfig[], role?: string | null): NavSectionConfig[] {
+// Filter nav items by user role and conditional visibility
+function filterNavByRole(
+  sections: NavSectionConfig[], 
+  role?: string | null,
+  orgPreferences?: { quotes?: { requireApproval?: boolean } }
+): NavSectionConfig[] {
   const userRole = (role || "").toLowerCase();
   const isOwner = userRole === "owner";
+  const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+  const requireApproval = orgPreferences?.quotes?.requireApproval || false;
 
   return sections
     .map((section) => ({
       ...section,
       items: section.items.filter((item) => {
-        if (!item.roles) return true;
-        if (isOwner) return true;
-        return item.roles.includes(userRole);
+        // Check role-based visibility
+        if (!item.roles) {
+          // No role restriction
+        } else if (isOwner) {
+          // Owner sees everything
+        } else if (!item.roles.includes(userRole)) {
+          return false;
+        }
+
+        // Check conditional visibility
+        if (item.conditional) {
+          if (item.conditional.requireApproval && !requireApproval) {
+            return false;
+          }
+          if (item.conditional.approverOnly && !isApprover) {
+            return false;
+          }
+        }
+
+        return true;
       }),
     }))
     .filter((section) => section.items.length > 0);
@@ -166,9 +210,10 @@ function saveSectionState(state: Record<string, boolean>): void {
 interface NavItemProps {
   item: NavItemConfig;
   isCollapsed: boolean;
+  badgeCount?: number;
 }
 
-function NavItem({ item, isCollapsed }: NavItemProps) {
+function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
   const location = useLocation();
   const Icon = item.icon;
 
@@ -191,7 +236,16 @@ function NavItem({ item, isCollapsed }: NavItemProps) {
       title={isCollapsed ? item.name : undefined}
     >
       <Icon className="h-4 w-4 shrink-0" />
-      {!isCollapsed && <span className="truncate">{item.name}</span>}
+      {!isCollapsed && (
+        <>
+          <span className="truncate flex-1">{item.name}</span>
+          {badgeCount !== undefined && badgeCount > 0 && (
+            <Badge variant="default" className="ml-auto h-5 min-w-[20px] px-1.5 text-xs">
+              {badgeCount}
+            </Badge>
+          )}
+        </>
+      )}
     </NavLink>
   );
 }
@@ -205,9 +259,10 @@ interface NavSectionProps {
   isCollapsed: boolean;
   isExpanded: boolean;
   onToggle: () => void;
+  badgeCounts: Record<string, number>;
 }
 
-function NavSection({ section, isCollapsed, isExpanded, onToggle }: NavSectionProps) {
+function NavSection({ section, isCollapsed, isExpanded, onToggle, badgeCounts }: NavSectionProps) {
   const sectionId = `nav-section-${section.sectionKey}`;
   const ChevronIcon = isExpanded ? ChevronDown : ChevronRight;
 
@@ -234,7 +289,12 @@ function NavSection({ section, isCollapsed, isExpanded, onToggle }: NavSectionPr
       {isExpanded && (
         <div id={sectionId} className="space-y-0.5 px-2 mt-1">
           {section.items.map((item) => (
-            <NavItem key={item.id} item={item} isCollapsed={isCollapsed} />
+            <NavItem 
+              key={item.id} 
+              item={item} 
+              isCollapsed={isCollapsed}
+              badgeCount={item.badge ? badgeCounts[item.id] : undefined}
+            />
           ))}
         </div>
       )}
@@ -253,10 +313,34 @@ interface TitanSidebarNavProps {
 
 export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: TitanSidebarNavProps) {
   const { user } = useAuth();
+  const { preferences } = useOrgPreferences();
   const navigate = useNavigate();
   const location = useLocation();
   const role = user?.role ?? null;
-  const filteredSections = filterNavByRole(NAV_CONFIG, role);
+  const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences);
+
+  // Fetch badge counts for items with badge=true
+  const badgeQueries = filteredSections.flatMap(section => 
+    section.items.filter(item => item.badge && item.badgeQuery)
+  );
+
+  const badgeCountsData = useQuery({
+    queryKey: ["/api/quotes/pending-approvals"],
+    queryFn: async () => {
+      const res = await fetch("/api/quotes/pending-approvals", {
+        credentials: "include",
+      });
+      if (!res.ok) return { count: 0 };
+      const data = await res.json();
+      return data;
+    },
+    enabled: badgeQueries.length > 0,
+    refetchInterval: 30000, // Refetch every 30 seconds
+  });
+
+  const badgeCounts: Record<string, number> = {
+    approvals: badgeCountsData.data?.count || 0,
+  };
 
   // Initialize section open/close state
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
@@ -373,6 +457,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
             isCollapsed={isCollapsed}
             isExpanded={openSections[section.sectionKey] ?? true}
             onToggle={() => toggleSection(section.sectionKey)}
+            badgeCounts={badgeCounts}
           />
         ))}
       </nav>

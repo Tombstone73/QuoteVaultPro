@@ -26,13 +26,13 @@ import { z } from "zod";
  * Database enum values (from shared/schema.ts line 32)
  * DO NOT MODIFY without schema migration approval
  */
-export type QuoteStatusDB = 'draft' | 'pending' | 'active' | 'canceled';
+export type QuoteStatusDB = 'draft' | 'pending_approval' | 'pending' | 'active' | 'canceled';
 
 /**
  * Enterprise workflow states (semantic layer)
  * These are what users see and what business logic operates on
  */
-export type QuoteWorkflowState = 'draft' | 'sent' | 'approved' | 'rejected' | 'expired' | 'converted';
+export type QuoteWorkflowState = 'draft' | 'pending_approval' | 'sent' | 'approved' | 'rejected' | 'expired' | 'converted';
 
 // ============================================================================
 // SEMANTIC MAPPING (DB ↔ Enterprise)
@@ -43,6 +43,7 @@ export type QuoteWorkflowState = 'draft' | 'sent' | 'approved' | 'rejected' | 'e
  */
 export const DB_TO_WORKFLOW: Record<QuoteStatusDB, QuoteWorkflowState> = {
   draft: 'draft',
+  pending_approval: 'pending_approval', // Awaiting internal approval
   pending: 'sent',      // Semantic: quote sent to customer
   active: 'approved',   // Semantic: customer approved (LOCKED)
   canceled: 'rejected', // Semantic: explicitly rejected
@@ -53,6 +54,7 @@ export const DB_TO_WORKFLOW: Record<QuoteStatusDB, QuoteWorkflowState> = {
  */
 export const WORKFLOW_TO_DB: Record<Exclude<QuoteWorkflowState, 'expired' | 'converted'>, QuoteStatusDB> = {
   draft: 'draft',
+  pending_approval: 'pending_approval',
   sent: 'pending',
   approved: 'active',
   rejected: 'canceled',
@@ -63,6 +65,7 @@ export const WORKFLOW_TO_DB: Record<Exclude<QuoteWorkflowState, 'expired' | 'con
  */
 export const WORKFLOW_LABELS: Record<QuoteWorkflowState, string> = {
   draft: 'Draft',
+  pending_approval: 'Pending Approval',
   sent: 'Sent',
   approved: 'Approved',
   rejected: 'Rejected',
@@ -75,6 +78,7 @@ export const WORKFLOW_LABELS: Record<QuoteWorkflowState, string> = {
  */
 export const WORKFLOW_BADGE_VARIANTS: Record<QuoteWorkflowState, 'default' | 'secondary' | 'success' | 'destructive' | 'outline'> = {
   draft: 'secondary',
+  pending_approval: 'default',
   sent: 'default',
   approved: 'success',
   rejected: 'destructive',
@@ -91,7 +95,8 @@ export const WORKFLOW_BADGE_VARIANTS: Record<QuoteWorkflowState, 'default' | 'se
  * Key: current state → Array of allowed next states
  */
 export const ALLOWED_TRANSITIONS: Record<QuoteWorkflowState, QuoteWorkflowState[]> = {
-  draft: ['sent', 'approved', 'rejected'], // Can approve directly from draft
+  draft: ['pending_approval', 'sent', 'approved', 'rejected'], // Can request approval or approve directly
+  pending_approval: ['approved', 'rejected', 'draft'], // Approvers can approve/reject, non-approvers can return to draft
   sent: ['approved', 'rejected', 'expired', 'draft'], // Can return to draft for edits
   approved: ['sent'], // Can send after approval (for Approve & Send workflow)
   rejected: [], // TERMINAL: Use "Revise Quote" to create new draft
@@ -191,6 +196,14 @@ export function getAvailableActions(state: QuoteWorkflowState, hasOrder: boolean
   
   for (const targetState of allowed) {
     switch (targetState) {
+      case 'pending_approval':
+        actions.push({
+          action: 'request_approval',
+          label: 'Request Approval',
+          targetState: 'pending_approval',
+          description: 'Submit this quote for internal approval',
+        });
+        break;
       case 'sent':
         actions.push({
           action: 'send',
@@ -218,7 +231,12 @@ export function getAvailableActions(state: QuoteWorkflowState, hasOrder: boolean
         });
         break;
       case 'draft':
-        // REMOVED: Terminal states cannot be mutated (use Revise Quote to clone)
+        actions.push({
+          action: 'return_to_draft',
+          label: 'Return to Draft',
+          targetState: 'draft',
+          description: 'Return quote to draft for further edits',
+        });
         break;
       case 'expired':
         // Expiration is automatic, not a manual action
@@ -280,9 +298,9 @@ export function workflowStateToDb(state: QuoteWorkflowState): QuoteStatusDB {
 // VALIDATION SCHEMAS
 // ============================================================================
 
-export const quoteStatusDBSchema = z.enum(['draft', 'pending', 'active', 'canceled']);
+export const quoteStatusDBSchema = z.enum(['draft', 'pending_approval', 'pending', 'active', 'canceled']);
 
-export const quoteWorkflowStateSchema = z.enum(['draft', 'sent', 'approved', 'rejected', 'expired', 'converted']);
+export const quoteWorkflowStateSchema = z.enum(['draft', 'pending_approval', 'sent', 'approved', 'rejected', 'expired', 'converted']);
 
 export const transitionRequestSchema = z.object({
   toState: quoteWorkflowStateSchema,

@@ -9,6 +9,8 @@ import { useMutation } from "@tanstack/react-query";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import { ROUTES } from "@/config/routes";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
+import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useQuoteEditorState } from "./useQuoteEditorState";
@@ -35,6 +37,8 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const navigate = useNavigate();
     const location = useLocation();
     const { preferences } = useUserPreferences();
+    const { user } = useAuth();
+    const { preferences: orgPreferences } = useOrgPreferences();
     const { toast } = useToast();
     const state = useQuoteEditorState();
 
@@ -87,6 +91,111 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const handleReviseQuote = () => {
         if (!state.quoteId) return;
         reviseMutation.mutate(state.quoteId);
+    };
+
+    // Approval workflow mutations
+    const approveMutation = useMutation({
+        mutationFn: async (quoteId: string) => {
+            const res = await fetch(`/api/quotes/${quoteId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ toState: "approved" }),
+                credentials: "include",
+            });
+            if (!res.ok) {
+                const error = await res.json();
+                throw new Error(error.error || error.message || "Failed to approve quote");
+            }
+            return res.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
+            queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+            toast({ title: "Quote Approved", description: "Quote has been approved and locked" });
+        },
+        onError: (error: Error) => {
+            toast({ title: "Approval Failed", description: error.message, variant: "destructive" });
+        },
+    });
+
+    const approveAndSendMutation = useMutation({
+        mutationFn: async (quoteId: string) => {
+            // Step 1: Approve
+            const approveRes = await fetch(`/api/quotes/${quoteId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ toState: "approved" }),
+                credentials: "include",
+            });
+            if (!approveRes.ok) {
+                const error = await approveRes.json();
+                throw new Error(error.error || error.message || "Failed to approve quote");
+            }
+
+            // Step 2: Send
+            const sendRes = await fetch(`/api/quotes/${quoteId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ toState: "sent" }),
+                credentials: "include",
+            });
+            if (!sendRes.ok) {
+                const error = await sendRes.json();
+                throw new Error(error.error || error.message || "Failed to send quote");
+            }
+
+            return sendRes.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
+            queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+            toast({ title: "Quote Approved & Sent", description: "Quote has been approved and marked as sent" });
+        },
+        onError: (error: Error) => {
+            toast({ title: "Approve & Send Failed", description: error.message, variant: "destructive" });
+        },
+    });
+
+    const requestApprovalMutation = useMutation({
+        mutationFn: async (quoteId: string) => {
+            const res = await fetch(`/api/quotes/${quoteId}/transition`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ toState: "pending_approval" }),
+                credentials: "include",
+            });
+            if (!res.ok) {
+                const error = await res.json();
+                throw new Error(error.error || error.message || "Failed to request approval");
+            }
+            return res.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
+            queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+            toast({ title: "Approval Requested", description: "Quote submitted for approval" });
+        },
+        onError: (error: Error) => {
+            toast({ title: "Request Failed", description: error.message, variant: "destructive" });
+        },
+    });
+
+    const handleApprove = () => {
+        if (!state.quoteId) return;
+        approveMutation.mutate(state.quoteId);
+    };
+
+    const handleApproveAndSend = () => {
+        if (!state.quoteId) return;
+        approveAndSendMutation.mutate(state.quoteId);
+    };
+
+    const handleRequestApproval = () => {
+        if (!state.quoteId) return;
+        requestApprovalMutation.mutate(state.quoteId);
     };
 
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
@@ -803,6 +912,15 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                                 quoteTaxRateOverride={state.quoteTaxRateOverride}
                                 onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
                                 onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
+                                workflowState={workflowState || undefined}
+                                requireApproval={orgPreferences?.quotes?.requireApproval || false}
+                                isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
+                                onApprove={handleApprove}
+                                onApproveAndSend={handleApproveAndSend}
+                                onRequestApproval={handleRequestApproval}
+                                isApproving={approveMutation.isPending}
+                                isApprovingAndSending={approveAndSendMutation.isPending}
+                                isRequestingApproval={requestApprovalMutation.isPending}
                             />
 
                             <CustomerInfoFooter
