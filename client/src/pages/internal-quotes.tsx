@@ -119,8 +119,11 @@ export default function InternalQuotes() {
   const [orderPriority, setOrderPriority] = useState<"normal" | "rush" | "low">("normal");
   const [orderNotes, setOrderNotes] = useState("");
   
-  // Column settings
-  const [columnSettings, setColumnSettings] = useColumnSettings(QUOTE_COLUMNS, "quotes_column_settings");
+  // Column settings - scoped per user for multi-tenant safety
+  const storageKey = user?.id 
+    ? `titan:listview:quotes:user_${user.id}` 
+    : "quotes_column_settings"; // fallback for loading state
+  const [columnSettings, setColumnSettings] = useColumnSettings(QUOTE_COLUMNS, storageKey);
   
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
@@ -903,7 +906,7 @@ export default function InternalQuotes() {
               )}
               <ColumnConfig
                 columns={QUOTE_COLUMNS}
-                storageKey="quotes_column_settings"
+                storageKey={storageKey}
                 settings={columnSettings}
                 onSettingsChange={setColumnSettings}
               />

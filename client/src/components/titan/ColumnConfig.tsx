@@ -10,6 +10,21 @@ import { Slider } from "@/components/ui/slider";
 import { Settings2, RotateCcw, GripVertical } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 export interface ColumnDefinition {
   key: string;
@@ -95,6 +110,102 @@ export function useColumnSettings(
   return [settings, setSettings];
 }
 
+// Sortable column item component
+interface SortableColumnItemProps {
+  col: ColumnDefinition;
+  colSettings: ColumnState;
+  onVisibilityChange: (key: string, visible: boolean) => void;
+  onWidthChange: (key: string, width: number) => void;
+  isActionsColumn: boolean;
+}
+
+function SortableColumnItem({
+  col,
+  colSettings,
+  onVisibilityChange,
+  onWidthChange,
+  isActionsColumn,
+}: SortableColumnItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: col.key, disabled: isActionsColumn });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "space-y-2 p-2 rounded-md border transition-all",
+        isDragging && "opacity-50 border-titan-accent z-50",
+        !isDragging && "border-transparent hover:border-border/50 hover:bg-muted/30",
+        isActionsColumn && "opacity-60 cursor-not-allowed"
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <div
+          {...attributes}
+          {...listeners}
+          className={cn(
+            "shrink-0",
+            isActionsColumn ? "cursor-not-allowed" : "cursor-move"
+          )}
+        >
+          <GripVertical className="h-4 w-4 text-muted-foreground" />
+        </div>
+        <Checkbox
+          id={`col-${col.key}`}
+          checked={colSettings.visible}
+          disabled={isActionsColumn}
+          onCheckedChange={(checked) =>
+            onVisibilityChange(col.key, checked === true)
+          }
+          onClick={(e) => e.stopPropagation()}
+        />
+        <Label
+          htmlFor={`col-${col.key}`}
+          className={cn(
+            "text-sm font-medium flex-1",
+            !isActionsColumn && "cursor-pointer"
+          )}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {col.label}
+          {isActionsColumn && (
+            <span className="ml-2 text-xs text-muted-foreground">(always visible)</span>
+          )}
+        </Label>
+      </div>
+      {colSettings.visible && !isActionsColumn && (
+        <div className="pl-9 space-y-1">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Width</span>
+            <span>{colSettings.width}px</span>
+          </div>
+          <Slider
+            value={[colSettings.width]}
+            onValueChange={([value]) => onWidthChange(col.key, value)}
+            min={col.minWidth || 60}
+            max={col.maxWidth || 300}
+            step={10}
+            className="w-full"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ColumnConfig({
   columns,
   storageKey,
@@ -102,8 +213,15 @@ export function ColumnConfig({
   onSettingsChange,
 }: ColumnConfigProps) {
   const [open, setOpen] = useState(false);
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  // Setup @dnd-kit sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Require 8px of movement before drag starts (prevents accidental drags)
+      },
+    })
+  );
 
   // Get ordered columns based on settings
   const orderedColumns = React.useMemo(() => {
@@ -150,46 +268,38 @@ export function ColumnConfig({
     onSettingsChange(defaults);
   };
 
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-  };
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverIndex(index);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault();
-    
-    if (draggedIndex === null || draggedIndex === dropIndex) {
-      setDraggedIndex(null);
-      setDragOverIndex(null);
+    if (!over || active.id === over.id) {
       return;
     }
 
-    const newOrder = [...orderedColumns];
-    const [draggedItem] = newOrder.splice(draggedIndex, 1);
-    newOrder.splice(dropIndex, 0, draggedItem);
+    // Don't allow reordering if dragging or dropping on Actions column
+    if (active.id === 'actions' || over.id === 'actions') {
+      return;
+    }
+
+    const oldIndex = orderedColumns.findIndex(col => col.key === active.id);
+    const newIndex = orderedColumns.findIndex(col => col.key === over.id);
+
+    if (oldIndex === -1 || newIndex === -1) {
+      return;
+    }
+
+    const newOrder = arrayMove(orderedColumns, oldIndex, newIndex);
+
+    // Ensure Actions column stays last
+    const actionsIndex = newOrder.findIndex(col => col.key === 'actions');
+    if (actionsIndex !== -1 && actionsIndex !== newOrder.length - 1) {
+      const [actionsCol] = newOrder.splice(actionsIndex, 1);
+      newOrder.push(actionsCol);
+    }
 
     onSettingsChange({
       ...settings,
       _columnOrder: newOrder.map(col => col.key),
     } as ColumnSettings);
-
-    setDraggedIndex(null);
-    setDragOverIndex(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedIndex(null);
-    setDragOverIndex(null);
   };
 
   const visibleCount = Object.values(settings).filter((s) => s && typeof s === 'object' && 'visible' in s && s.visible).length;
@@ -228,72 +338,37 @@ export function ColumnConfig({
           </div>
 
           <div className="text-xs text-muted-foreground px-1">
-            Drag to reorder columns
+            Drag to reorder columns (Actions column always stays last)
           </div>
 
-          <div className="space-y-1 max-h-[400px] overflow-y-auto pr-2">
-            {orderedColumns.map((col, index) => {
-              const colSettings = getColumnState(col.key, col);
-              const isDragging = draggedIndex === index;
-              const isDragOver = dragOverIndex === index && draggedIndex !== index;
-              
-              return (
-                <div
-                  key={col.key}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, index)}
-                  onDragOver={(e) => handleDragOver(e, index)}
-                  onDragLeave={handleDragLeave}
-                  onDrop={(e) => handleDrop(e, index)}
-                  onDragEnd={handleDragEnd}
-                  className={cn(
-                    "space-y-2 p-2 rounded-md border transition-all cursor-move",
-                    isDragging && "opacity-50 border-titan-accent",
-                    isDragOver && "border-titan-accent bg-titan-accent/10",
-                    !isDragging && !isDragOver && "border-transparent hover:border-border/50 hover:bg-muted/30"
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <Checkbox
-                      id={`col-${col.key}`}
-                      checked={colSettings.visible}
-                      onCheckedChange={(checked) =>
-                        handleVisibilityChange(col.key, checked === true)
-                      }
-                      onClick={(e) => e.stopPropagation()}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={orderedColumns.map(col => col.key)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="space-y-1 max-h-[400px] overflow-y-auto pr-2">
+                {orderedColumns.map((col) => {
+                  const colSettings = getColumnState(col.key, col);
+                  const isActionsColumn = col.key === 'actions';
+                  
+                  return (
+                    <SortableColumnItem
+                      key={col.key}
+                      col={col}
+                      colSettings={colSettings}
+                      onVisibilityChange={handleVisibilityChange}
+                      onWidthChange={handleWidthChange}
+                      isActionsColumn={isActionsColumn}
                     />
-                    <Label
-                      htmlFor={`col-${col.key}`}
-                      className="text-sm font-medium cursor-pointer flex-1"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {col.label}
-                    </Label>
-                  </div>
-                  {colSettings.visible && (
-                    <div className="pl-9 space-y-1">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>Width</span>
-                        <span>{colSettings.width}px</span>
-                      </div>
-                      <Slider
-                        value={[colSettings.width]}
-                        onValueChange={([value]) =>
-                          handleWidthChange(col.key, value)
-                        }
-                        min={col.minWidth || 60}
-                        max={col.maxWidth || 300}
-                        step={10}
-                        className="w-full"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                  );
+                })}
+              </div>
+            </SortableContext>
+          </DndContext>
         </div>
       </PopoverContent>
     </Popover>
@@ -328,7 +403,16 @@ export function getColumnOrder(
   settings: ColumnSettings
 ): ColumnDefinition[] {
   const order = settings._columnOrder || columns.map(col => col.key);
-  return order
+  const orderedCols = order
     .map(key => columns.find(col => col.key === key))
     .filter(Boolean) as ColumnDefinition[];
+  
+  // Enforce: Actions column always last
+  const actionsIndex = orderedCols.findIndex(col => col.key === 'actions');
+  if (actionsIndex !== -1 && actionsIndex !== orderedCols.length - 1) {
+    const [actionsCol] = orderedCols.splice(actionsIndex, 1);
+    orderedCols.push(actionsCol);
+  }
+  
+  return orderedCols;
 }
