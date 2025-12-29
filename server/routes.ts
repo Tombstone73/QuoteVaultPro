@@ -592,6 +592,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get organization preferences (from settings.preferences)
+  app.get('/api/organization/preferences', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+      
+      // Only allow owners/admins to read preferences
+      const userRole = req.user?.role || 'customer';
+      if (!['owner', 'admin'].includes(userRole)) {
+        return res.status(403).json({ message: "Only owners and admins can view preferences" });
+      }
+      
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      
+      if (!org) {
+        return res.status(404).json({ message: "Organization not found" });
+      }
+      
+      // Extract preferences from settings.preferences, default to empty object
+      const preferences = (org.settings as any)?.preferences || {};
+      res.json(preferences);
+    } catch (error) {
+      console.error("Error fetching organization preferences:", error);
+      res.status(500).json({ message: "Failed to fetch preferences" });
+    }
+  });
+
+  // Update organization preferences (merge into settings.preferences)
+  app.put('/api/organization/preferences', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+      
+      // Only allow owners/admins to update preferences
+      const userRole = req.user?.role || 'customer';
+      if (!['owner', 'admin'].includes(userRole)) {
+        return res.status(403).json({ message: "Only owners and admins can update preferences" });
+      }
+      
+      const newPreferences = req.body;
+      
+      // Get current settings
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      
+      if (!org) {
+        return res.status(404).json({ message: "Organization not found" });
+      }
+      
+      // Merge new preferences into existing settings
+      const currentSettings = (org.settings || {}) as any;
+      const updatedSettings = {
+        ...currentSettings,
+        preferences: newPreferences,
+      };
+      
+      // Update organization settings
+      await db
+        .update(organizations)
+        .set({ 
+          settings: updatedSettings as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, organizationId));
+      
+      res.json({ success: true, preferences: newPreferences });
+    } catch (error) {
+      console.error("Error updating organization preferences:", error);
+      res.status(500).json({ message: "Failed to update preferences" });
+    }
+  });
+
   app.get("/objects/:objectPath(*)", async (req: any, res) => {
     const userId = getUserId(req.user);
     const objectStorageService = new ObjectStorageService();
@@ -2643,7 +2726,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...quotePayload
       } = req.body as any;
 
-      const finalStatus: "active" = "active";
+      const finalStatus: "draft" = "draft";
 
       if (!hasCustomerId) {
         console.error("[QUOTE CREATE] missing customerId", { body: req.body });
@@ -3079,6 +3162,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ message: "User not authenticated" });
       
+      const userRole = req.user?.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+      
       const { id: quoteId } = req.params;
       
       // Validate request body
@@ -3091,6 +3177,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const { toState, reason, overrideExpired } = validationResult.data;
+      
+      // Permission gate: Only internal users can approve quotes
+      if (toState === 'approved' && !isInternalUser) {
+        return res.status(403).json({ 
+          error: 'You do not have permission to approve quotes.' 
+        });
+      }
       
       // Get existing quote
       const quote = await storage.getQuoteById(organizationId, quoteId);
@@ -3326,9 +3419,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           throw Object.assign(new Error('Quote not found'), { statusCode: 404 });
         }
 
-        // Only approved quotes (DB status 'active') can be revised
-        if (String((sourceQuote as any).status) !== 'active') {
-          throw Object.assign(new Error('Only approved quotes can be revised.'), { statusCode: 409 });
+        // Allow revising approved quotes (status='active') OR converted quotes (has convertedToOrderId)
+        // This enables creating new drafts from terminal states that warrant revision
+        const isApproved = String((sourceQuote as any).status) === 'active';
+        const isConverted = !!(sourceQuote as any).convertedToOrderId;
+        
+        if (!isApproved && !isConverted) {
+          throw Object.assign(new Error('Only approved or converted quotes can be revised.'), { statusCode: 409 });
         }
 
         // Get or auto-initialize next quote number (same logic as createQuote)
@@ -3528,29 +3625,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           attachmentIdMap.set(att.id, createdAtt.id);
 
-          // Copy PDF thumbnail pages if present
-          const sourcePages = await tx
-            .select()
-            .from(quoteAttachmentPages)
-            .where(and(
-              eq(quoteAttachmentPages.attachmentId, att.id),
-              eq(quoteAttachmentPages.organizationId, organizationId),
-            ))
-            .orderBy(asc(quoteAttachmentPages.pageIndex));
+          // Copy PDF thumbnail pages if present (only if table exists)
+          const { hasQuoteAttachmentPagesTable } = await import('./db');
+          const pagesTableExists = hasQuoteAttachmentPagesTable();
+          
+          if (pagesTableExists === true) {
+            try {
+              const sourcePages = await tx
+                .select()
+                .from(quoteAttachmentPages)
+                .where(and(
+                  eq(quoteAttachmentPages.attachmentId, att.id),
+                  eq(quoteAttachmentPages.organizationId, organizationId),
+                ))
+                .orderBy(asc(quoteAttachmentPages.pageIndex));
 
-          for (const p of sourcePages) {
-            await tx
-              .insert(quoteAttachmentPages)
-              .values({
-                organizationId,
-                attachmentId: createdAtt.id,
-                pageIndex: p.pageIndex,
-                thumbStatus: p.thumbStatus,
-                thumbKey: p.thumbKey,
-                previewKey: p.previewKey,
-                thumbError: p.thumbError,
-                updatedAt: new Date(),
-              } as any);
+              for (const p of sourcePages) {
+                await tx
+                  .insert(quoteAttachmentPages)
+                  .values({
+                    organizationId,
+                    attachmentId: createdAtt.id,
+                    pageIndex: p.pageIndex,
+                    thumbStatus: p.thumbStatus,
+                    thumbKey: p.thumbKey,
+                    previewKey: p.previewKey,
+                    thumbError: p.thumbError,
+                    updatedAt: new Date(),
+                  } as any);
+              }
+            } catch (error: any) {
+              // If table was dropped mid-transaction or other DB error, log and continue
+              // Don't fail the entire revise operation for missing page metadata
+              const pgCode = error?.code;
+              if (pgCode === '42P01') {
+                console.warn('[ReviseQuote] Skipping attachment page copy: quote_attachment_pages missing (42P01)');
+              } else {
+                console.error('[ReviseQuote] Error copying attachment pages (non-fatal):', error);
+              }
+              // Continue with revise operation - page metadata is not critical
+            }
+          } else {
+            console.log('[ReviseQuote] Skipping attachment page copy: quote_attachment_pages table not available');
           }
         }
 
@@ -7609,6 +7725,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("[QUOTE TO ORDER CONVERSION] failed", { quoteId, organizationId, error });
+      
+      // Return 409 for already-converted quotes
+      if (error?.message?.includes('already converted')) {
+        return res.status(409).json({
+          success: false,
+          message: error.message,
+        });
+      }
+      
       res.status(500).json({
         success: false,
         message: error?.message || "Failed to convert quote to order",
@@ -7750,6 +7875,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("[CONVERT QUOTE TO ORDER] Error:", error);
       console.error("[CONVERT QUOTE TO ORDER] Error stack:", (error as Error).stack);
+      
+      // Return 409 for already-converted quotes
+      if ((error as Error)?.message?.includes('already converted')) {
+        return res.status(409).json({ 
+          message: (error as Error).message,
+          error: (error as Error).message 
+        });
+      }
+      
       res.status(500).json({ message: "Failed to convert quote to order", error: (error as Error).message });
     }
   });
@@ -7840,6 +7974,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, data: order });
     } catch (error) {
       console.error('Error converting quote (portal):', error);
+      
+      // Return 409 for already-converted quotes
+      if ((error as Error)?.message?.includes('already converted')) {
+        return res.status(409).json({ 
+          error: (error as Error).message
+        });
+      }
+      
       res.status(500).json({ error: 'Failed to convert quote' });
     }
   });

@@ -91,9 +91,9 @@ export const WORKFLOW_BADGE_VARIANTS: Record<QuoteWorkflowState, 'default' | 'se
  * Key: current state → Array of allowed next states
  */
 export const ALLOWED_TRANSITIONS: Record<QuoteWorkflowState, QuoteWorkflowState[]> = {
-  draft: ['sent', 'rejected'],
+  draft: ['sent', 'approved', 'rejected'], // Can approve directly from draft
   sent: ['approved', 'rejected', 'expired', 'draft'], // Can return to draft for edits
-  approved: [], // TERMINAL: Approved quotes are locked (use "Revise" to clone)
+  approved: ['sent'], // Can send after approval (for Approve & Send workflow)
   rejected: [], // TERMINAL: Use "Revise Quote" to create new draft
   expired: [], // TERMINAL: Use "Revise Quote" to create new draft
   converted: [], // TERMINAL: Order already created (informational only)

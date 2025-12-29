@@ -4,6 +4,10 @@ import { TitanCard } from "@/components/titan";
 import { PageHeader } from "@/components/titan";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Settings,
@@ -16,6 +20,7 @@ import {
   Bell,
   Palette,
   PlugZap,
+  Sliders,
   type LucideIcon,
 } from "lucide-react";
 
@@ -47,6 +52,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/company", 
     icon: Settings,
     description: "Company info and defaults"
+  },
+  { 
+    label: "Preferences", 
+    path: "/settings/preferences", 
+    icon: Sliders,
+    description: "Workflow and behavior preferences"
   },
   { 
     label: "Users & Roles", 
@@ -356,6 +367,74 @@ export function AppearanceSettings() {
               </button>
             );
           })}
+        </div>
+      </div>
+    </TitanCard>
+  );
+}
+
+export function PreferencesSettings() {
+  const { preferences, isLoading, updatePreferences, isUpdating } = useOrgPreferences();
+  
+  const handleToggle = async (key: string, value: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      quotes: {
+        ...preferences?.quotes,
+        [key]: value,
+      },
+    });
+  };
+  
+  if (isLoading) {
+    return (
+      <TitanCard className="p-6">
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-titan-text-muted" />
+        </div>
+      </TitanCard>
+    );
+  }
+  
+  return (
+    <TitanCard className="p-6">
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-titan-lg font-semibold text-titan-text-primary">Preferences</h2>
+          <p className="text-titan-sm text-titan-text-secondary mt-1">
+            Configure workflow behavior and system preferences
+          </p>
+        </div>
+        
+        <div className="h-px bg-titan-border-subtle" />
+        
+        {/* Quotes Section */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-base font-medium text-titan-text-primary">Quotes</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Control quote workflow behavior
+            </p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="require-approval" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Require quote approval
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  When enabled, quotes must be explicitly approved by an authorized user (Owner/Admin/Manager/Employee) before they can be sent to customers.
+                </p>
+              </div>
+              <Switch
+                id="require-approval"
+                checked={preferences?.quotes?.requireApproval ?? false}
+                onCheckedChange={(checked) => handleToggle('requireApproval', checked)}
+                disabled={isUpdating}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </TitanCard>
