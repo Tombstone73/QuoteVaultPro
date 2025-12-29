@@ -16,6 +16,7 @@ import {
     jobs,
     jobStatusLog,
     globalVariables,
+    auditLogs,
     type Order,
     type InsertOrder,
     type OrderWithRelations,
@@ -414,6 +415,12 @@ export class OrdersRepository {
         // Fetch the quote with line items
         const [quote] = await this.dbInstance.select().from(quotes).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
         if (!quote) throw new Error('Quote not found');
+        
+        // Prevent double conversion
+        if (quote.convertedToOrderId) {
+            throw new Error('Quote is already converted to an order');
+        }
+        
         const quoteLines = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
         if (quoteLines.length === 0) throw new Error('Quote has no line items');
 
@@ -458,7 +465,45 @@ export class OrdersRepository {
             taxableSubtotal: quote.taxableSubtotal ? parseFloat(quote.taxableSubtotal) : undefined,
         };
 
-        return await this.createOrder(organizationId, orderData);
+        const createdOrder = await this.createOrder(organizationId, orderData);
+
+        // Update quote to link to the created order (marks it as converted)
+        await this.dbInstance
+            .update(quotes)
+            .set({ 
+                convertedToOrderId: createdOrder.id
+            })
+            .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
+
+        // Create timeline entry for the conversion (fail-soft)
+        try {
+            const [user] = await this.dbInstance
+                .select({ firstName: users.firstName, lastName: users.lastName, email: users.email })
+                .from(users)
+                .where(eq(users.id, createdByUserId));
+            
+            const userName = user
+                ? `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email
+                : 'System';
+
+            await this.dbInstance.insert(auditLogs).values({
+                organizationId,
+                userId: createdByUserId,
+                userName,
+                actionType: 'CONVERSION',
+                entityType: 'quote',
+                entityId: quoteId,
+                entityName: quote.quoteNumber?.toString() || quoteId,
+                description: `Converted to Order #${createdOrder.orderNumber}`,
+                oldValues: { converted: false },
+                newValues: { converted: true, orderId: createdOrder.id, orderNumber: createdOrder.orderNumber },
+            });
+        } catch (timelineError) {
+            console.error('[CONVERT QUOTE] Failed to create timeline entry:', timelineError);
+            // Continue - don't fail conversion if timeline creation fails
+        }
+
+        return createdOrder;
     }
 
     // Order line item operations

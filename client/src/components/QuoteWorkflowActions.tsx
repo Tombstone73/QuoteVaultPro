@@ -4,6 +4,7 @@
  */
 
 import { useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { 
   Dialog,
@@ -52,10 +53,15 @@ export function QuoteWorkflowActions({
   className 
 }: QuoteWorkflowActionsProps) {
   const { toast } = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<ReturnType<typeof getAvailableActions>[0] | null>(null);
   const [reason, setReason] = useState("");
+  const [isApproveAndSending, setIsApproveAndSending] = useState(false);
+  
+  // Check if user can approve quotes
+  const isInternalUser = user && ['owner', 'admin', 'manager', 'employee'].includes(user.role || '');
 
   const transitionMutation = useMutation({
     mutationFn: async ({ 
@@ -133,9 +139,67 @@ export function QuoteWorkflowActions({
       });
     }
   };
+  
+  // Approve & Send: explicit two-step transition (draft → approved → sent)
+  const handleApproveAndSend = async () => {
+    setIsApproveAndSending(true);
+    
+    try {
+      // Step 1: Approve
+      const approveResponse = await fetch(`/api/quotes/${quoteId}/transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toState: 'approved' }),
+        credentials: "include",
+      });
+      
+      if (!approveResponse.ok) {
+        const data = await approveResponse.json();
+        throw new Error(data.error || data.message || "Failed to approve quote");
+      }
+      
+      // Step 2: Send
+      const sendResponse = await fetch(`/api/quotes/${quoteId}/transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toState: 'sent' }),
+        credentials: "include",
+      });
+      
+      if (!sendResponse.ok) {
+        const data = await sendResponse.json();
+        throw new Error(data.error || data.message || "Failed to send quote");
+      }
+      
+      toast({
+        title: "Quote Approved & Sent",
+        description: "Quote has been approved and marked as sent",
+      });
+      
+      // Invalidate queries
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+      
+      if (onTransitionComplete) {
+        onTransitionComplete();
+      }
+    } catch (error: any) {
+      toast({
+        title: "Approve & Send Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsApproveAndSending(false);
+    }
+  };
 
   const Icon = pendingAction ? ACTION_ICONS[pendingAction.action as keyof typeof ACTION_ICONS] : null;
 
+  // Show Approve & Send button only for draft quotes when user can approve
+  const showApproveAndSend = currentState === 'draft' && isInternalUser;
+  
   return (
     <>
       <div className={`flex flex-wrap gap-2 ${className || ''}`}>
@@ -147,7 +211,7 @@ export function QuoteWorkflowActions({
               variant={action.action === 'approve' ? 'default' : 'outline'}
               size="sm"
               onClick={() => handleActionClick(action)}
-              disabled={transitionMutation.isPending}
+              disabled={transitionMutation.isPending || isApproveAndSending}
               title={action.description}
             >
               {transitionMutation.isPending ? (
@@ -159,6 +223,23 @@ export function QuoteWorkflowActions({
             </Button>
           );
         })}
+        
+        {showApproveAndSend && (
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleApproveAndSend}
+            disabled={transitionMutation.isPending || isApproveAndSending}
+            title="Approve the quote and mark as sent in one action"
+          >
+            {isApproveAndSending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle className="mr-2 h-4 w-4" />
+            )}
+            {isApproveAndSending ? "Processing..." : "Approve & Send"}
+          </Button>
+        )}
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

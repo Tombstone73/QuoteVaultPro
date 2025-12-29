@@ -3,6 +3,9 @@ import { useNavigate, useLocation, UNSAFE_NavigationContext } from "react-router
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Lock, ExternalLink } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
 import { ROUTES } from "@/config/routes";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
@@ -21,6 +24,7 @@ import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/p
 import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import type { CustomerSelectRef } from "@/components/CustomerSelect";
+import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 
 type QuoteEditorPageProps = {
     mode?: "view" | "edit";
@@ -34,18 +38,64 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const { toast } = useToast();
     const state = useQuoteEditorState();
 
-    const isApprovedLocked = (state.quote as any)?.status === 'approved';
-    const lockedHint = 'Approved quotes are locked. Revise to change.';
+    // Get effective workflow state (includes derived states like converted)
+    const workflowState = useQuoteWorkflowState(state.quote as any);
+    const isLocked = workflowState === 'approved' || workflowState === 'converted';
+    const lockedHint = workflowState === 'approved'
+        ? 'Approved quotes are locked. Use Revise Quote to create a new draft.'
+        : workflowState === 'converted'
+        ? 'Converted quotes are locked. View the order for changes or use Revise Quote for a new draft.'
+        : '';
     const convertedToOrderId = (state.quote as any)?.convertedToOrderId ?? null;
     const lockToastShownRef = useRef(false);
+    
+    // Revise quote mutation (creates new draft from approved/converted)
+    const reviseMutation = useMutation({
+        mutationFn: async (quoteId: string) => {
+            const res = await fetch(`/api/quotes/${quoteId}/revise`, {
+                method: "POST",
+                credentials: "include",
+            });
+            if (!res.ok) {
+                const error = await res.json().catch(() => ({ message: "Failed to revise quote" }));
+                throw new Error(error.message || "Failed to revise quote");
+            }
+            return res.json() as Promise<{ id: string; quoteNumber: number }>;
+        },
+        onSuccess: (data, quoteId) => {
+            // Invalidate old quote detail and list
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+            
+            // Navigate to new draft quote
+            navigate(`/quotes/${data.id}`);
+            
+            toast({
+                title: "Quote Revised",
+                description: `Created new draft quote #${data.quoteNumber}`,
+            });
+        },
+        onError: (error: Error) => {
+            toast({
+                title: "Failed to revise quote",
+                description: error.message,
+                variant: "destructive",
+            });
+        },
+    });
+    
+    const handleReviseQuote = () => {
+        if (!state.quoteId) return;
+        reviseMutation.mutate(state.quoteId);
+    };
 
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
     const [editMode, setEditMode] = useState(mode !== "view");
-    const readOnly = !editMode;
+    const readOnly = !editMode || isLocked;
 
-    // Enforce enterprise locking: approved quotes are view-only
+    // Enforce enterprise locking: approved/converted quotes are view-only
     useEffect(() => {
-        if (!isApprovedLocked) return;
+        if (!isLocked) return;
 
         if (editMode) {
             setEditMode(false);
@@ -55,7 +105,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             lockToastShownRef.current = true;
             toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
         }
-    }, [isApprovedLocked, editMode, toast]);
+    }, [isLocked, editMode, toast, lockedHint]);
 
     // Expanded line item (accordion) state
     // Stored as lineItemId (tempId || id) - persists across refetches
@@ -607,12 +657,16 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                     canDuplicateQuote={state.canDuplicateQuote}
                     isDuplicatingQuote={state.isDuplicatingQuote}
                     status={(state.quote as any)?.status}
+                    effectiveWorkflowState={workflowState}
+                    showReviseButton={isLocked}
+                    isRevisingQuote={reviseMutation.isPending}
                     editMode={editMode}
-                    editModeDisabled={state.isSaving || isApprovedLocked}
+                    editModeDisabled={state.isSaving || isLocked}
                     onBack={handleBack}
                     onDuplicateQuote={state.handlers.duplicateQuote}
+                    onReviseQuote={handleReviseQuote}
                     onEditModeChange={(next) => {
-                        if (isApprovedLocked) {
+                        if (isLocked) {
                             toast({ title: 'Locked', description: lockedHint, variant: 'destructive' });
                             setEditMode(false);
                             return;
@@ -621,10 +675,23 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                     }}
                 />
 
-                {isApprovedLocked && (
-                    <div className="mt-2 text-xs text-muted-foreground" title={lockedHint}>
-                        {lockedHint}
-                    </div>
+                {isLocked && lockedHint && (
+                    <Alert className="mt-4 border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
+                        <Lock className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                        <AlertDescription className="flex items-center justify-between text-amber-900 dark:text-amber-100">
+                            <span>{lockedHint}</span>
+                            {workflowState === 'converted' && convertedToOrderId && (
+                                <Button
+                                    variant="link"
+                                    size="sm"
+                                    className="text-amber-900 dark:text-amber-100 underline"
+                                    onClick={() => navigate(`/orders/${convertedToOrderId}`)}
+                                >
+                                    View Order <ExternalLink className="ml-1 h-3 w-3" />
+                                </Button>
+                            )}
+                        </AlertDescription>
+                    </Alert>
                 )}
 
                 {/* Two-column layout: Left (Customer + Line Items) | Right (Summary) */}
@@ -700,7 +767,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                                     <CardTitle className="text-xs font-medium text-muted-foreground">Attachments</CardTitle>
                                 </CardHeader>
                                 <CardContent>
-                                    <QuoteAttachmentsPanel quoteId={state.quoteId} locked={isApprovedLocked} />
+                                    <QuoteAttachmentsPanel quoteId={state.quoteId} locked={isLocked} />
                                 </CardContent>
                             </Card>
                         )}

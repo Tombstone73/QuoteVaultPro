@@ -234,8 +234,18 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
       const order = result?.data?.order;
       const orderId = order?.id;
       const orderNumber = order?.orderNumber;
+      
+      // Invalidate order queries
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      
+      // Invalidate quote list queries
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      
+      // CRITICAL: Invalidate the specific quote detail query to update badge and lock state
+      if (quoteId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+      }
+      
       toast({
         title: "Order created",
         description: orderNumber

@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { SettingsLayout, CompanySettings, UsersSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
+import { SettingsLayout, CompanySettings, PreferencesSettings, UsersSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -130,6 +130,7 @@ function Router() {
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<CompanySettings />} />
           <Route path="company" element={<CompanySettings />} />
+          <Route path="preferences" element={<PreferencesSettings />} />
           <Route path="users" element={<UsersSettings />} />
           <Route path="products" element={<ProductsPage />} />
           <Route path="product-types" element={<ProductTypesSettings />} />

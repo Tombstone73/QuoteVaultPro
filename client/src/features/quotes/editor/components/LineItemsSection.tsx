@@ -769,23 +769,29 @@ export function LineItemsSection({
                           <div className="flex flex-wrap items-end gap-3">
                             <div className="flex items-center gap-2">
                               <div className="flex items-center gap-2">
-                                <Input
-                                  value={widthText}
-                                  onChange={(e) => setWidthText(e.target.value)}
-                                  className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                                  inputMode="decimal"
-                                  disabled={readOnly || !dimsRequired}
-                                  readOnly={readOnly}
-                                />
-                                <span className="text-muted-foreground">×</span>
-                                <Input
-                                  value={heightText}
-                                  onChange={(e) => setHeightText(e.target.value)}
-                                  className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                                  inputMode="decimal"
-                                  disabled={readOnly || !dimsRequired}
-                                  readOnly={readOnly}
-                                />
+                                <div className="flex flex-col gap-1">
+                                  <div className="text-xs text-muted-foreground">Width</div>
+                                  <Input
+                                    value={widthText}
+                                    onChange={(e) => setWidthText(e.target.value)}
+                                    className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
+                                    inputMode="decimal"
+                                    disabled={readOnly || !dimsRequired}
+                                    readOnly={readOnly}
+                                  />
+                                </div>
+                                <span className="text-muted-foreground self-end pb-2">×</span>
+                                <div className="flex flex-col gap-1">
+                                  <div className="text-xs text-muted-foreground">Height</div>
+                                  <Input
+                                    value={heightText}
+                                    onChange={(e) => setHeightText(e.target.value)}
+                                    className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
+                                    inputMode="decimal"
+                                    disabled={readOnly || !dimsRequired}
+                                    readOnly={readOnly}
+                                  />
+                                </div>
                               </div>
                             </div>
 
