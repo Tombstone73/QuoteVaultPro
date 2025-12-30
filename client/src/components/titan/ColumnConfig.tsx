@@ -54,6 +54,7 @@ interface ColumnConfigProps {
   storageKey: string;
   settings: ColumnSettings;
   onSettingsChange: (settings: ColumnSettings) => void;
+  footerActions?: React.ReactNode;
 }
 
 export function useColumnSettings(
@@ -211,6 +212,7 @@ export function ColumnConfig({
   storageKey,
   settings,
   onSettingsChange,
+  footerActions,
 }: ColumnConfigProps) {
   const [open, setOpen] = useState(false);
 
@@ -369,6 +371,12 @@ export function ColumnConfig({
               </div>
             </SortableContext>
           </DndContext>
+
+          {footerActions ? (
+            <div className="pt-2 border-t border-border/40">
+              {footerActions}
+            </div>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>

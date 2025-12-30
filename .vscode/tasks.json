@@ -13,6 +13,18 @@
 			"problemMatcher": [
 				"$tsc"
 			]
+		},
+		{
+			"label": "typecheck",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"check"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

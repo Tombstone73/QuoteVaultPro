@@ -4,6 +4,7 @@ import {
     quoteLineItems,
     quoteAttachments,
     quoteWorkflowStates,
+    orders,
     users,
     customers,
     products,
@@ -20,9 +21,337 @@ import {
     type InsertGlobalVariable,
 } from "@shared/schema";
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
+import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
 
 export class QuotesRepository {
     constructor(private readonly dbInstance = db) { }
+
+    private buildUserQuotesConditions(
+        organizationId: string,
+        userId: string,
+        filters?: {
+            searchCustomer?: string;
+            searchProduct?: string;
+            startDate?: string;
+            endDate?: string;
+            minPrice?: string;
+            maxPrice?: string;
+            userRole?: string;
+            source?: string;
+            status?: WorkflowState;
+        }
+    ) {
+        // Include both active and draft quotes (don't filter out drafts)
+        const conditions = [eq(quotes.organizationId, organizationId)];
+
+        // Role-based filtering:
+        // - owner/admin: can see all quotes (no userId filter)
+        // - manager/employee: see only internal quotes they created
+        // - customer: see only their own customer_quick_quote quotes
+        const isStaff = filters?.userRole && ['owner', 'admin', 'manager', 'employee'].includes(filters.userRole);
+        const isAdminOrOwner = filters?.userRole && ['owner', 'admin'].includes(filters.userRole);
+
+        if (!isAdminOrOwner) {
+            conditions.push(eq(quotes.userId, userId));
+        }
+
+        // Source filtering
+        if (filters?.source) {
+            conditions.push(eq(quotes.source, filters.source));
+        } else if (isStaff && !isAdminOrOwner) {
+            conditions.push(eq(quotes.source, 'internal'));
+        }
+
+        if (filters?.searchCustomer) {
+            const term = `%${filters.searchCustomer}%`;
+            // Use a single SQL condition here to avoid `or()` returning `SQL | undefined` in drizzle's types.
+            conditions.push(sql`(${quotes.customerName} like ${term} OR ${customers.companyName} like ${term})`);
+        }
+
+        if (filters?.startDate) {
+            conditions.push(gte(quotes.createdAt, new Date(filters.startDate)));
+        }
+
+        if (filters?.endDate) {
+            const endDate = new Date(filters.endDate);
+            endDate.setHours(23, 59, 59, 999);
+            conditions.push(lte(quotes.createdAt, endDate));
+        }
+
+        if (filters?.minPrice) {
+            conditions.push(sql`${quotes.totalPrice}::numeric >= ${filters.minPrice}::numeric`);
+        }
+
+        if (filters?.maxPrice) {
+            conditions.push(sql`${quotes.totalPrice}::numeric <= ${filters.maxPrice}::numeric`);
+        }
+
+        if (filters?.searchProduct) {
+            // Product filter: keep this as an EXISTS subquery to avoid multiplying rows.
+            conditions.push(
+                sql`exists (
+                    select 1 from ${quoteLineItems}
+                    where ${quoteLineItems.quoteId} = ${quotes.id}
+                      and ${quoteLineItems.productId} = ${filters.searchProduct}
+                )`
+            );
+        }
+
+        if (filters?.status) {
+            // Workflow state filter (includes derived states)
+            const convertedExpr = sql`(${quotes.convertedToOrderId} is not null OR exists (
+                select 1 from ${orders}
+                where ${orders.quoteId} = ${quotes.id}
+                  and ${orders.organizationId} = ${organizationId}
+            ))`;
+
+            if (filters.status === 'converted') {
+                conditions.push(convertedExpr);
+            } else if (filters.status === 'expired') {
+                conditions.push(
+                    sql`(
+                        ${quotes.status} = 'pending'
+                        AND ${quotes.validUntil} is not null
+                        AND ${quotes.validUntil} < now()
+                        AND NOT ${convertedExpr}
+                    )`
+                );
+            } else {
+                // Non-derived states map to DB enum.
+                const dbStatus = {
+                    draft: 'draft',
+                    pending_approval: 'pending_approval',
+                    sent: 'pending',
+                    approved: 'active',
+                    rejected: 'canceled',
+                } as const;
+                const mapped = (dbStatus as any)[filters.status] as string | undefined;
+                if (mapped) {
+                    conditions.push(eq(quotes.status, mapped as any));
+                }
+            }
+        }
+
+        return { conditions };
+    }
+
+    private getUserQuotesOrderBy(sortBy: string | undefined, sortDir: string | undefined) {
+        const dir = (sortDir === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc';
+        const order = (expr: any) => (dir === 'asc' ? asc(expr) : desc(expr));
+
+        // Stable secondary sort to prevent shuffle between pages.
+        const stableSecondary = asc(quotes.id);
+
+        switch (sortBy) {
+            case 'quoteNumber':
+                return [order(quotes.quoteNumber), stableSecondary];
+            case 'label':
+                return [order(quotes.label), stableSecondary];
+            case 'customer':
+                return [order(sql`coalesce(${customers.companyName}, ${quotes.customerName})`), stableSecondary];
+            case 'total':
+                return [order(sql`${quotes.totalPrice}::numeric`), stableSecondary];
+            case 'items':
+                return [
+                    order(sql`(
+                        select count(*)::int from ${quoteLineItems}
+                        where ${quoteLineItems.quoteId} = ${quotes.id}
+                    )`),
+                    stableSecondary,
+                ];
+            case 'source':
+                return [order(quotes.source), stableSecondary];
+            case 'createdBy':
+                return [order(sql`coalesce(${users.lastName}, '')`), order(sql`coalesce(${users.firstName}, '')`), order(sql`coalesce(${users.email}, '')`), stableSecondary];
+            case 'date':
+            default:
+                return [order(quotes.createdAt), stableSecondary];
+        }
+    }
+
+    private async getPreviewThumbnailsForQuoteIds(organizationId: string, quoteIds: string[]) {
+        const previewData: Map<string, { thumbnails: string[]; totalCount: number }> = new Map();
+        if (!quoteIds.length) return previewData;
+
+        const attachmentsQuery = await this.dbInstance
+            .select({
+                quoteId: quoteAttachments.quoteId,
+                thumbKey: quoteAttachments.thumbKey,
+                previewKey: quoteAttachments.previewKey,
+                fileName: quoteAttachments.fileName,
+            })
+            .from(quoteAttachments)
+            .where(
+                and(
+                    inArray(quoteAttachments.quoteId, quoteIds),
+                    eq(quoteAttachments.organizationId, organizationId),
+                    sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                )
+            )
+            .orderBy(quoteAttachments.createdAt);
+
+        const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
+        for (const att of attachmentsQuery) {
+            if (!groupedAttachments.has(att.quoteId)) {
+                groupedAttachments.set(att.quoteId, []);
+            }
+            const group = groupedAttachments.get(att.quoteId)!;
+            if (group.length < 3) {
+                group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
+            }
+        }
+
+        const countQuery = await this.dbInstance
+            .select({
+                quoteId: quoteAttachments.quoteId,
+                count: sql<number>`count(*)::int`,
+            })
+            .from(quoteAttachments)
+            .where(
+                and(
+                    inArray(quoteAttachments.quoteId, quoteIds),
+                    eq(quoteAttachments.organizationId, organizationId),
+                    sql`${quoteAttachments.thumbStatus} = 'thumb_ready'`
+                )
+            )
+            .groupBy(quoteAttachments.quoteId);
+
+        const countMap = new Map<string, number>();
+        for (const row of countQuery) {
+            countMap.set(row.quoteId, row.count);
+        }
+
+        for (const quoteIdKey of Array.from(groupedAttachments.keys())) {
+            const attachments = groupedAttachments.get(quoteIdKey)!;
+            const thumbnails = attachments
+                .map((att) => att.previewKey || att.thumbKey)
+                .filter((key: string | null): key is string => !!key);
+            previewData.set(quoteIdKey, {
+                thumbnails,
+                totalCount: countMap.get(quoteIdKey) || 0,
+            });
+        }
+
+        return previewData;
+    }
+
+    async getUserQuotesPaginated(
+        organizationId: string,
+        userId: string,
+        opts: {
+            searchCustomer?: string;
+            searchProduct?: string;
+            startDate?: string;
+            endDate?: string;
+            minPrice?: string;
+            maxPrice?: string;
+            userRole?: string;
+            source?: string;
+            status?: WorkflowState;
+            sortBy?: string;
+            sortDir?: 'asc' | 'desc';
+            page: number;
+            pageSize: number;
+            includeThumbnails: boolean;
+        }
+    ): Promise<{
+        items: Array<
+            Omit<QuoteWithRelations, 'user' | 'lineItems'> & {
+                user: QuoteWithRelations['user'] | null;
+                lineItems: QuoteWithRelations['lineItems'];
+                lineItemsCount: number;
+                previewThumbnails?: string[];
+                thumbsCount?: number;
+                workflowState?: WorkflowState;
+            }
+        >
+        page: number;
+        pageSize: number;
+        totalCount: number;
+        totalPages: number;
+        hasNext: boolean;
+        hasPrev: boolean;
+    }> {
+        const page = Math.max(1, opts.page);
+        const pageSize = Math.min(200, Math.max(1, opts.pageSize));
+        const offset = (page - 1) * pageSize;
+
+        const { conditions } = this.buildUserQuotesConditions(organizationId, userId, opts);
+        const whereClause = and(...conditions);
+        const orderBy = this.getUserQuotesOrderBy(opts.sortBy, opts.sortDir);
+
+        const [{ totalCount }] = await this.dbInstance
+            .select({ totalCount: sql<number>`count(*)::int` })
+            .from(quotes)
+            .leftJoin(
+                customers,
+                and(eq(customers.id, quotes.customerId), eq(customers.organizationId, organizationId))
+            )
+            .where(whereClause);
+
+        const rows = await this.dbInstance
+            .select({
+                quote: quotes,
+                customerCompanyName: customers.companyName,
+                user: users,
+                lineItemsCount: sql<number>`(
+                    select count(*)::int from ${quoteLineItems}
+                    where ${quoteLineItems.quoteId} = ${quotes.id}
+                )`,
+                hasOrder: sql<boolean>`(
+                    ${quotes.convertedToOrderId} is not null OR exists (
+                        select 1 from ${orders}
+                        where ${orders.quoteId} = ${quotes.id}
+                          and ${orders.organizationId} = ${organizationId}
+                    )
+                )`,
+            })
+            .from(quotes)
+            .leftJoin(
+                customers,
+                and(eq(customers.id, quotes.customerId), eq(customers.organizationId, organizationId))
+            )
+            .leftJoin(users, eq(users.id, quotes.userId))
+            .where(whereClause)
+            .orderBy(...orderBy)
+            .limit(pageSize)
+            .offset(offset);
+
+        const quoteIds = rows.map((r) => r.quote.id);
+        const previewData = opts.includeThumbnails
+            ? await this.getPreviewThumbnailsForQuoteIds(organizationId, quoteIds)
+            : new Map<string, { thumbnails: string[]; totalCount: number }>();
+
+        const items = rows.map(({ quote, customerCompanyName, user, lineItemsCount, hasOrder }) => {
+            const workflowState = getEffectiveWorkflowState(
+                quote.status as any,
+                quote.validUntil ?? null,
+                !!hasOrder
+            );
+
+            return {
+                ...quote,
+                customerName: customerCompanyName ?? quote.customerName,
+                user,
+                lineItems: [],
+                lineItemsCount,
+                workflowState,
+                previewThumbnails: opts.includeThumbnails ? (previewData.get(quote.id)?.thumbnails || []) : [],
+                thumbsCount: opts.includeThumbnails ? (previewData.get(quote.id)?.totalCount || 0) : 0,
+            };
+        });
+
+        const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+        return {
+            items,
+            page,
+            pageSize,
+            totalCount,
+            totalPages,
+            hasNext: page < totalPages,
+            hasPrev: page > 1,
+        };
+    }
 
     async createQuote(organizationId: string, data: {
         userId: string;
