@@ -79,23 +79,39 @@ export type OrdersListResponse = {
   hasPrev: boolean;
 };
 
-export function useOrders(filters?: {
+// Query params type for non-paginated queries
+export interface OrdersFilterParams {
   search?: string;
   status?: string;
   priority?: string;
   customerId?: string;
   startDate?: string;
   endDate?: string;
+}
+
+// Query params type for paginated queries (includes pagination fields)
+export interface OrdersQueryParams extends OrdersFilterParams {
   page?: number;
   pageSize?: number;
   includeThumbnails?: boolean;
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
-}) {
+}
+
+// Function overloads for backward compatibility
+// Legacy: no args or only filter params (no pagination) -> returns Order[]
+export function useOrders(): ReturnType<typeof useQuery<Order[], Error>>;
+export function useOrders(filters: OrdersFilterParams): ReturnType<typeof useQuery<Order[], Error>>;
+// Paginated: includes page/pageSize -> returns OrdersListResponse
+export function useOrders(filters: OrdersQueryParams & { page: number }): ReturnType<typeof useQuery<OrdersListResponse, Error>>;
+export function useOrders(filters: OrdersQueryParams & { pageSize: number }): ReturnType<typeof useQuery<OrdersListResponse, Error>>;
+
+// Implementation
+export function useOrders(filters?: OrdersQueryParams): any {
   // Determine if paginated request
   const isPaginated = filters?.page !== undefined || filters?.pageSize !== undefined;
 
-  return useQuery<OrdersListResponse | Order[]>({
+  return useQuery({
     queryKey: ["/api/orders", filters],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -116,7 +132,14 @@ export function useOrders(filters?: {
       const url = `/api/orders${params.toString() ? `?${params.toString()}` : ""}`;
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch orders");
-      return response.json();
+      const data = await response.json();
+      
+      // If legacy call (no pagination params) and server returns paginated shape, extract items
+      if (!isPaginated && data && typeof data === 'object' && 'items' in data) {
+        return data.items as Order[];
+      }
+      
+      return data;
     },
     staleTime: 60_000,
     placeholderData: (prev) => prev,

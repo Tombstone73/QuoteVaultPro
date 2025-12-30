@@ -14,7 +14,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition } from "@/components/titan";
+import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel";
@@ -51,6 +51,11 @@ export default function Orders() {
   const [pageSize, setPageSize] = useState(25);
   const [includeThumbnails, setIncludeThumbnails] = useState(true);
   
+  // Attachment viewer state (matches Quotes pattern)
+  const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
+  const [selectedAttachment, setSelectedAttachment] = useState<any>(null);
+  const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
+  
   // Column settings - scoped per user (matches Quotes pattern)
   const storageKey = user?.id 
     ? `titan:listview:orders:user_${user.id}` 
@@ -75,7 +80,9 @@ export default function Orders() {
 
   // Determine if paginated response
   const isPaginated = ordersData && typeof ordersData === 'object' && 'items' in ordersData;
-  const orders = isPaginated ? (ordersData as OrdersListResponse).items : (ordersData as any[] || []);
+  const orders: OrderRow[] = isPaginated 
+    ? (ordersData as OrdersListResponse).items 
+    : (ordersData ? (ordersData as OrderRow[]) : []);
   const totalCount = isPaginated ? (ordersData as OrdersListResponse).totalCount : orders.length;
   const totalPages = isPaginated ? (ordersData as OrdersListResponse).totalPages : 1;
   const hasNext = isPaginated ? (ordersData as OrdersListResponse).hasNext : false;
@@ -85,7 +92,7 @@ export default function Orders() {
 
   // Filter orders by search, status, priority (client-side for Phase 1)
   const filteredOrders = useMemo(() => {
-    let filtered = orders;
+    let filtered: OrderRow[] = orders || [];
     
     if (search) {
       const searchLower = search.toLowerCase();
@@ -144,6 +151,64 @@ export default function Orders() {
       toast({ title: "Error", description: "Failed to update list note", variant: "destructive" });
     },
   });
+
+  // Handle thumbnail click - fetch attachment details and open viewer (matches Quotes pattern)
+  const handleThumbnailClick = async (orderId: string, thumbKey: string) => {
+    setLoadingAttachments(orderId);
+    
+    try {
+      // Fetch all attachments for the order (including line item attachments)
+      const response = await fetch(`/api/orders/${orderId}/attachments?includeLineItems=true`, {
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch attachments');
+      }
+      
+      const result = await response.json();
+      const attachments = result.data || [];
+      
+      // Find the attachment matching this thumbnail
+      // thumbKey format: "uploads/org_xxx/orders/order_xxx/attachment_xxx.thumb.jpg"
+      let matchedAttachment = attachments.find((att: any) => att.thumbKey === thumbKey);
+      
+      // Fallback: if no exact match, try finding by attachment ID in thumbKey
+      if (!matchedAttachment && thumbKey.includes('attachment_')) {
+        const attachmentIdMatch = thumbKey.match(/attachment_([^.\/]+)/);
+        if (attachmentIdMatch) {
+          const attachmentId = attachmentIdMatch[1];
+          matchedAttachment = attachments.find((att: any) => att.id.includes(attachmentId));
+        }
+      }
+      
+      // If still no match, use first attachment as fallback
+      if (!matchedAttachment && attachments.length > 0) {
+        matchedAttachment = attachments[0];
+      }
+      
+      if (matchedAttachment) {
+        // Ensure orderId is available for download
+        setSelectedAttachment({ ...matchedAttachment, orderId });
+        setAttachmentViewerOpen(true);
+      } else {
+        toast({
+          title: "No attachment found",
+          description: "Could not locate the attachment details.",
+          variant: "destructive"
+        });
+      }
+    } catch (error: any) {
+      console.error('[handleThumbnailClick] Error:', error);
+      toast({
+        title: "Failed to load attachment",
+        description: error.message || "Could not fetch attachment details.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoadingAttachments(null);
+    }
+  };
 
   // List-Label Inline Edit Cell Component (extracted to use hooks properly)
   const ListLabelCell = ({ row }: { row: OrderRow }) => {
@@ -217,24 +282,37 @@ export default function Orders() {
       case "thumbnails": {
         const thumbs = row.previewThumbnails || [];
         const thumbsCount = row.thumbsCount || 0;
+        const isLoadingThis = loadingAttachments === row.id;
+        
         if (thumbsCount === 0) {
           return <span className="text-muted-foreground italic text-xs">No attachments</span>;
         }
+        
         return (
           <div className="flex items-center gap-1">
-            {thumbs.slice(0, 3).map((url, idx) => (
-              <img
+            {isLoadingThis && (
+              <Loader2 className="w-4 h-4 animate-spin text-primary" />
+            )}
+            {thumbs.slice(0, 3).map((thumbKey, idx) => (
+              <button
                 key={idx}
-                src={url}
-                alt={`Preview ${idx + 1}`}
-                className="w-8 h-8 object-cover rounded border border-border cursor-pointer hover:ring-2 hover:ring-primary"
-                onClick={() => {
-                  // TODO: Open AttachmentViewerDialog (Checkpoint 5)
+                type="button"
+                className="w-8 h-8 rounded border border-border overflow-hidden hover:ring-2 hover:ring-primary transition-all disabled:opacity-50"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleThumbnailClick(row.id, thumbKey);
                 }}
-              />
+                disabled={isLoadingThis}
+              >
+                <img
+                  src={thumbKey}
+                  alt={`Preview ${idx + 1}`}
+                  className="w-full h-full object-cover"
+                />
+              </button>
             ))}
             {thumbsCount > 3 && (
-              <span className="text-xs text-muted-foreground">+{thumbsCount - 3}</span>
+              <span className="text-xs text-muted-foreground ml-1">+{thumbsCount - 3}</span>
             )}
           </div>
         );
@@ -293,11 +371,11 @@ export default function Orders() {
 
   // Helper functions
   const getColStyle = (key: string) => {
-    const setting = columnSettings?.[key];
-    const def = ORDER_COLUMNS.find((c) => c.key === key);
-    // Check if setting is a ColumnState (not the _columnOrder array)
-    const width = (setting && typeof setting === 'object' && 'width' in setting) ? setting.width : (def?.defaultWidth || 150);
-    return { width: `${width}px`, minWidth: `${def?.minWidth || 80}px`, maxWidth: `${def?.maxWidth || 300}px` };
+    const raw = columnSettings[key];
+    const settings: ColumnState | undefined =
+      raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ColumnState) : undefined;
+    if (!settings?.visible) return { display: "none" as const };
+    return { width: settings.width, minWidth: settings.width };
   };
 
   const isVisible = (key: string) => isColumnVisible(columnSettings, key);
@@ -527,6 +605,21 @@ export default function Orders() {
           )}
         </DataCard>
       </ContentLayout>
+
+      {/* Attachment Viewer Dialog (matches Quotes pattern) */}
+      {attachmentViewerOpen && selectedAttachment && (
+        <AttachmentViewerDialog
+          open={attachmentViewerOpen}
+          onOpenChange={setAttachmentViewerOpen}
+          attachment={selectedAttachment}
+          onDownload={async (att) => {
+            // Simple download - open URL in new tab
+            if (att.originalUrl) {
+              window.open(att.originalUrl, '_blank');
+            }
+          }}
+        />
+      )}
     </Page>
   );
 }

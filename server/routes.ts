@@ -4749,27 +4749,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-      const { filename, mimeType, size, purpose, quoteId } = req.body || {};
+      const { filename, mimeType, size, purpose, quoteId, orderId } = req.body || {};
       if (!filename || typeof filename !== 'string') return res.status(400).json({ error: 'filename is required' });
       if (!mimeType || typeof mimeType !== 'string') return res.status(400).json({ error: 'mimeType is required' });
       if (size == null || Number.isNaN(Number(size))) return res.status(400).json({ error: 'size is required' });
-      if (purpose !== 'quote-attachment') return res.status(400).json({ error: 'Unsupported purpose' });
-      if (!quoteId || typeof quoteId !== 'string') return res.status(400).json({ error: 'quoteId is required for quote-attachment' });
+      if (purpose !== 'quote-attachment' && purpose !== 'order-attachment') return res.status(400).json({ error: 'Unsupported purpose' });
 
-      // Validate quote belongs to org
-      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
-        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
-        .limit(1);
-      if (!quote) return res.status(404).json({ error: 'Quote not found' });
-
-      if (!assertQuoteEditable(res, quote)) return;
+      if (purpose === 'quote-attachment') {
+        if (!quoteId || typeof quoteId !== 'string') return res.status(400).json({ error: 'quoteId is required for quote-attachment' });
+        
+        // Validate quote belongs to org
+        const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
+          .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+          .limit(1);
+        if (!quote) return res.status(404).json({ error: 'Quote not found' });
+        if (!assertQuoteEditable(res, quote)) return;
+      } else if (purpose === 'order-attachment') {
+        if (!orderId || typeof orderId !== 'string') return res.status(400).json({ error: 'orderId is required for order-attachment' });
+        
+        // Validate order belongs to org
+        const order = await storage.getOrderById(organizationId, orderId);
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+      }
 
       const { createUploadSession } = await import('./services/chunkedUploads');
       const session = await createUploadSession({
         organizationId,
         createdByUserId: userId,
-        purpose: 'quote-attachment',
-        quoteId,
+        purpose,
+        quoteId: purpose === 'quote-attachment' ? quoteId : null,
+        orderId: purpose === 'order-attachment' ? orderId : null,
         filename,
         mimeType,
         sizeBytes: Number(size),
@@ -4830,20 +4839,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
       const { uploadId } = req.params;
-      const { quoteId } = req.body || {};
+      const { quoteId, orderId } = req.body || {};
       if (!uploadId) return res.status(400).json({ error: 'uploadId is required' });
-      if (!quoteId || typeof quoteId !== 'string') return res.status(400).json({ error: 'quoteId is required' });
 
-      // Validate quote belongs to org
-      const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
-        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
-        .limit(1);
-      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+      // Require either quoteId or orderId
+      if (!quoteId && !orderId) return res.status(400).json({ error: 'quoteId or orderId is required' });
+      if (quoteId && orderId) return res.status(400).json({ error: 'Cannot specify both quoteId and orderId' });
 
-      if (!assertQuoteEditable(res, quote)) return;
+      if (quoteId) {
+        // Validate quote belongs to org
+        const [quote] = await db.select({ id: quotes.id, status: quotes.status }).from(quotes)
+          .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+          .limit(1);
+        if (!quote) return res.status(404).json({ error: 'Quote not found' });
+        if (!assertQuoteEditable(res, quote)) return;
+      } else if (orderId) {
+        // Validate order belongs to org
+        const order = await storage.getOrderById(organizationId, orderId);
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+      }
 
       const { finalizeUploadSession } = await import('./services/chunkedUploads');
-      const finalized = await finalizeUploadSession({ uploadId, organizationId, quoteId });
+      const finalized = await finalizeUploadSession({ 
+        uploadId, 
+        organizationId, 
+        quoteId: quoteId || undefined,
+        orderId: orderId || undefined,
+      });
 
       return res.json({
         success: true,
@@ -7495,6 +7517,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Paginated response (match Quotes pattern)
         const page = Math.max(1, parseInt(pageRaw || '1', 10) || 1);
         const pageSize = Math.min(200, Math.max(1, parseInt(pageSizeRaw || '25', 10) || 25));
+        // Default to false to avoid breaking page load if thumbnails schema is incomplete
         const includeThumbnails = includeThumbnailsRaw === 'true' || includeThumbnailsRaw === '1';
 
         const result = await storage.getAllOrdersPaginated(organizationId, {
@@ -7875,6 +7898,204 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error updating order list note:", error);
       res.status(500).json({ message: "Failed to update list note" });
+    }
+  });
+
+  // Order Attachments (fetch all attachments for an order, optionally including line item attachments)
+  app.get("/api/orders/:orderId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { orderId } = req.params;
+      const { includeLineItems } = req.query;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      // Validate order belongs to org (prevents cross-tenant access)
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) return res.status(404).json({ error: "Order not found" });
+
+      const { orderAttachments } = await import("@shared/schema");
+
+      // Build where clause - optionally include line item attachments
+      const whereConditions: any[] = [
+        eq(orderAttachments.orderId, orderId)
+      ];
+      
+      // If includeLineItems is not explicitly true, filter to order-level only (backward compatible)
+      if (includeLineItems !== 'true') {
+        whereConditions.push(isNull(orderAttachments.orderLineItemId));
+      }
+
+      const files = await db.select().from(orderAttachments)
+        .where(and(...whereConditions))
+        .orderBy(desc(orderAttachments.createdAt));
+
+      // Enrich with URLs (same pattern as quotes) using local helper
+      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      return res.json({ success: true, data: enrichedFiles });
+    } catch (error) {
+      console.error("[OrderAttachments:GET] Error:", error);
+      return res.status(500).json({ error: "Failed to fetch order attachments" });
+    }
+  });
+
+  // Upload attachments to an order (mirrors Quotes pattern exactly)
+  app.post("/api/orders/:orderId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { orderId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const { uploadId, files, description, fileName, fileUrl, fileSize, mimeType } = req.body;
+
+      // Validate order belongs to org
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) return res.status(404).json({ error: "Order not found" });
+
+      // Chunked upload link
+      if (uploadId && typeof uploadId === 'string') {
+        const { loadUploadSessionMeta, saveUploadSessionMeta, deleteUploadSession } = await import('./services/chunkedUploads');
+        const meta = await loadUploadSessionMeta(uploadId);
+        if (meta.organizationId !== organizationId) return res.status(404).json({ error: 'Upload not found' });
+        if (meta.purpose !== 'order-attachment') return res.status(400).json({ error: 'Invalid upload purpose' });
+        if (meta.status !== 'finalized' || !meta.relativePath) return res.status(400).json({ error: 'Upload not finalized' });
+        if (meta.orderId && meta.orderId !== orderId) return res.status(400).json({ error: 'Upload orderId mismatch' });
+
+        const attachmentInsert: any = {
+          orderId,
+          orderLineItemId: null,
+          quoteId: order.quoteId || null,
+          uploadedByUserId: userId,
+          uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+          description: description || null,
+          fileName: meta.originalFilename,
+          fileUrl: meta.relativePath,
+          fileSize: meta.sizeBytes,
+          mimeType: meta.mimeType,
+          originalFilename: meta.originalFilename,
+          storedFilename: meta.storedFilename || null,
+          relativePath: meta.relativePath,
+          storageProvider: 'local',
+          extension: meta.extension || null,
+          sizeBytes: meta.sizeBytes,
+          checksum: meta.checksum || null,
+        };
+
+        const [created] = await db.insert(orderAttachments).values(attachmentInsert).returning();
+        meta.linkedAt = new Date().toISOString();
+        await saveUploadSessionMeta(uploadId, meta);
+        await deleteUploadSession(uploadId);
+
+        const enriched = await enrichAttachmentWithUrls(created);
+        return res.json({ success: true, data: [enriched] });
+      }
+
+      // Atomic upload+link in single request
+      if (Array.isArray(files) && files.length > 0) {
+        const {
+          processUploadedFile,
+          generateStoredFilename,
+          generateRelativePath,
+          computeChecksum,
+          getFileExtension,
+          deleteFile: deleteLocalFile,
+        } = await import('./utils/fileStorage.js');
+
+        const uploadedKeys: Array<{ provider: 'local'; key: string }> = [];
+
+        try {
+          const inserted = await db.transaction(async (tx) => {
+            const results: any[] = [];
+
+            for (const f of files) {
+              const originalFilename = (f?.originalFilename ?? f?.fileName ?? '').toString();
+              const fileBufferBase64 = (f?.fileBufferBase64 ?? f?.fileBuffer ?? '').toString();
+              const fileMimeType = (f?.mimeType ?? 'application/octet-stream').toString();
+
+              if (!originalFilename) throw new Error('originalFilename is required');
+              if (!fileBufferBase64) throw new Error(`fileBufferBase64 is required for ${originalFilename}`);
+
+              const buffer = Buffer.from(fileBufferBase64, 'base64');
+
+              const fileMetadata = await processUploadedFile({
+                originalFilename,
+                buffer,
+                mimeType: fileMimeType,
+                organizationId,
+                resourceType: 'order',
+                resourceId: orderId,
+              });
+              uploadedKeys.push({ provider: 'local', key: fileMetadata.relativePath });
+
+              const attachmentInsert: any = {
+                orderId,
+                orderLineItemId: null,
+                quoteId: order.quoteId || null,
+                uploadedByUserId: userId,
+                uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                description: description || null,
+                fileName: originalFilename,
+                fileUrl: fileMetadata.relativePath,
+                fileSize: fileMetadata.sizeBytes,
+                mimeType: fileMimeType,
+                originalFilename: fileMetadata.originalFilename,
+                storedFilename: fileMetadata.storedFilename,
+                relativePath: fileMetadata.relativePath,
+                storageProvider: 'local',
+                extension: fileMetadata.extension,
+                sizeBytes: fileMetadata.sizeBytes,
+                checksum: fileMetadata.checksum,
+              };
+
+              const [created] = await tx.insert(orderAttachments).values(attachmentInsert).returning();
+              results.push(created);
+            }
+
+            return results;
+          });
+
+          return res.json({ success: true, data: inserted });
+        } catch (error: any) {
+          // Best-effort cleanup
+          try {
+            await Promise.all(
+              uploadedKeys.map((k) => deleteLocalFile(k.key).catch(() => false))
+            );
+          } catch {
+            // fail-soft cleanup
+          }
+
+          console.error('[OrderAttachments:POST] Atomic upload failed:', error);
+          return res.status(500).json({ error: error?.message || 'Failed to upload attachments' });
+        }
+      }
+
+      // Fallback: link-only (legacy) contract
+      if (!fileName) return res.status(400).json({ error: "fileName is required" });
+      if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
+
+      const storageProvider = fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) ? undefined : 'local';
+
+      const attachmentData: any = {
+        orderId,
+        orderLineItemId: null,
+        quoteId: order.quoteId || null,
+        uploadedByUserId: userId,
+        uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        fileName,
+        originalFilename: fileName,
+        fileUrl,
+        fileSize: fileSize || null,
+        mimeType: mimeType || null,
+        description: description || null,
+        storageProvider,
+      };
+
+      const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+      return res.json({ success: true, data: attachment });
+    } catch (error) {
+      console.error("[OrderAttachments:POST] Error:", error);
+      return res.status(500).json({ error: "Failed to attach file to order" });
     }
   });
 
