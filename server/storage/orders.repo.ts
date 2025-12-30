@@ -35,7 +35,7 @@ import {
     type CustomerContact,
     type InsertJobStatusLog,
 } from "@shared/schema";
-import { eq, and, or, ilike, gte, lte, desc, sql, isNull } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
@@ -101,7 +101,8 @@ export class OrdersRepository {
         const previewData: Map<string, { thumbnails: string[]; totalCount: number }> = new Map();
         if (!orderIds.length) return previewData;
 
-        // Query orderAttachments (note: doesn't have organizationId or thumbStatus yet, so we filter via order join)
+        // Query orderAttachments with thumb_ready status (matches Quotes pattern exactly)
+        // Join with orders for organizationId filtering since order_attachments doesn't have org column
         const attachmentsQuery = await this.dbInstance
             .select({
                 orderId: orderAttachments.orderId,
@@ -113,12 +114,9 @@ export class OrdersRepository {
             .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
             .where(
                 and(
-                    sql`${orderAttachments.orderId} = ANY(${orderIds})`,
+                    inArray(orderAttachments.orderId, orderIds),
                     eq(orders.organizationId, organizationId),
-                    or(
-                        sql`${orderAttachments.thumbKey} IS NOT NULL`,
-                        sql`${orderAttachments.previewKey} IS NOT NULL`
-                    )
+                    sql`${orderAttachments.thumbStatus} = 'thumb_ready'`
                 )
             )
             .orderBy(orderAttachments.createdAt);
@@ -143,12 +141,9 @@ export class OrdersRepository {
             .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
             .where(
                 and(
-                    sql`${orderAttachments.orderId} = ANY(${orderIds})`,
+                    inArray(orderAttachments.orderId, orderIds),
                     eq(orders.organizationId, organizationId),
-                    or(
-                        sql`${orderAttachments.thumbKey} IS NOT NULL`,
-                        sql`${orderAttachments.previewKey} IS NOT NULL`
-                    )
+                    sql`${orderAttachments.thumbStatus} = 'thumb_ready'`
                 )
             )
             .groupBy(orderAttachments.orderId);
@@ -284,9 +279,17 @@ export class OrdersRepository {
             .offset(offset);
 
         const orderIds = rows.map((r) => r.order.id);
-        const previewData = opts.includeThumbnails
-            ? await this.getPreviewThumbnailsForOrderIds(organizationId, orderIds)
-            : new Map<string, { thumbnails: string[]; totalCount: number }>();
+        let previewData = new Map<string, { thumbnails: string[]; totalCount: number }>();
+        
+        if (opts.includeThumbnails) {
+            try {
+                previewData = await this.getPreviewThumbnailsForOrderIds(organizationId, orderIds);
+            } catch (error: any) {
+                console.error('[orders] thumbnails disabled/fallback due to error:', error.message);
+                // Fail-soft: return empty thumbnails instead of crashing
+                previewData = new Map();
+            }
+        }
 
         // Fetch list notes for all orders in this page
         const { orderListNotes } = await import("@shared/schema");
@@ -299,7 +302,7 @@ export class OrdersRepository {
             .where(
                 and(
                     eq(orderListNotes.organizationId, organizationId),
-                    sql`${orderListNotes.orderId} = ANY(${orderIds})`
+                    inArray(orderListNotes.orderId, orderIds)
                 )
             );
 
@@ -313,8 +316,8 @@ export class OrdersRepository {
             customer,
             contact,
             lineItemsCount,
-            previewThumbnails: opts.includeThumbnails ? (previewData.get(order.id)?.thumbnails || []) : [],
-            thumbsCount: opts.includeThumbnails ? (previewData.get(order.id)?.totalCount || 0) : 0,
+            previewThumbnails: previewData.get(order.id)?.thumbnails || [],
+            thumbsCount: previewData.get(order.id)?.totalCount || 0,
             listLabel: listNotesMap.get(order.id) || null,
         }));
 

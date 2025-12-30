@@ -2387,9 +2387,11 @@ export const orderAttachments = pgTable("order_attachments", {
   // Thumbnail support (legacy fields kept for backward compatibility)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
-  // Thumbnail scaffolding fields (migration 0035)
+  // Thumbnail scaffolding fields (migration 0011)
+  thumbStatus: thumbStatusEnum("thumb_status").default('uploaded'),
   thumbKey: text("thumb_key"), // Storage key for small thumbnail (e.g., 320x320)
   previewKey: text("preview_key"), // Storage key for medium preview (e.g., 1600x1600)
+  thumbError: text("thumb_error"), // Error message if thumbnail generation failed
   // Artwork metadata fields
   role: fileRoleEnum("role").default('other'), // artwork, proof, reference, etc.
   side: fileSideEnum("side").default('na'), // front, back, or n/a
@@ -2402,6 +2404,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_order_line_item_id_idx").on(table.orderLineItemId),
   index("order_attachments_quote_id_idx").on(table.quoteId),
   index("order_attachments_role_idx").on(table.role),
+  index("order_attachments_thumb_status_idx").on(table.thumbStatus),
 ]);
 
 export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({

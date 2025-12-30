@@ -28,6 +28,7 @@ import {
 import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem } from "@/hooks/useOrders";
+import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
 import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
 import type { OrderLineItem as HookOrderLineItem, OrderWithRelations as HookOrderWithRelations } from "@/hooks/useOrders";
@@ -677,6 +678,14 @@ export default function OrderDetail() {
                     </div>
                   </div>
                 )}
+
+                {/* Attachments */}
+                <div>
+                  <label className="text-sm font-medium text-muted-foreground">Attachments</label>
+                  <div className="mt-2">
+                    <OrderAttachmentsPanel orderId={order.id} locked={false} />
+                  </div>
+                </div>
               </CardContent>
             </Card>
 

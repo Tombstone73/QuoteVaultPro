@@ -10,7 +10,7 @@ import {
   getFileExtension,
 } from "../utils/fileStorage";
 
-export type UploadPurpose = "quote-attachment";
+export type UploadPurpose = "quote-attachment" | "order-attachment";
 
 type UploadSessionStatus = "initiated" | "uploading" | "finalized" | "failed";
 
@@ -20,6 +20,7 @@ type UploadSessionMeta = {
   createdByUserId: string | null;
   purpose: UploadPurpose;
   quoteId: string | null;
+  orderId: string | null;
 
   originalFilename: string;
   mimeType: string;
@@ -148,7 +149,8 @@ export async function writeUploadChunkFromStream(options: {
 export async function finalizeUploadSession(options: {
   uploadId: string;
   organizationId: string;
-  quoteId: string;
+  quoteId?: string;
+  orderId?: string;
 }): Promise<{
   fileId: string;
   filename: string;
@@ -162,15 +164,24 @@ export async function finalizeUploadSession(options: {
   if (meta.organizationId !== options.organizationId) {
     throw new Error("Upload session does not belong to this organization");
   }
-  if (meta.purpose !== "quote-attachment") {
+  if (meta.purpose !== "quote-attachment" && meta.purpose !== "order-attachment") {
     throw new Error("Unsupported upload purpose");
   }
 
-  // For quote attachments we require quoteId so the final storage path is stable.
-  if (meta.quoteId && meta.quoteId !== options.quoteId) {
-    throw new Error("Upload session quoteId mismatch");
+  // For quote attachments we require quoteId; for order attachments we require orderId
+  if (meta.purpose === "quote-attachment") {
+    if (!options.quoteId) throw new Error("quoteId is required for quote-attachment");
+    if (meta.quoteId && meta.quoteId !== options.quoteId) {
+      throw new Error("Upload session quoteId mismatch");
+    }
+    meta.quoteId = options.quoteId;
+  } else if (meta.purpose === "order-attachment") {
+    if (!options.orderId) throw new Error("orderId is required for order-attachment");
+    if (meta.orderId && meta.orderId !== options.orderId) {
+      throw new Error("Upload session orderId mismatch");
+    }
+    meta.orderId = options.orderId;
   }
-  meta.quoteId = options.quoteId;
 
   if (meta.status === "finalized" && meta.relativePath && meta.checksum) {
     return {
@@ -201,8 +212,8 @@ export async function finalizeUploadSession(options: {
   const storedFilename = generateStoredFilename(meta.originalFilename);
   const relativePath = generateRelativePath({
     organizationId: meta.organizationId,
-    resourceType: "quote",
-    resourceId: options.quoteId,
+    resourceType: meta.purpose === "quote-attachment" ? "quote" : "order",
+    resourceId: meta.purpose === "quote-attachment" ? options.quoteId! : options.orderId!,
     storedFilename,
   });
 
