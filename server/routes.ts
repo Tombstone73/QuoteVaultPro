@@ -3086,6 +3086,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Unauthorized" });
       }
       const userRole = req.user.role || 'employee';
+
+      const pageRaw = req.query.page as string | undefined;
+      const pageSizeRaw = req.query.pageSize as string | undefined;
+      const includeThumbnailsRaw = req.query.includeThumbnails as string | undefined;
+      const status = req.query.status as any;
+      const sortBy = req.query.sortBy as string | undefined;
+      const sortDir = (req.query.sortDir as string | undefined) === 'asc' ? 'asc' : 'desc';
+
       const filters = {
         searchCustomer: req.query.searchCustomer as string | undefined,
         searchProduct: req.query.searchProduct as string | undefined,
@@ -3095,13 +3103,156 @@ export async function registerRoutes(app: Express): Promise<Server> {
         maxPrice: req.query.maxPrice as string | undefined,
         userRole,
         source: req.query.source as string | undefined,
+        status: status as any,
       };
 
+      const hasPaging = pageRaw !== undefined || pageSizeRaw !== undefined;
+      if (hasPaging) {
+        const page = Math.max(1, parseInt(pageRaw || '1', 10) || 1);
+        const pageSize = Math.min(200, Math.max(1, parseInt(pageSizeRaw || '25', 10) || 25));
+        const includeThumbnails = includeThumbnailsRaw === 'true' || includeThumbnailsRaw === '1';
+
+        const result = await storage.getUserQuotesPaginated(organizationId, userId, {
+          ...filters,
+          sortBy,
+          sortDir,
+          page,
+          pageSize,
+          includeThumbnails,
+        });
+
+        return res.json(result);
+      }
+
       const quotes = await storage.getUserQuotes(organizationId, userId, filters);
-      res.json(quotes);
+      return res.json(quotes);
     } catch (error) {
       console.error("Error fetching quotes:", error);
       res.status(500).json({ message: "Failed to fetch quotes" });
+    }
+  });
+
+  // CSV export for quotes list (all matching; ignores pagination)
+  app.get("/api/quotes/export.csv", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const userRole = req.user.role || 'employee';
+
+      const includeHeadersRaw = req.query.includeHeaders as string | undefined;
+      const includeHeaders = includeHeadersRaw !== 'false' && includeHeadersRaw !== '0';
+      const columnsRaw = (req.query.columns as string | undefined) || '';
+      const columnKeys = columnsRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const sortBy = req.query.sortBy as string | undefined;
+      const sortDir = (req.query.sortDir as string | undefined) === 'asc' ? 'asc' : 'desc';
+      const status = req.query.status as any;
+
+      const filters = {
+        searchCustomer: req.query.searchCustomer as string | undefined,
+        searchProduct: req.query.searchProduct as string | undefined,
+        startDate: req.query.startDate as string | undefined,
+        endDate: req.query.endDate as string | undefined,
+        minPrice: req.query.minPrice as string | undefined,
+        maxPrice: req.query.maxPrice as string | undefined,
+        userRole,
+        source: req.query.source as string | undefined,
+        status: status as any,
+      };
+
+      // Hard clamp for safety: this endpoint exports all matching.
+      const pageSize = 200;
+      let page = 1;
+      let allItems: any[] = [];
+      let totalPages = 1;
+
+      // Page through results to avoid loading an unbounded array at once.
+      do {
+        const result = await storage.getUserQuotesPaginated(organizationId, userId, {
+          ...filters,
+          sortBy,
+          sortDir,
+          page,
+          pageSize,
+          includeThumbnails: false,
+        });
+
+        totalPages = result.totalPages;
+        allItems = allItems.concat(result.items);
+        page += 1;
+      } while (page <= totalPages);
+
+      const { buildCsv } = await import("@shared/csv");
+
+      const defaultColumns: Array<{ key: string; label: string }> = [
+        { key: 'quoteNumber', label: 'Quote #' },
+        { key: 'label', label: 'Label' },
+        { key: 'status', label: 'Status' },
+        { key: 'date', label: 'Date' },
+        { key: 'customer', label: 'Customer' },
+        { key: 'items', label: 'Items' },
+        { key: 'source', label: 'Source' },
+        { key: 'createdBy', label: 'Created By' },
+        { key: 'total', label: 'Total' },
+      ];
+
+      const selected = (columnKeys.length ? columnKeys : defaultColumns.map((c) => c.key))
+        .map((key) => defaultColumns.find((c) => c.key === key) || { key, label: key });
+
+      const headerRow = selected.map((c) => c.label);
+      const rows = allItems.map((q) => {
+        const workflowState = (q.workflowState || '') as string;
+        const createdBy = q.user
+          ? `${q.user.firstName || ''} ${q.user.lastName || ''}`.trim() || (q.user.email ?? '')
+          : '';
+        const date = q.createdAt ? new Date(q.createdAt).toISOString().slice(0, 10) : '';
+        const itemsCount = (q.lineItemsCount ?? (q.lineItems?.length ?? 0)) as number;
+        const total = q.totalPrice != null ? Number(q.totalPrice).toFixed(2) : '';
+
+        const valueFor = (key: string) => {
+          switch (key) {
+            case 'quoteNumber':
+              return q.quoteNumber ?? '';
+            case 'label':
+              return q.label ?? '';
+            case 'status':
+              return workflowState;
+            case 'date':
+              return date;
+            case 'customer':
+              return q.customerName ?? '';
+            case 'items':
+              return itemsCount;
+            case 'source':
+              return q.source ?? '';
+            case 'createdBy':
+              return createdBy;
+            case 'total':
+              return total;
+            case 'thumbnails':
+              return '';
+            default:
+              return '';
+          }
+        };
+
+        return selected.map((c) => valueFor(c.key));
+      });
+
+      const csv = buildCsv([headerRow, ...rows], { includeHeaders });
+      const timestamp = new Date().toISOString().slice(0, 10);
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="quotes-export-${timestamp}.csv"`);
+      return res.send(csv);
+    } catch (error) {
+      console.error("Error exporting quotes CSV:", error);
+      return res.status(500).json({ message: "Failed to export quotes" });
     }
   });
 

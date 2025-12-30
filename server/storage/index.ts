@@ -236,6 +236,7 @@ export const deleteLineItem = quotesRepo.deleteLineItem.bind(quotesRepo);
 export const finalizeTemporaryLineItemsForUser = quotesRepo.finalizeTemporaryLineItemsForUser.bind(quotesRepo);
 
 export const getUserQuotes = quotesRepo.getUserQuotes.bind(quotesRepo);
+export const getUserQuotesPaginated = quotesRepo.getUserQuotesPaginated.bind(quotesRepo);
 export const getAllQuotes = quotesRepo.getAllQuotes.bind(quotesRepo);
 export const getQuotesForCustomer = quotesRepo.getQuotesForCustomer.bind(quotesRepo);
 
@@ -445,6 +446,7 @@ export const storage = {
         quoteId: string
     ) => quotesRepo.finalizeTemporaryLineItemsForUser(organizationId, userId, quoteId),
     getUserQuotes,
+    getUserQuotesPaginated,
     getAllQuotes,
     getQuotesForCustomer,
     getQuoteWorkflowState,

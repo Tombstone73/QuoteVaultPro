@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, Fragment } from "react";
+import { useState, useMemo, useEffect, Fragment, useRef } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
@@ -6,6 +6,16 @@ import { ROUTES } from "@/config/routes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -45,6 +55,7 @@ import { QuoteWorkflowBadge } from "@/components/QuoteWorkflowBadge";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { buildCsv, type CsvValue } from "@shared/csv";
 import {
   Page,
   PageHeader,
@@ -59,6 +70,7 @@ import {
   type ColumnState,
 } from "@/components/titan";
 import type { QuoteWithRelations, Product } from "@shared/schema";
+import type { Organization } from "@shared/schema";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 
 type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "label";
@@ -67,6 +79,18 @@ type QuoteRow = QuoteWithRelations & {
   label?: string | null;
   previewThumbnails?: string[];
   thumbsCount?: number;
+  lineItemsCount?: number;
+  workflowState?: QuoteWorkflowState | null;
+};
+
+type QuotesListResponse = {
+  items: QuoteRow[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
 };
 
 // Column definitions for quotes table
@@ -107,11 +131,28 @@ export default function InternalQuotes() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
+  const { data: organization } = useQuery<Organization>({
+    queryKey: ["/api/organization/current"],
+    queryFn: async () => {
+      const response = await fetch("/api/organization/current", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch organization");
+      return response.json();
+    },
+    enabled: !!user,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+  });
+
   const [searchCustomer, setSearchCustomer] = useState("");
   const [searchProduct, setSearchProduct] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [statusFilter, setStatusFilter] = useState<QuoteWorkflowState | "all">("all");
+
+  // Pagination + performance controls (persisted per org+user)
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [includeThumbnails, setIncludeThumbnails] = useState(true);
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
   const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
   const [orderDueDate, setOrderDueDate] = useState("");
@@ -124,14 +165,80 @@ export default function InternalQuotes() {
     ? `titan:listview:quotes:user_${user.id}` 
     : "quotes_column_settings"; // fallback for loading state
   const [columnSettings, setColumnSettings] = useColumnSettings(QUOTE_COLUMNS, storageKey);
+
+  const orgIdForPrefs = organization?.id;
+  const pageSizeKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:pageSize:org_${orgIdForPrefs}:user_${user.id}` : null;
+  const includeThumbsKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:includeThumbnails:org_${orgIdForPrefs}:user_${user.id}` : null;
+
+  useEffect(() => {
+    if (!pageSizeKey || !includeThumbsKey) return;
+    try {
+      const savedPageSize = window.localStorage.getItem(pageSizeKey);
+      const savedThumbs = window.localStorage.getItem(includeThumbsKey);
+      if (savedPageSize) {
+        const n = parseInt(savedPageSize, 10);
+        if (Number.isFinite(n) && n >= 1 && n <= 200) setPageSize(n);
+      }
+      if (savedThumbs !== null) {
+        setIncludeThumbnails(savedThumbs === 'true');
+      }
+    } catch {
+      // ignore
+    }
+    // Reset paging when org/user changes
+    setPage(1);
+  }, [pageSizeKey, includeThumbsKey]);
+
+  useEffect(() => {
+    if (!pageSizeKey) return;
+    try {
+      window.localStorage.setItem(pageSizeKey, String(pageSize));
+    } catch {
+      // ignore
+    }
+  }, [pageSizeKey, pageSize]);
+
+  useEffect(() => {
+    if (!includeThumbsKey) return;
+    try {
+      window.localStorage.setItem(includeThumbsKey, includeThumbnails ? 'true' : 'false');
+    } catch {
+      // ignore
+    }
+  }, [includeThumbsKey, includeThumbnails]);
   
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+
+  // Reset page on any filter/sort/perf control changes
+  useEffect(() => {
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchCustomer, searchProduct, startDate, endDate, statusFilter, sortKey, sortDirection, pageSize, includeThumbnails]);
+
+  const hasWarnedPerf = useRef(false);
+  useEffect(() => {
+    if (pageSize === 200 && includeThumbnails && !hasWarnedPerf.current) {
+      hasWarnedPerf.current = true;
+      toast({
+        title: "Performance tip",
+        description: "200 rows with thumbnails can be slow. Turn off thumbnails for faster browsing.",
+      });
+    }
+  }, [pageSize, includeThumbnails, toast]);
   
   // Inline editing state for label
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
   const [tempLabel, setTempLabel] = useState("");
+
+  // CSV Export
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportScope, setExportScope] = useState<"visible" | "all">("visible");
+  const [exportIncludeHeaders, setExportIncludeHeaders] = useState(true);
+  const defaultExportFilename = `quotes_${format(new Date(), "yyyy-MM-dd")}.csv`;
+  const [exportFilename, setExportFilename] = useState(defaultExportFilename);
+  const [isExporting, setIsExporting] = useState(false);
 
   const convertToOrder = useConvertQuoteToOrder();
 
@@ -164,14 +271,26 @@ export default function InternalQuotes() {
   const visibleColumnCount = orderedColumns.filter(col => isVisible(col.key)).length;
 
   const {
-    data: quotes,
+    data: quotesResponse,
     isLoading,
     isFetching,
     error,
-  } = useQuery<QuoteWithRelations[], Error>({
+  } = useQuery<QuotesListResponse, Error>({
     queryKey: [
       "/api/quotes",
-      { source: "internal", searchCustomer, searchProduct, startDate, endDate },
+      {
+        source: "internal",
+        searchCustomer,
+        searchProduct,
+        startDate,
+        endDate,
+        status: statusFilter,
+        sortBy: sortKey,
+        sortDir: sortDirection,
+        page,
+        pageSize,
+        includeThumbnails,
+      },
     ],
     queryFn: async () => {
       const params = new URLSearchParams({ source: "internal" });
@@ -180,6 +299,13 @@ export default function InternalQuotes() {
         params.set("searchProduct", searchProduct);
       if (startDate) params.set("startDate", startDate);
       if (endDate) params.set("endDate", endDate);
+
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      params.set('sortBy', sortKey);
+      params.set('sortDir', sortDirection);
+      params.set('page', String(page));
+      params.set('pageSize', String(pageSize));
+      params.set('includeThumbnails', includeThumbnails ? 'true' : 'false');
 
       const url = `/api/quotes${
         params.toString() ? `?${params.toString()}` : ""
@@ -197,21 +323,17 @@ export default function InternalQuotes() {
     staleTime: 60_000,
     placeholderData: (prev) => prev,
     retry: false,
-    // @ts-expect-error onError is supported at runtime but not in this type version
-    onError: (err: Error) => {
-      console.error("[InternalQuotes] failed to load quotes", err);
-    },
   });
 
   const [hasEverLoaded, setHasEverLoaded] = useState(false);
 
   useEffect(() => {
-    if (!hasEverLoaded && quotes !== undefined) {
+    if (!hasEverLoaded && quotesResponse !== undefined) {
       setHasEverLoaded(true);
     }
-  }, [quotes, hasEverLoaded]);
+  }, [quotesResponse, hasEverLoaded]);
 
-  const quotesList: QuoteRow[] = (quotes ?? []) as QuoteRow[];
+  const quotesList: QuoteRow[] = (quotesResponse?.items ?? []) as QuoteRow[];
   const { data: products } = useQuery<Product[]>({
     queryKey: ["/api/products"],
   });
@@ -229,67 +351,121 @@ export default function InternalQuotes() {
     hasError: !!error,
   });
 
-  // Filter and sort quotes
-  const filteredAndSortedQuotes = useMemo(() => {
-    if (!quotesList.length) return [];
-    
-    // Apply status filter
-    let filtered = quotesList;
-    if (statusFilter !== "all") {
-      filtered = quotesList.filter((q: QuoteRow) => {
-        const state = useQuoteWorkflowState(q);
-        return state === statusFilter;
-      });
-    }
-    
-    // Sort filtered results
-    return [...filtered].sort((a: QuoteRow, b: QuoteRow) => {
-      let comparison = 0;
-      switch (sortKey) {
-        case "date":
-          comparison = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-          break;
-        case "quoteNumber":
-          comparison = (a.quoteNumber || "").toString().localeCompare((b.quoteNumber || "").toString(), undefined, { numeric: true });
-          break;
-        case "label":
-          comparison = (a.label || "").localeCompare(b.label || "");
-          break;
-        case "customer":
-          const customerA = a.customerName || "";
-          const customerB = b.customerName || "";
-          comparison = customerA.localeCompare(customerB);
-          break;
-        case "total":
-          comparison = parseFloat(a.totalPrice || "0") - parseFloat(b.totalPrice || "0");
-          break;
-        case "items":
-          const itemsA = a.lineItems?.length || 0;
-          const itemsB = b.lineItems?.length || 0;
-          comparison = itemsA - itemsB;
-          break;
-        case "source":
-          const sourceA = a.source || "";
-          const sourceB = b.source || "";
-          comparison = sourceA.localeCompare(sourceB);
-          break;
-        case "createdBy":
-          const userA =
-            a.user
-              ? `${a.user.firstName || ""} ${a.user.lastName || ""}`.trim() ||
-                (a.user.email ?? "")
-              : "";
-          const userB =
-            b.user
-              ? `${b.user.firstName || ""} ${b.user.lastName || ""}`.trim() ||
-                (b.user.email ?? "")
-              : "";
-          comparison = userA.localeCompare(userB);
-          break;
+  const filteredAndSortedQuotes = quotesList;
+
+  const exportableColumns = useMemo(() => {
+    // Export ONLY visible columns, in current configured order.
+    // Always exclude Actions.
+    return orderedColumns.filter((col) => isVisible(col.key) && col.key !== "actions");
+  }, [orderedColumns, columnSettings]);
+
+  const getExportValue = (quote: QuoteRow, columnKey: string): CsvValue => {
+    switch (columnKey) {
+      case "quoteNumber":
+        return quote.quoteNumber ?? "";
+      case "label":
+        return quote.label ?? "";
+      case "thumbnails": {
+        if (!includeThumbnails) return "";
+        const keys = quote.previewThumbnails ?? [];
+        if (!keys.length) return "";
+        // Export semicolon-separated URLs for compatibility.
+        return keys.map((k) => `/objects/${k}`).join(";");
       }
-      return sortDirection === "asc" ? comparison : -comparison;
-    });
-  }, [quotesList, sortKey, sortDirection, statusFilter]);
+      case "status": {
+        const state = quote.workflowState ?? useQuoteWorkflowState(quote);
+        return state ?? "";
+      }
+      case "date":
+        return format(new Date(quote.createdAt), "yyyy-MM-dd");
+      case "customer":
+        return quote.customerName ?? "";
+      case "items":
+        return quote.lineItemsCount ?? quote.lineItems?.length ?? 0;
+      case "source":
+        return quote.source ?? "";
+      case "createdBy": {
+        const name = quote.user
+          ? `${quote.user.firstName || ""} ${quote.user.lastName || ""}`.trim() || (quote.user.email ?? "")
+          : "";
+        return name;
+      }
+      case "total": {
+        // Export currency as a number string (no $) for Excel compatibility.
+        const n = Number(quote.totalPrice ?? 0);
+        return Number.isFinite(n) ? n.toFixed(2) : "";
+      }
+      default:
+        return "";
+    }
+  };
+
+  const downloadCsv = async () => {
+    try {
+      setIsExporting(true);
+      toast({ title: "Export started…", description: "Preparing CSV download." });
+
+      const filename = (exportFilename || defaultExportFilename).trim();
+      const safeFilename = filename.toLowerCase().endsWith(".csv") ? filename : `${filename}.csv`;
+
+      if (exportScope === 'visible') {
+        const rowsToExport = filteredAndSortedQuotes;
+        const headerRow: CsvValue[] = exportableColumns.map((c) => c.label);
+        const dataRows: CsvValue[][] = rowsToExport.map((q) => exportableColumns.map((c) => getExportValue(q, c.key)));
+        const csv = buildCsv([headerRow, ...dataRows], { includeHeaders: exportIncludeHeaders });
+
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = safeFilename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } else {
+        // All matching: server export ignores pagination but uses same filters/sort.
+        const params = new URLSearchParams({ source: 'internal' });
+        if (searchCustomer) params.set('searchCustomer', searchCustomer);
+        if (searchProduct && searchProduct !== 'all') params.set('searchProduct', searchProduct);
+        if (startDate) params.set('startDate', startDate);
+        if (endDate) params.set('endDate', endDate);
+        if (statusFilter !== 'all') params.set('status', statusFilter);
+        params.set('sortBy', sortKey);
+        params.set('sortDir', sortDirection);
+        params.set('includeHeaders', exportIncludeHeaders ? 'true' : 'false');
+        params.set('columns', exportableColumns.map((c) => c.key).join(','));
+
+        const url = `/api/quotes/export.csv?${params.toString()}`;
+        const response = await fetch(url, { credentials: 'include' });
+        if (!response.ok) {
+          const text = await response.text().catch(() => '');
+          throw new Error(text || 'Export failed');
+        }
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = safeFilename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(blobUrl);
+      }
+
+      toast({ title: "Download ready", description: safeFilename });
+      setExportOpen(false);
+    } catch (err: any) {
+      console.error("[InternalQuotes] export failed", err);
+      toast({
+        title: "Export failed",
+        description: err?.message || "Could not export CSV.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -310,7 +486,7 @@ export default function InternalQuotes() {
 
   // Render cell content based on column key
   const renderCell = (quote: QuoteRow, columnKey: string) => {
-    const workflowState = useQuoteWorkflowState(quote);
+    const workflowState = quote.workflowState ?? useQuoteWorkflowState(quote);
     const isApprovedLocked = workflowState === 'approved' || workflowState === 'converted';
     const lockedHint = workflowState === 'approved'
       ? "Approved quotes are locked. Revise to change."
@@ -397,7 +573,9 @@ export default function InternalQuotes() {
             style={getColStyle("thumbnails")}
             onClick={(e) => e.stopPropagation()}
           >
-            {quote.previewThumbnails && quote.previewThumbnails.length > 0 ? (
+            {!includeThumbnails ? (
+              <span className="text-xs text-muted-foreground">Off</span>
+            ) : quote.previewThumbnails && quote.previewThumbnails.length > 0 ? (
               <div className="flex items-center gap-1">
                 {quote.previewThumbnails.slice(0, 3).map((thumbKey, idx) => (
                   <div
@@ -461,7 +639,6 @@ export default function InternalQuotes() {
         );
       
       case "status":
-        const workflowState = useQuoteWorkflowState(quote);
         return (
           <TableCell style={getColStyle("status")}>
             {workflowState && <QuoteWorkflowBadge state={workflowState} />}
@@ -472,7 +649,7 @@ export default function InternalQuotes() {
         return (
           <TableCell style={getColStyle("items")}>
             <Badge variant="secondary">
-              {quote.lineItems?.length || 0} items
+              {(quote.lineItemsCount ?? quote.lineItems?.length ?? 0)} items
             </Badge>
           </TableCell>
         );
@@ -609,6 +786,7 @@ export default function InternalQuotes() {
     setSearchProduct("all");
     setStartDate("");
     setEndDate("");
+    setStatusFilter('all');
   };
 
   const handleConvertToOrder = (quoteId: string) => {
@@ -773,131 +951,164 @@ export default function InternalQuotes() {
 
       <ContentLayout className="space-y-3">
         {/* Inline Filters */}
-        <div className="flex flex-row items-center gap-3 flex-wrap">
-          <Input
-            placeholder="Search customers..."
-            value={searchCustomer}
-            onChange={(e) => setSearchCustomer(e.target.value)}
-            className="flex-1 min-w-[200px] h-9"
-          />
-          <Select value={searchProduct} onValueChange={setSearchProduct}>
-            <SelectTrigger className="w-[180px] h-9">
-              <SelectValue placeholder="All Products" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Products</SelectItem>
-              {products?.map((product) => (
-                <SelectItem key={product.id} value={product.id}>
-                  {product.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            placeholder="Start date"
-            className="w-[140px] h-9"
-          />
-          <Input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            placeholder="End date"
-            className="w-[140px] h-9"
-          />
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-1 min-w-0 items-center gap-3">
+            <Input
+              placeholder="Search customers..."
+              value={searchCustomer}
+              onChange={(e) => setSearchCustomer(e.target.value)}
+              className="flex-1 min-w-[200px] h-9"
+            />
+            <Select value={searchProduct} onValueChange={setSearchProduct}>
+              <SelectTrigger className="w-[180px] h-9">
+                <SelectValue placeholder="All Products" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Products</SelectItem>
+                {products?.map((product) => (
+                  <SelectItem key={product.id} value={product.id}>
+                    {product.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              placeholder="Start date"
+              className="w-[140px] h-9"
+            />
+            <Input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              placeholder="End date"
+              className="w-[140px] h-9"
+            />
+          </div>
+
+          <div className="shrink-0 flex flex-col items-end gap-2">
+            <div className="flex items-center justify-end gap-3">
+              <Label className="text-sm text-muted-foreground">Show thumbnails</Label>
+              <Switch checked={includeThumbnails} onCheckedChange={setIncludeThumbnails} />
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <Label className="text-sm text-muted-foreground">Rows per page</Label>
+              <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
+                <SelectTrigger className="w-[140px] h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                  <SelectItem value="200">200</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </div>
 
-        {/* Status Filter Chips (only for internal users) */}
-        {isInternalUser && (
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-muted-foreground">Status:</span>
-            <Button
-              variant={statusFilter === "all" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setStatusFilter("all")}
-            >
-              All
-            </Button>
-            <Button
-              variant={statusFilter === "draft" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setStatusFilter("draft")}
-            >
-              Draft
-            </Button>
-            {requireApproval && (
+        {/* Row 2: Status + approval indicators only */}
+        <div>
+
+          {/* Status Filter Chips (only for internal users) */}
+          {isInternalUser && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-muted-foreground">Status:</span>
               <Button
-                variant={statusFilter === "pending_approval" ? "default" : "outline"}
+                variant={statusFilter === "all" ? "default" : "outline"}
                 size="sm"
-                onClick={() => setStatusFilter("pending_approval")}
+                onClick={() => setStatusFilter("all")}
               >
-                Pending Approval
+                All
               </Button>
-            )}
-            <Button
-              variant={statusFilter === "sent" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setStatusFilter("sent")}
-            >
-              Sent
-            </Button>
-            <Button
-              variant={statusFilter === "approved" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setStatusFilter("approved")}
-            >
-              Approved
-            </Button>
-            <Button
-              variant={statusFilter === "converted" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setStatusFilter("converted")}
-            >
-              Converted
-            </Button>
-          </div>
-        )}
-        
-        {/* Approval Indicators (only when requireApproval is enabled) */}
-        {/* Note: Org-level approval means ALL drafts need approval before sending */}
-        {isInternalUser && requireApproval && (() => {
-          // Compute workflow states once for efficiency
-          const draftCount = quotesList.filter((q: QuoteRow) => {
-            const state = useQuoteWorkflowState(q);
-            return state === "draft";
-          }).length;
-          
-          const pendingApprovalCount = quotesList.filter((q: QuoteRow) => {
-            const state = useQuoteWorkflowState(q);
-            return state === "pending_approval";
-          }).length;
-          
-          return (
-            <div className="flex flex-wrap items-center gap-3 text-sm">
-              {draftCount > 0 && (
-                <div className="flex items-center gap-1.5 text-amber-600">
-                  <div className="w-2 h-2 rounded-full bg-amber-500" />
-                  <span>{draftCount} needs approval</span>
-                </div>
+              <Button
+                variant={statusFilter === "draft" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStatusFilter("draft")}
+              >
+                Draft
+              </Button>
+              {requireApproval && (
+                <Button
+                  variant={statusFilter === "pending_approval" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setStatusFilter("pending_approval")}
+                >
+                  Pending Approval
+                </Button>
               )}
-              {pendingApprovalCount > 0 && (
-                <div className="flex items-center gap-1.5 text-blue-600">
-                  <div className="w-2 h-2 rounded-full bg-blue-500" />
-                  <span>{pendingApprovalCount} pending approval</span>
-                </div>
-              )}
+              <Button
+                variant={statusFilter === "sent" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStatusFilter("sent")}
+              >
+                Sent
+              </Button>
+              <Button
+                variant={statusFilter === "approved" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStatusFilter("approved")}
+              >
+                Approved
+              </Button>
+              <Button
+                variant={statusFilter === "converted" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStatusFilter("converted")}
+              >
+                Converted
+              </Button>
             </div>
-          );
-        })()}
+          )}
+          
+          {/* Approval Indicators (only when requireApproval is enabled) */}
+          {/* Note: Org-level approval means ALL drafts need approval before sending */}
+          {isInternalUser && requireApproval && (() => {
+            // Compute workflow states once for efficiency
+            const draftCount = quotesList.filter((q: QuoteRow) => {
+              const state = q.workflowState ?? useQuoteWorkflowState(q);
+              return state === "draft";
+            }).length;
+            
+            const pendingApprovalCount = quotesList.filter((q: QuoteRow) => {
+              const state = q.workflowState ?? useQuoteWorkflowState(q);
+              return state === "pending_approval";
+            }).length;
+            
+            return (
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                {draftCount > 0 && (
+                  <div className="flex items-center gap-1.5 text-amber-600">
+                    <div className="w-2 h-2 rounded-full bg-amber-500" />
+                    <span>{draftCount} needs approval (on this page)</span>
+                  </div>
+                )}
+                {pendingApprovalCount > 0 && (
+                  <div className="flex items-center gap-1.5 text-blue-600">
+                    <div className="w-2 h-2 rounded-full bg-blue-500" />
+                    <span>{pendingApprovalCount} pending approval (on this page)</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+
+
 
         {/* Quotes List */}
         <DataCard
           title="Internal Quotes"
-          description={`${quotesList.length ?? 0} quote${
-            quotesList.length !== 1 ? "s" : ""
-          } found`}
+          description={
+            quotesResponse
+              ? `${quotesResponse.totalCount} quote${quotesResponse.totalCount !== 1 ? "s" : ""} found • Page ${quotesResponse.page} of ${quotesResponse.totalPages}`
+              : `${quotesList.length ?? 0} quote${quotesList.length !== 1 ? "s" : ""} found`
+          }
           className="mt-0"
           headerActions={
             <div className="flex items-center gap-2">
@@ -909,6 +1120,20 @@ export default function InternalQuotes() {
                 storageKey={storageKey}
                 settings={columnSettings}
                 onSettingsChange={setColumnSettings}
+                footerActions={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => {
+                      setExportFilename(defaultExportFilename);
+                      setExportOpen(true);
+                    }}
+                  >
+                    Export CSV
+                  </Button>
+                }
               />
             </div>
           }
@@ -964,6 +1189,41 @@ export default function InternalQuotes() {
                   ))}
                 </TableBody>
               </Table>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 py-3">
+                <div className="text-sm text-muted-foreground">
+                  Showing {quotesList.length} on this page
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!quotesResponse?.hasPrev}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Prev
+                  </Button>
+                  {quotesResponse ? (
+                    <span className="min-w-[100px] text-center text-sm text-muted-foreground">
+                      Page {quotesResponse.page} of {quotesResponse.totalPages}
+                    </span>
+                  ) : (
+                    <span className="min-w-[100px] text-center text-sm text-muted-foreground">
+                      Page —
+                    </span>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!quotesResponse?.hasNext}
+                    onClick={() => setPage((p) => p + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
         </DataCard>
@@ -992,6 +1252,61 @@ export default function InternalQuotes() {
           notes: orderNotes,
         }}
       />
+
+      <Dialog open={exportOpen} onOpenChange={setExportOpen}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Export CSV</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Scope</Label>
+              <RadioGroup value={exportScope} onValueChange={(v) => setExportScope(v as any)}>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="visible" id="export-scope-visible" />
+                  <Label htmlFor="export-scope-visible">Visible rows (current page)</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="all" id="export-scope-all" />
+                  <Label htmlFor="export-scope-all">All matching (with current filters)</Label>
+                </div>
+              </RadioGroup>
+              <p className="text-xs text-muted-foreground">
+                Export respects current filters, status chips, sort, and visible column order.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="export-headers"
+                checked={exportIncludeHeaders}
+                onCheckedChange={(v) => setExportIncludeHeaders(v === true)}
+              />
+              <Label htmlFor="export-headers">Include headers</Label>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="export-filename">Filename</Label>
+              <Input
+                id="export-filename"
+                value={exportFilename}
+                onChange={(e) => setExportFilename(e.target.value)}
+                placeholder={defaultExportFilename}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setExportOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={downloadCsv} disabled={isExporting}>
+              {isExporting ? "Exporting…" : "Download CSV"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Page>
   );
 }
