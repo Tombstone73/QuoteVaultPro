@@ -3131,3 +3131,41 @@ export type OAuthConnection = typeof oauthConnections.$inferSelect;
 export type InsertOAuthConnection = typeof oauthConnections.$inferInsert;
 export type AccountingSyncJob = typeof accountingSyncJobs.$inferSelect;
 export type InsertAccountingSyncJob = typeof accountingSyncJobs.$inferInsert;
+
+// Quote List Notes (list-only annotations, always editable regardless of quote lock)
+export const quoteListNotes = pgTable('quote_list_notes', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  quoteId: varchar('quote_id').notNull().references(() => quotes.id, { onDelete: 'cascade' }),
+  listLabel: text('list_label'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedByUserId: varchar('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+}, (table) => [
+  index('quote_list_notes_org_idx').on(table.organizationId),
+  index('quote_list_notes_quote_idx').on(table.quoteId),
+  uniqueIndex('quote_list_notes_unique').on(table.organizationId, table.quoteId),
+]);
+
+// List Settings (column visibility, order, custom labels, date format per user/org)
+export const listSettings = pgTable('list_settings', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  listKey: varchar('list_key').notNull(), // e.g. 'internalQuotesList'
+  settingsJson: jsonb('settings_json').$type<{
+    columnLabels?: Record<string, string>;
+    columnOrder?: string[];
+    columnVisible?: Record<string, boolean>;
+    dateFormat?: string; // 'MM/DD/YY', 'DD/MM/YY', 'MMM D, YYYY', etc.
+  }>().notNull().default(sql`'{}'::jsonb`),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('list_settings_org_user_idx').on(table.organizationId, table.userId),
+  index('list_settings_list_key_idx').on(table.listKey),
+  uniqueIndex('list_settings_unique').on(table.organizationId, table.userId, table.listKey),
+]);
+
+export type QuoteListNote = typeof quoteListNotes.$inferSelect;
+export type InsertQuoteListNote = typeof quoteListNotes.$inferInsert;
+export type ListSettings = typeof listSettings.$inferSelect;
+export type InsertListSettings = typeof listSettings.$inferInsert;

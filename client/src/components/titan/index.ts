@@ -7,7 +7,7 @@ export { FilterPanel } from "./FilterPanel";
 export { ContentLayout } from "./ContentLayout";
 
 // Column configuration
-export { ColumnConfig, useColumnSettings, getColumnStyle, isColumnVisible, getColumnOrder } from "./ColumnConfig";
+export { ColumnConfig, useColumnSettings, getColumnStyle, isColumnVisible, getColumnDisplayName, getColumnOrder } from "./ColumnConfig";
 export type { ColumnDefinition, ColumnState, ColumnSettings } from "./ColumnConfig";
 
 // Cards

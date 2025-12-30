@@ -6,6 +6,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Settings2, RotateCcw, GripVertical } from "lucide-react";
 import { Label } from "@/components/ui/label";
@@ -40,6 +41,7 @@ export interface ColumnDefinition {
 export interface ColumnState {
   visible: boolean;
   width: number;
+  displayName?: string; // Optional override for column header display text
 }
 
 export interface ColumnSettings {
@@ -67,6 +69,7 @@ export function useColumnSettings(
       defaults[col.key] = {
         visible: col.defaultVisible !== false,
         width: col.defaultWidth || 150,
+        displayName: '', // Empty string = use default label
       };
     });
     // Initialize default column order
@@ -117,6 +120,7 @@ interface SortableColumnItemProps {
   colSettings: ColumnState;
   onVisibilityChange: (key: string, visible: boolean) => void;
   onWidthChange: (key: string, width: number) => void;
+  onDisplayNameChange: (key: string, displayName: string) => void;
   isActionsColumn: boolean;
 }
 
@@ -125,6 +129,7 @@ function SortableColumnItem({
   colSettings,
   onVisibilityChange,
   onWidthChange,
+  onDisplayNameChange,
   isActionsColumn,
 }: SortableColumnItemProps) {
   const {
@@ -187,20 +192,36 @@ function SortableColumnItem({
         </Label>
       </div>
       {colSettings.visible && !isActionsColumn && (
-        <div className="pl-9 space-y-1">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Width</span>
-            <span>{colSettings.width}px</span>
+        <div className="pl-9 space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor={`col-displayname-${col.key}`} className="text-xs text-muted-foreground">
+              Display name
+            </Label>
+            <Input
+              id={`col-displayname-${col.key}`}
+              type="text"
+              value={colSettings.displayName || ''}
+              onChange={(e) => onDisplayNameChange(col.key, e.target.value)}
+              placeholder={col.label}
+              className="h-8 text-xs"
+              onClick={(e) => e.stopPropagation()}
+            />
           </div>
-          <Slider
-            value={[colSettings.width]}
-            onValueChange={([value]) => onWidthChange(col.key, value)}
-            min={col.minWidth || 60}
-            max={col.maxWidth || 300}
-            step={10}
-            className="w-full"
-            onClick={(e) => e.stopPropagation()}
-          />
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>Width</span>
+              <span>{colSettings.width}px</span>
+            </div>
+            <Slider
+              value={[colSettings.width]}
+              onValueChange={([value]) => onWidthChange(col.key, value)}
+              min={col.minWidth || 60}
+              max={col.maxWidth || 300}
+              step={10}
+              className="w-full"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
         </div>
       )}
     </div>
@@ -241,6 +262,7 @@ export function ColumnConfig({
     return {
       visible: fallback?.defaultVisible !== false,
       width: fallback?.defaultWidth || 150,
+      displayName: '', // Default to empty (use column's default label)
     };
   };
 
@@ -258,12 +280,20 @@ export function ColumnConfig({
     });
   };
 
+  const handleDisplayNameChange = (key: string, displayName: string) => {
+    onSettingsChange({
+      ...settings,
+      [key]: { ...getColumnState(key, columns.find(c => c.key === key)), displayName },
+    });
+  };
+
   const handleReset = () => {
     const defaults: ColumnSettings = {};
     columns.forEach((col) => {
       defaults[col.key] = {
         visible: col.defaultVisible !== false,
         width: col.defaultWidth || 150,
+        displayName: '', // Reset display names to empty (use defaults)
       };
     });
     defaults._columnOrder = columns.map(col => col.key);
@@ -364,6 +394,7 @@ export function ColumnConfig({
                       colSettings={colSettings}
                       onVisibilityChange={handleVisibilityChange}
                       onWidthChange={handleWidthChange}
+                      onDisplayNameChange={handleDisplayNameChange}
                       isActionsColumn={isActionsColumn}
                     />
                   );
@@ -404,6 +435,18 @@ export function isColumnVisible(settings: ColumnSettings, key: string): boolean 
   const colSettings =
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ColumnState) : undefined;
   return colSettings?.visible !== false;
+}
+
+export function getColumnDisplayName(
+  settings: ColumnSettings,
+  key: string,
+  defaultLabel: string
+): string {
+  const raw = settings[key];
+  const colSettings =
+    raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ColumnState) : undefined;
+  const displayName = colSettings?.displayName?.trim();
+  return displayName || defaultLabel;
 }
 
 export function getColumnOrder(

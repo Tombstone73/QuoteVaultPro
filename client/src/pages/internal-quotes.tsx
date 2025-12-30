@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
@@ -39,7 +40,6 @@ import {
   Edit,
   Package,
   Eye,
-  User,
   ArrowLeft,
   ChevronUp,
   ChevronDown,
@@ -66,6 +66,7 @@ import {
   useColumnSettings,
   isColumnVisible,
   getColumnOrder,
+  getColumnDisplayName,
   type ColumnDefinition,
   type ColumnState,
 } from "@/components/titan";
@@ -73,10 +74,11 @@ import type { QuoteWithRelations, Product } from "@shared/schema";
 import type { Organization } from "@shared/schema";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 
-type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "label";
+type SortKey = "date" | "quoteNumber" | "customer" | "total" | "items" | "source" | "createdBy" | "listLabel" | "jobLabel";
 
 type QuoteRow = QuoteWithRelations & {
-  label?: string | null;
+  label?: string | null; // This is the job label from quote record
+  listLabel?: string | null; // List-only note, always editable
   previewThumbnails?: string[];
   thumbsCount?: number;
   lineItemsCount?: number;
@@ -96,7 +98,8 @@ type QuotesListResponse = {
 // Column definitions for quotes table
 const QUOTE_COLUMNS: ColumnDefinition[] = [
   { key: "quoteNumber", label: "Quote #", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
-  { key: "label", label: "Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
+  { key: "listLabel", label: "List Note", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
+  { key: "jobLabel", label: "Job Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
   { key: "thumbnails", label: "Preview", defaultVisible: true, defaultWidth: 140, minWidth: 120, maxWidth: 200 },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150 },
   { key: "date", label: "Date", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
@@ -166,6 +169,16 @@ export default function InternalQuotes() {
     : "quotes_column_settings"; // fallback for loading state
   const [columnSettings, setColumnSettings] = useColumnSettings(QUOTE_COLUMNS, storageKey);
 
+  // Label editing state
+  const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
+  const [editingField, setEditingField] = useState<'listLabel' | 'jobLabel' | null>(null);
+  const [tempLabel, setTempLabel] = useState("");
+
+  // Attachment viewer state
+  const [selectedAttachment, setSelectedAttachment] = useState<any>(null);
+  const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
+  const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
+
   const orgIdForPrefs = organization?.id;
   const pageSizeKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:pageSize:org_${orgIdForPrefs}:user_${user.id}` : null;
   const includeThumbsKey = orgIdForPrefs && user?.id ? `titan:list:internalQuotes:includeThumbnails:org_${orgIdForPrefs}:user_${user.id}` : null;
@@ -227,10 +240,6 @@ export default function InternalQuotes() {
       });
     }
   }, [pageSize, includeThumbnails, toast]);
-  
-  // Inline editing state for label
-  const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
-  const [tempLabel, setTempLabel] = useState("");
 
   // CSV Export
   const [exportOpen, setExportOpen] = useState(false);
@@ -351,6 +360,7 @@ export default function InternalQuotes() {
     hasError: !!error,
   });
 
+  // Server already filters by status, so we just use the returned list directly
   const filteredAndSortedQuotes = quotesList;
 
   const exportableColumns = useMemo(() => {
@@ -363,7 +373,9 @@ export default function InternalQuotes() {
     switch (columnKey) {
       case "quoteNumber":
         return quote.quoteNumber ?? "";
-      case "label":
+      case "listLabel":
+        return quote.listLabel ?? "";
+      case "jobLabel":
         return quote.label ?? "";
       case "thumbnails": {
         if (!includeThumbnails) return "";
@@ -377,7 +389,7 @@ export default function InternalQuotes() {
         return state ?? "";
       }
       case "date":
-        return format(new Date(quote.createdAt), "yyyy-MM-dd");
+        return format(new Date(quote.createdAt), "MM/dd/yy");
       case "customer":
         return quote.customerName ?? "";
       case "items":
@@ -467,13 +479,115 @@ export default function InternalQuotes() {
     }
   };
 
+  // Handle thumbnail click - fetch attachment details and open viewer
+  const handleThumbnailClick = async (quoteId: string, thumbKey: string) => {
+    setLoadingAttachments(quoteId);
+    
+    try {
+      // Fetch all attachments for the quote (including line item attachments)
+      const response = await fetch(`/api/quotes/${quoteId}/attachments?includeLineItems=true`, {
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch attachments');
+      }
+      
+      const result = await response.json();
+      const attachments = result.data || [];
+      
+      // Find the attachment matching this thumbnail
+      // thumbKey format: "uploads/org_xxx/quotes/quote_xxx/attachment_xxx.thumb.jpg"
+      // We need to match by finding the attachment whose thumbKey matches
+      let matchedAttachment = attachments.find((att: any) => att.thumbKey === thumbKey);
+      
+      // Fallback: if no exact match, try finding by attachment ID in thumbKey
+      if (!matchedAttachment && thumbKey.includes('attachment_')) {
+        const attachmentIdMatch = thumbKey.match(/attachment_([^.\/]+)/);
+        if (attachmentIdMatch) {
+          const attachmentId = attachmentIdMatch[1];
+          matchedAttachment = attachments.find((att: any) => att.id.includes(attachmentId));
+        }
+      }
+      
+      // If still no match, use first attachment as fallback
+      if (!matchedAttachment && attachments.length > 0) {
+        matchedAttachment = attachments[0];
+      }
+      
+      if (matchedAttachment) {
+        // Ensure quoteId is available for download
+        setSelectedAttachment({ ...matchedAttachment, quoteId });
+        setAttachmentViewerOpen(true);
+      } else {
+        toast({
+          title: "No attachment found",
+          description: "Could not locate the attachment details.",
+          variant: "destructive"
+        });
+      }
+    } catch (error: any) {
+      console.error('[handleThumbnailClick] Error:', error);
+      toast({
+        title: "Failed to load attachment",
+        description: error.message || "Could not fetch attachment details.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoadingAttachments(null);
+    }
+  };
+
+  // Handle attachment download
+  const handleDownloadAttachment = async (attachment: any, fallbackQuoteId?: string) => {
+    try {
+      const fileName = attachment.originalFilename || attachment.fileName || 'download';
+      const quoteId = attachment.quoteId || fallbackQuoteId;
+      
+      if (!quoteId || !attachment.id) {
+        // Fallback: use originalUrl if available
+        if (attachment.originalUrl) {
+          const anchor = document.createElement("a");
+          anchor.href = attachment.originalUrl;
+          anchor.download = fileName;
+          anchor.target = "_blank";
+          anchor.rel = "noreferrer";
+          anchor.style.display = "none";
+          document.body.appendChild(anchor);
+          anchor.click();
+          document.body.removeChild(anchor);
+        }
+        return;
+      }
+      
+      // Use proxy endpoint for proper download
+      const proxyUrl = `/api/quotes/${quoteId}/attachments/${attachment.id}/download/proxy`;
+      
+      const anchor = document.createElement("a");
+      anchor.href = proxyUrl;
+      anchor.download = fileName;
+      anchor.rel = "noreferrer";
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+    } catch (error: any) {
+      console.error('[handleDownloadAttachment] Error:', error);
+      toast({
+        title: "Download failed",
+        description: error.message || "Could not download file.",
+        variant: "destructive"
+      });
+    }
+  };
+
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortDirection(prev => prev === "asc" ? "desc" : "asc");
     } else {
       setSortKey(key);
       // Default direction based on column type
-      setSortDirection(key === "customer" || key === "quoteNumber" || key === "source" || key === "createdBy" || key === "label" ? "asc" : "desc");
+      setSortDirection(key === "customer" || key === "quoteNumber" || key === "source" || key === "createdBy" || key === "listLabel" || key === "jobLabel" ? "asc" : "desc");
     }
   };
 
@@ -498,28 +612,82 @@ export default function InternalQuotes() {
       case "quoteNumber":
         return (
           <TableCell style={getColStyle("quoteNumber")}>
-            <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer">
+            <span className="font-mono text-titan-accent hover:text-titan-accent-hover hover:underline cursor-pointer block truncate">
               {quote.quoteNumber || "N/A"}
             </span>
           </TableCell>
         );
       
-      case "label":
+      case "listLabel":
         return (
           <TableCell 
-            style={getColStyle("label")}
+            style={getColStyle("listLabel")}
             onClick={(e) => e.stopPropagation()}
           >
-            {editingQuoteId === quote.id ? (
+            {editingQuoteId === quote.id && editingField === 'listLabel' ? (
               <div className="flex items-center gap-1">
                 <Input
                   value={tempLabel}
                   onChange={(e) => setTempLabel(e.target.value)}
                   className="h-8 w-[130px]"
-                  placeholder="Enter label..."
+                  placeholder="List note..."
                   autoFocus
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSaveLabel(quote.id);
+                    if (e.key === 'Enter') handleSaveListLabel(quote.id);
+                    if (e.key === 'Escape') handleCancelLabelEdit();
+                  }}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={updateListLabelMutation.isPending && editingQuoteId === quote.id}
+                  onClick={() => handleSaveListLabel(quote.id)}
+                >
+                  {updateListLabelMutation.isPending && editingQuoteId === quote.id ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Check className="h-3 w-3" />
+                  )}
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelLabelEdit}>
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              <div 
+                className="cursor-pointer px-2 py-1 rounded hover:bg-muted/30"
+                onClick={() => handleStartLabelEdit(quote.id, quote.listLabel || "", 'listLabel')}
+                title="Edit list note (always editable)"
+              >
+                {quote.listLabel ? (
+                  <span className="text-sm">{quote.listLabel}</span>
+                ) : (
+                  <span className="text-muted-foreground text-sm italic">
+                    Click to add...
+                  </span>
+                )}
+              </div>
+            )}
+          </TableCell>
+        );
+      
+      case "jobLabel":
+        return (
+          <TableCell 
+            style={getColStyle("jobLabel")}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {editingQuoteId === quote.id && editingField === 'jobLabel' ? (
+              <div className="flex items-center gap-1">
+                <Input
+                  value={tempLabel}
+                  onChange={(e) => setTempLabel(e.target.value)}
+                  className="h-8 w-[130px]"
+                  placeholder="Job label..."
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveJobLabel(quote.id);
                     if (e.key === 'Escape') handleCancelLabelEdit();
                   }}
                   disabled={isApprovedLocked}
@@ -528,11 +696,11 @@ export default function InternalQuotes() {
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
-                  disabled={(updateLabelMutation.isPending && editingQuoteId === quote.id) || isApprovedLocked}
-                  onClick={() => handleSaveLabel(quote.id)}
+                  disabled={(updateJobLabelMutation.isPending && editingQuoteId === quote.id) || isApprovedLocked}
+                  onClick={() => handleSaveJobLabel(quote.id)}
                   title={isApprovedLocked ? lockedHint : undefined}
                 >
-                  {updateLabelMutation.isPending && editingQuoteId === quote.id ? (
+                  {updateJobLabelMutation.isPending && editingQuoteId === quote.id ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
                     <Check className="h-3 w-3" />
@@ -551,9 +719,9 @@ export default function InternalQuotes() {
                 }
                 onClick={() => {
                   if (isApprovedLocked) return;
-                  handleStartLabelEdit(quote.id, quote.label || "");
+                  handleStartLabelEdit(quote.id, quote.label || "", 'jobLabel');
                 }}
-                title={isApprovedLocked ? lockedHint : "Edit label"}
+                title={isApprovedLocked ? lockedHint : "Edit job label (locks with quote)"}
               >
                 {quote.label ? (
                   <span className="text-sm">{quote.label}</span>
@@ -577,28 +745,51 @@ export default function InternalQuotes() {
               <span className="text-xs text-muted-foreground">Off</span>
             ) : quote.previewThumbnails && quote.previewThumbnails.length > 0 ? (
               <div className="flex items-center gap-1">
-                {quote.previewThumbnails.slice(0, 3).map((thumbKey, idx) => (
-                  <div
-                    key={idx}
-                    className="w-10 h-10 rounded border border-border bg-muted overflow-hidden hover:ring-2 hover:ring-primary cursor-pointer"
-                    title={`Preview ${idx + 1}`}
-                  >
-                    <img
-                      src={`/objects/${thumbKey}`}
-                      alt={`Thumbnail ${idx + 1}`}
-                      className="w-full h-full object-cover"
-                      loading="lazy"
-                      onError={(e) => {
-                        // Fallback to file icon on error
-                        e.currentTarget.style.display = 'none';
-                        const parent = e.currentTarget.parentElement;
-                        if (parent) {
-                          parent.innerHTML = '<div class="w-full h-full flex items-center justify-center"><svg class="w-5 h-5 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg></div>';
+                {quote.previewThumbnails.slice(0, 3).map((thumbKey, idx) => {
+                  const thumbUrl = `/objects/${thumbKey}`;
+                  const isLoading = loadingAttachments === quote.id;
+                  
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="w-10 h-10 rounded border border-border bg-muted overflow-hidden hover:ring-2 hover:ring-primary cursor-pointer transition-shadow p-0 disabled:opacity-50 disabled:cursor-wait"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (!isLoading) {
+                          handleThumbnailClick(quote.id, thumbKey);
                         }
                       }}
-                    />
-                  </div>
-                ))}
+                      disabled={isLoading}
+                      title={isLoading ? "Loading attachment..." : "Click to preview attachment"}
+                    >
+                      {isLoading ? (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : (
+                        <img
+                          src={thumbUrl}
+                          alt="Preview"
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                          onError={(e) => {
+                            const img = e.currentTarget;
+                            img.style.display = 'none';
+                            const btn = img.parentElement;
+                            if (btn && !btn.querySelector('.fallback-icon')) {
+                              const iconDiv = document.createElement('div');
+                              iconDiv.className = 'fallback-icon w-full h-full flex items-center justify-center bg-muted';
+                              iconDiv.innerHTML = '<svg class="w-5 h-5 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>';
+                              btn.appendChild(iconDiv);
+                            }
+                          }}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
                 {quote.thumbsCount && quote.thumbsCount > 3 && (
                   <span className="text-xs text-muted-foreground">
                     +{quote.thumbsCount - 3}
@@ -614,7 +805,7 @@ export default function InternalQuotes() {
       case "date":
         return (
           <TableCell style={getColStyle("date")}>
-            {format(new Date(quote.createdAt), "MMM d, yyyy")}
+            {format(new Date(quote.createdAt), "MM/dd/yy")}
           </TableCell>
         );
       
@@ -625,8 +816,8 @@ export default function InternalQuotes() {
             onClick={(e) => e.stopPropagation()}
           >
             {quote.customerId ? (
-              <Link to={ROUTES.customers.detail(quote.customerId)}>
-                <Button variant="link" className="h-auto p-0 font-normal">
+              <Link to={ROUTES.customers.detail(quote.customerId)} className="block min-w-0">
+                <Button variant="link" className="h-auto p-0 font-normal max-w-full truncate block" title={quote.customerName || undefined}>
                   {quote.customerName?.trim()
                     ? quote.customerName
                     : "View Customer"}
@@ -664,18 +855,15 @@ export default function InternalQuotes() {
       case "createdBy":
         return (
           <TableCell style={getColStyle("createdBy")}>
-            <div className="flex items-center gap-2">
-              <User className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm">
-                {quote.user
-                  ? (
-                      `${quote.user.firstName || ""} ${
-                        quote.user.lastName || ""
-                      }`.trim() || quote.user.email
-                    )
-                  : "—"}
-              </span>
-            </div>
+            <span className="text-sm truncate" title={quote.user ? (`${quote.user.firstName || ""} ${quote.user.lastName || ""}`.trim() || quote.user.email || undefined) : undefined}>
+              {quote.user
+                ? (
+                    `${quote.user.firstName || ""} ${
+                      quote.user.lastName || ""
+                    }`.trim() || quote.user.email
+                  )
+                : "—"}
+            </span>
           </TableCell>
         );
       
@@ -728,12 +916,54 @@ export default function InternalQuotes() {
   };
 
   // Handle label edit
-  const handleStartLabelEdit = (quoteId: string, currentLabel: string) => {
+  const handleStartLabelEdit = (quoteId: string, currentLabel: string, field: 'listLabel' | 'jobLabel') => {
     setEditingQuoteId(quoteId);
+    setEditingField(field);
     setTempLabel(currentLabel || "");
   };
 
-  const updateLabelMutation = useMutation({
+  // List Label Mutation (always editable, uses separate API)
+  const updateListLabelMutation = useMutation({
+    mutationFn: async ({ quoteId, listLabel }: { quoteId: string; listLabel: string }) => {
+      const response = await fetch(`/api/quotes/${quoteId}/list-note`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ listLabel }),
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const json = await response.json().catch(() => null);
+        const message =
+          (json && (json.error || json.message)) ||
+          (await response.text().catch(() => "")) ||
+          "Failed to update list note";
+        throw new Error(message);
+      }
+      return response.json();
+    },
+    onSuccess: async (_data, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      toast({
+        title: "Success",
+        description: "List note updated",
+      });
+      setEditingQuoteId(null);
+      setEditingField(null);
+      setTempLabel("");
+    },
+    onError: (error: any) => {
+      console.error("[InternalQuotes] list label update failed", error);
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to update list note",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Job Label Mutation (respects quote lock, uses quote PATCH)
+  const updateJobLabelMutation = useMutation({
     mutationFn: async ({ quoteId, label }: { quoteId: string; label: string }) => {
       const response = await fetch(`/api/quotes/${quoteId}`, {
         method: "PATCH",
@@ -747,37 +977,42 @@ export default function InternalQuotes() {
         const message =
           (json && (json.error || json.message)) ||
           (await response.text().catch(() => "")) ||
-          "Failed to update quote";
+          "Failed to update job label";
         throw new Error(message);
       }
       return response.json();
     },
     onSuccess: async (_data, variables) => {
-      // Update list without a full reload
       await queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       toast({
         title: "Success",
-        description: "Quote label updated",
+        description: "Job label updated",
       });
       setEditingQuoteId(null);
+      setEditingField(null);
       setTempLabel("");
     },
     onError: (error: any) => {
-      console.error("[InternalQuotes] label update failed", error);
+      console.error("[InternalQuotes] job label update failed", error);
       toast({
         title: "Error",
-        description: error?.message || "Failed to update quote label",
+        description: error?.message || "Failed to update job label",
         variant: "destructive",
       });
     },
   });
 
-  const handleSaveLabel = async (quoteId: string) => {
-    await updateLabelMutation.mutateAsync({ quoteId, label: tempLabel });
+  const handleSaveListLabel = async (quoteId: string) => {
+    await updateListLabelMutation.mutateAsync({ quoteId, listLabel: tempLabel });
+  };
+
+  const handleSaveJobLabel = async (quoteId: string) => {
+    await updateJobLabelMutation.mutateAsync({ quoteId, label: tempLabel });
   };
 
   const handleCancelLabelEdit = () => {
     setEditingQuoteId(null);
+    setEditingField(null);
     setTempLabel("");
   };
 
@@ -933,7 +1168,7 @@ export default function InternalQuotes() {
   }
 
   return (
-    <Page>
+    <Page maxWidth="full">
       <PageHeader
         title="Internal Quotes"
         subtitle="Manage internal quotes and convert them to orders"
@@ -950,9 +1185,10 @@ export default function InternalQuotes() {
       />
 
       <ContentLayout className="space-y-3">
-        {/* Inline Filters */}
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex flex-1 min-w-0 items-center gap-3">
+        {/* Toolbar: 2-Row Grid Layout */}
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2">
+          {/* Row 1 Left: Filter Controls */}
+          <div className="flex flex-wrap items-center gap-3">
             <Input
               placeholder="Search customers..."
               value={searchCustomer}
@@ -988,115 +1224,119 @@ export default function InternalQuotes() {
             />
           </div>
 
-          <div className="shrink-0 flex flex-col items-end gap-2">
-            <div className="flex items-center justify-end gap-3">
-              <Label className="text-sm text-muted-foreground">Show thumbnails</Label>
-              <Switch checked={includeThumbnails} onCheckedChange={setIncludeThumbnails} />
-            </div>
-
-            <div className="flex items-center justify-end gap-3">
-              <Label className="text-sm text-muted-foreground">Rows per page</Label>
-              <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
-                <SelectTrigger className="w-[140px] h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="10">10</SelectItem>
-                  <SelectItem value="25">25</SelectItem>
-                  <SelectItem value="50">50</SelectItem>
-                  <SelectItem value="100">100</SelectItem>
-                  <SelectItem value="200">200</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          {/* Row 1 Right: Show Thumbnails Toggle */}
+          <div className="flex items-center justify-end gap-3 whitespace-nowrap md:justify-self-end">
+            <Label className="text-sm text-muted-foreground">Show thumbnails</Label>
+            <Switch checked={includeThumbnails} onCheckedChange={setIncludeThumbnails} />
           </div>
-        </div>
 
-        {/* Row 2: Status + approval indicators only */}
-        <div>
-
-          {/* Status Filter Chips (only for internal users) */}
-          {isInternalUser && (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm text-muted-foreground">Status:</span>
-              <Button
-                variant={statusFilter === "all" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setStatusFilter("all")}
-              >
-                All
-              </Button>
-              <Button
-                variant={statusFilter === "draft" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setStatusFilter("draft")}
-              >
-                Draft
-              </Button>
-              {requireApproval && (
+          {/* Row 2 Left: Status Chips and Approval Indicators */}
+          <div className="flex flex-col gap-1">
+            {/* Status Filter Chips (only for internal users) */}
+            {isInternalUser && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-muted-foreground">Status:</span>
                 <Button
-                  variant={statusFilter === "pending_approval" ? "default" : "outline"}
+                  variant={statusFilter === "all" ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setStatusFilter("pending_approval")}
+                  onClick={() => setStatusFilter("all")}
                 >
-                  Pending Approval
+                  All
                 </Button>
-              )}
-              <Button
-                variant={statusFilter === "sent" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setStatusFilter("sent")}
-              >
-                Sent
-              </Button>
-              <Button
-                variant={statusFilter === "approved" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setStatusFilter("approved")}
-              >
-                Approved
-              </Button>
-              <Button
-                variant={statusFilter === "converted" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setStatusFilter("converted")}
-              >
-                Converted
-              </Button>
-            </div>
-          )}
-          
-          {/* Approval Indicators (only when requireApproval is enabled) */}
-          {/* Note: Org-level approval means ALL drafts need approval before sending */}
-          {isInternalUser && requireApproval && (() => {
-            // Compute workflow states once for efficiency
-            const draftCount = quotesList.filter((q: QuoteRow) => {
-              const state = q.workflowState ?? useQuoteWorkflowState(q);
-              return state === "draft";
-            }).length;
-            
-            const pendingApprovalCount = quotesList.filter((q: QuoteRow) => {
-              const state = q.workflowState ?? useQuoteWorkflowState(q);
-              return state === "pending_approval";
-            }).length;
-            
-            return (
-              <div className="flex flex-wrap items-center gap-3 text-sm">
-                {draftCount > 0 && (
-                  <div className="flex items-center gap-1.5 text-amber-600">
-                    <div className="w-2 h-2 rounded-full bg-amber-500" />
-                    <span>{draftCount} needs approval (on this page)</span>
-                  </div>
+                <Button
+                  variant={statusFilter === "draft" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setStatusFilter("draft")}
+                >
+                  Draft
+                </Button>
+                {requireApproval && (
+                  <Button
+                    variant={statusFilter === "pending_approval" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setStatusFilter("pending_approval")}
+                  >
+                    Pending Approval
+                  </Button>
                 )}
-                {pendingApprovalCount > 0 && (
-                  <div className="flex items-center gap-1.5 text-blue-600">
-                    <div className="w-2 h-2 rounded-full bg-blue-500" />
-                    <span>{pendingApprovalCount} pending approval (on this page)</span>
-                  </div>
-                )}
+                <Button
+                  variant={statusFilter === "sent" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setStatusFilter("sent")}
+                >
+                  Sent
+                </Button>
+                <Button
+                  variant={statusFilter === "approved" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setStatusFilter("approved")}
+                >
+                  Approved
+                </Button>
+                <Button
+                  variant={statusFilter === "converted" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setStatusFilter("converted")}
+                >
+                  Converted
+                </Button>
               </div>
-            );
-          })()}
+            )}
+            
+            {/* Approval Indicators (only when requireApproval is enabled) */}
+            {/* Note: Org-level approval means ALL drafts need approval before sending */}
+            {isInternalUser && requireApproval && (() => {
+              // CRITICAL: Only pending_approval status indicates quotes that need approval
+              // Drafts are not yet submitted and should NOT show approval indicators
+              
+              // Pending approval quotes (workflow state = pending_approval, submitted for approval)
+              const pendingApprovalCount = quotesList.filter((q: QuoteRow) => {
+                return q.status === 'pending_approval' && !q.convertedToOrderId;
+              }).length;
+              
+              // Temporary debug log (remove after testing)
+              if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development' && quotesList.length > 0) {
+                console.log('[InternalQuotes] Approval status check:', {
+                  totalRows: quotesList.length,
+                  pendingApprovalCount,
+                  currentFilter: statusFilter,
+                });
+              }
+              
+              return (
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  {pendingApprovalCount > 0 && (
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5 text-amber-600 hover:text-amber-700 transition-colors cursor-pointer"
+                      onClick={() => setStatusFilter('pending_approval')}
+                      title="Click to filter Pending Approval quotes"
+                    >
+                      <div className="w-2 h-2 rounded-full bg-amber-500" />
+                      <span>{pendingApprovalCount} need{pendingApprovalCount === 1 ? 's' : ''} approval (on this page)</span>
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Row 2 Right: Rows Per Page Dropdown */}
+          <div className="flex items-center justify-end gap-3 whitespace-nowrap md:justify-self-end">
+            <Label className="text-sm text-muted-foreground">Rows per page</Label>
+            <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
+              <SelectTrigger className="w-[140px] h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10</SelectItem>
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+                <SelectItem value="200">200</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
 
@@ -1109,7 +1349,7 @@ export default function InternalQuotes() {
               ? `${quotesResponse.totalCount} quote${quotesResponse.totalCount !== 1 ? "s" : ""} found • Page ${quotesResponse.page} of ${quotesResponse.totalPages}`
               : `${quotesList.length ?? 0} quote${quotesList.length !== 1 ? "s" : ""} found`
           }
-          className="mt-0"
+          className="-mt-1"
           headerActions={
             <div className="flex items-center gap-2">
               {isRefreshing && (
@@ -1150,8 +1390,10 @@ export default function InternalQuotes() {
               <NewQuoteButton />
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <Table className="table-dense">
+            <>
+              <div className="overflow-x-auto -mx-5">
+                <div className="min-w-full inline-block align-middle">
+                  <Table className="table-dense w-full">
                 <TableHeader>
                   <TableRow>
                     {orderedColumns.map((col) => {
@@ -1159,6 +1401,7 @@ export default function InternalQuotes() {
                       
                       const isSortable = col.sortable !== false;
                       const isRightAligned = col.align === "right";
+                      const displayName = getColumnDisplayName(columnSettings, col.key, col.label);
                       
                       return (
                         <TableHead
@@ -1167,7 +1410,7 @@ export default function InternalQuotes() {
                           style={getColStyle(col.key)}
                           onClick={isSortable ? () => handleSort(col.key as SortKey) : undefined}
                         >
-                          {col.label}
+                          {displayName}
                           {isSortable && <SortIcon columnKey={col.key as SortKey} />}
                         </TableHead>
                       );
@@ -1189,6 +1432,8 @@ export default function InternalQuotes() {
                   ))}
                 </TableBody>
               </Table>
+                </div>
+              </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 py-3">
                 <div className="text-sm text-muted-foreground">
@@ -1224,7 +1469,7 @@ export default function InternalQuotes() {
                   </Button>
                 </div>
               </div>
-            </div>
+            </>
           )}
         </DataCard>
       </ContentLayout>
@@ -1307,6 +1552,14 @@ export default function InternalQuotes() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Attachment Viewer Modal */}
+      <AttachmentViewerDialog
+        attachment={selectedAttachment}
+        open={attachmentViewerOpen}
+        onOpenChange={setAttachmentViewerOpen}
+        onDownload={(att) => handleDownloadAttachment(att, selectedAttachment?.quoteId)}
+      />
     </Page>
   );
 }
