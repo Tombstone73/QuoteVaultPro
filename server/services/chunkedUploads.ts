@@ -82,6 +82,7 @@ export async function createUploadSession(input: {
   createdByUserId: string | null;
   purpose: UploadPurpose;
   quoteId?: string | null;
+  orderId?: string | null;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -102,6 +103,7 @@ export async function createUploadSession(input: {
     createdByUserId: input.createdByUserId,
     purpose: input.purpose,
     quoteId: input.quoteId ?? null,
+    orderId: input.orderId ?? null,
     originalFilename: input.filename,
     mimeType: input.mimeType,
     sizeBytes: input.sizeBytes,

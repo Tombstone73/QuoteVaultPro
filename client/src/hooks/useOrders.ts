@@ -464,3 +464,77 @@ export function useDeleteOrderLineItem(orderId: string) {
     },
   });
 }
+
+// Order State Transition Hook
+export function useTransitionOrderStatus(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ toStatus, reason }: { toStatus: string; reason?: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toStatus, reason }),
+        credentials: "include",
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.message || "Failed to transition order status");
+      }
+      
+      return data;
+    },
+    onSuccess: (data) => {
+      // Invalidate all order queries
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+      
+      // Show success message with any warnings
+      const warnings = data.warnings?.length ? `\n\nWarnings: ${data.warnings.join(', ')}` : '';
+      toast({
+        title: "Success",
+        description: data.message + warnings,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+// Helper to get allowed next statuses based on current status (client-side mirror of server rules)
+export function getAllowedNextStatuses(currentStatus: string): string[] {
+  switch (currentStatus) {
+    case 'new':
+      return ['in_production', 'on_hold', 'canceled'];
+    case 'in_production':
+      return ['ready_for_shipment', 'on_hold', 'canceled'];
+    case 'on_hold':
+      return ['in_production', 'canceled'];
+    case 'ready_for_shipment':
+      return ['completed', 'on_hold'];
+    case 'completed':
+      return []; // Terminal
+    case 'canceled':
+      return []; // Terminal
+    default:
+      return [];
+  }
+}
+
+// Helper to check if order is editable (terminal states are locked)
+export function isOrderEditable(status: string): boolean {
+  return status !== 'completed' && status !== 'canceled';
+}
+
+// Helper to check if line items can be edited (only in 'new' status)
+export function areLineItemsEditable(status: string): boolean {
+  return status === 'new';
+}
