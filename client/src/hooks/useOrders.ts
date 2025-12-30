@@ -23,6 +23,8 @@ export type Order = {
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
+  label?: string | null; // Job label
+  poNumber?: string | null; // PO number
 };
 
 export type OrderLineItem = {
@@ -56,6 +58,27 @@ export type OrderWithRelations = Order & {
   })[];
 };
 
+// Order row for list views (matches Quotes pattern)
+export type OrderRow = Order & {
+  customer: any;
+  contact?: any;
+  lineItemsCount?: number;
+  listLabel?: string | null; // List-only note (always editable)
+  previewThumbnails?: string[]; // GCS thumbnail keys
+  thumbsCount?: number; // Total attachment count
+};
+
+// Paginated response (matches Quotes pattern)
+export type OrdersListResponse = {
+  items: OrderRow[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+};
+
 export function useOrders(filters?: {
   search?: string;
   status?: string;
@@ -63,8 +86,16 @@ export function useOrders(filters?: {
   customerId?: string;
   startDate?: string;
   endDate?: string;
+  page?: number;
+  pageSize?: number;
+  includeThumbnails?: boolean;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
 }) {
-  return useQuery<Order[]>({
+  // Determine if paginated request
+  const isPaginated = filters?.page !== undefined || filters?.pageSize !== undefined;
+
+  return useQuery<OrdersListResponse | Order[]>({
     queryKey: ["/api/orders", filters],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -74,12 +105,21 @@ export function useOrders(filters?: {
       if (filters?.customerId) params.append("customerId", filters.customerId);
       if (filters?.startDate) params.append("startDate", filters.startDate);
       if (filters?.endDate) params.append("endDate", filters.endDate);
+      
+      // Pagination params
+      if (filters?.page !== undefined) params.append("page", String(filters.page));
+      if (filters?.pageSize !== undefined) params.append("pageSize", String(filters.pageSize));
+      if (filters?.includeThumbnails !== undefined) params.append("includeThumbnails", filters.includeThumbnails ? 'true' : 'false');
+      if (filters?.sortBy) params.append("sortBy", filters.sortBy);
+      if (filters?.sortDir) params.append("sortDir", filters.sortDir);
 
       const url = `/api/orders${params.toString() ? `?${params.toString()}` : ""}`;
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch orders");
       return response.json();
     },
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
   });
 }
 

@@ -97,6 +97,239 @@ export class OrdersRepository {
         return (maxNum + 1).toString();
     }
 
+    private async getPreviewThumbnailsForOrderIds(organizationId: string, orderIds: string[]) {
+        const previewData: Map<string, { thumbnails: string[]; totalCount: number }> = new Map();
+        if (!orderIds.length) return previewData;
+
+        // Query orderAttachments (note: doesn't have organizationId or thumbStatus yet, so we filter via order join)
+        const attachmentsQuery = await this.dbInstance
+            .select({
+                orderId: orderAttachments.orderId,
+                thumbKey: orderAttachments.thumbKey,
+                previewKey: orderAttachments.previewKey,
+                fileName: orderAttachments.fileName,
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+            .where(
+                and(
+                    sql`${orderAttachments.orderId} = ANY(${orderIds})`,
+                    eq(orders.organizationId, organizationId),
+                    or(
+                        sql`${orderAttachments.thumbKey} IS NOT NULL`,
+                        sql`${orderAttachments.previewKey} IS NOT NULL`
+                    )
+                )
+            )
+            .orderBy(orderAttachments.createdAt);
+
+        const groupedAttachments = new Map<string, Array<{ thumbKey: string | null; previewKey: string | null; fileName: string }>>();
+        for (const att of attachmentsQuery) {
+            if (!groupedAttachments.has(att.orderId)) {
+                groupedAttachments.set(att.orderId, []);
+            }
+            const group = groupedAttachments.get(att.orderId)!;
+            if (group.length < 3) {
+                group.push({ thumbKey: att.thumbKey, previewKey: att.previewKey, fileName: att.fileName });
+            }
+        }
+
+        const countQuery = await this.dbInstance
+            .select({
+                orderId: orderAttachments.orderId,
+                count: sql<number>`count(*)::int`,
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+            .where(
+                and(
+                    sql`${orderAttachments.orderId} = ANY(${orderIds})`,
+                    eq(orders.organizationId, organizationId),
+                    or(
+                        sql`${orderAttachments.thumbKey} IS NOT NULL`,
+                        sql`${orderAttachments.previewKey} IS NOT NULL`
+                    )
+                )
+            )
+            .groupBy(orderAttachments.orderId);
+
+        const countMap = new Map<string, number>();
+        for (const row of countQuery) {
+            countMap.set(row.orderId, row.count);
+        }
+
+        for (const orderIdKey of Array.from(groupedAttachments.keys())) {
+            const attachments = groupedAttachments.get(orderIdKey)!;
+            const thumbnails = attachments
+                .map((att) => att.previewKey || att.thumbKey)
+                .filter((key: string | null): key is string => !!key);
+            previewData.set(orderIdKey, {
+                thumbnails,
+                totalCount: countMap.get(orderIdKey) || 0,
+            });
+        }
+
+        return previewData;
+    }
+
+    async getAllOrdersPaginated(organizationId: string, opts: {
+        search?: string;
+        status?: string;
+        priority?: string;
+        customerId?: string;
+        startDate?: string;
+        endDate?: string;
+        sortBy?: string;
+        sortDir?: 'asc' | 'desc';
+        page: number;
+        pageSize: number;
+        includeThumbnails: boolean;
+    }): Promise<{
+        items: Array<Order & {
+            customer: any;
+            contact: any;
+            lineItemsCount: number;
+            previewThumbnails?: string[];
+            thumbsCount?: number;
+            listLabel?: string | null;
+        }>;
+        page: number;
+        pageSize: number;
+        totalCount: number;
+        totalPages: number;
+        hasNext: boolean;
+        hasPrev: boolean;
+    }> {
+        const page = Math.max(1, opts.page);
+        const pageSize = Math.min(200, Math.max(1, opts.pageSize));
+        const offset = (page - 1) * pageSize;
+
+        const conditions = [eq(orders.organizationId, organizationId)] as any[];
+        if (opts.search) {
+            const pattern = `%${opts.search}%`;
+            conditions.push(or(
+                ilike(orders.orderNumber, pattern),
+                ilike(orders.poNumber, pattern),
+                ilike(orders.label, pattern),
+                ilike(orders.notesInternal, pattern)
+            ));
+        }
+        if (opts.status) conditions.push(eq(orders.status, opts.status));
+        if (opts.priority) conditions.push(eq(orders.priority, opts.priority));
+        if (opts.customerId) conditions.push(eq(orders.customerId, opts.customerId));
+        if (opts.startDate) conditions.push(gte(orders.createdAt, opts.startDate));
+        if (opts.endDate) conditions.push(lte(orders.createdAt, opts.endDate));
+
+        const whereClause = and(...conditions);
+
+        // Determine order by
+        let orderByClause = desc(orders.createdAt);
+        if (opts.sortBy) {
+            const dir = opts.sortDir === 'asc' ? 'asc' : 'desc';
+            switch (opts.sortBy) {
+                case 'orderNumber':
+                    orderByClause = dir === 'asc' ? sql`${orders.orderNumber} ASC` : sql`${orders.orderNumber} DESC`;
+                    break;
+                case 'customer':
+                    orderByClause = dir === 'asc' ? sql`${customers.companyName} ASC` : sql`${customers.companyName} DESC`;
+                    break;
+                case 'total':
+                    orderByClause = dir === 'asc' ? sql`${orders.total}::numeric ASC` : sql`${orders.total}::numeric DESC`;
+                    break;
+                case 'dueDate':
+                    orderByClause = dir === 'asc' ? sql`${orders.dueDate} ASC NULLS LAST` : sql`${orders.dueDate} DESC NULLS LAST`;
+                    break;
+                case 'status':
+                    orderByClause = dir === 'asc' ? sql`${orders.status} ASC` : sql`${orders.status} DESC`;
+                    break;
+                case 'priority':
+                    orderByClause = dir === 'asc' ? sql`${orders.priority} ASC` : sql`${orders.priority} DESC`;
+                    break;
+                case 'label':
+                    orderByClause = dir === 'asc' ? sql`${orders.label} ASC NULLS LAST` : sql`${orders.label} DESC NULLS LAST`;
+                    break;
+                default:
+                    orderByClause = desc(orders.createdAt);
+            }
+        }
+
+        const [{ totalCount }] = await this.dbInstance
+            .select({ totalCount: sql<number>`count(*)::int` })
+            .from(orders)
+            .where(whereClause);
+
+        const rows = await this.dbInstance
+            .select({
+                order: orders,
+                customerCompanyName: customers.companyName,
+                customer: customers,
+                contact: customerContacts,
+                lineItemsCount: sql<number>`(
+                    select count(*)::int from ${orderLineItems}
+                    where ${orderLineItems.orderId} = ${orders.id}
+                )`,
+            })
+            .from(orders)
+            .leftJoin(
+                customers,
+                and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId))
+            )
+            .leftJoin(
+                customerContacts,
+                eq(customerContacts.id, orders.contactId)
+            )
+            .where(whereClause)
+            .orderBy(orderByClause)
+            .limit(pageSize)
+            .offset(offset);
+
+        const orderIds = rows.map((r) => r.order.id);
+        const previewData = opts.includeThumbnails
+            ? await this.getPreviewThumbnailsForOrderIds(organizationId, orderIds)
+            : new Map<string, { thumbnails: string[]; totalCount: number }>();
+
+        // Fetch list notes for all orders in this page
+        const { orderListNotes } = await import("@shared/schema");
+        const listNotesResult = await this.dbInstance
+            .select({
+                orderId: orderListNotes.orderId,
+                listLabel: orderListNotes.listLabel,
+            })
+            .from(orderListNotes)
+            .where(
+                and(
+                    eq(orderListNotes.organizationId, organizationId),
+                    sql`${orderListNotes.orderId} = ANY(${orderIds})`
+                )
+            );
+
+        const listNotesMap = new Map<string, string | null>();
+        for (const note of listNotesResult) {
+            listNotesMap.set(note.orderId, note.listLabel);
+        }
+
+        const items = rows.map(({ order, customer, contact, lineItemsCount }) => ({
+            ...order,
+            customer,
+            contact,
+            lineItemsCount,
+            previewThumbnails: opts.includeThumbnails ? (previewData.get(order.id)?.thumbnails || []) : [],
+            thumbsCount: opts.includeThumbnails ? (previewData.get(order.id)?.totalCount || 0) : 0,
+            listLabel: listNotesMap.get(order.id) || null,
+        }));
+
+        const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+        return {
+            items,
+            page,
+            pageSize,
+            totalCount,
+            totalPages,
+            hasNext: page < totalPages,
+            hasPrev: page > 1,
+        };
+    }
+
     async getAllOrders(organizationId: string, filters?: {
         search?: string;
         status?: string;
