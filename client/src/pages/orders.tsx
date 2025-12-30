@@ -1,26 +1,31 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef, Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer } from "lucide-react";
+import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useOrders, useUpdateOrder } from "@/hooks/useOrders";
+import { useOrders, type OrderRow, type OrdersListResponse } from "@/hooks/useOrders";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { LineItemThumbnail } from "@/components/LineItemThumbnail";
-import { Page, PageHeader, ContentLayout, FilterPanel, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnStyle, type ColumnDefinition } from "@/components/titan";
+import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 
-type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label";
+type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel";
 
-// Column definitions for orders table
+// Column definitions for orders table (matches Quotes pattern)
 const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "orderNumber", label: "Order #", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
+  { key: "listLabel", label: "List Note", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
+  { key: "label", label: "Job Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
+  { key: "thumbnails", label: "Preview", defaultVisible: true, defaultWidth: 140, minWidth: 120, maxWidth: 200 },
   { key: "poNumber", label: "PO #", defaultVisible: true, defaultWidth: 120, minWidth: 80, maxWidth: 180, sortable: true },
-  { key: "label", label: "Label", defaultVisible: true, defaultWidth: 150, minWidth: 100, maxWidth: 250, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 130, minWidth: 100, maxWidth: 180, sortable: true },
   { key: "priority", label: "Priority", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
@@ -28,105 +33,87 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "items", label: "Items", defaultVisible: true, defaultWidth: 80, minWidth: 60, maxWidth: 120, sortable: true },
   { key: "total", label: "Total", defaultVisible: true, defaultWidth: 110, minWidth: 80, maxWidth: 150, sortable: true, align: "right" },
   { key: "created", label: "Created", defaultVisible: true, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
-  { key: "actions", label: "Actions", defaultVisible: true, defaultWidth: 160, minWidth: 120, maxWidth: 200 },
+  { key: "actions", label: "Actions", defaultVisible: true, defaultWidth: 200, minWidth: 150, maxWidth: 280 },
 ];
 
 export default function Orders() {
   const { user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   
-  // Column settings
-  const [columnSettings, setColumnSettings] = useColumnSettings(ORDER_COLUMNS, "orders_column_settings");
+  // Pagination + performance controls (persisted per org+user, matching Quotes)
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [includeThumbnails, setIncludeThumbnails] = useState(true);
+  
+  // Column settings - scoped per user (matches Quotes pattern)
+  const storageKey = user?.id 
+    ? `titan:listview:orders:user_${user.id}` 
+    : "orders_column_settings"; // fallback for loading state
+  const [columnSettings, setColumnSettings] = useColumnSettings(ORDER_COLUMNS, storageKey);
   
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
-  
-  // Inline editing state
-  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
-  const [editingField, setEditingField] = useState<'status' | 'priority' | 'dueDate' | 'label' | 'poNumber' | null>(null);
-  const [tempValue, setTempValue] = useState("");
 
-  const { data: orders, isLoading } = useOrders({
-    search,
-    status: statusFilter !== "all" ? statusFilter : undefined,
-    priority: priorityFilter !== "all" ? priorityFilter : undefined,
+  // Computed ordered columns (ensures Actions column always last)
+  const orderedColumns = useMemo(() => getColumnOrder(ORDER_COLUMNS, columnSettings), [columnSettings]);
+
+  // Fetch orders with pagination support
+  const { data: ordersData, isLoading, error } = useOrders({
+    page,
+    pageSize,
+    includeThumbnails,
+    sortBy: sortKey,
+    sortDir: sortDirection,
   });
 
-  const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
-  
-  // Helper to get column width style
-  const getColStyle = (key: string) => {
-    const def = ORDER_COLUMNS.find(c => c.key === key);
-    return getColumnStyle(columnSettings, key, def?.defaultWidth || 150);
-  };
-  
-  // Helper to check column visibility
-  const isVisible = (key: string) => isColumnVisible(columnSettings, key);
-  
-  // Count visible columns for colspan
-  const visibleColumnCount = ORDER_COLUMNS.filter(col => isVisible(col.key)).length;
+  // Determine if paginated response
+  const isPaginated = ordersData && typeof ordersData === 'object' && 'items' in ordersData;
+  const orders = isPaginated ? (ordersData as OrdersListResponse).items : (ordersData as any[] || []);
+  const totalCount = isPaginated ? (ordersData as OrdersListResponse).totalCount : orders.length;
+  const totalPages = isPaginated ? (ordersData as OrdersListResponse).totalPages : 1;
+  const hasNext = isPaginated ? (ordersData as OrdersListResponse).hasNext : false;
+  const hasPrev = isPaginated ? (ordersData as OrdersListResponse).hasPrev : false;
 
-  // Sorted orders
-  const sortedOrders = useMemo(() => {
-    if (!orders) return [];
-    return [...orders].sort((a: any, b: any) => {
-      let comparison = 0;
-      switch (sortKey) {
-        case "date":
-          comparison = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-          break;
-        case "orderNumber":
-          comparison = (a.orderNumber || "").localeCompare(b.orderNumber || "", undefined, { numeric: true });
-          break;
-        case "poNumber":
-          comparison = (a.poNumber || "").localeCompare(b.poNumber || "");
-          break;
-        case "label":
-          comparison = (a.label || "").localeCompare(b.label || "");
-          break;
-        case "customer":
-          const customerA = a.customer?.companyName || "";
-          const customerB = b.customer?.companyName || "";
-          comparison = customerA.localeCompare(customerB);
-          break;
-        case "total":
-          comparison = parseFloat(a.total || "0") - parseFloat(b.total || "0");
-          break;
-        case "dueDate":
-          const dueDateA = a.dueDate ? new Date(a.dueDate).getTime() : 0;
-          const dueDateB = b.dueDate ? new Date(b.dueDate).getTime() : 0;
-          comparison = dueDateA - dueDateB;
-          break;
-        case "status":
-          const statusOrder = ['new', 'scheduled', 'in_production', 'ready_for_pickup', 'shipped', 'completed', 'on_hold', 'canceled'];
-          comparison = statusOrder.indexOf(a.status || '') - statusOrder.indexOf(b.status || '');
-          break;
-        case "priority":
-          const priorityOrder = ['rush', 'normal', 'low'];
-          comparison = priorityOrder.indexOf(a.priority || '') - priorityOrder.indexOf(b.priority || '');
-          break;
-        case "items":
-          const itemsA = Array.isArray(a.lineItems) ? a.lineItems.length : 0;
-          const itemsB = Array.isArray(b.lineItems) ? b.lineItems.length : 0;
-          comparison = itemsA - itemsB;
-          break;
-      }
-      return sortDirection === "asc" ? comparison : -comparison;
-    });
-  }, [orders, sortKey, sortDirection]);
+  const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
+
+  // Filter orders by search, status, priority (client-side for Phase 1)
+  const filteredOrders = useMemo(() => {
+    let filtered = orders;
+    
+    if (search) {
+      const searchLower = search.toLowerCase();
+      filtered = filtered.filter((order: any) =>
+        order.orderNumber?.toLowerCase().includes(searchLower) ||
+        order.label?.toLowerCase().includes(searchLower) ||
+        order.poNumber?.toLowerCase().includes(searchLower) ||
+        order.customer?.companyName?.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    if (statusFilter !== "all") {
+      filtered = filtered.filter((order: any) => order.status === statusFilter);
+    }
+    
+    if (priorityFilter !== "all") {
+      filtered = filtered.filter((order: any) => order.priority === priorityFilter);
+    }
+    
+    return filtered;
+  }, [orders, search, statusFilter, priorityFilter]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortDirection(prev => prev === "asc" ? "desc" : "asc");
     } else {
       setSortKey(key);
-      // Default direction based on column type
-      setSortDirection(key === "customer" || key === "orderNumber" || key === "status" || key === "priority" || key === "label" ? "asc" : "desc");
+      setSortDirection(key === "customer" || key === "orderNumber" || key === "status" || key === "priority" || key === "label" || key === "listLabel" ? "asc" : "desc");
     }
   };
 
@@ -137,84 +124,198 @@ export default function Orders() {
       : <ChevronDown className="inline w-4 h-4 ml-1" />;
   };
 
-  const handleStartEdit = (orderId: string, field: 'status' | 'priority' | 'dueDate' | 'label' | 'poNumber', currentValue: string) => {
-    if (!isAdminOrOwner) return;
-    setEditingOrderId(orderId);
-    setEditingField(field);
-    setTempValue(currentValue);
-  };
-
-  const handleSaveEdit = async (orderId: string) => {
-    if (!editingField) return;
-
-    try {
-      let updateData: any = {};
-      
-      if (editingField === 'dueDate') {
-        updateData.dueDate = tempValue ? new Date(tempValue) : null;
-      } else {
-        updateData[editingField] = tempValue;
-      }
-
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: 'PATCH',
+  // List-Label mutation (updates order_list_notes table)
+  const updateListLabelMutation = useMutation({
+    mutationFn: async ({ orderId, listLabel }: { orderId: string; listLabel: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/list-note`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updateData),
+        body: JSON.stringify({ listLabel }),
         credentials: 'include',
       });
+      if (!response.ok) throw new Error('Failed to update list note');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api', 'orders'] });
+      toast({ title: "Success", description: "List note updated" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to update list note", variant: "destructive" });
+    },
+  });
 
-      if (!response.ok) throw new Error('Failed to update order');
+  // List-Label Inline Edit Cell Component (extracted to use hooks properly)
+  const ListLabelCell = ({ row }: { row: OrderRow }) => {
+    const [isEditing, setIsEditing] = useState(false);
+    const [localValue, setLocalValue] = useState(row.listLabel || "");
+    const inputRef = useRef<HTMLInputElement>(null);
 
-      toast({
-        title: "Success",
-        description: `Order ${editingField} updated`,
-      });
+    useEffect(() => {
+      if (isEditing && inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.select();
+      }
+    }, [isEditing]);
 
-      // Refresh orders list
-      window.location.reload();
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to update order",
-        variant: "destructive",
-      });
-    } finally {
-      setEditingOrderId(null);
-      setEditingField(null);
-      setTempValue("");
+    const handleSave = () => {
+      if (localValue !== (row.listLabel || "")) {
+        updateListLabelMutation.mutate({ orderId: row.id, listLabel: localValue });
+      }
+      setIsEditing(false);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') handleSave();
+      if (e.key === 'Escape') {
+        setLocalValue(row.listLabel || "");
+        setIsEditing(false);
+      }
+    };
+
+    if (isEditing) {
+      return (
+        <Input
+          ref={inputRef}
+          type="text"
+          value={localValue}
+          onChange={(e) => setLocalValue(e.target.value)}
+          onBlur={handleSave}
+          onKeyDown={handleKeyDown}
+          className="h-7 text-sm"
+        />
+      );
+    }
+
+    return (
+      <div
+        onClick={() => setIsEditing(true)}
+        className="cursor-pointer hover:bg-accent/50 px-2 py-1 rounded min-h-[28px] flex items-center"
+        title="Click to edit list note"
+      >
+        {row.listLabel || <span className="text-muted-foreground italic text-xs">Add note...</span>}
+      </div>
+    );
+  };
+
+  // Helper to render cell content based on column key (matches Quotes pattern)
+  const renderCell = (row: OrderRow, columnKey: string) => {
+    switch (columnKey) {
+      case "orderNumber":
+        return (
+          <Link to={ROUTES.orders.detail(row.id)} className="text-blue-600 hover:underline font-medium">
+            {row.orderNumber || `#${row.id.slice(0, 8)}`}
+          </Link>
+        );
+
+      case "listLabel":
+        return <ListLabelCell row={row} />;
+
+      case "label":
+        return row.label || <span className="text-muted-foreground italic">—</span>;
+
+      case "thumbnails": {
+        const thumbs = row.previewThumbnails || [];
+        const thumbsCount = row.thumbsCount || 0;
+        if (thumbsCount === 0) {
+          return <span className="text-muted-foreground italic text-xs">No attachments</span>;
+        }
+        return (
+          <div className="flex items-center gap-1">
+            {thumbs.slice(0, 3).map((url, idx) => (
+              <img
+                key={idx}
+                src={url}
+                alt={`Preview ${idx + 1}`}
+                className="w-8 h-8 object-cover rounded border border-border cursor-pointer hover:ring-2 hover:ring-primary"
+                onClick={() => {
+                  // TODO: Open AttachmentViewerDialog (Checkpoint 5)
+                }}
+              />
+            ))}
+            {thumbsCount > 3 && (
+              <span className="text-xs text-muted-foreground">+{thumbsCount - 3}</span>
+            )}
+          </div>
+        );
+      }
+
+      case "poNumber":
+        return row.poNumber || <span className="text-muted-foreground italic">—</span>;
+
+      case "customer":
+        return row.customer?.companyName || <span className="text-muted-foreground italic">No customer</span>;
+
+      case "status":
+        return <OrderStatusBadge status={row.status} />;
+
+      case "priority":
+        return <OrderPriorityBadge priority={row.priority} />;
+
+      case "dueDate":
+        return row.dueDate ? format(new Date(row.dueDate), "MMM d, yyyy") : <span className="text-muted-foreground italic">—</span>;
+
+      case "items":
+        return row.lineItemsCount || 0;
+
+      case "total":
+        return `$${parseFloat(row.total || "0").toFixed(2)}`;
+
+      case "created":
+        return format(new Date(row.createdAt), "MMM d, yyyy");
+
+      case "actions":
+        return (
+          <div className="flex gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => navigate(ROUTES.orders.detail(row.id))}
+            >
+              <Eye className="w-4 h-4" />
+            </Button>
+            {isAdminOrOwner && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => navigate(`${ROUTES.orders.detail(row.id)}/edit`)}
+              >
+                <Edit className="w-4 h-4" />
+              </Button>
+            )}
+          </div>
+        );
+
+      default:
+        return null;
     }
   };
 
-  const handleCancelEdit = () => {
-    setEditingOrderId(null);
-    setEditingField(null);
-    setTempValue("");
+  // Helper functions
+  const getColStyle = (key: string) => {
+    const setting = columnSettings?.[key];
+    const def = ORDER_COLUMNS.find((c) => c.key === key);
+    // Check if setting is a ColumnState (not the _columnOrder array)
+    const width = (setting && typeof setting === 'object' && 'width' in setting) ? setting.width : (def?.defaultWidth || 150);
+    return { width: `${width}px`, minWidth: `${def?.minWidth || 80}px`, maxWidth: `${def?.maxWidth || 300}px` };
   };
 
-  const formatCurrency = (amount: string) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-    }).format(parseFloat(amount));
-  };
+  const isVisible = (key: string) => isColumnVisible(columnSettings, key);
 
-  const formatDate = (dateString: string | null) => {
-    if (!dateString) return "-";
-    try {
-      return format(new Date(dateString), "MMM d, yyyy");
-    } catch {
-      return "-";
-    }
-  };
+  const visibleColumnCount = orderedColumns.filter((col) => isVisible(col.key)).length;
+
+  // Format helpers
+  const formatDate = (date: string | Date) => format(new Date(date), "MMM d, yyyy");
+  const formatCurrency = (amount: string | number) => `$${parseFloat(String(amount) || "0").toFixed(2)}`;
 
   return (
-    <Page>
+    <Page maxWidth="full">
       <PageHeader
         title="Orders"
-        subtitle="Manage production orders and job tracking"
+        subtitle="Manage production orders and track fulfillment"
         className="pb-3"
         backButton={
-          <Button variant="ghost" size="icon" onClick={() => navigate(ROUTES.dashboard)}>
+          <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.dashboard)}>
             <ArrowLeft className="w-5 h-5" />
           </Button>
         }
@@ -267,23 +368,32 @@ export default function Orders() {
               <SelectItem value="low">Low</SelectItem>
             </SelectContent>
           </Select>
-          {orders && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Package className="w-4 h-4" />
-              <span>{orders.length} order{orders.length !== 1 ? 's' : ''}</span>
-            </div>
-          )}
+          <div className="flex items-center gap-3 whitespace-nowrap">
+            <Label className="text-sm text-muted-foreground">Rows per page</Label>
+            <Select value={String(pageSize)} onValueChange={(v) => setPageSize(parseInt(v, 10))}>
+              <SelectTrigger className="w-[100px] h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10</SelectItem>
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+                <SelectItem value="200">200</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {/* Orders Table */}
         <DataCard
           title="Orders"
-          description={`${orders?.length ?? 0} order${orders?.length !== 1 ? 's' : ''} found`}
+          description={`${filteredOrders.length} order${filteredOrders.length !== 1 ? 's' : ''} found • ${totalCount} total orders`}
           className="mt-0"
           headerActions={
             <ColumnConfig
               columns={ORDER_COLUMNS}
-              storageKey="orders_column_settings"
+              storageKey={storageKey}
               settings={columnSettings}
               onSettingsChange={setColumnSettings}
             />
@@ -292,423 +402,132 @@ export default function Orders() {
         >
           <div className="overflow-x-auto">
             <Table className="table-dense">
-            <TableHeader>
-              <TableRow className="text-left">
-                {isVisible("orderNumber") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("orderNumber")}
-                    onClick={() => handleSort("orderNumber")}
-                  >
-                    Order #<SortIcon columnKey="orderNumber" />
-                  </TableHead>
-                )}
-                {isVisible("label") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("label")}
-                    onClick={() => handleSort("label")}
-                  >
-                    Label<SortIcon columnKey="label" />
-                  </TableHead>
-                )}
-                {isVisible("poNumber") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("poNumber")}
-                    onClick={() => handleSort("poNumber")}
-                  >
-                    PO #<SortIcon columnKey="poNumber" />
-                  </TableHead>
-                )}
-                {isVisible("customer") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("customer")}
-                    onClick={() => handleSort("customer")}
-                  >
-                    Customer<SortIcon columnKey="customer" />
-                  </TableHead>
-                )}
-                {isVisible("status") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("status")}
-                    onClick={() => handleSort("status")}
-                  >
-                    Status<SortIcon columnKey="status" />
-                  </TableHead>
-                )}
-                {isVisible("priority") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("priority")}
-                    onClick={() => handleSort("priority")}
-                  >
-                    Priority<SortIcon columnKey="priority" />
-                  </TableHead>
-                )}
-                {isVisible("dueDate") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("dueDate")}
-                    onClick={() => handleSort("dueDate")}
-                  >
-                    Due Date<SortIcon columnKey="dueDate" />
-                  </TableHead>
-                )}
-                {isVisible("items") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("items")}
-                    onClick={() => handleSort("items")}
-                  >
-                    Items<SortIcon columnKey="items" />
-                  </TableHead>
-                )}
-                {isVisible("total") && (
-                  <TableHead 
-                    className="text-right cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("total")}
-                    onClick={() => handleSort("total")}
-                  >
-                    Total<SortIcon columnKey="total" />
-                  </TableHead>
-                )}
-                {isVisible("created") && (
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50 select-none"
-                    style={getColStyle("created")}
-                    onClick={() => handleSort("date")}
-                  >
-                    Created<SortIcon columnKey="date" />
-                  </TableHead>
-                )}
-                {isVisible("actions") && (
-                  <TableHead style={getColStyle("actions")}>Actions</TableHead>
-                )}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={visibleColumnCount} className="text-center py-8 text-muted-foreground">
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                      <span>Loading orders...</span>
-                    </div>
-                  </TableCell>
+                  {orderedColumns.map((col) => {
+                    if (!isVisible(col.key)) return null;
+                    
+                    const isSortable = col.sortable !== false;
+                    const isRightAligned = col.align === "right";
+                    const displayName = getColumnDisplayName(columnSettings, col.key, col.label);
+                    
+                    return (
+                      <TableHead
+                        key={col.key}
+                        className={`${isSortable ? "cursor-pointer hover:bg-muted/50 select-none" : ""} ${isRightAligned ? "text-right" : ""}`}
+                        style={getColStyle(col.key)}
+                        onClick={isSortable ? () => handleSort(col.key as SortKey) : undefined}
+                      >
+                        {displayName}
+                        {isSortable && <SortIcon columnKey={col.key as SortKey} />}
+                      </TableHead>
+                    );
+                  })}
                 </TableRow>
-              ) : !orders || orders.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={visibleColumnCount} className="text-center py-6 text-muted-foreground">
-                    <div className="flex flex-col items-center gap-2">
-                      <Package className="w-8 h-8 text-muted-foreground" />
-                      <p>No orders found</p>
-                      <Link to={ROUTES.orders.new}>
-                        <Button variant="outline" size="sm">
-                          <Plus className="w-4 h-4 mr-2" />
-                          Create first order
-                        </Button>
-                      </Link>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                sortedOrders.map((order: any) => (
-                  <TableRow key={order.id} className="cursor-pointer hover:bg-muted/50">
-                    {isVisible("orderNumber") && (
-                      <TableCell className="font-mono font-medium" style={getColStyle("orderNumber")}>
-                        <Link to={ROUTES.orders.detail(order.id)}>
-                          <span className="hover:underline text-primary">{order.orderNumber}</span>
-                        </Link>
-                      </TableCell>
-                    )}
-                    {isVisible("label") && (
-                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("label")}>
-                        {isAdminOrOwner && editingOrderId === order.id && editingField === 'label' ? (
-                          <div className="flex items-center gap-1">
-                            <Input
-                              value={tempValue}
-                              onChange={(e) => setTempValue(e.target.value)}
-                              className="h-8 w-[130px]"
-                              placeholder="Enter label..."
-                              autoFocus
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveEdit(order.id);
-                                if (e.key === 'Escape') handleCancelEdit();
-                              }}
-                            />
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveEdit(order.id)}>
-                              <Check className="h-3 w-3" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelEdit}>
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        ) : (
-                          <div 
-                            className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded hover:bg-muted/30" : ""}
-                            onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'label', order.label || '')}
-                          >
-                            {order.label ? (
-                              <span className="text-sm">{order.label}</span>
-                            ) : (
-                              <span className="text-muted-foreground text-sm italic">
-                                {isAdminOrOwner ? "Click to add..." : "-"}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </TableCell>
-                    )}
-                    {isVisible("poNumber") && (
-                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("poNumber")}>
-                        {isAdminOrOwner && editingOrderId === order.id && editingField === 'poNumber' ? (
-                          <div className="flex items-center gap-1">
-                            <Input
-                              value={tempValue}
-                              onChange={(e) => setTempValue(e.target.value)}
-                              className="h-8 w-[110px]"
-                              placeholder="Enter PO #..."
-                              autoFocus
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveEdit(order.id);
-                                if (e.key === 'Escape') handleCancelEdit();
-                              }}
-                            />
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveEdit(order.id)}>
-                              <Check className="h-3 w-3" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelEdit}>
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        ) : (
-                          <div 
-                            className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded hover:bg-muted/30" : ""}
-                            onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'poNumber', order.poNumber || '')}
-                          >
-                            {order.poNumber ? (
-                              <span className="text-sm font-mono">{order.poNumber}</span>
-                            ) : (
-                              <span className="text-muted-foreground text-sm italic">
-                                {isAdminOrOwner ? "Click to add..." : "-"}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </TableCell>
-                    )}
-                    {isVisible("customer") && (
-                      <TableCell style={getColStyle("customer")}>
-                        <div className="flex items-center gap-2">
-                          <div>
-                            {order.customer ? (
-                              <Link to={ROUTES.customers.detail(order.customer.id)}>
-                                <div className="font-medium hover:underline cursor-pointer text-primary">
-                                  {order.customer.companyName}
-                                </div>
-                              </Link>
-                            ) : (
-                              <div className="font-medium text-muted-foreground">Unknown</div>
-                            )}
-                            {order.contact && (
-                              <div className="text-xs text-muted-foreground">
-                                {order.contact.firstName} {order.contact.lastName}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </TableCell>
-                    )}
-                    {isVisible("status") && (
-                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("status")}>
-                        {isAdminOrOwner && editingOrderId === order.id && editingField === 'status' ? (
-                          <div className="flex items-center gap-1">
-                            <Select value={tempValue} onValueChange={setTempValue}>
-                              <SelectTrigger className="h-8 w-[140px]">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="new">New</SelectItem>
-                                <SelectItem value="scheduled">Scheduled</SelectItem>
-                                <SelectItem value="in_production">In Production</SelectItem>
-                                <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
-                                <SelectItem value="shipped">Shipped</SelectItem>
-                                <SelectItem value="completed">Completed</SelectItem>
-                                <SelectItem value="on_hold">On Hold</SelectItem>
-                                <SelectItem value="canceled">Canceled</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveEdit(order.id)}>
-                              <Check className="h-3 w-3" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelEdit}>
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        ) : (
-                          <div 
-                            className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded inline-block" : ""}
-                            onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'status', order.status)}
-                          >
-                            <OrderStatusBadge status={order.status} />
-                          </div>
-                        )}
-                      </TableCell>
-                    )}
-                    {isVisible("priority") && (
-                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("priority")}>
-                        {isAdminOrOwner && editingOrderId === order.id && editingField === 'priority' ? (
-                          <div className="flex items-center gap-1">
-                            <Select value={tempValue} onValueChange={setTempValue}>
-                              <SelectTrigger className="h-8 w-[100px]">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="rush">Rush</SelectItem>
-                                <SelectItem value="normal">Normal</SelectItem>
-                                <SelectItem value="low">Low</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveEdit(order.id)}>
-                              <Check className="h-3 w-3" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelEdit}>
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        ) : (
-                          <div 
-                            className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded inline-block" : ""}
-                            onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'priority', order.priority)}
-                          >
-                            <OrderPriorityBadge priority={order.priority} />
-                          </div>
-                        )}
-                      </TableCell>
-                    )}
-                    {isVisible("dueDate") && (
-                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("dueDate")}>
-                        {isAdminOrOwner && editingOrderId === order.id && editingField === 'dueDate' ? (
-                          <div className="flex items-center gap-1">
-                            <Input
-                              type="date"
-                              value={tempValue}
-                              onChange={(e) => setTempValue(e.target.value)}
-                              className="h-8 w-[140px]"
-                              autoFocus
-                            />
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleSaveEdit(order.id)}>
-                              <Check className="h-3 w-3" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCancelEdit}>
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        ) : (
-                          <div 
-                            className={isAdminOrOwner ? "cursor-pointer px-2 py-1 rounded" : ""}
-                            onClick={() => isAdminOrOwner && handleStartEdit(order.id, 'dueDate', order.dueDate ? format(new Date(order.dueDate), 'yyyy-MM-dd') : '')}
-                          >
-                            {order.dueDate ? (
-                              <div className="flex items-center gap-1">
-                                <Calendar className="w-4 h-4 text-muted-foreground" />
-                                <span>{formatDate(order.dueDate)}</span>
-                              </div>
-                            ) : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
-                          </div>
-                        )}
-                      </TableCell>
-                    )}
-                    {isVisible("items") && (
-                      <TableCell style={getColStyle("items")}>
-                        <div className="flex items-center gap-2">
-                          {/* Show placeholder thumbnails (no fetching to avoid N+1) */}
-                          <div className="flex items-center gap-1">
-                            {Array.isArray(order.lineItems) && order.lineItems.slice(0, 3).map((lineItem: any, idx: number) => (
-                              <div key={lineItem.id || idx} className="h-8 w-8 shrink-0">
-                                <LineItemThumbnail
-                                  parentId={order.id}
-                                  lineItemId={lineItem.id}
-                                  parentType="order"
-                                  placeholderOnly={true}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                          <span className="text-muted-foreground text-sm">
-                            {(Array.isArray(order.lineItems) ? order.lineItems.length : 0)} {(Array.isArray(order.lineItems) ? order.lineItems.length : 0) !== 1 ? 'items' : 'item'}
-                          </span>
-                        </div>
-                      </TableCell>
-                    )}
-                    {isVisible("total") && (
-                      <TableCell className="text-right" style={getColStyle("total")}>
-                        <div className="flex flex-col items-end">
-                          <span className="font-medium">{formatCurrency(order.total)}</span>
-                          {parseFloat(order.discount) > 0 && (
-                            <span className="text-xs text-muted-foreground">
-                              -{formatCurrency(order.discount)} discount
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                    )}
-                    {isVisible("created") && (
-                      <TableCell style={getColStyle("created")}>
-                        <span className="text-sm text-muted-foreground">{formatDate(order.createdAt)}</span>
-                      </TableCell>
-                    )}
-                    {isVisible("actions") && (
-                      <TableCell onClick={(e) => e.stopPropagation()} style={getColStyle("actions")}>
-                        <div className="flex gap-1 justify-end flex-nowrap">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => navigate(`/orders/${order.id}`)}
-                          title="View order"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => navigate(`/orders/${order.id}/edit`)}
-                          title="Edit order"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => navigate(`/orders/new?duplicate=${order.id}`)}
-                          title="Duplicate order"
-                        >
-                          <Copy className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => window.open(`/orders/${order.id}/print`, '_blank')}
-                          title="Print order"
-                        >
-                          <Printer className="h-4 w-4" />
-                        </Button>
-                        </div>
-                      </TableCell>
-                    )}
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={visibleColumnCount} className="text-center py-8 text-muted-foreground">
+                      <div className="flex items-center justify-center gap-2">
+                        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                        <span>Loading orders...</span>
+                      </div>
+                    </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : filteredOrders.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={visibleColumnCount} className="text-center py-6 text-muted-foreground">
+                      <div className="flex flex-col items-center gap-2">
+                        <Package className="w-8 h-8 text-muted-foreground" />
+                        <p>No orders found</p>
+                        <Link to={ROUTES.orders.new}>
+                          <Button variant="outline" size="sm">
+                            <Plus className="w-4 h-4 mr-2" />
+                            Create first order
+                          </Button>
+                        </Link>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredOrders.map((order: any) => (
+                    <TableRow 
+                      key={order.id} 
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => navigate(ROUTES.orders.detail(order.id))}
+                    >
+                      {orderedColumns.map((col) => {
+                        if (!isVisible(col.key)) return null;
+                        return (
+                          <TableCell 
+                            key={col.key}
+                            style={getColStyle(col.key)}
+                            className={col.align === "right" ? "text-right" : ""}
+                            onClick={(e) => {
+                              // Allow inline editing for listLabel without triggering row click
+                              if (col.key === "listLabel") {
+                                e.stopPropagation();
+                              }
+                            }}
+                          >
+                            {renderCell(order, col.key)}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
           </div>
+
+          {/* Pagination Controls */}
+          {filteredOrders.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 border-t">
+              <div className="flex items-center gap-3">
+                <div className="text-sm text-muted-foreground">
+                  Showing {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, filteredOrders.length)} of {filteredOrders.length}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="includeThumbnails"
+                    checked={includeThumbnails}
+                    onCheckedChange={(checked) => setIncludeThumbnails(checked === true)}
+                  />
+                  <Label htmlFor="includeThumbnails" className="text-sm text-muted-foreground cursor-pointer">
+                    Show thumbnails
+                  </Label>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={page === 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </Button>
+                <div className="text-sm text-muted-foreground">
+                  Page {page} of {totalPages}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </DataCard>
       </ContentLayout>
     </Page>
   );
 }
+

@@ -7482,6 +7482,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      const pageRaw = req.query.page as string | undefined;
+      const pageSizeRaw = req.query.pageSize as string | undefined;
+      const includeThumbnailsRaw = req.query.includeThumbnails as string | undefined;
+      const sortBy = req.query.sortBy as string | undefined;
+      const sortDir = (req.query.sortDir as string | undefined) === 'asc' ? 'asc' : 'desc';
+
+      const hasPaging = pageRaw !== undefined || pageSizeRaw !== undefined;
+      
+      if (hasPaging) {
+        // Paginated response (match Quotes pattern)
+        const page = Math.max(1, parseInt(pageRaw || '1', 10) || 1);
+        const pageSize = Math.min(200, Math.max(1, parseInt(pageSizeRaw || '25', 10) || 25));
+        const includeThumbnails = includeThumbnailsRaw === 'true' || includeThumbnailsRaw === '1';
+
+        const result = await storage.getAllOrdersPaginated(organizationId, {
+          search: req.query.search as string | undefined,
+          status: req.query.status as string | undefined,
+          priority: req.query.priority as string | undefined,
+          customerId: req.query.customerId as string | undefined,
+          startDate: req.query.startDate as string | undefined,
+          endDate: req.query.endDate as string | undefined,
+          sortBy,
+          sortDir,
+          page,
+          pageSize,
+          includeThumbnails,
+        });
+
+        return res.json(result);
+      }
+
+      // Legacy non-paginated response (for backward compatibility)
       const filters = {
         search: req.query.search as string | undefined,
         status: req.query.status as string | undefined,
@@ -7773,6 +7806,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error updating order:", error);
       res.status(500).json({ message: "Failed to update order" });
+    }
+  });
+
+  // Order List Notes (list-only annotations - always editable)
+  app.get("/api/orders/:id/list-note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const { id: orderId } = req.params;
+
+      const { orderListNotes } = await import("@shared/schema");
+      const [note] = await db
+        .select()
+        .from(orderListNotes)
+        .where(
+          and(
+            eq(orderListNotes.organizationId, organizationId),
+            eq(orderListNotes.orderId, orderId)
+          )
+        )
+        .limit(1);
+
+      res.json({ listLabel: note?.listLabel || null });
+    } catch (error) {
+      console.error("Error fetching order list note:", error);
+      res.status(500).json({ message: "Failed to fetch list note" });
+    }
+  });
+
+  app.put("/api/orders/:id/list-note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ message: "User not authenticated" });
+      const { id: orderId } = req.params;
+      const { listLabel } = req.body;
+
+      // Verify order exists and belongs to org
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+
+      // Upsert list note (always allowed)
+      const { orderListNotes } = await import("@shared/schema");
+      const [updated] = await db
+        .insert(orderListNotes)
+        .values({
+          organizationId,
+          orderId,
+          listLabel: listLabel || null,
+          updatedByUserId: userId,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [orderListNotes.organizationId, orderListNotes.orderId],
+          set: {
+            listLabel: listLabel || null,
+            updatedByUserId: userId,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+
+      res.json({ success: true, listLabel: updated.listLabel });
+    } catch (error) {
+      console.error("Error updating order list note:", error);
+      res.status(500).json({ message: "Failed to update list note" });
     }
   });
 

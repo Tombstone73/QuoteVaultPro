@@ -3169,3 +3169,20 @@ export type QuoteListNote = typeof quoteListNotes.$inferSelect;
 export type InsertQuoteListNote = typeof quoteListNotes.$inferInsert;
 export type ListSettings = typeof listSettings.$inferSelect;
 export type InsertListSettings = typeof listSettings.$inferInsert;
+
+// Order List Notes (list-only annotations for Orders list, always editable)
+export const orderListNotes = pgTable('order_list_notes', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar('order_id').notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  listLabel: text('list_label'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedByUserId: varchar('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+}, (table) => [
+  index('order_list_notes_org_idx').on(table.organizationId),
+  index('order_list_notes_order_idx').on(table.orderId),
+  uniqueIndex('order_list_notes_unique').on(table.organizationId, table.orderId),
+]);
+
+export type OrderListNote = typeof orderListNotes.$inferSelect;
+export type InsertOrderListNote = typeof orderListNotes.$inferInsert;
