@@ -322,6 +322,26 @@ export class QuotesRepository {
             ? await this.getPreviewThumbnailsForQuoteIds(organizationId, quoteIds)
             : new Map<string, { thumbnails: string[]; totalCount: number }>();
 
+        // Fetch list notes for all quotes in this page
+        const { quoteListNotes } = await import("@shared/schema");
+        const listNotesResult = await this.dbInstance
+            .select({
+                quoteId: quoteListNotes.quoteId,
+                listLabel: quoteListNotes.listLabel,
+            })
+            .from(quoteListNotes)
+            .where(
+                and(
+                    eq(quoteListNotes.organizationId, organizationId),
+                    inArray(quoteListNotes.quoteId, quoteIds)
+                )
+            );
+        
+        const listNotesMap = new Map<string, string | null>();
+        for (const note of listNotesResult) {
+            listNotesMap.set(note.quoteId, note.listLabel);
+        }
+
         const items = rows.map(({ quote, customerCompanyName, user, lineItemsCount, hasOrder }) => {
             const workflowState = getEffectiveWorkflowState(
                 quote.status as any,
@@ -338,6 +358,7 @@ export class QuotesRepository {
                 workflowState,
                 previewThumbnails: opts.includeThumbnails ? (previewData.get(quote.id)?.thumbnails || []) : [],
                 thumbsCount: opts.includeThumbnails ? (previewData.get(quote.id)?.totalCount || 0) : 0,
+                listLabel: listNotesMap.get(quote.id) || null,
             };
         });
 

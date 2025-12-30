@@ -1,10 +1,12 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import path from "path";
+import { promises as fsPromises } from "fs";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings } from "@shared/schema";
 import { eq, desc, and, isNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -675,28 +677,108 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/objects/:objectPath(*)", async (req: any, res) => {
+  app.get("/objects/:objectPath(*)", isAuthenticated, async (req: any, res) => {
     const userId = getUserId(req.user);
-    const objectStorageService = new ObjectStorageService();
+    const isDev = process.env.NODE_ENV === 'development';
+    
     try {
-      const objectFile = await objectStorageService.getObjectEntityFile(
-        req.path,
-      );
+      // Try Supabase first if configured
+      if (isSupabaseConfigured()) {
+        const objectPath = req.path.replace('/objects/', '');
+        const supabaseService = new SupabaseStorageService();
+        
+        try {
+          const signedUrl = await supabaseService.getSignedDownloadUrl(objectPath, 3600);
+          // Redirect to signed URL
+          return res.redirect(signedUrl);
+        } catch (supabaseError: any) {
+          // If file not found in Supabase, fall through to local/GCS
+          if (isDev) {
+            console.log('[objects] File not in Supabase, trying local storage:', supabaseError.message);
+          }
+        }
+      }
+      
+      // Try local filesystem (STORAGE_ROOT) - common in local dev
+      const storageRoot = process.env.STORAGE_ROOT || './storage';
+      const objectPath = req.path.replace('/objects/', '');
+      const localPath = path.join(storageRoot, objectPath);
+      
+      try {
+        // Check if file exists locally
+        await fsPromises.access(localPath, fsPromises.constants.R_OK);
+        
+        // Determine content type
+        const ext = path.extname(objectPath).toLowerCase();
+        const contentTypes: { [key: string]: string } = {
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.png': 'image/png',
+          '.gif': 'image/gif',
+          '.webp': 'image/webp',
+          '.pdf': 'application/pdf',
+        };
+        const contentType = contentTypes[ext] || 'application/octet-stream';
+        
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day cache
+        
+        // Serve file directly
+        return res.sendFile(path.resolve(localPath));
+      } catch (localError: any) {
+        // File not found locally, try GCS
+        if (isDev) {
+          console.log('[objects] File not in local storage, trying GCS:', localError.message);
+        }
+      }
+      
+      // Try GCS via Replit ObjectStorage (requires sidecar)
+      // Check if GCS credentials are accessible
+      const hasGCSAccess = process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.REPL_ID !== 'local-dev-repl-id';
+      
+      if (!hasGCSAccess) {
+        return res.status(404).json({
+          error: "File not found",
+          message: "File not available in Supabase or local storage, and GCS not configured",
+          path: req.path
+        });
+      }
+      
+      const objectStorageService = new ObjectStorageService();
+      const objectFile = await objectStorageService.getObjectEntityFile(req.path);
+      
       const canAccess = await objectStorageService.canAccessObjectEntity({
         objectFile,
         userId: userId,
         requestedPermission: ObjectPermission.READ,
       });
+      
       if (!canAccess) {
-        return res.sendStatus(401);
+        return res.status(403).json({ error: "Access denied", path: req.path });
       }
+      
       objectStorageService.downloadObject(objectFile, res);
-    } catch (error) {
-      console.error("Error checking object access:", error);
+    } catch (error: any) {
+      console.error("[objects] Error serving object:", error);
+      
       if (error instanceof ObjectNotFoundError) {
-        return res.sendStatus(404);
+        return res.status(404).json({ error: "Object not found", path: req.path });
       }
-      return res.sendStatus(500);
+      
+      // Check if this is a credential/connection error (don't return 500 for config issues)
+      if (error.message?.includes('ECONNREFUSED') || error.message?.includes('credential')) {
+        return res.status(501).json({
+          error: "Storage unavailable",
+          message: isDev ? "GCS sidecar not running (local dev)" : "Storage service unavailable",
+          ...(isDev && { details: error.message })
+        });
+      }
+      
+      // True internal errors
+      return res.status(500).json({ 
+        error: "Internal server error",
+        ...(isDev && { details: error.message || String(error) })
+      });
     }
   });
 
@@ -3415,6 +3497,133 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Quote List Notes (list-only annotations - always editable, not affected by quote lock)
+  app.get("/api/quotes/:id/list-note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const { id: quoteId } = req.params;
+
+      const [note] = await db
+        .select()
+        .from(quoteListNotes)
+        .where(
+          and(
+            eq(quoteListNotes.organizationId, organizationId),
+            eq(quoteListNotes.quoteId, quoteId)
+          )
+        )
+        .limit(1);
+
+      res.json({ listLabel: note?.listLabel || null });
+    } catch (error) {
+      console.error("Error fetching list note:", error);
+      res.status(500).json({ message: "Failed to fetch list note" });
+    }
+  });
+
+  app.put("/api/quotes/:id/list-note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      const { id: quoteId } = req.params;
+      const { listLabel } = req.body;
+
+      // Verify quote exists and belongs to org
+      const quote = await storage.getQuoteById(organizationId, quoteId);
+      if (!quote) {
+        return res.status(404).json({ message: "Quote not found" });
+      }
+
+      // Upsert list note (always allowed, not affected by quote lock)
+      const [updated] = await db
+        .insert(quoteListNotes)
+        .values({
+          organizationId,
+          quoteId,
+          listLabel: listLabel || null,
+          updatedByUserId: userId,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [quoteListNotes.organizationId, quoteListNotes.quoteId],
+          set: {
+            listLabel: listLabel || null,
+            updatedByUserId: userId,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+
+      res.json({ success: true, listLabel: updated.listLabel });
+    } catch (error) {
+      console.error("Error updating list note:", error);
+      res.status(500).json({ message: "Failed to update list note" });
+    }
+  });
+
+  // List Settings (column visibility, order, custom labels, date format)
+  app.get("/api/list-settings/:listKey", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ message: "User ID not found" });
+      const { listKey } = req.params;
+
+      const [settings] = await db
+        .select()
+        .from(listSettings)
+        .where(
+          and(
+            eq(listSettings.organizationId, organizationId),
+            eq(listSettings.userId, userId),
+            eq(listSettings.listKey, listKey)
+          )
+        )
+        .limit(1);
+
+      res.json({ settings: settings?.settingsJson || {} });
+    } catch (error) {
+      console.error("Error fetching list settings:", error);
+      res.status(500).json({ message: "Failed to fetch list settings" });
+    }
+  });
+
+  app.put("/api/list-settings/:listKey", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      const { listKey } = req.params;
+      const { settings } = req.body;
+
+      const [updated] = await db
+        .insert(listSettings)
+        .values({
+          organizationId,
+          userId,
+          listKey,
+          settingsJson: settings,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [listSettings.organizationId, listSettings.userId, listSettings.listKey],
+          set: {
+            settingsJson: settings,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+
+      res.json({ success: true, settings: updated.settingsJson });
+    } catch (error) {
+      console.error("Error updating list settings:", error);
+      res.status(500).json({ message: "Failed to update list settings" });
+    }
+  });
+
   // Helper: Get organization preferences
   async function getOrgPreferences(organizationId: string): Promise<any> {
     try {
@@ -4656,6 +4865,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/quotes/:quoteId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const { quoteId } = req.params;
+      const { includeLineItems } = req.query;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
@@ -4665,12 +4875,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .limit(1);
       if (!quote) return res.status(404).json({ error: "Quote not found" });
 
+      // Build where clause - optionally include line item attachments
+      const whereConditions = [
+        eq(quoteAttachments.quoteId, quoteId),
+        eq(quoteAttachments.organizationId, organizationId)
+      ];
+      
+      // If includeLineItems is not explicitly true, filter to quote-level only (backward compatible)
+      if (includeLineItems !== 'true') {
+        whereConditions.push(isNull(quoteAttachments.quoteLineItemId));
+      }
+
       const files = await db.select().from(quoteAttachments)
-        .where(and(
-          eq(quoteAttachments.quoteId, quoteId),
-          isNull(quoteAttachments.quoteLineItemId),
-          eq(quoteAttachments.organizationId, organizationId)
-        ))
+        .where(and(...whereConditions))
         .orderBy(desc(quoteAttachments.createdAt));
 
       const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
