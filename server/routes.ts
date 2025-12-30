@@ -7808,11 +7808,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // NOTE: Auto inventory deduction moved to /transition endpoint (status changes blocked here)
 
-      // Create audit log
+      // Create audit log entries in both tables for better tracking
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      
+      // General audit log
       if (userId) {
         await storage.createAuditLog(organizationId, {
           userId,
-          userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+          userName,
           actionType: 'UPDATE',
           entityType: 'order',
           entityId: order.id,
@@ -7821,6 +7824,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
           oldValues: oldOrder,
           newValues: order,
         });
+        
+        // Create specific orderAuditLog entries for tracked fields
+        if (oldOrder) {
+          // Priority change
+          if (updateData.priority !== undefined && oldOrder.priority !== updateData.priority) {
+            await storage.createOrderAuditLog({
+              orderId: order.id,
+              userId,
+              userName,
+              actionType: 'priority_change',
+              fromStatus: null,
+              toStatus: null,
+              note: null,
+              metadata: { oldValue: oldOrder.priority, newValue: updateData.priority },
+            });
+          }
+          
+          // Due date change
+          if (updateData.dueDate !== undefined && oldOrder.dueDate !== updateData.dueDate) {
+            await storage.createOrderAuditLog({
+              orderId: order.id,
+              userId,
+              userName,
+              actionType: 'due_date_change',
+              fromStatus: null,
+              toStatus: null,
+              note: null,
+              metadata: { 
+                oldValue: oldOrder.dueDate ? new Date(oldOrder.dueDate).toISOString().split('T')[0] : null,
+                newValue: updateData.dueDate ? new Date(updateData.dueDate).toISOString().split('T')[0] : null
+              },
+            });
+          }
+          
+          // Promised date change
+          if (updateData.promisedDate !== undefined && oldOrder.promisedDate !== updateData.promisedDate) {
+            await storage.createOrderAuditLog({
+              orderId: order.id,
+              userId,
+              userName,
+              actionType: 'promised_date_change',
+              fromStatus: null,
+              toStatus: null,
+              note: null,
+              metadata: { 
+                oldValue: oldOrder.promisedDate ? new Date(oldOrder.promisedDate).toISOString().split('T')[0] : null,
+                newValue: updateData.promisedDate ? new Date(updateData.promisedDate).toISOString().split('T')[0] : null
+              },
+            });
+          }
+          
+          // Job label change
+          if (updateData.label !== undefined && oldOrder.label !== updateData.label) {
+            await storage.createOrderAuditLog({
+              orderId: order.id,
+              userId,
+              userName,
+              actionType: 'job_label_change',
+              fromStatus: null,
+              toStatus: null,
+              note: null,
+              metadata: { oldValue: oldOrder.label, newValue: updateData.label },
+            });
+          }
+          
+          // PO number change
+          if (updateData.poNumber !== undefined && oldOrder.poNumber !== updateData.poNumber) {
+            await storage.createOrderAuditLog({
+              orderId: order.id,
+              userId,
+              userName,
+              actionType: 'po_number_change',
+              fromStatus: null,
+              toStatus: null,
+              note: null,
+              metadata: { oldValue: oldOrder.poNumber, newValue: updateData.poNumber },
+            });
+          }
+        }
       }
 
       // Return full order with customer data
@@ -7882,6 +7964,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.warn('[OrderTransition] Could not load jobs count:', err);
       }
 
+      // Load organization preferences
+      const orgPreferences = await getOrgPreferences(organizationId);
+
       // Validate transition
       const { validateOrderTransition } = await import('./services/orderTransition');
       const validation = validateOrderTransition(order.status, toStatus, {
@@ -7891,6 +7976,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         fulfillmentStatus: order.fulfillmentStatus,
         jobsCount,
         hasShippedAt: !!order.shippedAt,
+        orgPreferences,
       });
 
       if (!validation.ok) {
@@ -7946,10 +8032,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Apply status update
       const updatedOrder = await storage.updateOrder(organizationId, orderId, updateData);
 
-      // Create audit log
+      // Create audit logs in both tables
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      
+      // General audit log
       await storage.createAuditLog(organizationId, {
         userId,
-        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        userName,
         actionType: 'UPDATE',
         entityType: 'order',
         entityId: updatedOrder.id,
@@ -7957,6 +8046,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         description: `Changed order status from ${order.status} to ${toStatus}${reason ? `: ${reason}` : ''}`,
         oldValues: { status: order.status },
         newValues: { status: toStatus, reason },
+      });
+      
+      // Order-specific audit log for status transition
+      await storage.createOrderAuditLog({
+        orderId: updatedOrder.id,
+        userId,
+        userName,
+        actionType: 'status_transition',
+        fromStatus: order.status,
+        toStatus: toStatus,
+        note: reason || null,
+        metadata: null,
       });
 
       // Return success with updated order and any warnings
@@ -9412,14 +9513,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/order-line-items/:id", isAuthenticated, async (req, res) => {
+  app.patch("/api/order-line-items/:id", isAuthenticated, async (req: any, res) => {
     try {
+      const userId = getUserId(req.user);
+      
       const lineItemData = updateOrderLineItemSchema.parse({
         ...req.body,
         id: req.params.id,
       });
       const { id, ...updateData } = lineItemData;
+      
+      // Get old line item for audit
+      const oldLineItem = await storage.getOrderLineItemById(req.params.id);
+      
       const lineItem = await storage.updateOrderLineItem(req.params.id, updateData);
+      
+      // Create audit log for status changes
+      if (oldLineItem && updateData.status !== undefined && oldLineItem.status !== updateData.status && userId) {
+        const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+        await storage.createOrderAuditLog({
+          orderId: lineItem.orderId,
+          userId,
+          userName,
+          actionType: 'line_item_status_change',
+          fromStatus: null,
+          toStatus: null,
+          note: null,
+          metadata: { 
+            lineItemId: lineItem.id,
+            oldStatus: oldLineItem.status,
+            newStatus: updateData.status,
+            description: lineItem.description
+          },
+        });
+      }
+      
       res.json(lineItem);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -9427,6 +9555,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error updating order line item:", error);
       res.status(500).json({ message: "Failed to update order line item" });
+    }
+  });
+
+  // Update line item status only (always allowed, even when order is locked)
+  app.patch("/api/orders/:orderId/line-items/:lineItemId/status", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      const { orderId, lineItemId } = req.params;
+      const { status } = req.body;
+
+      // Validate status value
+      const validStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+      if (!status || !validStatuses.includes(status)) {
+        return res.status(400).json({ 
+          message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` 
+        });
+      }
+
+      // Verify order exists and belongs to org
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+
+      // Get line item and verify it belongs to the order
+      const oldLineItem = await storage.getOrderLineItemById(lineItemId);
+      if (!oldLineItem || oldLineItem.orderId !== orderId) {
+        return res.status(404).json({ message: "Line item not found or does not belong to this order" });
+      }
+
+      // Update only the status
+      const updatedLineItem = await storage.updateOrderLineItem(lineItemId, { status });
+
+      // Create audit log entry
+      if (userId && oldLineItem.status !== status) {
+        const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+        await storage.createOrderAuditLog({
+          orderId: order.id,
+          userId,
+          userName,
+          actionType: 'line_item_status_change',
+          fromStatus: null,
+          toStatus: null,
+          note: null,
+          metadata: { 
+            lineItemId: updatedLineItem.id,
+            oldStatus: oldLineItem.status,
+            newStatus: status,
+            description: updatedLineItem.description
+          },
+        });
+      }
+
+      res.json({ success: true, data: updatedLineItem });
+    } catch (error) {
+      console.error("Error updating line item status:", error);
+      res.status(500).json({ message: "Failed to update line item status" });
     }
   });
 
@@ -9604,6 +9791,110 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .limit(Math.min(limit * 3, 300));
 
           for (const row of oAudit) {
+            // Generate human-readable message based on actionType and metadata
+            let message = row.note || '';
+            
+            if (!message) {
+              const meta = row.metadata as any || {};
+              
+              switch (row.actionType) {
+                case 'status_change':
+                case 'status_transition':
+                  if (row.fromStatus && row.toStatus) {
+                    message = `Status changed: ${row.fromStatus} → ${row.toStatus}`;
+                  } else if (row.toStatus) {
+                    message = `Status changed to ${row.toStatus}`;
+                  } else {
+                    message = 'Status updated';
+                  }
+                  break;
+                
+                case 'priority_change':
+                  if (meta.oldValue && meta.newValue) {
+                    message = `Priority changed: ${meta.oldValue} → ${meta.newValue}`;
+                  } else if (meta.newValue) {
+                    message = `Priority set to ${meta.newValue}`;
+                  } else {
+                    message = 'Priority updated';
+                  }
+                  break;
+                
+                case 'due_date_change':
+                  if (meta.oldValue && meta.newValue) {
+                    message = `Due date changed: ${meta.oldValue} → ${meta.newValue}`;
+                  } else if (meta.newValue) {
+                    message = `Due date set to ${meta.newValue}`;
+                  } else {
+                    message = 'Due date updated';
+                  }
+                  break;
+                
+                case 'promised_date_change':
+                  if (meta.oldValue && meta.newValue) {
+                    message = `Promised date changed: ${meta.oldValue} → ${meta.newValue}`;
+                  } else if (meta.newValue) {
+                    message = `Promised date set to ${meta.newValue}`;
+                  } else {
+                    message = 'Promised date updated';
+                  }
+                  break;
+                
+                case 'label_change':
+                case 'job_label_change':
+                  if (meta.oldValue && meta.newValue) {
+                    message = `Job label changed: "${meta.oldValue}" → "${meta.newValue}"`;
+                  } else if (meta.newValue) {
+                    message = `Job label set to "${meta.newValue}"`;
+                  } else {
+                    message = 'Job label updated';
+                  }
+                  break;
+                
+                case 'po_number_change':
+                  if (meta.oldValue && meta.newValue) {
+                    message = `PO # changed: ${meta.oldValue} → ${meta.newValue}`;
+                  } else if (meta.newValue) {
+                    message = `PO # set to ${meta.newValue}`;
+                  } else {
+                    message = 'PO # updated';
+                  }
+                  break;
+                
+                case 'line_item_status_change':
+                  if (meta.lineItemId && meta.oldStatus && meta.newStatus) {
+                    message = `Line item status changed: ${meta.oldStatus} → ${meta.newStatus}`;
+                  } else {
+                    message = 'Line item status updated';
+                  }
+                  break;
+                
+                case 'file_uploaded':
+                case 'attachment_uploaded':
+                  if (meta.fileName) {
+                    message = `Attachment uploaded: ${meta.fileName}`;
+                  } else {
+                    message = 'Attachment uploaded';
+                  }
+                  break;
+                
+                case 'converted_by_customer':
+                  message = 'Order created from customer approval';
+                  break;
+                
+                case 'note_added':
+                  message = 'Note added';
+                  break;
+                
+                default:
+                  // Fallback: use status transition if available, else actionType
+                  if (row.fromStatus || row.toStatus) {
+                    message = `${row.fromStatus || ''} → ${row.toStatus || ''}`.trim();
+                  } else {
+                    message = row.actionType.replace(/_/g, ' ');
+                  }
+              }
+            }
+            
             events.push({
               id: `order_audit:${row.id}`,
               occurredAt: toIso(row.createdAt),
@@ -9611,7 +9902,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               actorUserId: row.userId || null,
               entityType: 'order',
               eventType: row.actionType,
-              message: row.note || (row.fromStatus || row.toStatus ? `Order status ${row.fromStatus || ''} → ${row.toStatus || ''}`.trim() : row.actionType),
+              message,
               metadata: {
                 orderId: row.orderId,
                 fromStatus: row.fromStatus,

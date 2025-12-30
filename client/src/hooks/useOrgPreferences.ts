@@ -10,6 +10,11 @@ export interface OrgPreferences {
   quotes?: {
     requireApproval?: boolean;
   };
+  orders?: {
+    requireDueDateForProduction?: boolean;
+    requireBillingAddressForProduction?: boolean;
+    requireShippingAddressForProduction?: boolean;
+  };
 }
 
 export function useOrgPreferences() {

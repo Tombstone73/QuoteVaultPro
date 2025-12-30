@@ -376,11 +376,21 @@ export function AppearanceSettings() {
 export function PreferencesSettings() {
   const { preferences, isLoading, updatePreferences, isUpdating } = useOrgPreferences();
   
-  const handleToggle = async (key: string, value: boolean) => {
+  const handleQuoteToggle = async (key: string, value: boolean) => {
     await updatePreferences({
       ...preferences,
       quotes: {
         ...preferences?.quotes,
+        [key]: value,
+      },
+    });
+  };
+  
+  const handleOrderToggle = async (key: string, value: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      orders: {
+        ...preferences?.orders,
         [key]: value,
       },
     });
@@ -430,7 +440,70 @@ export function PreferencesSettings() {
               <Switch
                 id="require-approval"
                 checked={preferences?.quotes?.requireApproval ?? false}
-                onCheckedChange={(checked) => handleToggle('requireApproval', checked)}
+                onCheckedChange={(checked) => handleQuoteToggle('requireApproval', checked)}
+                disabled={isUpdating}
+              />
+            </div>
+          </div>
+        </div>
+        
+        {/* Orders Section */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-base font-medium text-titan-text-primary">Orders</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Control order transition requirements
+            </p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="require-due-date" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Require due date for production
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  When enabled, orders must have a due date set before they can be moved to production status.
+                </p>
+              </div>
+              <Switch
+                id="require-due-date"
+                checked={preferences?.orders?.requireDueDateForProduction ?? true}
+                onCheckedChange={(checked) => handleOrderToggle('requireDueDateForProduction', checked)}
+                disabled={isUpdating}
+              />
+            </div>
+            
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="require-billing" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Require billing address for production
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  When enabled, orders must have billing information (name or company) before they can be moved to production status.
+                </p>
+              </div>
+              <Switch
+                id="require-billing"
+                checked={preferences?.orders?.requireBillingAddressForProduction ?? true}
+                onCheckedChange={(checked) => handleOrderToggle('requireBillingAddressForProduction', checked)}
+                disabled={isUpdating}
+              />
+            </div>
+            
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="require-shipping" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Require shipping address for production
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  When enabled, orders must have shipping information (name or company) before they can be moved to production status.
+                </p>
+              </div>
+              <Switch
+                id="require-shipping"
+                checked={preferences?.orders?.requireShippingAddressForProduction ?? false}
+                onCheckedChange={(checked) => handleOrderToggle('requireShippingAddressForProduction', checked)}
                 disabled={isUpdating}
               />
             </div>

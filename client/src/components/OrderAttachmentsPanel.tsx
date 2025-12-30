@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { isValidHttpUrl } from "@/lib/utils";
 import { Download, Loader2, Upload, X } from "lucide-react";
+import { orderTimelineQueryKey } from "@/hooks/useOrders";
 
 
 type OrderAttachment = {
@@ -197,7 +198,10 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
       if (successCount > 0) {
         queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] });
         // Also invalidate orders list to refresh thumbnails
-        queryClient.invalidateQueries({ queryKey: ['/api', 'orders'] });
+        queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+        if (orderId) {
+          queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+        }
         toast({
           title: "Uploaded",
           description: `${successCount} file${successCount === 1 ? "" : "s"} attached to order.`,

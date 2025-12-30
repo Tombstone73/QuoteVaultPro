@@ -9,6 +9,14 @@ import type { Order, InsertOrder } from '@shared/schema';
 
 export type OrderStatus = 'new' | 'in_production' | 'on_hold' | 'ready_for_shipment' | 'completed' | 'canceled';
 
+export interface OrgPreferences {
+  orders?: {
+    requireDueDateForProduction?: boolean;
+    requireBillingAddressForProduction?: boolean;
+    requireShippingAddressForProduction?: boolean;
+  };
+}
+
 export interface TransitionContext {
   order: Order;
   lineItemsCount: number;
@@ -16,6 +24,7 @@ export interface TransitionContext {
   fulfillmentStatus?: string;
   jobsCount?: number;
   hasShippedAt?: boolean;
+  orgPreferences?: OrgPreferences;
 }
 
 export interface TransitionResult {
@@ -27,6 +36,7 @@ export interface TransitionResult {
 
 /**
  * Validates if a status transition is allowed based on business rules.
+ * Org preferences control which validations are enforced.
  */
 export function validateOrderTransition(
   fromStatus: string,
@@ -69,7 +79,12 @@ export function validateOrderTransition(
   switch (from) {
     case 'new':
       if (to === 'in_production') {
-        // Critical validation: Must have line items
+        // Extract org preferences with safe defaults (strict by default)
+        const requireDueDate = ctx.orgPreferences?.orders?.requireDueDateForProduction ?? true;
+        const requireBillingAddress = ctx.orgPreferences?.orders?.requireBillingAddressForProduction ?? true;
+        const requireShippingAddress = ctx.orgPreferences?.orders?.requireShippingAddressForProduction ?? false;
+
+        // Critical validation: Must have line items (ALWAYS required)
         if (ctx.lineItemsCount === 0) {
           return {
             ok: false,
@@ -78,21 +93,30 @@ export function validateOrderTransition(
           };
         }
 
-        // Critical validation: Must have due date
-        if (!ctx.order.dueDate) {
+        // Conditional validation: Due date (based on org preference)
+        if (requireDueDate && !ctx.order.dueDate) {
           return {
             ok: false,
             code: 'NO_DUE_DATE',
-            message: 'Cannot start production: Due date is required.',
+            message: 'Cannot start production: Due date is required by organization policy.',
           };
         }
 
-        // Critical validation: Must have billing info
-        if (!ctx.order.billToName && !ctx.order.billToCompany) {
+        // Conditional validation: Billing info (based on org preference)
+        if (requireBillingAddress && !ctx.order.billToName && !ctx.order.billToCompany) {
           return {
             ok: false,
             code: 'NO_BILLING_INFO',
-            message: 'Cannot start production: Billing information (name or company) is required.',
+            message: 'Cannot start production: Billing information (name or company) is required by organization policy.',
+          };
+        }
+
+        // Conditional validation: Shipping info (based on org preference)
+        if (requireShippingAddress && !ctx.order.shipToName && !ctx.order.shipToCompany) {
+          return {
+            ok: false,
+            code: 'NO_SHIPPING_INFO',
+            message: 'Cannot start production: Shipping information (name or company) is required by organization policy.',
           };
         }
 

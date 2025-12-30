@@ -6,16 +6,28 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useOrders, type OrderRow, type OrdersListResponse } from "@/hooks/useOrders";
+import { useOrders, type OrderRow, type OrdersListResponse, getAllowedNextStatuses, ordersListQueryKey, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
+import { getDisplayOrderNumber } from "@/lib/orderUtils";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel";
 
@@ -56,6 +68,12 @@ export default function Orders() {
   const [selectedAttachment, setSelectedAttachment] = useState<any>(null);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
   
+  // Inline editing state
+  const [editingStatusOrderId, setEditingStatusOrderId] = useState<string | null>(null);
+  const [editingPriorityOrderId, setEditingPriorityOrderId] = useState<string | null>(null);
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [pendingStatusChange, setPendingStatusChange] = useState<{ orderId: string; toStatus: string } | null>(null);
+  
   // Column settings - scoped per user (matches Quotes pattern)
   const storageKey = user?.id 
     ? `titan:listview:orders:user_${user.id}` 
@@ -89,6 +107,13 @@ export default function Orders() {
   const hasPrev = isPaginated ? (ordersData as OrdersListResponse).hasPrev : false;
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
+
+  // Helper to determine if a click event should prevent row navigation
+  const shouldIgnoreRowNav = (e: React.MouseEvent): boolean => {
+    const target = e.target as HTMLElement;
+    // Check if click originated from interactive element or marked container
+    return !!target.closest('button, a, input, select, textarea, [data-stop-row-nav="true"]');
+  };
 
   // Filter orders by search, status, priority (client-side for Phase 1)
   const filteredOrders = useMemo(() => {
@@ -143,14 +168,188 @@ export default function Orders() {
       if (!response.ok) throw new Error('Failed to update list note');
       return response.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api', 'orders'] });
+    onSuccess: (_data, variables) => {
+      // Optimistically update list caches
+      queryClient.setQueriesData<OrdersListResponse | OrderRow[]>(
+        { predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "orders" && key[1] === "list";
+        }},
+        (old) => {
+          if (!old) return old;
+          
+          // Handle paginated response
+          if ('items' in old && Array.isArray(old.items)) {
+            return {
+              ...old,
+              items: old.items.map((order) => 
+                order.id === variables.orderId 
+                  ? { ...order, listLabel: variables.listLabel }
+                  : order
+              ),
+            };
+          }
+          
+          // Handle non-paginated array
+          if (Array.isArray(old)) {
+            return old.map((order) =>
+              order.id === variables.orderId
+                ? { ...order, listLabel: variables.listLabel }
+                : order
+            );
+          }
+          
+          return old;
+        }
+      );
+      
       toast({ title: "Success", description: "List note updated" });
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to update list note", variant: "destructive" });
     },
   });
+
+  // Status transition mutation
+  const transitionStatusMutation = useMutation({
+    mutationFn: async ({ orderId, toStatus }: { orderId: string; toStatus: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/transition`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toStatus }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to transition status');
+      }
+      return data;
+    },
+    onSuccess: (response, variables) => {
+      const updatedOrder = response?.data;
+      
+      // Optimistically update all list caches
+      queryClient.setQueriesData<OrdersListResponse | OrderRow[]>(
+        { predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "orders" && key[1] === "list";
+        }},
+        (old) => {
+          if (!old || !updatedOrder) return old;
+          
+          // Handle paginated response
+          if ('items' in old && Array.isArray(old.items)) {
+            return {
+              ...old,
+              items: old.items.map((order) => 
+                order.id === variables.orderId 
+                  ? { ...order, status: updatedOrder.status, updatedAt: updatedOrder.updatedAt }
+                  : order
+              ),
+            };
+          }
+          
+          // Handle non-paginated array
+          if (Array.isArray(old)) {
+            return old.map((order) =>
+              order.id === variables.orderId
+                ? { ...order, status: updatedOrder.status, updatedAt: updatedOrder.updatedAt }
+                : order
+            );
+          }
+          
+          return old;
+        }
+      );
+      
+      // Invalidate detail and timeline
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(variables.orderId) });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(variables.orderId) });
+      
+      setEditingStatusOrderId(null);
+      toast({ title: "Success", description: "Order status updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Priority update mutation
+  const updatePriorityMutation = useMutation({
+    mutationFn: async ({ orderId, priority }: { orderId: string; priority: string }) => {
+      const response = await fetch(`/api/orders/${orderId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority }),
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error('Failed to update priority');
+      return response.json();
+    },
+    onSuccess: (updatedOrder, variables) => {
+      // Optimistically update all list caches
+      queryClient.setQueriesData<OrdersListResponse | OrderRow[]>(
+        { predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "orders" && key[1] === "list";
+        }},
+        (old) => {
+          if (!old) return old;
+          
+          // Handle paginated response
+          if ('items' in old && Array.isArray(old.items)) {
+            return {
+              ...old,
+              items: old.items.map((order) => 
+                order.id === variables.orderId 
+                  ? { ...order, priority: variables.priority, updatedAt: updatedOrder?.updatedAt || order.updatedAt }
+                  : order
+              ),
+            };
+          }
+          
+          // Handle non-paginated array
+          if (Array.isArray(old)) {
+            return old.map((order) =>
+              order.id === variables.orderId
+                ? { ...order, priority: variables.priority, updatedAt: updatedOrder?.updatedAt || order.updatedAt }
+                : order
+            );
+          }
+          
+          return old;
+        }
+      );
+      
+      // Invalidate detail and timeline
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(variables.orderId) });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(variables.orderId) });
+      
+      setEditingPriorityOrderId(null);
+      toast({ title: "Success", description: "Priority updated" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to update priority", variant: "destructive" });
+    },
+  });
+
+  // Handle status change with confirmation for terminal states
+  const handleStatusChange = (orderId: string, toStatus: string) => {
+    if (toStatus === 'canceled' || toStatus === 'completed') {
+      setPendingStatusChange({ orderId, toStatus });
+      setConfirmDialogOpen(true);
+    } else {
+      transitionStatusMutation.mutate({ orderId, toStatus });
+    }
+  };
+
+  const confirmStatusChange = () => {
+    if (pendingStatusChange) {
+      transitionStatusMutation.mutate(pendingStatusChange);
+      setPendingStatusChange(null);
+      setConfirmDialogOpen(false);
+    }
+  };
 
   // Handle thumbnail click - fetch attachment details and open viewer (matches Quotes pattern)
   const handleThumbnailClick = async (orderId: string, thumbKey: string) => {
@@ -248,6 +447,7 @@ export default function Orders() {
           onBlur={handleSave}
           onKeyDown={handleKeyDown}
           className="h-7 text-sm"
+          data-stop-row-nav="true"
         />
       );
     }
@@ -257,6 +457,7 @@ export default function Orders() {
         onClick={() => setIsEditing(true)}
         className="cursor-pointer hover:bg-accent/50 px-2 py-1 rounded min-h-[28px] flex items-center"
         title="Click to edit list note"
+        data-stop-row-nav="true"
       >
         {row.listLabel || <span className="text-muted-foreground italic text-xs">Add note...</span>}
       </div>
@@ -266,12 +467,17 @@ export default function Orders() {
   // Helper to render cell content based on column key (matches Quotes pattern)
   const renderCell = (row: OrderRow, columnKey: string) => {
     switch (columnKey) {
-      case "orderNumber":
+      case "orderNumber": {
+        const { displayNumber, isTest } = getDisplayOrderNumber(row);
         return (
-          <Link to={ROUTES.orders.detail(row.id)} className="text-blue-600 hover:underline font-medium">
-            {row.orderNumber || `#${row.id.slice(0, 8)}`}
+          <Link to={ROUTES.orders.detail(row.id)} className="text-blue-600 hover:underline font-medium flex items-center gap-1.5">
+            <span>{displayNumber}</span>
+            {isTest && (
+              <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-medium">Test</span>
+            )}
           </Link>
         );
+      }
 
       case "listLabel":
         return <ListLabelCell row={row} />;
@@ -324,11 +530,101 @@ export default function Orders() {
       case "customer":
         return row.customer?.companyName || <span className="text-muted-foreground italic">No customer</span>;
 
-      case "status":
-        return <OrderStatusBadge status={row.status} />;
+      case "status": {
+        if (!isAdminOrOwner) {
+          return <OrderStatusBadge status={row.status} />;
+        }
 
-      case "priority":
-        return <OrderPriorityBadge priority={row.priority} />;
+        const allowedStatuses = getAllowedNextStatuses(row.status);
+        const isTerminal = allowedStatuses.length === 0;
+
+        return (
+          <Popover 
+            open={editingStatusOrderId === row.id} 
+            onOpenChange={(open) => setEditingStatusOrderId(open ? row.id : null)}
+          >
+            <PopoverTrigger asChild>
+              <div 
+                className="cursor-pointer hover:opacity-80 transition-opacity"
+                data-stop-row-nav="true"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <OrderStatusBadge status={row.status} />
+              </div>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-2" align="start">
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-muted-foreground px-2 py-1">Change Status</div>
+                {isTerminal ? (
+                  <div className="text-xs text-muted-foreground px-2 py-1">No transitions available</div>
+                ) : (
+                  <>
+                    <button
+                      className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent transition-colors"
+                      onClick={() => {
+                        setEditingStatusOrderId(null);
+                      }}
+                    >
+                      <OrderStatusBadge status={row.status} /> (current)
+                    </button>
+                    {allowedStatuses.map((status) => (
+                      <button
+                        key={status}
+                        className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent transition-colors"
+                        onClick={() => handleStatusChange(row.id, status)}
+                      >
+                        <OrderStatusBadge status={status} />
+                      </button>
+                    ))}
+                  </>
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
+        );
+      }
+
+      case "priority": {
+        if (!isAdminOrOwner) {
+          return <OrderPriorityBadge priority={row.priority} />;
+        }
+
+        const priorities = ['rush', 'normal', 'low'];
+
+        return (
+          <Popover 
+            open={editingPriorityOrderId === row.id} 
+            onOpenChange={(open) => setEditingPriorityOrderId(open ? row.id : null)}
+          >
+            <PopoverTrigger asChild>
+              <div 
+                className="cursor-pointer hover:opacity-80 transition-opacity"
+                data-stop-row-nav="true"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <OrderPriorityBadge priority={row.priority} />
+              </div>
+            </PopoverTrigger>
+            <PopoverContent className="w-40 p-2" align="start">
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-muted-foreground px-2 py-1">Change Priority</div>
+                {priorities.map((priority) => (
+                  <button
+                    key={priority}
+                    className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent transition-colors"
+                    onClick={() => {
+                      updatePriorityMutation.mutate({ orderId: row.id, priority });
+                    }}
+                  >
+                    <OrderPriorityBadge priority={priority} />
+                    {priority === row.priority && <span className="ml-2 text-xs text-muted-foreground">(current)</span>}
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+        );
+      }
 
       case "dueDate":
         return row.dueDate ? format(new Date(row.dueDate), "MMM d, yyyy") : <span className="text-muted-foreground italic">—</span>;
@@ -533,7 +829,11 @@ export default function Orders() {
                     <TableRow 
                       key={order.id} 
                       className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => navigate(ROUTES.orders.detail(order.id))}
+                      onClick={(e) => {
+                        if (!shouldIgnoreRowNav(e)) {
+                          navigate(ROUTES.orders.detail(order.id));
+                        }
+                      }}
                     >
                       {orderedColumns.map((col) => {
                         if (!isVisible(col.key)) return null;
@@ -542,12 +842,6 @@ export default function Orders() {
                             key={col.key}
                             style={getColStyle(col.key)}
                             className={col.align === "right" ? "text-right" : ""}
-                            onClick={(e) => {
-                              // Allow inline editing for listLabel without triggering row click
-                              if (col.key === "listLabel") {
-                                e.stopPropagation();
-                              }
-                            }}
                           >
                             {renderCell(order, col.key)}
                           </TableCell>
@@ -620,6 +914,32 @@ export default function Orders() {
           }}
         />
       )}
+
+      {/* Confirmation Dialog for Terminal Status Changes */}
+      <AlertDialog open={confirmDialogOpen} onOpenChange={setConfirmDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Status Change</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingStatusChange?.toStatus === 'canceled' 
+                ? 'Are you sure you want to cancel this order? This action marks the order as canceled and cannot be reversed.'
+                : 'Are you sure you want to mark this order as completed? This action finalizes the order and cannot be reversed.'
+              }
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => {
+              setPendingStatusChange(null);
+              setEditingStatusOrderId(null);
+            }}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={confirmStatusChange}>
+              Confirm
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Page>
   );
 }

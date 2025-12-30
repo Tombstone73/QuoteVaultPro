@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Skeleton } from "@/components/ui/skeleton";
+import { orderTimelineQueryKey } from "@/hooks/useOrders";
 
 type TimelineEventDto = {
   id: string;
@@ -25,7 +26,9 @@ export function TimelinePanel({
   const enabled = Boolean(quoteId || orderId);
 
   const { data, isLoading, error } = useQuery<TimelineEventDto[]>({
-    queryKey: ["/api/timeline", { quoteId: quoteId ?? null, orderId: orderId ?? null, limit }],
+    queryKey: orderId 
+      ? orderTimelineQueryKey(orderId)
+      : ["/api/timeline", { quoteId: quoteId ?? null, orderId: orderId ?? null, limit }],
     enabled,
     queryFn: async () => {
       const params = new URLSearchParams();
