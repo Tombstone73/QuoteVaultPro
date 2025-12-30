@@ -1847,6 +1847,11 @@ export const orders = pgTable("orders", {
   syncStatus: varchar("sync_status", { length: 20 }),
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: false, mode: "string" }),
+  // State transition timestamps
+  startedProductionAt: timestamp("started_production_at", { withTimezone: true, mode: "string" }),
+  completedProductionAt: timestamp("completed_production_at", { withTimezone: true, mode: "string" }),
+  canceledAt: timestamp("canceled_at", { withTimezone: true, mode: "string" }),
+  cancellationReason: text("cancellation_reason"),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "string" }).defaultNow().notNull(),
@@ -1858,6 +1863,9 @@ export const orders = pgTable("orders", {
   index("orders_fulfillment_status_idx").on(table.fulfillmentStatus),
   index("orders_due_date_idx").on(table.dueDate),
   index("orders_created_at_idx").on(table.createdAt),
+  index("orders_started_production_at_idx").on(table.startedProductionAt),
+  index("orders_completed_production_at_idx").on(table.completedProductionAt),
+  index("orders_canceled_at_idx").on(table.canceledAt),
   index("orders_created_by_user_id_idx").on(table.createdByUserId),
 ]);
 

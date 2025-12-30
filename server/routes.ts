@@ -161,6 +161,8 @@ import {
   updateOrderSchema,
   insertOrderLineItemSchema,
   updateOrderLineItemSchema,
+  type InsertOrder,
+  type InsertOrderLineItem,
   insertInvoiceSchema,
   updateInvoiceSchema,
   insertInvoiceLineItemSchema,
@@ -7743,6 +7745,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
       
+      // BLOCK status changes - must use /transition endpoint
+      if (req.body.status !== undefined) {
+        return res.status(400).json({ 
+          message: "Status changes must use the /api/orders/:id/transition endpoint for proper validation and side effects.",
+          code: "USE_TRANSITION_ENDPOINT"
+        });
+      }
+      
       // Validate customerId if provided
       if (req.body.customerId) {
         const customer = await storage.getCustomerById(organizationId, req.body.customerId);
@@ -7796,15 +7806,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...snapshotData,
       });
 
-      // Auto inventory deduction when moving to production
-      if (userId && oldOrder && oldOrder.status !== 'in_production' && order.status === 'in_production') {
-        try {
-          await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, order.id, userId);
-        } catch (invErr) {
-          console.error('Inventory auto-deduction error:', invErr);
-          // Do not fail the order update; surface warning
-        }
-      }
+      // NOTE: Auto inventory deduction moved to /transition endpoint (status changes blocked here)
 
       // Create audit log
       if (userId) {
@@ -7829,6 +7831,149 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error updating order:", error);
       res.status(500).json({ message: "Failed to update order" });
+    }
+  });
+
+  // Order Status Transition Endpoint (ENFORCED PATHWAY FOR STATUS CHANGES)
+  app.post("/api/orders/:orderId/transition", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { orderId } = req.params;
+      const { toStatus, reason } = req.body;
+
+      if (!toStatus || typeof toStatus !== 'string') {
+        return res.status(400).json({ success: false, message: "toStatus is required" });
+      }
+
+      // Load order with relations
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) {
+        return res.status(404).json({ success: false, message: "Order not found" });
+      }
+
+      // Load line items count
+      const lineItems = await db
+        .select()
+        .from(orderLineItems)
+        .where(eq(orderLineItems.orderId, orderId));
+      const lineItemsCount = lineItems.length;
+
+      // Load attachments count
+      const attachments = await db
+        .select()
+        .from(orderAttachments)
+        .where(eq(orderAttachments.orderId, orderId));
+      const attachmentsCount = attachments.length;
+
+      // Load jobs count (if jobs exist for this order)
+      let jobsCount = 0;
+      try {
+        const jobRecords = await db
+          .select()
+          .from(jobs)
+          .where(eq(jobs.orderId, orderId));
+        jobsCount = jobRecords.length;
+      } catch (err) {
+        // Jobs module may not be fully wired - fail soft
+        console.warn('[OrderTransition] Could not load jobs count:', err);
+      }
+
+      // Validate transition
+      const { validateOrderTransition } = await import('./services/orderTransition');
+      const validation = validateOrderTransition(order.status, toStatus, {
+        order,
+        lineItemsCount,
+        attachmentsCount,
+        fulfillmentStatus: order.fulfillmentStatus,
+        jobsCount,
+        hasShippedAt: !!order.shippedAt,
+      });
+
+      if (!validation.ok) {
+        return res.status(400).json({
+          success: false,
+          message: validation.message,
+          code: validation.code,
+        });
+      }
+
+      // Prepare update data with new status
+      const updateData: Partial<InsertOrder> = {
+        status: toStatus as "new" | "in_production" | "on_hold" | "ready_for_shipment" | "completed" | "canceled",
+      };
+
+      // Execute side effects for specific transitions
+      const now = new Date().toISOString();
+
+      if (order.status === 'new' && toStatus === 'in_production') {
+        // Side effect: Auto-deduct inventory
+        try {
+          await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, orderId, userId);
+          console.log(`[OrderTransition] Auto-deducted inventory for order ${order.orderNumber}`);
+        } catch (invErr) {
+          console.error('[OrderTransition] Inventory deduction failed:', invErr);
+          // Log warning but don't block transition
+          validation.warnings = validation.warnings || [];
+          validation.warnings.push('Inventory deduction failed - please verify stock levels manually.');
+        }
+
+        // Set timestamp
+        updateData.startedProductionAt = now;
+        
+        // Set production due date if not already set
+        if (!order.productionDueDate && order.dueDate) {
+          updateData.productionDueDate = order.dueDate;
+        }
+      }
+
+      if (toStatus === 'completed') {
+        // Set completion timestamp
+        updateData.completedProductionAt = now;
+      }
+
+      if (toStatus === 'canceled') {
+        // Set cancellation timestamp and reason
+        updateData.canceledAt = now;
+        if (reason && typeof reason === 'string') {
+          updateData.cancellationReason = reason;
+        }
+      }
+
+      // Apply status update
+      const updatedOrder = await storage.updateOrder(organizationId, orderId, updateData);
+
+      // Create audit log
+      await storage.createAuditLog(organizationId, {
+        userId,
+        userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        actionType: 'UPDATE',
+        entityType: 'order',
+        entityId: updatedOrder.id,
+        entityName: updatedOrder.orderNumber,
+        description: `Changed order status from ${order.status} to ${toStatus}${reason ? `: ${reason}` : ''}`,
+        oldValues: { status: order.status },
+        newValues: { status: toStatus, reason },
+      });
+
+      // Return success with updated order and any warnings
+      return res.json({
+        success: true,
+        data: updatedOrder,
+        message: `Order status changed to ${toStatus}`,
+        warnings: validation.warnings,
+      });
+
+    } catch (error: any) {
+      console.error('[OrderTransition] Error:', error);
+      return res.status(500).json({ 
+        success: false, 
+        message: "Failed to transition order status",
+        error: error?.message 
+      });
     }
   });
 

@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem } from "@/hooks/useOrders";
+import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
 import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
@@ -111,12 +111,17 @@ export default function OrderDetail() {
   const [editingShipment, setEditingShipment] = useState<Shipment | null>(null);
   const [showPackingSlipModal, setShowPackingSlipModal] = useState(false);
   const [shipmentToDelete, setShipmentToDelete] = useState<string | null>(null);
+  
+  // Status transition confirmation state
+  const [pendingStatusTransition, setPendingStatusTransition] = useState<{ toStatus: string; requiresReason: boolean } | null>(null);
+  const [cancellationReason, setCancellationReason] = useState("");
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
   const order = orderRaw as OrderDetailOrder | undefined;
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
+  const transitionStatus = useTransitionOrderStatus(orderId!);
   const updateLineItem = useUpdateOrderLineItem(orderId!);
   const createLineItem = useCreateOrderLineItem(orderId!);
   const deleteLineItem = useDeleteOrderLineItem(orderId!);
@@ -131,6 +136,12 @@ export default function OrderDetail() {
   // Check if user is admin or owner
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const isManagerOrHigher = isAdminOrOwner || user?.role === 'manager';
+  
+  // Check editability based on order status
+  const canEditLineItems = order ? areLineItemsEditable(order.status) : false;
+  const canEditOrder = order ? isOrderEditable(order.status) : false;
+  const allowedNextStatuses = order ? getAllowedNextStatuses(order.status) : [];
+  const isTerminal = allowedNextStatuses.length === 0;
 
   // Fetch customers for the customer change dialog
   const { data: customers = [] } = useQuery({
@@ -199,11 +210,44 @@ export default function OrderDetail() {
   };
 
   const handleStatusChange = async (newStatus: string) => {
+    // Check if this transition requires confirmation
+    if (newStatus === 'canceled') {
+      setPendingStatusTransition({ toStatus: newStatus, requiresReason: true });
+      return;
+    }
+    
+    if (newStatus === 'completed') {
+      setPendingStatusTransition({ toStatus: newStatus, requiresReason: false });
+      return;
+    }
+    
+    // Execute transition immediately for other statuses
     try {
-      await updateOrder.mutateAsync({ status: newStatus });
+      await transitionStatus.mutateAsync({ toStatus: newStatus });
     } catch (error) {
       // Error toast handled by mutation
     }
+  };
+  
+  const confirmStatusTransition = async () => {
+    if (!pendingStatusTransition) return;
+    
+    try {
+      await transitionStatus.mutateAsync({
+        toStatus: pendingStatusTransition.toStatus,
+        reason: pendingStatusTransition.requiresReason ? cancellationReason : undefined,
+      });
+      
+      setPendingStatusTransition(null);
+      setCancellationReason("");
+    } catch (error) {
+      // Error toast handled by mutation
+    }
+  };
+  
+  const cancelStatusTransition = () => {
+    setPendingStatusTransition(null);
+    setCancellationReason("");
   };
 
   const handlePriorityChange = async (newPriority: string) => {
@@ -330,6 +374,7 @@ export default function OrderDetail() {
 
   // Inline price editing handlers
   const handleEditPrice = (itemId: string, priceType: 'unit' | 'total', currentValue: string) => {
+    if (!canEditLineItems) return; // Block price edits when not in 'new' status
     setEditingPriceItemId(itemId);
     setEditingPriceType(priceType);
     setTempPrice(currentValue);
@@ -583,20 +628,40 @@ export default function OrderDetail() {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-sm font-medium text-muted-foreground">Status</label>
-                    <Select value={order.status} onValueChange={handleStatusChange}>
+                    <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                      Status
+                      {isTerminal && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                          Locked
+                        </span>
+                      )}
+                    </label>
+                    <Select value={order.status} onValueChange={handleStatusChange} disabled={isTerminal}>
                       <SelectTrigger className="mt-1">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="new">New</SelectItem>
-                        <SelectItem value="scheduled">Scheduled</SelectItem>
-                        <SelectItem value="in_production">In Production</SelectItem>
-                        <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
-                        <SelectItem value="shipped">Shipped</SelectItem>
-                        <SelectItem value="completed">Completed</SelectItem>
-                        <SelectItem value="on_hold">On Hold</SelectItem>
-                        <SelectItem value="canceled">Canceled</SelectItem>
+                        {/* Current status always shown */}
+                        <SelectItem value={order.status}>
+                          {order.status === 'new' && 'New'}
+                          {order.status === 'in_production' && 'In Production'}
+                          {order.status === 'on_hold' && 'On Hold'}
+                          {order.status === 'ready_for_shipment' && 'Ready for Shipment'}
+                          {order.status === 'completed' && 'Completed'}
+                          {order.status === 'canceled' && 'Canceled'}
+                        </SelectItem>
+                        
+                        {/* Only show allowed next statuses */}
+                        {allowedNextStatuses.map((status) => (
+                          <SelectItem key={status} value={status}>
+                            {status === 'new' && 'New'}
+                            {status === 'in_production' && 'In Production'}
+                            {status === 'on_hold' && 'On Hold'}
+                            {status === 'ready_for_shipment' && 'Ready for Shipment'}
+                            {status === 'completed' && 'Completed'}
+                            {status === 'canceled' && 'Canceled'}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -694,10 +759,17 @@ export default function OrderDetail() {
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div>
-                    <CardTitle>Order Items</CardTitle>
+                    <CardTitle className="flex items-center gap-2">
+                      Order Items
+                      {!canEditLineItems && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                          Locked
+                        </span>
+                      )}
+                    </CardTitle>
                     <CardDescription>{order.lineItems.length} items</CardDescription>
                   </div>
-                  {isAdminOrOwner && (
+                  {isAdminOrOwner && canEditLineItems && (
                     <Button onClick={handleAddLineItem} size="sm">
                       <Plus className="w-4 h-4 mr-2" />
                       Add Item
@@ -879,6 +951,7 @@ export default function OrderDetail() {
                                 size="icon"
                                 className="h-8 w-8"
                                 onClick={() => handleEditLineItem(item)}
+                                disabled={!canEditLineItems}
                               >
                                 <Edit className="h-4 w-4" />
                               </Button>
@@ -887,6 +960,7 @@ export default function OrderDetail() {
                                 size="icon"
                                 className="h-8 w-8 text-destructive hover:text-destructive"
                                 onClick={() => setLineItemToDelete(item.id)}
+                                disabled={!canEditLineItems}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
@@ -1405,6 +1479,49 @@ export default function OrderDetail() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Status Transition Confirmation Dialog */}
+      <AlertDialog open={!!pendingStatusTransition} onOpenChange={(open) => !open && cancelStatusTransition()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingStatusTransition?.toStatus === 'canceled' ? 'Cancel Order' : 'Complete Order'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingStatusTransition?.toStatus === 'canceled' && (
+                <div className="space-y-2">
+                  <p>Are you sure you want to cancel this order? This action cannot be undone.</p>
+                  <div className="mt-4">
+                    <label className="text-sm font-medium">Cancellation Reason (optional)</label>
+                    <textarea
+                      className="w-full mt-1 p-2 border rounded-md"
+                      rows={3}
+                      value={cancellationReason}
+                      onChange={(e) => setCancellationReason(e.target.value)}
+                      placeholder="Enter reason for cancellation..."
+                    />
+                  </div>
+                </div>
+              )}
+              {pendingStatusTransition?.toStatus === 'completed' && (
+                <p>Are you sure you want to mark this order as completed? This will lock the order from further edits.</p>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={cancelStatusTransition}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmStatusTransition}
+              className={pendingStatusTransition?.toStatus === 'canceled' 
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : "bg-primary text-primary-foreground hover:bg-primary/90"
+              }
+            >
+              {pendingStatusTransition?.toStatus === 'canceled' ? 'Cancel Order' : 'Complete Order'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
