@@ -113,7 +113,7 @@ describe('Order Transition Validation', () => {
       expect(result.message).toContain('at least one line item');
     });
 
-    it('should reject new -> in_production without due date', () => {
+    it('should reject new -> in_production without due date (default strict)', () => {
       const order = createMockOrder({ status: 'new', dueDate: null });
       const ctx: TransitionContext = {
         order,
@@ -124,9 +124,10 @@ describe('Order Transition Validation', () => {
       expect(result.ok).toBe(false);
       expect(result.code).toBe('NO_DUE_DATE');
       expect(result.message).toContain('Due date is required');
+      expect(result.message).toContain('organization policy');
     });
 
-    it('should reject new -> in_production without billing info', () => {
+    it('should reject new -> in_production without billing info (default strict)', () => {
       const order = createMockOrder({ status: 'new', billToName: null, billToCompany: null });
       const ctx: TransitionContext = {
         order,
@@ -137,6 +138,7 @@ describe('Order Transition Validation', () => {
       expect(result.ok).toBe(false);
       expect(result.code).toBe('NO_BILLING_INFO');
       expect(result.message).toContain('Billing information');
+      expect(result.message).toContain('organization policy');
     });
 
     it('should warn when new -> in_production without attachments', () => {
@@ -222,6 +224,102 @@ describe('Order Transition Validation', () => {
       const result = validateOrderTransition('new', 'completed', ctx);
       expect(result.ok).toBe(false);
       expect(result.code).toBe('INVALID_TRANSITION');
+    });
+
+    // === Configurable Validation Tests (Org Preferences) ===
+
+    it('should allow new -> in_production without due date when org pref disabled', () => {
+      const order = createMockOrder({ status: 'new', dueDate: null, billToName: 'Test' });
+      const ctx: TransitionContext = {
+        order,
+        lineItemsCount: 1,
+        orgPreferences: {
+          orders: {
+            requireDueDateForProduction: false,
+          },
+        },
+      };
+
+      const result = validateOrderTransition('new', 'in_production', ctx);
+      expect(result.ok).toBe(true);
+    });
+
+    it('should allow new -> in_production without billing when org pref disabled', () => {
+      const order = createMockOrder({ status: 'new', billToName: null, billToCompany: null, dueDate: new Date().toISOString() });
+      const ctx: TransitionContext = {
+        order,
+        lineItemsCount: 1,
+        orgPreferences: {
+          orders: {
+            requireBillingAddressForProduction: false,
+          },
+        },
+      };
+
+      const result = validateOrderTransition('new', 'in_production', ctx);
+      expect(result.ok).toBe(true);
+    });
+
+    it('should allow new -> in_production without due date OR billing when both prefs disabled', () => {
+      const order = createMockOrder({ status: 'new', dueDate: null, billToName: null, billToCompany: null });
+      const ctx: TransitionContext = {
+        order,
+        lineItemsCount: 1,
+        orgPreferences: {
+          orders: {
+            requireDueDateForProduction: false,
+            requireBillingAddressForProduction: false,
+          },
+        },
+      };
+
+      const result = validateOrderTransition('new', 'in_production', ctx);
+      expect(result.ok).toBe(true);
+    });
+
+    it('should reject new -> in_production without shipping address when org pref enabled', () => {
+      const order = createMockOrder({ 
+        status: 'new', 
+        dueDate: new Date().toISOString(), 
+        billToName: 'Test',
+        shipToName: null,
+        shipToCompany: null,
+      });
+      const ctx: TransitionContext = {
+        order,
+        lineItemsCount: 1,
+        orgPreferences: {
+          orders: {
+            requireShippingAddressForProduction: true,
+          },
+        },
+      };
+
+      const result = validateOrderTransition('new', 'in_production', ctx);
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe('NO_SHIPPING_INFO');
+      expect(result.message).toContain('Shipping information');
+      expect(result.message).toContain('organization policy');
+    });
+
+    it('should ALWAYS require line items regardless of org preferences', () => {
+      const order = createMockOrder({ status: 'new', dueDate: null, billToName: null, billToCompany: null });
+      const ctx: TransitionContext = {
+        order,
+        lineItemsCount: 0, // Zero items
+        orgPreferences: {
+          orders: {
+            requireDueDateForProduction: false,
+            requireBillingAddressForProduction: false,
+            requireShippingAddressForProduction: false,
+          },
+        },
+      };
+
+      const result = validateOrderTransition('new', 'in_production', ctx);
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe('NO_LINE_ITEMS');
+      expect(result.message).toContain('at least one line item');
     });
   });
 

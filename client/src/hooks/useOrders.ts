@@ -2,6 +2,35 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 
+// ============================================================
+// QUERY KEY FACTORIES (Single Source of Truth)
+// ============================================================
+
+/**
+ * Query key for orders list (with filters/pagination)
+ * Pattern: ["orders", "list", filters]
+ */
+export const ordersListQueryKey = (filters?: OrdersQueryParams) => 
+  ["orders", "list", filters] as const;
+
+/**
+ * Query key for single order detail
+ * Pattern: ["orders", "detail", orderId]
+ */
+export const orderDetailQueryKey = (orderId: string) => 
+  ["orders", "detail", orderId] as const;
+
+/**
+ * Query key for order audit/timeline
+ * Pattern: ["orders", "timeline", orderId]
+ */
+export const orderTimelineQueryKey = (orderId: string) => 
+  ["orders", "timeline", orderId] as const;
+
+// ============================================================
+// TYPE DEFINITIONS
+// ============================================================
+
 export type Order = {
   id: string;
   orderNumber: string;
@@ -112,7 +141,7 @@ export function useOrders(filters?: OrdersQueryParams): any {
   const isPaginated = filters?.page !== undefined || filters?.pageSize !== undefined;
 
   return useQuery({
-    queryKey: ["/api/orders", filters],
+    queryKey: ordersListQueryKey(filters),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters?.search) params.append("search", filters.search);
@@ -148,7 +177,7 @@ export function useOrders(filters?: OrdersQueryParams): any {
 
 export function useOrder(id: string | undefined) {
   return useQuery<OrderWithRelations>({
-    queryKey: ["/api/orders", id],
+    queryKey: id ? orderDetailQueryKey(id) : ["orders", "detail", "undefined"],
     queryFn: async () => {
       if (!id) throw new Error("Order ID is required");
       const response = await fetch(`/api/orders/${id}`, { credentials: "include" });
@@ -178,7 +207,8 @@ export function useCreateOrder() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      // Invalidate all orders list queries (all filter combinations)
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       toast({
         title: "Success",
         description: "Order created successfully",
@@ -212,9 +242,22 @@ export function useUpdateOrder(id: string) {
       }
       return response.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders", id] });
+    onSuccess: (updatedOrder) => {
+      // Invalidate list queries
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      
+      // Invalidate specific order detail
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(id) });
+      
+      // Invalidate timeline
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(id) });
+      
+      // Optimistically update the detail cache
+      queryClient.setQueryData(orderDetailQueryKey(id), (old: any) => {
+        if (!old) return updatedOrder;
+        return { ...old, ...updatedOrder };
+      });
+      
       toast({
         title: "Success",
         description: "Order updated successfully",
@@ -247,7 +290,9 @@ export function useDeleteOrder() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      // Invalidate all list queries
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      
       toast({
         title: "Success",
         description: "Order deleted successfully",
@@ -299,9 +344,9 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
       const orderNumber = order?.orderNumber;
       
       // Invalidate order queries
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       
-      // Invalidate quote list queries
+      // Invalidate quote list queries (still using old keys for quotes)
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       
       // CRITICAL: Invalidate the specific quote detail query to update badge and lock state
@@ -363,9 +408,16 @@ export function useUpdateOrderLineItem(orderId: string) {
       }
       return response.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+    onSuccess: (updatedLineItem) => {
+      // Invalidate order detail to refresh line items
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      
+      // Invalidate list queries
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      
+      // Invalidate timeline
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+      
       toast({
         title: "Success",
         description: "Line item updated successfully",
@@ -414,8 +466,8 @@ export function useCreateOrderLineItem(orderId: string) {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       toast({
         title: "Success",
         description: "Line item added successfully",
@@ -448,11 +500,57 @@ export function useDeleteOrderLineItem(orderId: string) {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       toast({
         title: "Success",
         description: "Line item deleted successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+// Update line item status (allowed even when order is locked)
+export function useUpdateOrderLineItemStatus(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ lineItemId, status }: { lineItemId: string; status: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+        credentials: "include",
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to update line item status");
+      }
+      
+      return response.json();
+    },
+    onSuccess: (updatedLineItem) => {
+      // Invalidate order detail
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      
+      // Invalidate list queries
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      
+      // Invalidate timeline
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+      
+      toast({
+        title: "Success",
+        description: "Line item status updated successfully",
       });
     },
     onError: (error: Error) => {
@@ -487,16 +585,52 @@ export function useTransitionOrderStatus(orderId: string) {
       
       return data;
     },
-    onSuccess: (data) => {
-      // Invalidate all order queries
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+    onSuccess: (response) => {
+      const updatedOrder = response?.data;
+      
+      // Optimistically update all list caches
+      queryClient.setQueriesData<OrdersListResponse | Order[]>(
+        { predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "orders" && key[1] === "list";
+        }},
+        (old) => {
+          if (!old || !updatedOrder) return old;
+          
+          // Handle paginated response
+          if ('items' in old && Array.isArray(old.items)) {
+            return {
+              ...old,
+              items: old.items.map((order) => 
+                order.id === orderId 
+                  ? { ...order, status: updatedOrder.status, updatedAt: updatedOrder.updatedAt }
+                  : order
+              ),
+            };
+          }
+          
+          // Handle non-paginated array response
+          if (Array.isArray(old)) {
+            return old.map((order) =>
+              order.id === orderId
+                ? { ...order, status: updatedOrder.status, updatedAt: updatedOrder.updatedAt }
+                : order
+            );
+          }
+          
+          return old;
+        }
+      );
+      
+      // Invalidate detail and timeline for full refresh
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       
       // Show success message with any warnings
-      const warnings = data.warnings?.length ? `\n\nWarnings: ${data.warnings.join(', ')}` : '';
+      const warnings = response.warnings?.length ? `\n\nWarnings: ${response.warnings.join(', ')}` : '';
       toast({
         title: "Success",
-        description: data.message + warnings,
+        description: response.message + warnings,
       });
     },
     onError: (error: Error) => {

@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
+import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
 import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
@@ -44,6 +44,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { TimelinePanel } from "@/components/TimelinePanel";
+import { getDisplayOrderNumber } from "@/lib/orderUtils";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -123,6 +124,7 @@ export default function OrderDetail() {
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
   const updateLineItem = useUpdateOrderLineItem(orderId!);
+  const updateLineItemStatus = useUpdateOrderLineItemStatus(orderId!);
   const createLineItem = useCreateOrderLineItem(orderId!);
   const deleteLineItem = useDeleteOrderLineItem(orderId!);
 
@@ -442,11 +444,9 @@ export default function OrderDetail() {
     if (!tempStatus) return;
 
     try {
-      await updateLineItem.mutateAsync({
-        id: itemId,
-        data: {
-          status: tempStatus,
-        },
+      await updateLineItemStatus.mutateAsync({
+        lineItemId: itemId,
+        status: tempStatus,
       });
 
       setEditingStatusItemId(null);
@@ -582,10 +582,13 @@ export default function OrderDetail() {
     );
   }
 
+  const { displayNumber, isTest } = getDisplayOrderNumber(order);
+  const titleText = isTest ? `${displayNumber} (Test Data)` : displayNumber;
+
   return (
     <Page>
       <PageHeader
-        title={order.orderNumber}
+        title={titleText}
         subtitle={`Created ${formatDate(order.createdAt)}`}
         className="pb-3"
         backButton={

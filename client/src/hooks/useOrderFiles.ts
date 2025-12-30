@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { OrderAttachment, InsertOrderAttachment, UpdateOrderAttachment, JobFile, InsertJobFile } from "@shared/schema";
+import { orderDetailQueryKey, orderTimelineQueryKey } from "./useOrders";
 
 // Enriched order attachment with user info and signed URLs
 export type OrderFileWithUser = OrderAttachment & {
@@ -96,6 +97,7 @@ export function useAttachFileToOrder(orderId: string) {
       // Invalidate order files query to refetch
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'artwork-summary'] });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
     },
   });
 }
@@ -121,11 +123,12 @@ export function useUpdateOrderFile(orderId: string) {
       }
 
       const json = await res.json();
-      return json.data;
+      return json.data || json;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'artwork-summary'] });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
     },
   });
 }
@@ -153,6 +156,7 @@ export function useDetachOrderFile(orderId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
       queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'artwork-summary'] });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
     },
   });
 }
