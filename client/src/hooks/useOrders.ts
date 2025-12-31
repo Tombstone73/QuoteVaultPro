@@ -9,9 +9,25 @@ import { useToast } from "@/hooks/use-toast";
 /**
  * Query key for orders list (with filters/pagination)
  * Pattern: ["orders", "list", filters]
+ * Note: Backend handles org scoping via tenantContext middleware
  */
-export const ordersListQueryKey = (filters?: OrdersQueryParams) => 
-  ["orders", "list", filters] as const;
+export const ordersListQueryKey = (filters?: OrdersQueryParams) => {
+  // Ensure stable key by stringifying params in consistent order
+  const stableFilters = filters ? {
+    page: filters.page,
+    pageSize: filters.pageSize,
+    includeThumbnails: filters.includeThumbnails,
+    sortBy: filters.sortBy,
+    sortDir: filters.sortDir,
+    search: filters.search,
+    status: filters.status,
+    priority: filters.priority,
+    customerId: filters.customerId,
+    startDate: filters.startDate,
+    endDate: filters.endDate,
+  } : undefined;
+  return ["orders", "list", stableFilters] as const;
+};
 
 /**
  * Query key for single order detail
