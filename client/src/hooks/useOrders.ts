@@ -111,6 +111,11 @@ export type OrderRow = Order & {
   listLabel?: string | null; // List-only note (always editable)
   previewThumbnails?: string[]; // GCS thumbnail keys
   thumbsCount?: number; // Total attachment count
+  // TitanOS State Architecture fields
+  state?: string;
+  statusPillValue?: string | null;
+  paymentStatus?: string;
+  routingTarget?: string | null;
 };
 
 // Paginated response (matches Quotes pattern)

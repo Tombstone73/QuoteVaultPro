@@ -48,6 +48,17 @@ import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/compone
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn } from "@/lib/utils";
+// TitanOS State Architecture
+import { OrderStateBadge } from "@/components/OrderStateBadge";
+import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
+import { 
+  CompleteProductionButton, 
+  CloseOrderButton, 
+  CancelOrderButton, 
+  ReopenOrderButton 
+} from "@/components/StateTransitionButtons";
+import type { OrderState } from "@/hooks/useOrderState";
+import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -79,6 +90,12 @@ type OrderAddressSnapshotFields = {
   shippingMethod?: string | null;
   carrier?: string | null;
   trackingNumber?: string | null;
+  
+  // TitanOS State Architecture fields
+  state?: string;
+  statusPillValue?: string | null;
+  paymentStatus?: string;
+  routingTarget?: string | null;
 };
 
 type OrderDetailOrder = HookOrderWithRelations & OrderAddressSnapshotFields;
@@ -704,6 +721,94 @@ export default function OrderDetail() {
                 <CardTitle>Order Details</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
+                {/* TitanOS State Architecture */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg border border-border">
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">State</label>
+                    <div className="mt-2">
+                      <OrderStateBadge state={order.state as OrderState} />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Canonical workflow state
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">Status</label>
+                    <div className="mt-2">
+                      <OrderStatusPillSelector 
+                        orderId={order.id}
+                        currentState={order.state as OrderState}
+                        currentPillValue={order.statusPillValue}
+                        disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Org-configurable status label
+                    </p>
+                  </div>
+                  
+                  {order.state === 'closed' && (
+                    <div>
+                      <label className="text-sm font-medium text-muted-foreground">Payment</label>
+                      <div className="mt-2">
+                        <Badge variant="outline" className={
+                          order.paymentStatus === 'paid' 
+                            ? 'bg-green-100 text-green-800 border-green-300'
+                            : order.paymentStatus === 'partial'
+                            ? 'bg-yellow-100 text-yellow-800 border-yellow-300'
+                            : 'bg-gray-100 text-gray-800 border-gray-300'
+                        }>
+                          {order.paymentStatus === 'paid' && 'Paid'}
+                          {order.paymentStatus === 'partial' && 'Partial'}
+                          {order.paymentStatus === 'unpaid' && 'Unpaid'}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Payment status
+                      </p>
+                    </div>
+                  )}
+                  
+                  {order.routingTarget && (
+                    <div>
+                      <label className="text-sm font-medium text-muted-foreground">Routed To</label>
+                      <div className="mt-2">
+                        <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-300">
+                          {order.routingTarget === 'fulfillment' ? 'Fulfillment' : 'Invoicing'}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Next workflow stage
+                      </p>
+                    </div>
+                  )}
+                </div>
+                
+                {/* State Transition Actions */}
+                {isAdminOrOwner && (
+                  <div className="flex gap-2 flex-wrap">
+                    {order.state === 'open' && (
+                      <CompleteProductionButton orderId={order.id} />
+                    )}
+                    
+                    {order.state === 'production_complete' && (
+                      <CloseOrderButton orderId={order.id} />
+                    )}
+                    
+                    {(order.state === 'open' || order.state === 'production_complete') && (
+                      <CancelOrderButton orderId={order.id} />
+                    )}
+                    
+                    {order.state === 'closed' && (
+                      <ReopenOrderButton orderId={order.id} />
+                    )}
+                  </div>
+                )}
+                
+                <Separator />
+                
+                {/* Legacy Status Field (backward compatible) */}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">

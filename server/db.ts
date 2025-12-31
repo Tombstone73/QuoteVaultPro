@@ -78,6 +78,28 @@ export async function probeDatabaseSchema(): Promise<void> {
       console.warn(`[DB] Missing page_count_status column; PDF derived fields disabled until migrations/DB connection fixed.`);
     }
 
+    // TitanOS Phase 1 migration check: verify state column exists
+    const titanosCheckResult = await db.execute(sql`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'orders'
+        AND column_name IN ('state', 'status_pill_value', 'payment_status', 'routing_target')
+      ORDER BY column_name
+    `);
+    const titanosColumns = titanosCheckResult.rows.map((r: any) => r.column_name);
+    const hasTitanOSMigration = titanosColumns.includes('state');
+    
+    console.log(`[DB] TitanOS columns found: ${titanosColumns.length > 0 ? titanosColumns.join(', ') : 'NONE'}`);
+    
+    if (!hasTitanOSMigration) {
+      console.error(`[DB] ⚠️  CRITICAL: TitanOS migration (0012) NOT applied! Column 'orders.state' does not exist.`);
+      console.error(`[DB] ⚠️  /api/orders will fail with 500 error until migration is applied.`);
+      console.error(`[DB] ⚠️  Run: npm run db:push OR apply server/db/migrations/0012_order_state_architecture.sql manually`);
+    } else {
+      console.log(`[DB] ✓ TitanOS migration (0012) verified - all columns present`);
+    }
+
     // Schema probe: check if quote_attachment_pages table exists (respects search_path)
     const tableCheckResult = await db.execute(sql`
       SELECT EXISTS (

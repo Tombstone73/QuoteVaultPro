@@ -28,8 +28,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
 import { ROUTES } from "@/config/routes";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
+// TitanOS State Architecture
+import { OrderStateBadge } from "@/components/OrderStateBadge";
+import { Badge } from "@/components/ui/badge";
+import type { OrderState } from "@/hooks/useOrderState";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel";
+type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 
 // Column definitions for orders table (matches Quotes pattern)
 const ORDER_COLUMNS: ColumnDefinition[] = [
@@ -40,6 +45,7 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "poNumber", label: "PO #", defaultVisible: true, defaultWidth: 120, minWidth: 80, maxWidth: 180, sortable: true },
   { key: "customer", label: "Customer", defaultVisible: true, defaultWidth: 180, minWidth: 120, maxWidth: 300, sortable: true },
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 130, minWidth: 100, maxWidth: 180, sortable: true },
+  { key: "paymentStatus", label: "Payment", defaultVisible: false, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "priority", label: "Priority", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
   { key: "dueDate", label: "Due Date", defaultVisible: true, defaultWidth: 120, minWidth: 100, maxWidth: 180, sortable: true },
   { key: "items", label: "Items", defaultVisible: true, defaultWidth: 80, minWidth: 60, maxWidth: 120, sortable: true },
@@ -55,6 +61,7 @@ export default function Orders() {
   const queryClient = useQueryClient();
   
   const [search, setSearch] = useState("");
+  const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   
@@ -83,6 +90,25 @@ export default function Orders() {
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+
+  // Auto-show Payment Status column for closed/canceled views
+  useEffect(() => {
+    const shouldShowPayment = stateFilter === 'closed' || stateFilter === 'canceled';
+    const currentSettings = columnSettings['paymentStatus'];
+    const isCurrentlyVisible = currentSettings && typeof currentSettings === 'object' && 'visible' in currentSettings 
+      ? currentSettings.visible 
+      : false;
+    
+    if (shouldShowPayment !== isCurrentlyVisible) {
+      setColumnSettings(prev => ({
+        ...prev,
+        paymentStatus: {
+          ...(typeof prev['paymentStatus'] === 'object' ? prev['paymentStatus'] as any : {}),
+          visible: shouldShowPayment,
+        }
+      }));
+    }
+  }, [stateFilter, columnSettings, setColumnSettings]);
 
   // Computed ordered columns (ensures Actions column always last)
   const orderedColumns = useMemo(() => getColumnOrder(ORDER_COLUMNS, columnSettings), [columnSettings]);
@@ -118,7 +144,7 @@ export default function Orders() {
     return !!target.closest('button, a, input, select, textarea, [data-stop-row-nav="true"]');
   };
 
-  // Filter orders by search, status, priority (client-side for Phase 1)
+  // Filter orders by search, state, status, priority (client-side for Phase 1)
   const filteredOrders = useMemo(() => {
     let filtered: OrderRow[] = orders || [];
     
@@ -132,6 +158,11 @@ export default function Orders() {
       );
     }
     
+    // TitanOS: Filter by state
+    if (stateFilter !== "all") {
+      filtered = filtered.filter((order: any) => order.state === stateFilter);
+    }
+    
     if (statusFilter !== "all") {
       filtered = filtered.filter((order: any) => order.status === statusFilter);
     }
@@ -141,7 +172,7 @@ export default function Orders() {
     }
     
     return filtered;
-  }, [orders, search, statusFilter, priorityFilter]);
+  }, [orders, search, stateFilter, statusFilter, priorityFilter]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -534,56 +565,39 @@ export default function Orders() {
         return row.customer?.companyName || <span className="text-muted-foreground italic">No customer</span>;
 
       case "status": {
-        if (!isAdminOrOwner) {
-          return <OrderStatusBadge status={row.status} />;
-        }
-
-        const allowedStatuses = getAllowedNextStatuses(row.status);
-        const isTerminal = allowedStatuses.length === 0;
-
+        // TitanOS: Show state badge + status pill
         return (
-          <Popover 
-            open={editingStatusOrderId === row.id} 
-            onOpenChange={(open) => setEditingStatusOrderId(open ? row.id : null)}
+          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <OrderStateBadge state={row.state as OrderState} />
+            {row.statusPillValue && (
+              <Badge variant="outline" className="text-xs">
+                {row.statusPillValue}
+              </Badge>
+            )}
+          </div>
+        );
+      }
+
+      case "paymentStatus": {
+        const paymentStatus = (row as any).paymentStatus || "unpaid";
+        const statusColors: Record<string, string> = {
+          unpaid: "bg-red-100 text-red-700 border-red-200",
+          partial: "bg-yellow-100 text-yellow-700 border-yellow-200",
+          paid: "bg-green-100 text-green-700 border-green-200",
+        };
+        const statusLabels: Record<string, string> = {
+          unpaid: "Unpaid",
+          partial: "Partial",
+          paid: "Paid",
+        };
+        return (
+          <Badge 
+            variant="outline" 
+            className={`text-xs ${statusColors[paymentStatus] || statusColors.unpaid}`}
+            onClick={(e) => e.stopPropagation()}
           >
-            <PopoverTrigger asChild>
-              <div 
-                className="cursor-pointer hover:opacity-80 transition-opacity"
-                data-stop-row-nav="true"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <OrderStatusBadge status={row.status} />
-              </div>
-            </PopoverTrigger>
-            <PopoverContent className="w-48 p-2" align="start">
-              <div className="space-y-1">
-                <div className="text-xs font-medium text-muted-foreground px-2 py-1">Change Status</div>
-                {isTerminal ? (
-                  <div className="text-xs text-muted-foreground px-2 py-1">No transitions available</div>
-                ) : (
-                  <>
-                    <button
-                      className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent transition-colors"
-                      onClick={() => {
-                        setEditingStatusOrderId(null);
-                      }}
-                    >
-                      <OrderStatusBadge status={row.status} /> (current)
-                    </button>
-                    {allowedStatuses.map((status) => (
-                      <button
-                        key={status}
-                        className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-accent transition-colors"
-                        onClick={() => handleStatusChange(row.id, status)}
-                      >
-                        <OrderStatusBadge status={status} />
-                      </button>
-                    ))}
-                  </>
-                )}
-              </div>
-            </PopoverContent>
-          </Popover>
+            {statusLabels[paymentStatus] || paymentStatus}
+          </Badge>
         );
       }
 
@@ -707,6 +721,32 @@ export default function Orders() {
       />
 
       <ContentLayout className="space-y-3">
+        {/* TitanOS State Tabs */}
+        <Tabs value={stateFilter} onValueChange={(value) => setStateFilter(value as OrderState | "all")}>
+          <TabsList>
+            <TabsTrigger value="open">
+              Open
+              {stateFilter === "open" && (
+                <Badge variant="secondary" className="ml-2">
+                  {filteredOrders.length}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="production_complete">
+              Prod Complete
+            </TabsTrigger>
+            <TabsTrigger value="closed">
+              Closed
+            </TabsTrigger>
+            <TabsTrigger value="canceled">
+              Canceled
+            </TabsTrigger>
+            <TabsTrigger value="all">
+              All States
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        
         {/* Inline Filters */}
         <div className="flex flex-row items-center gap-3 flex-wrap">
           <div className="relative flex-1 min-w-[200px]">
