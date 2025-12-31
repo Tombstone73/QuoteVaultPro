@@ -87,14 +87,17 @@ export default function Orders() {
   // Computed ordered columns (ensures Actions column always last)
   const orderedColumns = useMemo(() => getColumnOrder(ORDER_COLUMNS, columnSettings), [columnSettings]);
 
-  // Fetch orders with pagination support
-  const { data: ordersData, isLoading, error } = useOrders({
+  // Stable filters object for query key consistency
+  const ordersFilters = useMemo(() => ({
     page,
     pageSize,
     includeThumbnails,
     sortBy: sortKey,
     sortDir: sortDirection,
-  });
+  }), [page, pageSize, includeThumbnails, sortKey, sortDirection]);
+
+  // Fetch orders with pagination support
+  const { data: ordersData, isLoading, error } = useOrders(ordersFilters);
 
   // Determine if paginated response
   const isPaginated = ordersData && typeof ordersData === 'object' && 'items' in ordersData;
