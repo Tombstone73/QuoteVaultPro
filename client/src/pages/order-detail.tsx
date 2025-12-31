@@ -172,7 +172,9 @@ export default function OrderDetail() {
   
   // Admin/Owner override: allow editing terminal orders if setting enabled
   const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
-  const requireLineItemsDone = preferences?.orders?.requireLineItemsDoneToComplete ?? true; // Default strict
+  const requireLineItemsDone = (preferences?.orders?.requireAllLineItemsDoneToComplete
+    ?? preferences?.orders?.requireLineItemsDoneToComplete
+    ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
   
   // Determine if order fields should be read-only (Edit Mode OFF or locked by status)
@@ -807,65 +809,19 @@ export default function OrderDetail() {
                 )}
                 
                 <Separator />
-                
-                {/* Legacy Status Field (backward compatible) */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                      Status
-                      {isTerminal && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                          Terminal
-                        </span>
-                      )}
-                    </label>
-                    {/* Status transitions independent of Edit Mode - always use transition endpoint */}
-                    <Select 
-                      value={order.status} 
-                      onValueChange={handleStatusChange} 
-                      disabled={!isAdminOrOwner || isTerminal || allowedNextStatuses.length === 0}
-                    >
-                      <SelectTrigger className="mt-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {/* Current status always shown */}
-                        <SelectItem value={order.status}>
-                          {order.status === 'new' && 'New'}
-                          {order.status === 'in_production' && 'In Production'}
-                          {order.status === 'on_hold' && 'On Hold'}
-                          {order.status === 'ready_for_shipment' && 'Ready for Shipment'}
-                          {order.status === 'completed' && 'Completed'}
-                          {order.status === 'canceled' && 'Canceled'}
-                        </SelectItem>
-                        
-                        {/* Only show allowed next statuses */}
-                        {allowedNextStatuses.map((status) => (
-                          <SelectItem key={status} value={status}>
-                            {status === 'new' && 'New'}
-                            {status === 'in_production' && 'In Production'}
-                            {status === 'on_hold' && 'On Hold'}
-                            {status === 'ready_for_shipment' && 'Ready for Shipment'}
-                            {status === 'completed' && 'Completed'}
-                            {status === 'canceled' && 'Canceled'}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground">Priority</label>
-                    <Select value={order.priority} onValueChange={handlePriorityChange} disabled={readOnly}>
-                      <SelectTrigger className="mt-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="rush">Rush</SelectItem>
-                        <SelectItem value="normal">Normal</SelectItem>
-                        <SelectItem value="low">Low</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+
+                <div>
+                  <label className="text-sm font-medium text-muted-foreground">Priority</label>
+                  <Select value={order.priority} onValueChange={handlePriorityChange} disabled={readOnly}>
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="rush">Rush</SelectItem>
+                      <SelectItem value="normal">Normal</SelectItem>
+                      <SelectItem value="low">Low</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">

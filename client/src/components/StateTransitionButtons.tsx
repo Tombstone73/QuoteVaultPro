@@ -16,8 +16,11 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { useTransitionOrderState, useReopenOrder } from '@/hooks/useOrderState';
+import { useReopenOrder, useTransitionOrderState } from '@/hooks/useOrderState';
 import type { OrderState } from '@/hooks/useOrderState';
+import { Checkbox } from '@/components/ui/checkbox';
+import { useToast } from '@/hooks/use-toast';
+import { useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, CheckCircle2, XCircle, RotateCcw } from 'lucide-react';
 
 interface CompleteProductionButtonProps {
@@ -26,26 +29,86 @@ interface CompleteProductionButtonProps {
 }
 
 export function CompleteProductionButton({ orderId, disabled }: CompleteProductionButtonProps) {
-  const [showDialog, setShowDialog] = useState(false);
-  const [notes, setNotes] = useState('');
-  const transitionState = useTransitionOrderState(orderId);
+  const [showOverrideDialog, setShowOverrideDialog] = useState(false);
+  const [remainingCount, setRemainingCount] = useState<number>(0);
+  const [overrideChecked, setOverrideChecked] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
 
-  const handleConfirm = () => {
-    transitionState.mutate(
-      { nextState: 'production_complete', notes: notes || undefined },
-      {
-        onSuccess: () => {
-          setShowDialog(false);
-          setNotes('');
-        },
+  const callCompleteProduction = async (payload: Record<string, any>) => {
+    const res = await fetch(`/api/orders/${orderId}/complete-production`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: 'include',
+    });
+
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  };
+
+  const invalidateAfterSuccess = () => {
+    queryClient.invalidateQueries({ queryKey: ['/api', 'orders', orderId] });
+    queryClient.invalidateQueries({ queryKey: ['/api', 'orders'] });
+    queryClient.invalidateQueries({ queryKey: ['/api', 'timeline'] });
+  };
+
+  const attemptComplete = async (payload: Record<string, any>) => {
+    try {
+      setIsProcessing(true);
+
+      const result = await callCompleteProduction(payload);
+
+      if (result.ok && result.data?.success) {
+        invalidateAfterSuccess();
+
+        toast({
+          title: 'Production Completed',
+          description: result.data?.message || 'Order moved to Production Complete',
+        });
+        return;
       }
-    );
+
+      // Strict-mode override flow: remaining items, needs checkbox-confirmed second request
+      if (result.status === 409) {
+        setRemainingCount(result.data?.remainingCount ?? 0);
+        setOverrideChecked(false);
+        setShowOverrideDialog(true);
+        return;
+      }
+
+      throw new Error(result.data?.message || result.data?.error || 'Failed to complete production');
+    } catch (err: any) {
+      toast({
+        title: 'Complete Production Failed',
+        description: err?.message || 'Unknown error',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleClick = async () => {
+    // Small shop: backend auto-marks by default (no modal).
+    // Big shop: backend returns 409 when remaining items exist, which triggers the override modal.
+    await attemptComplete({});
+  };
+
+  const handleOverrideConfirm = async () => {
+    if (!overrideChecked) {
+      setShowOverrideDialog(false);
+      return;
+    }
+    await attemptComplete({ autoMarkRemainingDone: true });
+    setShowOverrideDialog(false);
   };
 
   return (
     <>
       <Button
-        onClick={() => setShowDialog(true)}
+        onClick={handleClick}
         disabled={disabled}
         variant="default"
         className="bg-purple-600 hover:bg-purple-700"
@@ -54,38 +117,40 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
         Complete Production
       </Button>
 
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+      <Dialog
+        open={showOverrideDialog}
+        onOpenChange={setShowOverrideDialog}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Complete Production</DialogTitle>
-            <DialogDescription>
-              Mark this order as production complete. The order will be routed to the next workflow stage.
-            </DialogDescription>
+            <DialogDescription>{remainingCount} items not done.</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="notes">Notes (optional)</Label>
-              <Textarea
-                id="notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Add any notes about the production completion..."
-                rows={3}
+          <div className="py-4">
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="override-auto-mark"
+                checked={overrideChecked}
+                onCheckedChange={(checked) => setOverrideChecked(checked === true)}
+                disabled={isProcessing}
               />
+              <Label htmlFor="override-auto-mark" className="text-sm cursor-pointer">
+                Mark remaining as Done and complete production
+              </Label>
             </div>
           </div>
 
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setShowDialog(false)}
-              disabled={transitionState.isPending}
+              onClick={() => setShowOverrideDialog(false)}
+              disabled={isProcessing}
             >
               Cancel
             </Button>
-            <Button onClick={handleConfirm} disabled={transitionState.isPending}>
-              {transitionState.isPending ? 'Processing...' : 'Complete Production'}
+            <Button onClick={handleOverrideConfirm} disabled={isProcessing}>
+              {isProcessing ? 'Processing...' : 'Confirm'}
             </Button>
           </DialogFooter>
         </DialogContent>

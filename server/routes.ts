@@ -6,7 +6,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings } from "@shared/schema";
 import { eq, desc, and, isNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -428,6 +428,28 @@ async function snapshotCustomerData(
 
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
+
+  // Dev-only debug: verify status pills exist per org/state
+  if (nodeEnv === 'development') {
+    try {
+      const rows = await db
+        .select({
+          organizationId: orderStatusPills.organizationId,
+          stateScope: orderStatusPills.stateScope,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(orderStatusPills)
+        .groupBy(orderStatusPills.organizationId, orderStatusPills.stateScope)
+        .orderBy(orderStatusPills.organizationId, orderStatusPills.stateScope);
+
+      const summary = rows
+        .map((r) => `${r.organizationId}:${r.stateScope}=${r.count}`)
+        .join(' | ');
+      console.log(`[StatusPills:DEV] counts ${summary || '(none)'}`);
+    } catch (err) {
+      console.warn('[StatusPills:DEV] failed to count pills:', err);
+    }
+  }
 
   // ────────────────────────────────────────────────────────────────────────────
   // Quote Workflow (enterprise rule): Formal state machine enforcement
@@ -8226,6 +8248,158 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ==================== TitanOS Order State Architecture ====================
   
+  // Complete Production (open -> production_complete) with org preference enforcement
+  // This is the enforced pathway for completing production when line items are incomplete.
+  app.post("/api/orders/:orderId/complete-production", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { orderId } = req.params;
+      const { autoMarkRemainingDone } = req.body || {};
+
+      // Load order
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) {
+        return res.status(404).json({ success: false, message: "Order not found" });
+      }
+
+      if (order.state !== 'open') {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_STATE',
+          message: `Cannot complete production from ${order.state} state.`,
+        });
+      }
+
+      // Load line items
+      const lineItems = await db
+        .select()
+        .from(orderLineItems)
+        .where(eq(orderLineItems.orderId, orderId));
+
+      const remainingLineItems = lineItems.filter((li: any) => li.status !== 'done' && li.status !== 'canceled');
+      const remainingCount = remainingLineItems.length;
+      const remainingIds = remainingLineItems.map((li: any) => li.id);
+      const remainingCountBefore = remainingCount;
+
+      // Load org preferences
+      const orgPreferences = await getOrgPreferences(organizationId);
+      const requireAllLineItemsDoneToComplete =
+        orgPreferences?.orders?.requireAllLineItemsDoneToComplete
+          ?? orgPreferences?.orders?.requireLineItemsDoneToComplete
+          ?? true; // Default strict
+
+      // Behavior per spec:
+      // - Big shops (requireAllLineItemsDoneToComplete=true): if remaining>0 and no override flag => 409, else proceed
+      // - Small shops (requireAllLineItemsDoneToComplete=false): auto-mark by default, never 409
+      const shouldAutoMark = requireAllLineItemsDoneToComplete
+        ? autoMarkRemainingDone === true
+        : true;
+
+      if (requireAllLineItemsDoneToComplete && remainingCount > 0 && !shouldAutoMark) {
+        return res.status(409).json({
+          success: false,
+          code: 'LINE_ITEMS_NOT_COMPLETE',
+          remainingCount,
+          canOverride: true,
+          requireAllLineItemsDoneToComplete: true,
+        });
+      }
+
+      const { determineRoutingTarget, mapStateToLegacyStatus } = await import('./services/orderStateService');
+
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      const nowIso = new Date().toISOString();
+
+      const result = await db.transaction(async (tx) => {
+        let didAutoMark = false;
+        let autoMarkedCount = 0;
+
+        if (remainingCount > 0 && shouldAutoMark) {
+          didAutoMark = true;
+          autoMarkedCount = remainingCount;
+
+          await tx
+            .update(orderLineItems)
+            .set({
+              status: 'done',
+              updatedAt: sql`now()` as any,
+            })
+            .where(and(eq(orderLineItems.orderId, orderId), inArray(orderLineItems.id, remainingIds)));
+
+          await tx.insert(orderAuditLog).values({
+            orderId,
+            userId,
+            userName,
+            actionType: 'line_items_auto_marked_done',
+            fromStatus: null,
+            toStatus: null,
+            note: `Auto-marked ${autoMarkedCount} line item(s) as Done`,
+            metadata: {
+              count: autoMarkedCount,
+              lineItemIds: remainingIds,
+            },
+          });
+        }
+
+        const routingTarget = determineRoutingTarget(order as any);
+        const legacyStatus = mapStateToLegacyStatus('production_complete' as any);
+
+        const [updatedOrder] = await tx
+          .update(orders)
+          .set({
+            state: 'production_complete' as any,
+            status: legacyStatus as any,
+            productionCompletedAt: nowIso,
+            routingTarget,
+            updatedAt: sql`now()` as any,
+          })
+          .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+          .returning();
+
+        await tx.insert(orderAuditLog).values({
+          orderId,
+          userId,
+          userName,
+          actionType: 'state_transition',
+          fromStatus: 'open',
+          toStatus: 'production_complete',
+          note: 'State changed from open to production_complete',
+          metadata: {
+            routingTarget,
+            didAutoMark,
+            remainingCountBefore,
+            autoMarkedCount,
+            timestamp: nowIso,
+          },
+        });
+
+        return { updatedOrder, didAutoMark, autoMarkedCount };
+      });
+
+      return res.json({
+        success: true,
+        data: result.updatedOrder,
+        didAutoMark: result.didAutoMark,
+        autoMarkedCount: result.autoMarkedCount,
+        remainingCountBefore,
+        remainingCount,
+        message: 'Order production completed',
+      });
+
+    } catch (error: any) {
+      console.error('[CompleteProduction] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to complete production',
+        error: error?.message,
+      });
+    }
+  });
+  
   // State Transition (canonical state changes)
   app.patch("/api/orders/:orderId/state", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -8285,17 +8459,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Special validation for production_complete: Check if line items are done
       if (nextState === 'production_complete') {
-        const requireLineItemsDone = orgPreferences?.orders?.requireLineItemsDoneToComplete ?? false;
-        if (requireLineItemsDone && lineItems.length > 0) {
-          const incompleteLi = lineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
-          if (incompleteLi.length > 0) {
-            return res.status(400).json({
-              success: false,
-              message: `Cannot complete production: ${incompleteLi.length} line item(s) are not finished. All line items must have status "done" or "canceled".`,
-              code: 'LINE_ITEMS_NOT_COMPLETE',
-              incompleteCount: incompleteLi.length,
-            });
-          }
+        const requireAllLineItemsDoneToComplete =
+          orgPreferences?.orders?.requireAllLineItemsDoneToComplete
+            ?? orgPreferences?.orders?.requireLineItemsDoneToComplete
+            ?? true; // Default strict
+
+        const incompleteLi = lineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+        if (incompleteLi.length > 0) {
+          // Always block here to prevent silent completion. Use /complete-production for explicit confirmation.
+          return res.status(409).json({
+            success: false,
+            message: requireAllLineItemsDoneToComplete
+              ? `Cannot complete production: ${incompleteLi.length} line item(s) are not finished. All line items must have status "done" or "canceled".`
+              : `There are ${incompleteLi.length} line item(s) not marked Done yet. Use Complete Production action to confirm.`,
+            code: 'LINE_ITEMS_NOT_COMPLETE',
+            remainingCount: incompleteLi.length,
+            requireAllLineItemsDoneToComplete,
+          });
         }
       }
 
@@ -8425,10 +8605,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
-      const { stateScope } = req.query;
-
+      // Back-compat: allow both stateScope (legacy) and state (new)
+      const stateScope = (req.query.stateScope ?? req.query.state) as unknown;
       if (!stateScope || typeof stateScope !== 'string') {
-        return res.status(400).json({ success: false, message: "stateScope query parameter is required" });
+        return res.status(400).json({ success: false, message: "state query parameter is required" });
       }
 
       // Import pill service
@@ -8436,13 +8616,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const pills = await listStatusPills(organizationId, stateScope as any, true);
 
-      return res.json({ success: true, pills });
+      // Back-compat: include both data and pills
+      return res.json({ success: true, data: pills, pills });
 
     } catch (error: any) {
       console.error('[StatusPills:GET] Error:', error);
       return res.status(500).json({
         success: false,
         message: "Failed to fetch status pills",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Get Status Pills (new canonical endpoint)
+  app.get('/api/order-status-pills', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      const state = req.query.state as unknown;
+      if (!state || typeof state !== 'string') {
+        return res.status(400).json({ success: false, message: 'state query parameter is required' });
+      }
+
+      const { listStatusPills } = await import('./services/orderStatusPillService');
+      const pills = await listStatusPills(organizationId, state as any, true);
+
+      return res.json({ success: true, data: pills });
+    } catch (error: any) {
+      console.error('[StatusPillsV2:GET] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch status pills',
         error: error?.message,
       });
     }
@@ -8457,7 +8663,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
       const { orderId } = req.params;
-      const { statusPillValue } = req.body;
+      // New contract: { value }, back-compat: { statusPillValue }
+      const rawValue = (req.body?.value ?? req.body?.statusPillValue) as unknown;
+      if (rawValue !== null && rawValue !== undefined && typeof rawValue !== 'string') {
+        return res.status(400).json({ success: false, message: 'value must be a string or null' });
+      }
+      const value = typeof rawValue === 'string' ? rawValue.trim() : null;
+      const statusPillValue = value ? value : null;
 
       // Import pill service
       const { assignOrderStatusPill } = await import('./services/orderStatusPillService');
@@ -8467,7 +8679,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await assignOrderStatusPill({
         organizationId,
         orderId,
-        statusPillValue: statusPillValue || null,
+        statusPillValue,
         actorUserId: userId,
         actorUserName: userName,
       });
@@ -10337,6 +10549,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               switch (row.actionType) {
                 case 'status_change':
                 case 'status_transition':
+                case 'status_pill_changed':
                   if (row.fromStatus && row.toStatus) {
                     message = `Status changed: ${row.fromStatus} → ${row.toStatus}`;
                   } else if (row.toStatus) {
@@ -10402,6 +10615,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     message = `Line item status changed: ${meta.oldStatus} → ${meta.newStatus}`;
                   } else {
                     message = 'Line item status updated';
+                  }
+                  break;
+
+                case 'line_items_auto_marked_done':
+                  if (meta.count) {
+                    message = `Auto-marked ${meta.count} line item(s) as Done`;
+                  } else {
+                    message = 'Auto-marked line items as Done';
                   }
                   break;
                 

@@ -24,6 +24,15 @@ export function OrderStatusPillSelector({
   disabled = false,
   className = '',
 }: OrderStatusPillSelectorProps) {
+  // TitanOS rule: canceled is a terminal workflow state and should not have editable pills
+  if (currentState === 'canceled') {
+    return (
+      <span className={`text-sm text-muted-foreground ${className}`.trim()}>
+        {currentPillValue || 'Canceled'}
+      </span>
+    );
+  }
+
   const { data: pills, isLoading } = useOrderStatusPills(currentState);
   const assignPill = useAssignOrderStatusPill(orderId);
 

@@ -7,6 +7,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import type { OrderState } from './useOrderState';
+import { orderDetailQueryKey, ordersListQueryKey, orderTimelineQueryKey } from './useOrders';
 
 export interface OrderStatusPill {
   id: string;
@@ -28,7 +29,7 @@ export function useOrderStatusPills(stateScope: OrderState) {
   return useQuery<OrderStatusPill[]>({
     queryKey: ['/api', 'orders', 'status-pills', stateScope],
     queryFn: async () => {
-      const res = await fetch(`/api/orders/status-pills?stateScope=${stateScope}`, {
+      const res = await fetch(`/api/order-status-pills?state=${stateScope}`, {
         credentials: 'include',
       });
 
@@ -37,7 +38,7 @@ export function useOrderStatusPills(stateScope: OrderState) {
       }
 
       const data = await res.json();
-      return data.pills || [];
+      return data.data || data.pills || [];
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
@@ -51,11 +52,11 @@ export function useAssignOrderStatusPill(orderId: string) {
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (statusPillValue: string | null) => {
+    mutationFn: async (value: string | null) => {
       const res = await fetch(`/api/orders/${orderId}/status-pill`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ statusPillValue }),
+        body: JSON.stringify({ value }),
         credentials: 'include',
       });
 
@@ -67,9 +68,10 @@ export function useAssignOrderStatusPill(orderId: string) {
       return res.json();
     },
     onSuccess: (data) => {
-      // Invalidate queries
-      queryClient.invalidateQueries({ queryKey: ['/api', 'orders', orderId] });
-      queryClient.invalidateQueries({ queryKey: ['/api', 'orders'] });
+      // Invalidate TitanOS queries (and keep legacy timeline key for safety)
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: ordersListQueryKey() });
       queryClient.invalidateQueries({ queryKey: ['/api', 'timeline'] });
 
       // Show success toast
