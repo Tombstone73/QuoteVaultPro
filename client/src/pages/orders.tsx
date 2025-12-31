@@ -7,22 +7,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useOrders, type OrderRow, type OrdersListResponse, getAllowedNextStatuses, ordersListQueryKey, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
+import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { OrderStatusBadge, OrderPriorityBadge } from "@/components/order-status-badge";
+import { OrderPriorityBadge } from "@/components/order-status-badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSettings, isColumnVisible, getColumnOrder, getColumnDisplayName, type ColumnDefinition, type ColumnState } from "@/components/titan";
@@ -33,8 +23,80 @@ import { OrderStateBadge } from "@/components/OrderStateBadge";
 import { Badge } from "@/components/ui/badge";
 import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
+
+function OrderStatusPillCell({
+  orderId,
+  state,
+  value,
+}: {
+  orderId: string;
+  state: OrderState;
+  value: string | null;
+}) {
+  // Never allow selection in canceled state
+  if (state === 'canceled') {
+    return value ? (
+      <Badge variant="outline" className="text-xs">
+        {value}
+      </Badge>
+    ) : null;
+  }
+
+  const { data: pills, isLoading } = useOrderStatusPills(state);
+  const assignPill = useAssignOrderStatusPill(orderId);
+
+  if (isLoading) {
+    return <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />;
+  }
+
+  if (!pills || pills.length === 0) {
+    return (
+      <span className="text-xs text-muted-foreground">No status pills configured…</span>
+    );
+  }
+
+  const currentColor = value ? pills.find((p) => p.name === value)?.color : undefined;
+
+  return (
+    <Select
+      value={value || ''}
+      onValueChange={(next) => {
+        assignPill.mutate(next || null);
+      }}
+      disabled={assignPill.isPending}
+    >
+      <SelectTrigger
+        className="h-7 w-[160px]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <SelectValue placeholder="Select status">
+          {value ? (
+            <div className="flex items-center gap-2">
+              <div
+                className="w-2.5 h-2.5 rounded-full"
+                style={{ backgroundColor: currentColor || '#3b82f6' }}
+              />
+              <span className="text-xs">{value}</span>
+            </div>
+          ) : null}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent onClick={(e) => e.stopPropagation()}>
+        {pills.map((pill) => (
+          <SelectItem key={pill.id} value={pill.name}>
+            <div className="flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
+              {pill.name}
+            </div>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 // Column definitions for orders table (matches Quotes pattern)
 const ORDER_COLUMNS: ColumnDefinition[] = [
@@ -62,7 +124,7 @@ export default function Orders() {
   
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusPillFilter, setStatusPillFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   
   // Pagination + performance controls (persisted per org+user, matching Quotes)
@@ -76,10 +138,7 @@ export default function Orders() {
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
   
   // Inline editing state
-  const [editingStatusOrderId, setEditingStatusOrderId] = useState<string | null>(null);
   const [editingPriorityOrderId, setEditingPriorityOrderId] = useState<string | null>(null);
-  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
-  const [pendingStatusChange, setPendingStatusChange] = useState<{ orderId: string; toStatus: string } | null>(null);
   
   // Column settings - scoped per user (matches Quotes pattern)
   const storageKey = user?.id 
@@ -109,6 +168,15 @@ export default function Orders() {
       }));
     }
   }, [stateFilter, columnSettings, setColumnSettings]);
+
+  // Reset pill filter when switching state tab (keeps filters consistent)
+  useEffect(() => {
+    setStatusPillFilter('all');
+  }, [stateFilter]);
+
+  const pillFilterEnabled = stateFilter === 'open' || stateFilter === 'production_complete' || stateFilter === 'closed';
+  const pillFilterScope: OrderState = pillFilterEnabled ? (stateFilter as OrderState) : 'open';
+  const { data: pillsForFilter, isLoading: pillsForFilterLoading } = useOrderStatusPills(pillFilterScope);
 
   // Computed ordered columns (ensures Actions column always last)
   const orderedColumns = useMemo(() => getColumnOrder(ORDER_COLUMNS, columnSettings), [columnSettings]);
@@ -162,9 +230,10 @@ export default function Orders() {
     if (stateFilter !== "all") {
       filtered = filtered.filter((order: any) => order.state === stateFilter);
     }
-    
-    if (statusFilter !== "all") {
-      filtered = filtered.filter((order: any) => order.status === statusFilter);
+
+    // TitanOS: Filter by status pill within the active state scope
+    if (pillFilterEnabled && statusPillFilter !== 'all') {
+      filtered = filtered.filter((order: any) => (order.statusPillValue || null) === statusPillFilter);
     }
     
     if (priorityFilter !== "all") {
@@ -172,7 +241,7 @@ export default function Orders() {
     }
     
     return filtered;
-  }, [orders, search, stateFilter, statusFilter, priorityFilter]);
+  }, [orders, search, stateFilter, pillFilterEnabled, statusPillFilter, priorityFilter]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -244,70 +313,6 @@ export default function Orders() {
     },
   });
 
-  // Status transition mutation
-  const transitionStatusMutation = useMutation({
-    mutationFn: async ({ orderId, toStatus }: { orderId: string; toStatus: string }) => {
-      const response = await fetch(`/api/orders/${orderId}/transition`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ toStatus }),
-        credentials: 'include',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to transition status');
-      }
-      return data;
-    },
-    onSuccess: (response, variables) => {
-      const updatedOrder = response?.data;
-      
-      // Optimistically update all list caches
-      queryClient.setQueriesData<OrdersListResponse | OrderRow[]>(
-        { predicate: (query) => {
-          const key = query.queryKey;
-          return Array.isArray(key) && key[0] === "orders" && key[1] === "list";
-        }},
-        (old) => {
-          if (!old || !updatedOrder) return old;
-          
-          // Handle paginated response
-          if ('items' in old && Array.isArray(old.items)) {
-            return {
-              ...old,
-              items: old.items.map((order) => 
-                order.id === variables.orderId 
-                  ? { ...order, status: updatedOrder.status, updatedAt: updatedOrder.updatedAt }
-                  : order
-              ),
-            };
-          }
-          
-          // Handle non-paginated array
-          if (Array.isArray(old)) {
-            return old.map((order) =>
-              order.id === variables.orderId
-                ? { ...order, status: updatedOrder.status, updatedAt: updatedOrder.updatedAt }
-                : order
-            );
-          }
-          
-          return old;
-        }
-      );
-      
-      // Invalidate detail and timeline
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(variables.orderId) });
-      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(variables.orderId) });
-      
-      setEditingStatusOrderId(null);
-      toast({ title: "Success", description: "Order status updated" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
   // Priority update mutation
   const updatePriorityMutation = useMutation({
     mutationFn: async ({ orderId, priority }: { orderId: string; priority: string }) => {
@@ -366,24 +371,6 @@ export default function Orders() {
       toast({ title: "Error", description: "Failed to update priority", variant: "destructive" });
     },
   });
-
-  // Handle status change with confirmation for terminal states
-  const handleStatusChange = (orderId: string, toStatus: string) => {
-    if (toStatus === 'canceled' || toStatus === 'completed') {
-      setPendingStatusChange({ orderId, toStatus });
-      setConfirmDialogOpen(true);
-    } else {
-      transitionStatusMutation.mutate({ orderId, toStatus });
-    }
-  };
-
-  const confirmStatusChange = () => {
-    if (pendingStatusChange) {
-      transitionStatusMutation.mutate(pendingStatusChange);
-      setPendingStatusChange(null);
-      setConfirmDialogOpen(false);
-    }
-  };
 
   // Handle thumbnail click - fetch attachment details and open viewer (matches Quotes pattern)
   const handleThumbnailClick = async (orderId: string, thumbKey: string) => {
@@ -565,15 +552,15 @@ export default function Orders() {
         return row.customer?.companyName || <span className="text-muted-foreground italic">No customer</span>;
 
       case "status": {
-        // TitanOS: Show state badge + status pill
+        // TitanOS: Show state badge + editable status pill (org-configured)
         return (
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             <OrderStateBadge state={row.state as OrderState} />
-            {row.statusPillValue && (
-              <Badge variant="outline" className="text-xs">
-                {row.statusPillValue}
-              </Badge>
-            )}
+            <OrderStatusPillCell
+              orderId={row.id}
+              state={row.state as OrderState}
+              value={row.statusPillValue ?? null}
+            />
           </div>
         );
       }
@@ -758,20 +745,32 @@ export default function Orders() {
               className="pl-8 h-9"
             />
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[160px] h-9">
-              <SelectValue placeholder="All Statuses" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Statuses</SelectItem>
-              <SelectItem value="new">New</SelectItem>
-              <SelectItem value="in_production">In Production</SelectItem>
-              <SelectItem value="ready_for_shipment">Ready for Shipment</SelectItem>
-              <SelectItem value="completed">Completed</SelectItem>
-              <SelectItem value="on_hold">On Hold</SelectItem>
-              <SelectItem value="canceled">Canceled</SelectItem>
-            </SelectContent>
-          </Select>
+          {pillFilterEnabled && (
+            <Select value={statusPillFilter} onValueChange={setStatusPillFilter}>
+              <SelectTrigger className="w-[200px] h-9">
+                <SelectValue
+                  placeholder={
+                    pillsForFilterLoading
+                      ? 'Loading status pills…'
+                      : (!pillsForFilter || pillsForFilter.length === 0)
+                      ? 'No status pills configured…'
+                      : 'All Status Pills'
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status Pills</SelectItem>
+                {(pillsForFilter || []).map((pill) => (
+                  <SelectItem key={pill.id} value={pill.name}>
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
+                      {pill.name}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select value={priorityFilter} onValueChange={setPriorityFilter}>
             <SelectTrigger className="w-[140px] h-9">
               <SelectValue placeholder="All Priorities" />
@@ -955,32 +954,6 @@ export default function Orders() {
           }}
         />
       )}
-
-      {/* Confirmation Dialog for Terminal Status Changes */}
-      <AlertDialog open={confirmDialogOpen} onOpenChange={setConfirmDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Confirm Status Change</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingStatusChange?.toStatus === 'canceled' 
-                ? 'Are you sure you want to cancel this order? This action marks the order as canceled and cannot be reversed.'
-                : 'Are you sure you want to mark this order as completed? This action finalizes the order and cannot be reversed.'
-              }
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => {
-              setPendingStatusChange(null);
-              setEditingStatusOrderId(null);
-            }}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction onClick={confirmStatusChange}>
-              Confirm
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Page>
   );
 }

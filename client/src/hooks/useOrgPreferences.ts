@@ -15,6 +15,7 @@ export interface OrgPreferences {
     requireBillingAddressForProduction?: boolean;
     requireShippingAddressForProduction?: boolean;
     allowCompletedOrderEdits?: boolean;
+    requireAllLineItemsDoneToComplete?: boolean;
     requireLineItemsDoneToComplete?: boolean;
   };
 }
