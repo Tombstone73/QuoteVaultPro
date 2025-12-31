@@ -8224,6 +8224,397 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ==================== TitanOS Order State Architecture ====================
+  
+  // State Transition (canonical state changes)
+  app.patch("/api/orders/:orderId/state", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { orderId } = req.params;
+      const { nextState, notes } = req.body;
+
+      if (!nextState || typeof nextState !== 'string') {
+        return res.status(400).json({ success: false, message: "nextState is required" });
+      }
+
+      // Import state service
+      const { 
+        validateOrderStateTransition, 
+        transitionOrderState, 
+        isTerminalState 
+      } = await import('./services/orderStateService');
+      
+      type OrderState = 'open' | 'production_complete' | 'closed' | 'canceled';
+      
+      // Validate nextState is valid OrderState
+      const validStates: OrderState[] = ['open', 'production_complete', 'closed', 'canceled'];
+      if (!validStates.includes(nextState as OrderState)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Invalid state: ${nextState}. Must be one of: ${validStates.join(', ')}` 
+        });
+      }
+
+      // Load order
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) {
+        return res.status(404).json({ success: false, message: "Order not found" });
+      }
+
+      // Check for terminal state
+      if (isTerminalState(order.state as any)) {
+        return res.status(400).json({
+          success: false,
+          message: `Cannot transition from ${order.state} state. Use the Reopen action if needed.`,
+          code: 'TERMINAL_STATE',
+        });
+      }
+
+      // Load line items for validation
+      const lineItems = await db
+        .select()
+        .from(orderLineItems)
+        .where(eq(orderLineItems.orderId, orderId));
+
+      // Load org preferences
+      const orgPreferences = await getOrgPreferences(organizationId);
+
+      // Special validation for production_complete: Check if line items are done
+      if (nextState === 'production_complete') {
+        const requireLineItemsDone = orgPreferences?.orders?.requireLineItemsDoneToComplete ?? false;
+        if (requireLineItemsDone && lineItems.length > 0) {
+          const incompleteLi = lineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+          if (incompleteLi.length > 0) {
+            return res.status(400).json({
+              success: false,
+              message: `Cannot complete production: ${incompleteLi.length} line item(s) are not finished. All line items must have status "done" or "canceled".`,
+              code: 'LINE_ITEMS_NOT_COMPLETE',
+              incompleteCount: incompleteLi.length,
+            });
+          }
+        }
+      }
+
+      // Validate transition
+      const validation = validateOrderStateTransition(
+        order.state as any,
+        nextState as OrderState,
+        {
+          order,
+          lineItemsCount: lineItems.length,
+          orgPreferences,
+        }
+      );
+
+      if (!validation.ok) {
+        return res.status(400).json({
+          success: false,
+          message: validation.message,
+          code: validation.code,
+        });
+      }
+
+      // Execute transition
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      const updatedOrder = await transitionOrderState({
+        organizationId,
+        orderId,
+        nextState: nextState as OrderState,
+        actorUserId: userId,
+        actorUserName: userName,
+        notes,
+      });
+
+      return res.json({
+        success: true,
+        data: updatedOrder,
+        message: `Order transitioned to ${nextState}`,
+        routingTarget: updatedOrder.routingTarget,
+      });
+
+    } catch (error: any) {
+      console.error('[OrderStateTransition] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to transition order state",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Reopen Order (special escape from closed terminal state)
+  app.post("/api/orders/:orderId/reopen", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { orderId } = req.params;
+      const { reason, targetState = 'production_complete' } = req.body;
+
+      // Reason is REQUIRED
+      if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Reason is required to reopen an order",
+          code: 'REASON_REQUIRED',
+        });
+      }
+
+      // Validate targetState
+      if (targetState !== 'open' && targetState !== 'production_complete') {
+        return res.status(400).json({
+          success: false,
+          message: "Target state must be either 'open' or 'production_complete'",
+          code: 'INVALID_TARGET_STATE',
+        });
+      }
+
+      // Import state service
+      const { reopenOrder } = await import('./services/orderStateService');
+
+      // Load order to verify it's closed
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) {
+        return res.status(404).json({ success: false, message: "Order not found" });
+      }
+
+      if (order.state !== 'closed') {
+        return res.status(400).json({
+          success: false,
+          message: `Cannot reopen order: current state is ${order.state}, must be closed`,
+          code: 'NOT_CLOSED',
+        });
+      }
+
+      // Execute reopen
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      const updatedOrder = await reopenOrder({
+        organizationId,
+        orderId,
+        actorUserId: userId,
+        actorUserName: userName,
+        reason,
+        targetState,
+      });
+
+      return res.json({
+        success: true,
+        data: updatedOrder,
+        message: `Order reopened and moved to ${targetState}`,
+      });
+
+    } catch (error: any) {
+      console.error('[OrderReopen] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error?.message || "Failed to reopen order",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Get Status Pills (for a specific state scope)
+  app.get("/api/orders/status-pills", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const { stateScope } = req.query;
+
+      if (!stateScope || typeof stateScope !== 'string') {
+        return res.status(400).json({ success: false, message: "stateScope query parameter is required" });
+      }
+
+      // Import pill service
+      const { listStatusPills } = await import('./services/orderStatusPillService');
+
+      const pills = await listStatusPills(organizationId, stateScope as any, true);
+
+      return res.json({ success: true, pills });
+
+    } catch (error: any) {
+      console.error('[StatusPills:GET] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch status pills",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Assign Status Pill to Order
+  app.patch("/api/orders/:orderId/status-pill", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { orderId } = req.params;
+      const { statusPillValue } = req.body;
+
+      // Import pill service
+      const { assignOrderStatusPill } = await import('./services/orderStatusPillService');
+
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+
+      await assignOrderStatusPill({
+        organizationId,
+        orderId,
+        statusPillValue: statusPillValue || null,
+        actorUserId: userId,
+        actorUserName: userName,
+      });
+
+      // Reload order to return updated data
+      const updatedOrder = await storage.getOrderById(organizationId, orderId);
+
+      return res.json({
+        success: true,
+        data: updatedOrder,
+        message: statusPillValue ? `Status pill set to "${statusPillValue}"` : 'Status pill cleared',
+      });
+
+    } catch (error: any) {
+      console.error('[StatusPill:PATCH] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error?.message || "Failed to update status pill",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Create Status Pill (Admin only)
+  app.post("/api/orders/status-pills", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const { stateScope, name, color, isDefault, sortOrder } = req.body;
+
+      if (!stateScope || !name) {
+        return res.status(400).json({
+          success: false,
+          message: "stateScope and name are required",
+        });
+      }
+
+      // Import pill service
+      const { createStatusPill } = await import('./services/orderStatusPillService');
+
+      const pill = await createStatusPill(organizationId, {
+        stateScope,
+        name,
+        color: color || '#3b82f6',
+        isDefault: isDefault ?? false,
+        isActive: true,
+        sortOrder: sortOrder ?? 0,
+      });
+
+      return res.json({ success: true, pill });
+
+    } catch (error: any) {
+      console.error('[StatusPills:POST] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error?.message || "Failed to create status pill",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Update Status Pill (Admin only)
+  app.patch("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const { pillId } = req.params;
+      const { name, color, isDefault, sortOrder, isActive } = req.body;
+
+      // Import pill service
+      const { updateStatusPill } = await import('./services/orderStatusPillService');
+
+      const updates: any = {};
+      if (name !== undefined) updates.name = name;
+      if (color !== undefined) updates.color = color;
+      if (isDefault !== undefined) updates.isDefault = isDefault;
+      if (sortOrder !== undefined) updates.sortOrder = sortOrder;
+      if (isActive !== undefined) updates.isActive = isActive;
+
+      const pill = await updateStatusPill(organizationId, pillId, updates);
+
+      return res.json({ success: true, pill });
+
+    } catch (error: any) {
+      console.error('[StatusPills:PATCH] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error?.message || "Failed to update status pill",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Delete (Deactivate) Status Pill (Admin only)
+  app.delete("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const { pillId } = req.params;
+
+      // Import pill service
+      const { deleteStatusPill } = await import('./services/orderStatusPillService');
+
+      await deleteStatusPill(organizationId, pillId);
+
+      return res.json({ success: true, message: "Status pill deleted" });
+
+    } catch (error: any) {
+      console.error('[StatusPills:DELETE] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error?.message || "Failed to delete status pill",
+        error: error?.message,
+      });
+    }
+  });
+
+  // Set Default Status Pill (Admin only)
+  app.post("/api/orders/status-pills/:pillId/make-default", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const { pillId } = req.params;
+
+      // Import pill service
+      const { setDefaultPill } = await import('./services/orderStatusPillService');
+
+      const pill = await setDefaultPill(organizationId, pillId);
+
+      return res.json({ success: true, pill, message: "Default pill updated" });
+
+    } catch (error: any) {
+      console.error('[StatusPills:MakeDefault] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error?.message || "Failed to set default pill",
+        error: error?.message,
+      });
+    }
+  });
+
+  // ==================== End TitanOS State Architecture ====================
+
   // Order List Notes (list-only annotations - always editable)
   app.get("/api/orders/:id/list-note", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
