@@ -7744,6 +7744,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
+      const userRole = req.user?.role || 'customer';
       
       // BLOCK status changes - must use /transition endpoint
       if (req.body.status !== undefined) {
@@ -7751,6 +7752,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
           message: "Status changes must use the /api/orders/:id/transition endpoint for proper validation and side effects.",
           code: "USE_TRANSITION_ENDPOINT"
         });
+      }
+      
+      // Get order to check current status
+      const existingOrder = await storage.getOrderById(organizationId, req.params.id);
+      if (!existingOrder) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+      
+      // Check if order is terminal (completed/canceled)
+      const isTerminal = existingOrder.status === 'completed' || existingOrder.status === 'canceled';
+      
+      // Enforce allowCompletedOrderEdits setting for terminal orders
+      if (isTerminal) {
+        const isAdminOrOwner = ['owner', 'admin'].includes(userRole);
+        
+        if (!isAdminOrOwner) {
+          return res.status(403).json({ 
+            message: "Cannot edit completed or canceled orders",
+            code: "ORDER_LOCKED"
+          });
+        }
+        
+        // Admin/Owner must have setting enabled
+        const [org] = await db
+          .select({ settings: organizations.settings })
+          .from(organizations)
+          .where(eq(organizations.id, organizationId))
+          .limit(1);
+        
+        const preferences = (org?.settings as any)?.preferences || {};
+        const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
+        
+        if (!allowCompletedOrderEdits) {
+          return res.status(403).json({ 
+            message: "Editing completed/canceled orders is disabled. Enable 'Allow Completed Order Edits' in organization settings.",
+            code: "ORDER_LOCKED_SETTING_DISABLED"
+          });
+        }
       }
       
       // Validate customerId if provided
