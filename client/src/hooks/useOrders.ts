@@ -579,6 +579,50 @@ export function useUpdateOrderLineItemStatus(orderId: string) {
   });
 }
 
+// Bulk update line item statuses
+export function useBulkUpdateOrderLineItemStatus(orderId: string) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ status, lineItemIds }: { status: string; lineItemIds?: string[] }) => {
+      const response = await fetch(`/api/orders/${orderId}/line-items/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, lineItemIds }),
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || "Failed to bulk update line item statuses");
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      // Invalidate order detail (contains line items)
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      
+      // Invalidate order timeline
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+      
+      // Invalidate orders list
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      
+      toast({
+        title: "Success",
+        description: data.message || `Updated ${data.updatedCount} line item(s)`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
 // Order State Transition Hook
 export function useTransitionOrderStatus(orderId: string) {
   const queryClient = useQueryClient();
@@ -665,7 +709,7 @@ export function getAllowedNextStatuses(currentStatus: string): string[] {
     case 'new':
       return ['in_production', 'on_hold', 'canceled'];
     case 'in_production':
-      return ['ready_for_shipment', 'on_hold', 'canceled'];
+      return ['ready_for_shipment', 'completed', 'on_hold', 'canceled'];
     case 'on_hold':
       return ['in_production', 'canceled'];
     case 'ready_for_shipment':

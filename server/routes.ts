@@ -7955,6 +7955,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Bulk Line Item Status Update Endpoint
+  app.patch("/api/orders/:orderId/line-items/status", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { orderId } = req.params;
+      const { status, lineItemIds } = req.body;
+
+      if (!status || typeof status !== 'string') {
+        return res.status(400).json({ message: "status is required" });
+      }
+
+      // Validate status is valid line item status
+      const validStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+      }
+
+      // Get order to verify ownership
+      const order = await storage.getOrderById(organizationId, orderId);
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+
+      // Get all line items for this order
+      const allLineItems = await db
+        .select()
+        .from(orderLineItems)
+        .where(eq(orderLineItems.orderId, orderId));
+
+      // Determine which line items to update
+      let itemsToUpdate = allLineItems;
+      if (lineItemIds && Array.isArray(lineItemIds) && lineItemIds.length > 0) {
+        itemsToUpdate = allLineItems.filter(li => lineItemIds.includes(li.id));
+      } else {
+        // If no specific IDs, update all that are NOT already done/canceled
+        itemsToUpdate = allLineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+      }
+
+      if (itemsToUpdate.length === 0) {
+        return res.json({ 
+          success: true, 
+          message: "No line items to update",
+          updatedCount: 0 
+        });
+      }
+
+      // Update all selected line items
+      const updatePromises = itemsToUpdate.map(li =>
+        db
+          .update(orderLineItems)
+          .set({ 
+            status: status as any,
+            updatedAt: sql`now()`
+          })
+          .where(eq(orderLineItems.id, li.id))
+      );
+
+      await Promise.all(updatePromises);
+
+      // Create audit log entry
+      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+      await storage.createOrderAuditLog({
+        orderId: order.id,
+        userId,
+        userName,
+        actionType: 'bulk_line_item_status_update',
+        fromStatus: null,
+        toStatus: null,
+        note: `Bulk updated ${itemsToUpdate.length} line item(s) to status: ${status}`,
+        metadata: {
+          status,
+          count: itemsToUpdate.length,
+          lineItemIds: itemsToUpdate.map(li => li.id),
+        },
+      });
+
+      res.json({
+        success: true,
+        message: `Updated ${itemsToUpdate.length} line item(s) to ${status}`,
+        updatedCount: itemsToUpdate.length,
+      });
+    } catch (error) {
+      console.error("Error bulk updating line item status:", error);
+      res.status(500).json({ message: "Failed to update line item statuses" });
+    }
+  });
+
   // Order Status Transition Endpoint (ENFORCED PATHWAY FOR STATUS CHANGES)
   app.post("/api/orders/:orderId/transition", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -8005,6 +8096,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Load organization preferences
       const orgPreferences = await getOrgPreferences(organizationId);
+
+      // Special validation for completion: All line items must be done or canceled (if required by org)
+      if (toStatus === 'completed') {
+        const requireLineItemsDone = orgPreferences?.orders?.requireLineItemsDoneToComplete ?? true; // Default strict
+        if (requireLineItemsDone) {
+          const incompleteLi = lineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+          if (incompleteLi.length > 0) {
+            return res.status(400).json({
+              success: false,
+              message: `Cannot complete order: ${incompleteLi.length} line item(s) are not finished. All line items must have status "done" or "canceled" before completing the order.`,
+              code: 'LINE_ITEMS_NOT_COMPLETE',
+              incompleteCount: incompleteLi.length,
+            });
+          }
+        }
+      }
 
       // Validate transition
       const { validateOrderTransition } = await import('./services/orderTransition');

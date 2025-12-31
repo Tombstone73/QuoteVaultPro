@@ -1780,7 +1780,14 @@ export const orders = pgTable("orders", {
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
-  status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled
+  status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled [DEPRECATED: use state instead]
+  // TitanOS State Architecture (canonical workflow states)
+  state: varchar("state", { length: 50 }).notNull().default("open"), // open, production_complete, closed, canceled
+  statusPillValue: varchar("status_pill_value", { length: 100 }), // Org-configurable status pill within current state
+  paymentStatus: varchar("payment_status", { length: 50 }).default("unpaid"), // unpaid, partial, paid
+  routingTarget: varchar("routing_target", { length: 50 }), // 'fulfillment' or 'invoicing' (set on production_complete)
+  productionCompletedAt: timestamp("production_completed_at", { withTimezone: true, mode: "string" }),
+  closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
   priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low
   fulfillmentStatus: varchar("fulfillment_status", { length: 50 }).notNull().default("pending"), // pending, packed, shipped, delivered
   dueDate: timestamp("due_date", { withTimezone: true, mode: "string" }),
@@ -1860,6 +1867,8 @@ export const orders = pgTable("orders", {
   index("orders_order_number_idx").on(table.orderNumber),
   index("orders_customer_id_idx").on(table.customerId),
   index("orders_status_idx").on(table.status),
+  index("orders_state_idx").on(table.state), // NEW: Index for state filtering
+  index("orders_payment_status_idx").on(table.paymentStatus), // NEW: Index for payment status
   index("orders_fulfillment_status_idx").on(table.fulfillmentStatus),
   index("orders_due_date_idx").on(table.dueDate),
   index("orders_created_at_idx").on(table.createdAt),
@@ -1877,6 +1886,10 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
 }).extend({
   orderNumber: z.string().min(1),
   status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "completed", "canceled"]).default("new"),
+  state: z.enum(["open", "production_complete", "closed", "canceled"]).default("open"),
+  statusPillValue: z.string().max(100).optional().nullable(),
+  paymentStatus: z.enum(["unpaid", "partial", "paid"]).default("unpaid"),
+  routingTarget: z.enum(["fulfillment", "invoicing"]).optional().nullable(),
   priority: z.enum(["rush", "normal", "low"]).default("normal"),
   fulfillmentStatus: z.enum(["pending", "packed", "shipped", "delivered"]).default("pending"),
   subtotal: z.coerce.number().min(0),
@@ -2001,6 +2014,49 @@ export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().ext
 export type InsertOrderLineItem = z.infer<typeof insertOrderLineItemSchema>;
 export type UpdateOrderLineItem = z.infer<typeof updateOrderLineItemSchema>;
 export type OrderLineItem = typeof orderLineItems.$inferSelect;
+
+// Order Status Pills (TitanOS State Architecture)
+// Org-configurable status pills scoped within canonical states
+export const orderStatusPills = pgTable("order_status_pills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  stateScope: varchar("state_scope", { length: 50 }).notNull(), // 'open', 'production_complete', 'closed', 'canceled'
+  name: varchar("name", { length: 100 }).notNull(), // Display label (e.g., "In Production", "On Hold")
+  color: varchar("color", { length: 50 }).notNull().default("#3b82f6"), // Hex color or design token
+  isDefault: boolean("is_default").notNull().default(false), // One default pill per (org_id, state_scope)
+  isActive: boolean("is_active").notNull().default(true), // Soft delete flag
+  sortOrder: integer("sort_order").notNull().default(0), // Display order in UI
+  createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { mode: "string" }).defaultNow().notNull(),
+}, (table) => [
+  index("order_status_pills_org_idx").on(table.organizationId),
+  index("order_status_pills_state_scope_idx").on(table.stateScope),
+  index("order_status_pills_org_state_idx").on(table.organizationId, table.stateScope),
+  // Unique constraint: only one default pill per (org_id, state_scope)
+  // This is enforced in the migration with a partial unique index
+]);
+
+export const insertOrderStatusPillSchema = createInsertSchema(orderStatusPills).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  organizationId: z.string().uuid(),
+  stateScope: z.enum(["open", "production_complete", "closed", "canceled"]),
+  name: z.string().min(1).max(100),
+  color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#3b82f6"),
+  isDefault: z.boolean().default(false),
+  isActive: z.boolean().default(true),
+  sortOrder: z.number().int().min(0).default(0),
+});
+
+export const updateOrderStatusPillSchema = insertOrderStatusPillSchema.partial().extend({
+  id: z.string().uuid(),
+});
+
+export type InsertOrderStatusPill = z.infer<typeof insertOrderStatusPillSchema>;
+export type UpdateOrderStatusPill = z.infer<typeof updateOrderStatusPillSchema>;
+export type OrderStatusPill = typeof orderStatusPills.$inferSelect;
 
 // Jobs table for production tracking
 export const jobs = pgTable("jobs", {

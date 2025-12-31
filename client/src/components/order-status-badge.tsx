@@ -24,6 +24,11 @@ export function OrderStatusBadge({ status, className }: OrderStatusBadgeProps) {
           label: "In Production",
           className: "bg-orange-500/10 text-orange-500 border-orange-500/20",
         };
+      case "ready_for_shipment":
+        return {
+          label: "Ready for Shipment",
+          className: "bg-cyan-500/10 text-cyan-500 border-cyan-500/20",
+        };
       case "ready_for_pickup":
         return {
           label: "Ready for Pickup",
@@ -37,7 +42,7 @@ export function OrderStatusBadge({ status, className }: OrderStatusBadgeProps) {
       case "completed":
         return {
           label: "Completed",
-          className: "bg-gray-500/10 text-gray-500 border-gray-500/20",
+          className: "bg-green-600/10 text-green-600 border-green-600/20",
         };
       case "on_hold":
         return {
@@ -117,32 +122,32 @@ export function LineItemStatusBadge({ status, className }: LineItemStatusBadgePr
       case "queued":
         return {
           label: "Queued",
-          className: "bg-gray-500/10 text-gray-500 border-gray-500/20",
+          className: "bg-gray-500/20 text-gray-700 dark:text-gray-300 border-gray-500/40",
         };
       case "printing":
         return {
           label: "Printing",
-          className: "bg-blue-500/10 text-blue-500 border-blue-500/20",
+          className: "bg-blue-500/20 text-blue-700 dark:text-blue-300 border-blue-500/40",
         };
       case "finishing":
         return {
           label: "Finishing",
-          className: "bg-purple-500/10 text-purple-500 border-purple-500/20",
+          className: "bg-purple-500/20 text-purple-700 dark:text-purple-300 border-purple-500/40",
         };
       case "done":
         return {
           label: "Done",
-          className: "bg-green-500/10 text-green-500 border-green-500/20",
+          className: "bg-green-500/20 text-green-700 dark:text-green-300 border-green-500/40",
         };
       case "canceled":
         return {
           label: "Canceled",
-          className: "bg-red-500/10 text-red-500 border-red-500/20",
+          className: "bg-red-500/20 text-red-700 dark:text-red-300 border-red-500/40",
         };
       default:
         return {
           label: status,
-          className: "bg-gray-500/10 text-gray-500 border-gray-500/20",
+          className: "bg-gray-500/20 text-gray-700 dark:text-gray-300 border-gray-500/40",
         };
     }
   };
