@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -27,6 +28,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
@@ -83,6 +85,7 @@ type OrderDetailLineItem = HookOrderWithRelations["lineItems"][number];
 
 export default function OrderDetail() {
   const { user } = useAuth();
+  const { preferences } = useOrgPreferences();
   const params = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -116,6 +119,9 @@ export default function OrderDetail() {
   // Status transition confirmation state
   const [pendingStatusTransition, setPendingStatusTransition] = useState<{ toStatus: string; requiresReason: boolean } | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
+  
+  // Edit Mode state (matches Quotes pattern)
+  const [editMode, setEditMode] = useState(false);
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
@@ -141,9 +147,16 @@ export default function OrderDetail() {
   
   // Check editability based on order status
   const canEditLineItems = order ? areLineItemsEditable(order.status) : false;
-  const canEditOrder = order ? isOrderEditable(order.status) : false;
+  const baseCanEditOrder = order ? isOrderEditable(order.status) : false;
   const allowedNextStatuses = order ? getAllowedNextStatuses(order.status) : [];
   const isTerminal = allowedNextStatuses.length === 0;
+  
+  // Admin/Owner override: allow editing terminal orders if setting enabled
+  const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
+  const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+  
+  // Determine if order fields should be read-only (Edit Mode OFF or locked by status)
+  const readOnly = !editMode || !canEditOrder;
 
   // Fetch customers for the customer change dialog
   const { data: customers = [] } = useQuery({
@@ -604,18 +617,36 @@ export default function OrderDetail() {
           </Link>
         }
         actions={
-          isAdminOrOwner ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowDeleteDialog(true)}
-              disabled={deleteOrder.isPending}
-              className="rounded-titan-md"
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              Delete
-            </Button>
-          ) : null
+          <div className="flex items-center gap-3">
+            {/* Edit Mode Toggle */}
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={editMode}
+                onCheckedChange={setEditMode}
+                disabled={!canEditOrder}
+                aria-label="Toggle Edit Mode"
+              />
+              <span className="text-xs text-muted-foreground">Edit Mode</span>
+              {isTerminal && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                  {canEditOrder ? "Locked (Override)" : "Locked"}
+                </span>
+              )}
+            </div>
+            
+            {isAdminOrOwner && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowDeleteDialog(true)}
+                disabled={deleteOrder.isPending}
+                className="rounded-titan-md"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -639,7 +670,7 @@ export default function OrderDetail() {
                         </span>
                       )}
                     </label>
-                    <Select value={order.status} onValueChange={handleStatusChange} disabled={isTerminal}>
+                    <Select value={order.status} onValueChange={handleStatusChange} disabled={readOnly || isTerminal}>
                       <SelectTrigger className="mt-1">
                         <SelectValue />
                       </SelectTrigger>
@@ -670,7 +701,7 @@ export default function OrderDetail() {
                   </div>
                   <div>
                     <label className="text-sm font-medium text-muted-foreground">Priority</label>
-                    <Select value={order.priority} onValueChange={handlePriorityChange}>
+                    <Select value={order.priority} onValueChange={handlePriorityChange} disabled={readOnly}>
                       <SelectTrigger className="mt-1">
                         <SelectValue />
                       </SelectTrigger>
@@ -704,9 +735,11 @@ export default function OrderDetail() {
                     ) : (
                       <div className="flex items-center gap-2 mt-1">
                         <div className="text-sm">{formatDate(order.dueDate)}</div>
-                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handleDueDateEdit}>
-                          <Edit className="h-3 w-3" />
-                        </Button>
+                        {!readOnly && (
+                          <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handleDueDateEdit}>
+                            <Edit className="h-3 w-3" />
+                          </Button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -730,9 +763,11 @@ export default function OrderDetail() {
                     ) : (
                       <div className="flex items-center gap-2 mt-1">
                         <div className="text-sm">{formatDate(order.promisedDate)}</div>
-                        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handlePromisedDateEdit}>
-                          <Edit className="h-3 w-3" />
-                        </Button>
+                        {!readOnly && (
+                          <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handlePromisedDateEdit}>
+                            <Edit className="h-3 w-3" />
+                          </Button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -772,7 +807,7 @@ export default function OrderDetail() {
                     </CardTitle>
                     <CardDescription>{order.lineItems.length} items</CardDescription>
                   </div>
-                  {isAdminOrOwner && canEditLineItems && (
+                  {isAdminOrOwner && canEditLineItems && editMode && (
                     <Button onClick={handleAddLineItem} size="sm">
                       <Plus className="w-4 h-4 mr-2" />
                       Add Item
@@ -863,7 +898,7 @@ export default function OrderDetail() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'unit' ? (
+                          {isAdminOrOwner && editMode && editingPriceItemId === item.id && editingPriceType === 'unit' ? (
                             <div className="flex items-center justify-end gap-1">
                               <Input
                                 type="number"
@@ -897,15 +932,15 @@ export default function OrderDetail() {
                             </div>
                           ) : (
                             <div 
-                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
-                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'unit', item.unitPrice)}
+                              className={isAdminOrOwner && editMode ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
+                              onClick={() => isAdminOrOwner && editMode && handleEditPrice(item.id, 'unit', item.unitPrice)}
                             >
                               {formatCurrency(item.unitPrice)}
                             </div>
                           )}
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'total' ? (
+                          {isAdminOrOwner && editMode && editingPriceItemId === item.id && editingPriceType === 'total' ? (
                             <div className="flex items-center justify-end gap-1">
                               <Input
                                 type="number"
@@ -939,8 +974,8 @@ export default function OrderDetail() {
                             </div>
                           ) : (
                             <div 
-                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
-                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'total', item.totalPrice)}
+                              className={isAdminOrOwner && editMode ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
+                              onClick={() => isAdminOrOwner && editMode && handleEditPrice(item.id, 'total', item.totalPrice)}
                             >
                               {formatCurrency(item.totalPrice)}
                             </div>
@@ -954,7 +989,7 @@ export default function OrderDetail() {
                                 size="icon"
                                 className="h-8 w-8"
                                 onClick={() => handleEditLineItem(item)}
-                                disabled={!canEditLineItems}
+                                disabled={!canEditLineItems || !editMode}
                               >
                                 <Edit className="h-4 w-4" />
                               </Button>
@@ -963,7 +998,7 @@ export default function OrderDetail() {
                                 size="icon"
                                 className="h-8 w-8 text-destructive hover:text-destructive"
                                 onClick={() => setLineItemToDelete(item.id)}
-                                disabled={!canEditLineItems}
+                                disabled={!canEditLineItems || !editMode}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
@@ -1192,7 +1227,7 @@ export default function OrderDetail() {
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-base">Bill To</CardTitle>
-                  {isAdminOrOwner && (
+                  {isAdminOrOwner && editMode && (
                     <Button
                       variant="ghost"
                       size="sm"

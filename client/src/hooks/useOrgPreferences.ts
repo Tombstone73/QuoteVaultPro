@@ -14,6 +14,7 @@ export interface OrgPreferences {
     requireDueDateForProduction?: boolean;
     requireBillingAddressForProduction?: boolean;
     requireShippingAddressForProduction?: boolean;
+    allowCompletedOrderEdits?: boolean;
   };
 }
 
