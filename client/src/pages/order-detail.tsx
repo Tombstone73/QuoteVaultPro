@@ -26,10 +26,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText } from "lucide-react";
+import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
+import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
 import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
@@ -47,6 +47,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
+import { cn } from "@/lib/utils";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -131,6 +132,7 @@ export default function OrderDetail() {
   const transitionStatus = useTransitionOrderStatus(orderId!);
   const updateLineItem = useUpdateOrderLineItem(orderId!);
   const updateLineItemStatus = useUpdateOrderLineItemStatus(orderId!);
+  const bulkUpdateLineItemStatus = useBulkUpdateOrderLineItemStatus(orderId!);
   const createLineItem = useCreateOrderLineItem(orderId!);
   const deleteLineItem = useDeleteOrderLineItem(orderId!);
 
@@ -153,10 +155,14 @@ export default function OrderDetail() {
   
   // Admin/Owner override: allow editing terminal orders if setting enabled
   const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
+  const requireLineItemsDone = preferences?.orders?.requireLineItemsDoneToComplete ?? true; // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
   
   // Determine if order fields should be read-only (Edit Mode OFF or locked by status)
   const readOnly = !editMode || !canEditOrder;
+
+  // Calculate incomplete line items for completion workflow
+  const incompleteLi = order?.lineItems?.filter(li => li.status !== 'done' && li.status !== 'canceled') || [];
 
   // Fetch customers for the customer change dialog
   const { data: customers = [] } = useQuery({
@@ -232,6 +238,13 @@ export default function OrderDetail() {
     }
     
     if (newStatus === 'completed') {
+      // Check if there are incomplete line items and strict mode is enabled
+      if (requireLineItemsDone && incompleteLi.length > 0) {
+        // Show dialog offering to mark items done
+        setPendingStatusTransition({ toStatus: newStatus, requiresReason: false });
+        return;
+      }
+      // If not strict OR all items done, show regular confirmation
       setPendingStatusTransition({ toStatus: newStatus, requiresReason: false });
       return;
     }
@@ -248,6 +261,15 @@ export default function OrderDetail() {
     if (!pendingStatusTransition) return;
     
     try {
+      // If completing and there are incomplete items in strict mode, mark them done first
+      if (pendingStatusTransition.toStatus === 'completed' && requireLineItemsDone && incompleteLi.length > 0) {
+        // Mark all incomplete items as done
+        await bulkUpdateLineItemStatus.mutateAsync({ status: 'done' });
+        
+        // Small delay to ensure queries invalidated
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
       await transitionStatus.mutateAsync({
         toStatus: pendingStatusTransition.toStatus,
         reason: pendingStatusTransition.requiresReason ? cancellationReason : undefined,
@@ -618,6 +640,28 @@ export default function OrderDetail() {
         }
         actions={
           <div className="flex items-center gap-3">
+            {/* Mark Completed Button */}
+            {isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed') && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => {
+                  // If strict mode and incomplete items, show dialog
+                  if (requireLineItemsDone && incompleteLi.length > 0) {
+                    setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
+                    return;
+                  }
+                  // Otherwise show regular confirmation
+                  setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
+                }}
+                disabled={transitionStatus.isPending}
+                className="rounded-titan-md bg-green-600 hover:bg-green-700 text-white"
+              >
+                <Check className="w-4 h-4 mr-2" />
+                Mark Completed
+              </Button>
+            )}
+            
             {/* Edit Mode Toggle */}
             <div className="flex items-center gap-2">
               <Switch
@@ -666,11 +710,16 @@ export default function OrderDetail() {
                       Status
                       {isTerminal && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                          Locked
+                          Terminal
                         </span>
                       )}
                     </label>
-                    <Select value={order.status} onValueChange={handleStatusChange} disabled={readOnly || isTerminal}>
+                    {/* Status transitions independent of Edit Mode - always use transition endpoint */}
+                    <Select 
+                      value={order.status} 
+                      onValueChange={handleStatusChange} 
+                      disabled={!isAdminOrOwner || isTerminal || allowedNextStatuses.length === 0}
+                    >
                       <SelectTrigger className="mt-1">
                         <SelectValue />
                       </SelectTrigger>
@@ -890,10 +939,22 @@ export default function OrderDetail() {
                             </div>
                           ) : (
                             <div 
-                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded inline-block" : ""}
-                              onClick={() => isAdminOrOwner && handleEditStatus(item.id, item.status)}
+                              className={cn(
+                                "inline-flex items-center gap-1 px-2 py-1 rounded-md transition-colors",
+                                isAdminOrOwner && "cursor-pointer hover:bg-accent/50 hover:ring-1 hover:ring-border"
+                              )}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (isAdminOrOwner) {
+                                  handleEditStatus(item.id, item.status);
+                                }
+                              }}
                             >
-                              <LineItemStatusBadge status={item.status} />
+                              <LineItemStatusBadge status={item.status} className="font-medium" />
+                              {isAdminOrOwner && (
+                                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                              )}
                             </div>
                           )}
                         </TableCell>
@@ -1546,7 +1607,16 @@ export default function OrderDetail() {
                 </div>
               )}
               {pendingStatusTransition?.toStatus === 'completed' && (
-                <p>Are you sure you want to mark this order as completed? This will lock the order from further edits.</p>
+                <>
+                  {requireLineItemsDone && incompleteLi.length > 0 ? (
+                    <p>
+                      <strong>{incompleteLi.length} line item(s)</strong> aren't marked Done yet. 
+                      Do you want to mark them as Done and complete this order?
+                    </p>
+                  ) : (
+                    <p>Are you sure you want to mark this order as completed? This will lock the order from further edits.</p>
+                  )}
+                </>
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -1559,7 +1629,13 @@ export default function OrderDetail() {
                 : "bg-primary text-primary-foreground hover:bg-primary/90"
               }
             >
-              {pendingStatusTransition?.toStatus === 'canceled' ? 'Cancel Order' : 'Complete Order'}
+              {pendingStatusTransition?.toStatus === 'canceled' 
+                ? 'Cancel Order' 
+                : (requireLineItemsDone && incompleteLi.length > 0 
+                    ? 'Mark Done & Complete' 
+                    : 'Complete Order'
+                  )
+              }
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

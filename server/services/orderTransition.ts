@@ -153,6 +153,12 @@ export function validateOrderTransition(
         return { ok: true, warnings: warnings.length > 0 ? warnings : undefined };
       }
 
+      if (to === 'completed') {
+        // Allow direct completion from production (skipping shipment for internal/pickup orders)
+        // This represents "production complete" regardless of fulfillment
+        return { ok: true };
+      }
+
       if (to === 'on_hold') {
         return { ok: true };
       }
@@ -165,7 +171,7 @@ export function validateOrderTransition(
       return {
         ok: false,
         code: 'INVALID_TRANSITION',
-        message: `Cannot transition from ${from} to ${to}. Valid options: ready_for_shipment, on_hold, canceled.`,
+        message: `Cannot transition from ${from} to ${to}. Valid options: ready_for_shipment, completed, on_hold, canceled.`,
       };
 
     case 'on_hold':
@@ -224,7 +230,7 @@ export function getAllowedNextStatuses(currentStatus: OrderStatus): OrderStatus[
     case 'new':
       return ['in_production', 'on_hold', 'canceled'];
     case 'in_production':
-      return ['ready_for_shipment', 'on_hold', 'canceled'];
+      return ['ready_for_shipment', 'completed', 'on_hold', 'canceled'];
     case 'on_hold':
       return ['in_production', 'canceled'];
     case 'ready_for_shipment':

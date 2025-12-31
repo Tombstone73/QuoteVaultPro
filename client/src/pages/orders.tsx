@@ -725,10 +725,8 @@ export default function Orders() {
             <SelectContent>
               <SelectItem value="all">All Statuses</SelectItem>
               <SelectItem value="new">New</SelectItem>
-              <SelectItem value="scheduled">Scheduled</SelectItem>
               <SelectItem value="in_production">In Production</SelectItem>
-              <SelectItem value="ready_for_pickup">Ready for Pickup</SelectItem>
-              <SelectItem value="shipped">Shipped</SelectItem>
+              <SelectItem value="ready_for_shipment">Ready for Shipment</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
               <SelectItem value="on_hold">On Hold</SelectItem>
               <SelectItem value="canceled">Canceled</SelectItem>
