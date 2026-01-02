@@ -15,6 +15,7 @@ import { useLocation, useRoute } from "wouter";
 import { ROUTES } from "@/config/routes";
 import { useContactDetail } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
+import { formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -178,8 +179,8 @@ export default function ContactDetailPage() {
                   <div className="text-sm font-medium text-muted-foreground mb-1">Phone</div>
                   <div className="flex items-center gap-2">
                     <Phone className="w-4 h-4 text-muted-foreground" />
-                    <a href={`tel:${contact.phone}`} className="hover:underline">
-                      {contact.phone}
+                    <a href={phoneToTelHref(contact.phone)} className="hover:underline">
+                      {formatPhoneForDisplay(contact.phone)}
                     </a>
                   </div>
                 </div>
@@ -190,8 +191,8 @@ export default function ContactDetailPage() {
                   <div className="text-sm font-medium text-muted-foreground mb-1">Mobile</div>
                   <div className="flex items-center gap-2">
                     <Phone className="w-4 h-4 text-muted-foreground" />
-                    <a href={`tel:${contact.mobile}`} className="hover:underline">
-                      {contact.mobile}
+                    <a href={phoneToTelHref(contact.mobile)} className="hover:underline">
+                      {formatPhoneForDisplay(contact.mobile)}
                     </a>
                   </div>
                 </div>

@@ -12,6 +12,7 @@ import { ROUTES } from "@/config/routes";
 import { useContacts, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
+import { formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { ListViewSettings } from "@/components/list/ListViewSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -189,11 +190,11 @@ export default function ContactsPage() {
           <div className="flex items-center gap-2">
             <Phone className="w-4 h-4 text-titan-text-muted" />
             <a
-              href={`tel:${contact.phone}`}
+              href={phoneToTelHref(contact.phone)}
               onClick={(e) => e.stopPropagation()}
               className="hover:underline text-titan-sm text-titan-text-secondary"
             >
-              {contact.phone}
+              {formatPhoneForDisplay(contact.phone)}
             </a>
           </div>
         ) : (
