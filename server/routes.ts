@@ -7827,6 +7827,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         id: req.params.id,
       });
       const { id, ...updateData } = orderData;
+
+      // NOTE: updateOrderSchema may strip fields we still support updating via PATCH.
+      // Customer/contact changes are validated above and also used for snapshot refresh.
+      const updateDataWithCustomer = {
+        ...updateData,
+        ...(req.body.customerId !== undefined ? { customerId: req.body.customerId } : {}),
+        ...(req.body.contactId !== undefined ? { contactId: req.body.contactId } : {}),
+      };
       
       // Get old values for audit
       const oldOrder = await storage.getOrderById(organizationId, req.params.id);
@@ -7863,7 +7871,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Update order - now returns full OrderWithRelations
       const order = await storage.updateOrder(organizationId, req.params.id, {
-        ...updateData,
+        ...updateDataWithCustomer,
         ...snapshotData,
       });
 

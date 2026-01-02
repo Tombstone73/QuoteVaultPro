@@ -26,7 +26,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Calendar, User, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown } from "lucide-react";
+import { ArrowLeft, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
@@ -44,17 +44,15 @@ import type { Shipment } from "@shared/schema";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Page, PageHeader, ContentLayout, DataCard, StatusPill } from "@/components/titan";
+import { Page, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn } from "@/lib/utils";
 // TitanOS State Architecture
-import { OrderStateBadge } from "@/components/OrderStateBadge";
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
   CompleteProductionButton, 
   CloseOrderButton, 
-  CancelOrderButton, 
   ReopenOrderButton 
 } from "@/components/StateTransitionButtons";
 import type { OrderState } from "@/hooks/useOrderState";
@@ -81,11 +79,14 @@ type OrderAddressSnapshotFields = {
 
   shipToName?: string | null;
   shipToCompany?: string | null;
+  shipToEmail?: string | null;
+  shipToPhone?: string | null;
   shipToAddress1?: string | null;
   shipToAddress2?: string | null;
   shipToCity?: string | null;
   shipToState?: string | null;
   shipToPostalCode?: string | null;
+  shipToCountry?: string | null;
 
   shippingMethod?: string | null;
   carrier?: string | null;
@@ -140,6 +141,10 @@ export default function OrderDetail() {
   
   // Edit Mode state (matches Quotes pattern)
   const [editMode, setEditMode] = useState(false);
+
+  const [rightPanel, setRightPanel] = useState<"collapsed" | "timeline" | "material">("collapsed");
+
+  const [showCustomerAddress, setShowCustomerAddress] = useState(true);
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
@@ -206,7 +211,7 @@ export default function OrderDetail() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}`] });
+      queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
       toast({
         title: "Success",
         description: "Customer updated successfully",
@@ -354,6 +359,33 @@ export default function OrderDetail() {
   const handlePromisedDateCancel = () => {
     setEditingPromisedDate(false);
     setTempPromisedDate('');
+  };
+
+  type ShipToUpdatePayload = Partial<Pick<
+    OrderDetailOrder,
+    | "shipToCompany"
+    | "shipToName"
+    | "shipToEmail"
+    | "shipToPhone"
+    | "shipToAddress1"
+    | "shipToAddress2"
+    | "shipToCity"
+    | "shipToState"
+    | "shipToPostalCode"
+    | "shipToCountry"
+  >>;
+
+  const normalizeNullableString = (value: string): string | null => {
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  };
+
+  const saveShipTo = async (payload: ShipToUpdatePayload) => {
+    try {
+      await updateOrder.mutateAsync(payload);
+    } catch (error) {
+      // Error toast handled by mutation
+    }
   };
 
   const handleCustomerChange = () => {
@@ -638,17 +670,124 @@ export default function OrderDetail() {
 
   const { displayNumber, isTest } = getDisplayOrderNumber(order);
   const titleText = isTest ? `${displayNumber} (Test Data)` : displayNumber;
+  const showPaymentStatus = order.state === 'closed';
+  const showRoutedTo = Boolean(order.routingTarget);
+
+  const normalizeAddressKey = (parts: Array<string | null | undefined>) =>
+    parts
+      .filter((p): p is string => Boolean(p && p.trim().length > 0))
+      .map((p) => p.trim().toLowerCase().replace(/\s+/g, ' '))
+      .join('|');
+
+  const billToKey = normalizeAddressKey([
+    order.billToName,
+    order.billToCompany,
+    order.billToAddress1,
+    order.billToAddress2,
+    order.billToCity,
+    order.billToState,
+    order.billToPostalCode,
+  ]);
+  const shipToKey = normalizeAddressKey([
+    order.shipToName,
+    order.shipToCompany,
+    order.shipToAddress1,
+    order.shipToAddress2,
+    order.shipToCity,
+    order.shipToState,
+    order.shipToPostalCode,
+  ]);
+
+  const isSameBillShipAddress = billToKey === shipToKey;
+  const billToTitle = isSameBillShipAddress ? 'Billing / Shipping' : 'Bill To';
+
+  const normalizePhoneKey = (value: string | null | undefined) =>
+    (value || '').replace(/\D+/g, '');
+
+  const customerCompanyName: string | null = order.customer?.companyName || order.billToCompany || null;
+  const contactNameFromContact: string | null = (() => {
+    const c: any = order.contact;
+    if (!c) return null;
+    const name = (c.name || c.fullName || c.displayName || `${c.firstName || ""} ${c.lastName || ""}`).trim();
+    return name || null;
+  })();
+  const contactLineName: string | null =
+    contactNameFromContact && contactNameFromContact !== customerCompanyName ? contactNameFromContact : null;
+  const contactLinePhone: string | null = (order.contact as any)?.phone || (order.contact as any)?.phoneNumber || (order.contact as any)?.mobile || null;
+
+  const email: string | null = order.contact?.email || order.customer?.email || order.billToEmail || null;
+  const customerPhone: string | null = order.customer?.phone || null;
+  const metaPhone: string | null = customerPhone || contactLinePhone || null;
+
+  const getAddressParts = (source: {
+    street1?: string | null;
+    street2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postalCode?: string | null;
+    country?: string | null;
+  }) => {
+    const line1 = [source.street1, source.street2].filter(Boolean).join(', ');
+    const line2 = [source.city, source.state, source.postalCode].filter(Boolean).join(', ');
+    const line3 = [source.country].filter(Boolean).join(', ');
+    return { line1, line2, line3 };
+  };
+
+  const resolvedBillAddress = (() => {
+    if (order.billToAddress1 || order.billToAddress2 || order.billToCity || order.billToState || order.billToPostalCode) {
+      return getAddressParts({
+        street1: order.billToAddress1,
+        street2: order.billToAddress2,
+        city: order.billToCity,
+        state: order.billToState,
+        postalCode: order.billToPostalCode,
+        country: (order as any).billToCountry,
+      });
+    }
+
+    if (order.contact?.street1) {
+      return getAddressParts({
+        street1: order.contact.street1,
+        street2: order.contact.street2,
+        city: order.contact.city,
+        state: order.contact.state,
+        postalCode: order.contact.postalCode,
+        country: order.contact.country,
+      });
+    }
+
+    if (order.customer?.shippingStreet1) {
+      return getAddressParts({
+        street1: order.customer.shippingStreet1,
+        street2: order.customer.shippingStreet2,
+        city: order.customer.shippingCity,
+        state: order.customer.shippingState,
+        postalCode: order.customer.shippingPostalCode,
+        country: order.customer.shippingCountry,
+      });
+    }
+
+    return getAddressParts({
+      street1: order.customer?.billingStreet1,
+      street2: order.customer?.billingStreet2,
+      city: order.customer?.billingCity,
+      state: order.customer?.billingState,
+      postalCode: order.customer?.billingPostalCode,
+      country: order.customer?.billingCountry,
+    });
+  })();
+
+  const billAddressLine1 = resolvedBillAddress.line1;
+  const billAddressLine2 = resolvedBillAddress.line2;
+  const hasBillAddress = Boolean(billAddressLine1 || billAddressLine2);
 
   return (
     <Page>
-      <PageHeader
-        title={titleText}
-        subtitle={`Created ${formatDate(order.createdAt)}`}
-        className="pb-3"
-        backButton={
+      <div className="flex items-center justify-between mb-6 pb-3">
+        <div className="flex items-center gap-4 min-w-0">
           <Link to="/orders">
-            <Button 
-              variant="ghost" 
+            <Button
+              variant="ghost"
               size="sm"
               className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
             >
@@ -656,101 +795,345 @@ export default function OrderDetail() {
               Back
             </Button>
           </Link>
-        }
-        actions={
-          <div className="flex items-center gap-3">
-            {/* Mark Completed Button */}
-            {isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed') && (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => {
-                  // If strict mode and incomplete items, show dialog
-                  if (requireLineItemsDone && incompleteLi.length > 0) {
-                    setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
-                    return;
-                  }
-                  // Otherwise show regular confirmation
+
+          <div className="flex flex-col justify-center min-w-0">
+            <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
+              {`Order ${titleText}`}
+            </h1>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              {`Created ${formatDate(order.createdAt)}`}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-1 items-center justify-center px-4">
+          <OrderStatusPillSelector
+            orderId={order.id}
+            currentState={order.state as OrderState}
+            currentPillValue={order.statusPillValue}
+            disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
+            className="h-10 w-[260px] rounded-full text-base"
+          />
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Mark Completed Button */}
+          {isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed') && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => {
+                // If strict mode and incomplete items, show dialog
+                if (requireLineItemsDone && incompleteLi.length > 0) {
                   setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
-                }}
-                disabled={transitionStatus.isPending}
-                className="rounded-titan-md bg-green-600 hover:bg-green-700 text-white"
-              >
-                <Check className="w-4 h-4 mr-2" />
-                Mark Completed
-              </Button>
-            )}
-            
-            {/* Edit Mode Toggle */}
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={editMode}
-                onCheckedChange={setEditMode}
-                disabled={!canEditOrder}
-                aria-label="Toggle Edit Mode"
-              />
-              <span className="text-xs text-muted-foreground">Edit Mode</span>
-              {isTerminal && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                  {canEditOrder ? "Locked (Override)" : "Locked"}
-                </span>
-              )}
-            </div>
-            
-            {isAdminOrOwner && (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setShowDeleteDialog(true)}
-                disabled={deleteOrder.isPending}
-                className="rounded-titan-md"
-              >
-                <Trash2 className="w-4 h-4 mr-2" />
-                Delete
-              </Button>
+                  return;
+                }
+                // Otherwise show regular confirmation
+                setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
+              }}
+              disabled={transitionStatus.isPending}
+              className="rounded-titan-md bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Check className="w-4 h-4 mr-2" />
+              Mark Completed
+            </Button>
+          )}
+
+          {/* Edit Mode Toggle */}
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={editMode}
+              onCheckedChange={setEditMode}
+              disabled={!canEditOrder}
+              aria-label="Toggle Edit Mode"
+            />
+            <span className="text-xs text-muted-foreground">Edit Mode</span>
+            {isTerminal && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                {canEditOrder ? "Locked (Override)" : "Locked"}
+              </span>
             )}
           </div>
-        }
-      />
+
+          {isAdminOrOwner && order.state === 'open' && (
+            <CompleteProductionButton orderId={order.id} />
+          )}
+        </div>
+      </div>
 
       <ContentLayout>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Main Content */}
           <div className="lg:col-span-2 space-y-4">
+            {/* Customer / Contact */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Customer / Contact</CardTitle>
+                  {isAdminOrOwner && editMode && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleCustomerChange}
+                      disabled={changeCustomerMutation.isPending}
+                      title="Change customer will refresh bill to/ship to snapshot"
+                    >
+                      <UserCog className="w-4 h-4 mr-1" />
+                      Change
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="p-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Customer</div>
+                    {order.customer?.id && customerCompanyName ? (
+                      <Link
+                        to={`/customers/${order.customer.id}`}
+                        className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
+                        title={customerCompanyName}
+                      >
+                        {customerCompanyName}
+                      </Link>
+                    ) : (
+                      <div className="block truncate text-sm font-semibold leading-5 text-foreground">
+                        {customerCompanyName || "—"}
+                      </div>
+                    )}
+                    {order.customer?.email && (
+                      <div className="text-[11px] leading-4 text-muted-foreground font-mono" title={order.customer.email}>
+                        {order.customer.email}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">Contact</div>
+                    <div className="text-sm text-foreground">
+                      {contactLineName || "—"}
+                    </div>
+                    {(order.contact?.email || contactLinePhone) && (
+                      <div className="text-[11px] leading-4 text-muted-foreground">
+                        {order.contact?.email && contactLinePhone ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            <span className="min-w-0 truncate font-mono" title={order.contact.email}>
+                              {order.contact.email}
+                            </span>
+                            <span className="justify-self-end font-mono" title={contactLinePhone}>
+                              {contactLinePhone}
+                            </span>
+                          </div>
+                        ) : order.contact?.email ? (
+                          <span className="font-mono" title={order.contact.email}>
+                            {order.contact.email}
+                          </span>
+                        ) : (
+                          contactLinePhone && (
+                            <span className="font-mono" title={contactLinePhone}>
+                              {contactLinePhone}
+                            </span>
+                          )
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {isSameBillShipAddress ? (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">{billToTitle}</CardTitle>
+                    <div className="flex items-center gap-3">
+                      {hasBillAddress && (
+                        <button
+                          type="button"
+                          onClick={() => setShowCustomerAddress((v) => !v)}
+                          className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
+                        >
+                          {showCustomerAddress ? "Hide address" : "Show address"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <div className="space-y-2 -mt-1">
+                    <div className="min-w-0">
+                      {order.customer?.id && customerCompanyName ? (
+                        <Link
+                          to={`/customers/${order.customer.id}`}
+                          className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
+                          title={customerCompanyName}
+                        >
+                          {customerCompanyName}
+                        </Link>
+                      ) : (
+                        <div className="block truncate text-sm font-semibold leading-5 text-foreground">
+                          {customerCompanyName || '—'}
+                        </div>
+                      )}
+                      {contactLineName && (
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-4 text-muted-foreground">
+                          <span className="truncate" title={contactLineName}>
+                            {contactLineName}
+                          </span>
+                          {contactLinePhone && (
+                            <span className="font-mono" title={contactLinePhone}>
+                              {contactLinePhone}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {hasBillAddress && (
+                      <div className="text-[11px] leading-4 text-muted-foreground">
+                        <div className="hidden print:block">
+                          {billAddressLine1 && <div>{billAddressLine1}</div>}
+                          {billAddressLine2 && <div>{billAddressLine2}</div>}
+                        </div>
+                        {showCustomerAddress && (
+                          <div className="space-y-0.5 print:hidden">
+                            {billAddressLine1 && <div>{billAddressLine1}</div>}
+                            {billAddressLine2 && <div>{billAddressLine2}</div>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {(email || metaPhone) && (
+                      <div className="text-[11px] leading-4 text-muted-foreground">
+                        {email && metaPhone ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            <span className="min-w-0 truncate font-mono" title={email}>
+                              {email}
+                            </span>
+                            <span className="justify-self-end font-mono" title={metaPhone}>
+                              {metaPhone}
+                            </span>
+                          </div>
+                        ) : email ? (
+                          <span className="font-mono" title={email}>
+                            {email}
+                          </span>
+                        ) : (
+                          metaPhone && (
+                            <span className="font-mono" title={metaPhone}>
+                              {metaPhone}
+                            </span>
+                          )
+                        )}
+                      </div>
+                    )}
+
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">{billToTitle}</CardTitle>
+                    <div className="flex items-center gap-3">
+                      {hasBillAddress && (
+                        <button
+                          type="button"
+                          onClick={() => setShowCustomerAddress((v) => !v)}
+                          className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
+                        >
+                          {showCustomerAddress ? "Hide address" : "Show address"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <div className="space-y-2 -mt-1">
+                    <div className="min-w-0">
+                      {order.customer?.id && customerCompanyName ? (
+                        <Link
+                          to={`/customers/${order.customer.id}`}
+                          className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
+                          title={customerCompanyName}
+                        >
+                          {customerCompanyName}
+                        </Link>
+                      ) : (
+                        <div className="block truncate text-sm font-semibold leading-5 text-foreground">
+                          {customerCompanyName || order.billToCompany || '—'}
+                        </div>
+                      )}
+                      {contactLineName && (
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-4 text-muted-foreground">
+                          <span className="truncate" title={contactLineName}>
+                            {contactLineName}
+                          </span>
+                          {contactLinePhone && (
+                            <span className="font-mono" title={contactLinePhone}>
+                              {contactLinePhone}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {hasBillAddress && (
+                      <div className="text-[11px] leading-4 text-muted-foreground">
+                        <div className="hidden print:block">
+                          {billAddressLine1 && <div>{billAddressLine1}</div>}
+                          {billAddressLine2 && <div>{billAddressLine2}</div>}
+                        </div>
+                        {showCustomerAddress && (
+                          <div className="space-y-0.5 print:hidden">
+                            {billAddressLine1 && <div>{billAddressLine1}</div>}
+                            {billAddressLine2 && <div>{billAddressLine2}</div>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {(email || metaPhone) && (
+                      <div className="text-[11px] leading-4 text-muted-foreground">
+                        {email && metaPhone ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            <span className="min-w-0 truncate font-mono" title={email}>
+                              {email}
+                            </span>
+                            <span className="justify-self-end font-mono" title={metaPhone}>
+                              {metaPhone}
+                            </span>
+                          </div>
+                        ) : email ? (
+                          <span className="font-mono" title={email}>
+                            {email}
+                          </span>
+                        ) : (
+                          metaPhone && (
+                            <span className="font-mono" title={metaPhone}>
+                              {metaPhone}
+                            </span>
+                          )
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Order Details */}
             <Card className="bg-titan-bg-card border-titan-border-subtle">
-              <CardHeader>
-                <CardTitle>Order Details</CardTitle>
-              </CardHeader>
               <CardContent className="space-y-4">
                 {/* TitanOS State Architecture */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg border border-border">
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground">State</label>
-                    <div className="mt-2">
-                      <OrderStateBadge state={order.state as OrderState} />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Canonical workflow state
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground">Status</label>
-                    <div className="mt-2">
-                      <OrderStatusPillSelector 
-                        orderId={order.id}
-                        currentState={order.state as OrderState}
-                        currentPillValue={order.statusPillValue}
-                        disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Org-configurable status label
-                    </p>
-                  </div>
-                  
-                  {order.state === 'closed' && (
+                <div className={cn(
+                  "grid grid-cols-1 gap-4 p-4 bg-muted/50 rounded-lg border border-border",
+                  showPaymentStatus && showRoutedTo ? "md:grid-cols-2" : "md:grid-cols-1"
+                )}>
+                  {showPaymentStatus && (
                     <div>
                       <label className="text-sm font-medium text-muted-foreground">Payment</label>
                       <div className="mt-2">
@@ -772,7 +1155,7 @@ export default function OrderDetail() {
                     </div>
                   )}
                   
-                  {order.routingTarget && (
+                  {showRoutedTo && (
                     <div>
                       <label className="text-sm font-medium text-muted-foreground">Routed To</label>
                       <div className="mt-2">
@@ -790,16 +1173,8 @@ export default function OrderDetail() {
                 {/* State Transition Actions */}
                 {isAdminOrOwner && (
                   <div className="flex gap-2 flex-wrap">
-                    {order.state === 'open' && (
-                      <CompleteProductionButton orderId={order.id} />
-                    )}
-                    
                     {order.state === 'production_complete' && (
                       <CloseOrderButton orderId={order.id} />
-                    )}
-                    
-                    {(order.state === 'open' || order.state === 'production_complete') && (
-                      <CancelOrderButton orderId={order.id} />
                     )}
                     
                     {order.state === 'closed' && (
@@ -810,21 +1185,7 @@ export default function OrderDetail() {
                 
                 <Separator />
 
-                <div>
-                  <label className="text-sm font-medium text-muted-foreground">Priority</label>
-                  <Select value={order.priority} onValueChange={handlePriorityChange} disabled={readOnly}>
-                    <SelectTrigger className="mt-1">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="rush">Rush</SelectItem>
-                      <SelectItem value="normal">Normal</SelectItem>
-                      <SelectItem value="low">Low</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                     <label className="text-sm font-medium text-muted-foreground">Due Date</label>
                     {editingDueDate ? (
@@ -880,6 +1241,20 @@ export default function OrderDetail() {
                         )}
                       </div>
                     )}
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium text-muted-foreground">Priority</label>
+                    <Select value={order.priority} onValueChange={handlePriorityChange} disabled={readOnly}>
+                      <SelectTrigger className="mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="rush">Rush</SelectItem>
+                        <SelectItem value="normal">Normal</SelectItem>
+                        <SelectItem value="low">Low</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
 
@@ -1159,17 +1534,12 @@ export default function OrderDetail() {
               </CardContent>
             </Card>
 
-            {/* Material Usage */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Material Usage</CardTitle>
-                <CardDescription>Automatic deductions recorded for this order</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <MaterialUsageTable orderId={order.id} />
-              </CardContent>
-            </Card>
+            {/* Artwork & Files */}
+            <OrderArtworkPanel orderId={order.id} isAdminOrOwner={isAdminOrOwner} />
+          </div>
 
+          {/* Sidebar */}
+          <div className="space-y-6">
             {/* Fulfillment & Shipping */}
             <Card>
               <CardHeader>
@@ -1219,6 +1589,177 @@ export default function OrderDetail() {
                     <FileText className="h-4 w-4 mr-2" />
                     {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
                   </Button>
+                </div>
+
+                {/* Ship To (order-level blind shipping) */}
+                <div className="space-y-3">
+                  <div className="text-sm font-medium">Ship To</div>
+
+                  {!editMode ? (
+                    <div className="space-y-1 text-sm text-muted-foreground">
+                      {(order.shipToCompany || order.shipToName) && (
+                        <div className="text-foreground">
+                          {order.shipToCompany || order.shipToName}
+                        </div>
+                      )}
+                      {order.shipToCompany && order.shipToName && order.shipToCompany !== order.shipToName && (
+                        <div>{order.shipToName}</div>
+                      )}
+
+                      {(order.shipToEmail || order.shipToPhone) && (
+                        <div className="grid grid-cols-1 gap-1 md:grid-cols-2 md:gap-3">
+                          {order.shipToEmail && (
+                            <span className="min-w-0 truncate font-mono" title={order.shipToEmail}>
+                              {order.shipToEmail}
+                            </span>
+                          )}
+                          {order.shipToPhone && (
+                            <span className="md:justify-self-end font-mono" title={order.shipToPhone}>
+                              {order.shipToPhone}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {(order.shipToAddress1 || order.shipToAddress2) && (
+                        <div>
+                          {order.shipToAddress1 && <div>{order.shipToAddress1}</div>}
+                          {order.shipToAddress2 && <div>{order.shipToAddress2}</div>}
+                        </div>
+                      )}
+
+                      {(order.shipToCity || order.shipToState || order.shipToPostalCode) && (
+                        <div>
+                          {[order.shipToCity, order.shipToState].filter(Boolean).join(", ")}
+                          {order.shipToPostalCode ? ` ${order.shipToPostalCode}` : ""}
+                        </div>
+                      )}
+
+                      {order.shipToCountry && <div>{order.shipToCountry}</div>}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Company</label>
+                        <Input
+                          defaultValue={order.shipToCompany ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToCompany ?? null) === nextValue) return;
+                            void saveShipTo({ shipToCompany: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Contact</label>
+                        <Input
+                          defaultValue={order.shipToName ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToName ?? null) === nextValue) return;
+                            void saveShipTo({ shipToName: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Email</label>
+                        <Input
+                          defaultValue={order.shipToEmail ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToEmail ?? null) === nextValue) return;
+                            void saveShipTo({ shipToEmail: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Phone</label>
+                        <Input
+                          defaultValue={order.shipToPhone ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToPhone ?? null) === nextValue) return;
+                            void saveShipTo({ shipToPhone: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1 md:col-span-2">
+                        <label className="text-xs text-muted-foreground">Address 1</label>
+                        <Input
+                          defaultValue={order.shipToAddress1 ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToAddress1 ?? null) === nextValue) return;
+                            void saveShipTo({ shipToAddress1: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1 md:col-span-2">
+                        <label className="text-xs text-muted-foreground">Address 2</label>
+                        <Input
+                          defaultValue={order.shipToAddress2 ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToAddress2 ?? null) === nextValue) return;
+                            void saveShipTo({ shipToAddress2: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">City</label>
+                        <Input
+                          defaultValue={order.shipToCity ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToCity ?? null) === nextValue) return;
+                            void saveShipTo({ shipToCity: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">State</label>
+                        <Input
+                          defaultValue={order.shipToState ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToState ?? null) === nextValue) return;
+                            void saveShipTo({ shipToState: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Postal Code</label>
+                        <Input
+                          defaultValue={order.shipToPostalCode ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToPostalCode ?? null) === nextValue) return;
+                            void saveShipTo({ shipToPostalCode: nextValue });
+                          }}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">Country</label>
+                        <Input
+                          defaultValue={order.shipToCountry ?? ""}
+                          onBlur={(e) => {
+                            const nextValue = normalizeNullableString(e.target.value);
+                            if ((order.shipToCountry ?? null) === nextValue) return;
+                            void saveShipTo({ shipToCountry: nextValue });
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <Separator />
@@ -1329,142 +1870,6 @@ export default function OrderDetail() {
               </CardContent>
             </Card>
 
-            {/* Artwork & Files */}
-            <OrderArtworkPanel orderId={order.id} isAdminOrOwner={isAdminOrOwner} />
-          </div>
-
-          {/* Sidebar */}
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Timeline</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <TimelinePanel orderId={order.id} quoteId={order.quoteId ?? undefined} />
-              </CardContent>
-            </Card>
-
-            {/* Bill To */}
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Bill To</CardTitle>
-                  {isAdminOrOwner && editMode && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleCustomerChange}
-                      disabled={changeCustomerMutation.isPending}
-                      title="Change customer will refresh bill to/ship to snapshot"
-                    >
-                      <UserCog className="w-4 h-4 mr-1" />
-                      Change
-                    </Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {order.billToName ? (
-                  <>
-                    <div className="font-medium text-base">{order.billToName}</div>
-                    {order.billToCompany && (
-                      <div className="text-sm text-muted-foreground">{order.billToCompany}</div>
-                    )}
-                    {order.billToAddress1 && (
-                      <div className="text-sm text-muted-foreground">{order.billToAddress1}</div>
-                    )}
-                    {order.billToAddress2 && (
-                      <div className="text-sm text-muted-foreground">{order.billToAddress2}</div>
-                    )}
-                    {(order.billToCity || order.billToState || order.billToPostalCode) && (
-                      <div className="text-sm text-muted-foreground">
-                        {order.billToCity && `${order.billToCity}, `}
-                        {order.billToState && `${order.billToState} `}
-                        {order.billToPostalCode}
-                      </div>
-                    )}
-                    {order.billToPhone && (
-                      <div className="text-sm text-muted-foreground">{order.billToPhone}</div>
-                    )}
-                    {order.billToEmail && (
-                      <div className="text-sm text-muted-foreground">{order.billToEmail}</div>
-                    )}
-                    {order.customer && (
-                      <div className="mt-3 pt-3 border-t">
-                        <Link to={`/customers/${order.customer.id}`}>
-                          <Button variant="link" className="p-0 h-auto text-xs text-muted-foreground hover:text-primary">
-                            View Customer Record
-                          </Button>
-                        </Link>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-sm text-muted-foreground">
-                    {order.customer ? (
-                      <Link to={`/customers/${order.customer.id}`}>
-                        <Button variant="link" className="p-0 h-auto font-medium text-base">
-                          {order.customer.companyName}
-                        </Button>
-                      </Link>
-                    ) : (
-                      '—'
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Ship To */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Ship To</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {order.shipToName ? (
-                  <>
-                    <div className="font-medium text-base">{order.shipToName}</div>
-                    {order.shipToCompany && (
-                      <div className="text-sm text-muted-foreground">{order.shipToCompany}</div>
-                    )}
-                    {order.shipToAddress1 && (
-                      <div className="text-sm text-muted-foreground">{order.shipToAddress1}</div>
-                    )}
-                    {order.shipToAddress2 && (
-                      <div className="text-sm text-muted-foreground">{order.shipToAddress2}</div>
-                    )}
-                    {(order.shipToCity || order.shipToState || order.shipToPostalCode) && (
-                      <div className="text-sm text-muted-foreground">
-                        {order.shipToCity && `${order.shipToCity}, `}
-                        {order.shipToState && `${order.shipToState} `}
-                        {order.shipToPostalCode}
-                      </div>
-                    )}
-                    {order.shippingMethod && (
-                      <div className="mt-2">
-                        <Badge variant="outline" className="text-xs">
-                          {order.shippingMethod}
-                        </Badge>
-                      </div>
-                    )}
-                    {order.carrier && (
-                      <div className="text-sm text-muted-foreground">
-                        Carrier: {order.carrier}
-                      </div>
-                    )}
-                    {order.trackingNumber && (
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">Tracking: </span>
-                        <span className="font-mono">{order.trackingNumber}</span>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-sm text-muted-foreground">—</div>
-                )}
-              </CardContent>
-            </Card>
-
             {/* Source Quote */}
             {order.quote && (
               <Card>
@@ -1481,24 +1886,63 @@ export default function OrderDetail() {
               </Card>
             )}
 
-            {/* Created By */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Created By</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-2">
-                  <User className="w-4 h-4 text-muted-foreground" />
-                  <div>
-                    <div className="font-medium">
-                      {order.createdByUser.firstName} {order.createdByUser.lastName}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {order.createdByUser.email}
-                    </div>
-                  </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      "w-full justify-between px-2",
+                      rightPanel === "timeline" && "bg-muted"
+                    )}
+                    onClick={() => setRightPanel(prev => prev === "timeline" ? "collapsed" : "timeline")}
+                  >
+                    <span>Timeline</span>
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 transition-transform",
+                        rightPanel === "timeline" ? "rotate-180" : "rotate-0"
+                      )}
+                    />
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      "w-full justify-between px-2",
+                      rightPanel === "material" && "bg-muted"
+                    )}
+                    onClick={() => setRightPanel(prev => prev === "material" ? "collapsed" : "material")}
+                  >
+                    <span>Material Usage</span>
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 transition-transform",
+                        rightPanel === "material" ? "rotate-180" : "rotate-0"
+                      )}
+                    />
+                  </Button>
                 </div>
-              </CardContent>
+              </CardHeader>
+              {rightPanel !== "collapsed" && (
+                <CardContent>
+                  {rightPanel === "timeline" && (
+                    <TimelinePanel orderId={order.id} quoteId={order.quoteId ?? undefined} />
+                  )}
+                  {rightPanel === "material" && (
+                    <>
+                      <CardDescription>Automatic deductions recorded for this order</CardDescription>
+                      <div className="mt-3">
+                        <MaterialUsageTable orderId={order.id} />
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              )}
             </Card>
           </div>
         </div>
