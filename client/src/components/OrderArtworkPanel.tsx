@@ -267,7 +267,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Artwork & Files</CardTitle>
+              <CardTitle className="text-lg font-medium">Artwork & Files</CardTitle>
               <CardDescription>
                 {files.length} {files.length === 1 ? 'file' : 'files'} attached
               </CardDescription>

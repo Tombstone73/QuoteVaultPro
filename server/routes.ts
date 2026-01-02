@@ -7820,6 +7820,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!customer) {
           return res.status(400).json({ message: "Invalid customer ID" });
         }
+        
+        // Auto-set contactId to primary contact when customer changes
+        if (req.body.customerId !== existingOrder.customerId) {
+          // Find primary contact for new customer, or fallback to newest
+          const contacts = await db
+            .select()
+            .from(customerContacts)
+            .where(eq(customerContacts.customerId, req.body.customerId))
+            .orderBy(
+              sql`CASE WHEN ${customerContacts.isPrimary} = true THEN 0 ELSE 1 END`,
+              sql`${customerContacts.createdAt} DESC`
+            );
+          
+          // Set contactId to primary contact or null if none exist
+          req.body.contactId = contacts[0]?.id || null;
+        }
       }
       
       const orderData = updateOrderSchema.parse({

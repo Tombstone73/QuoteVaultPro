@@ -393,11 +393,28 @@ export class OrdersRepository {
             })
         );
         const [customer] = await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => []);
+        
+        // Contact resolution with fallback logic
         let contact: CustomerContact | null = null;
         if (order.contactId) {
+            // If order has a contact_id, fetch that specific contact
             const contactRows = await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, order.contactId));
             contact = contactRows[0] || null;
         }
+        
+        // Fallback: If no contact_id or contact not found, get best contact for the customer
+        if (!contact && order.customerId) {
+            const contactsForCustomer = await this.dbInstance
+                .select()
+                .from(customerContacts)
+                .where(eq(customerContacts.customerId, order.customerId))
+                .orderBy(
+                    sql`CASE WHEN ${customerContacts.isPrimary} = true THEN 0 ELSE 1 END`,
+                    sql`${customerContacts.createdAt} DESC`
+                );
+            contact = contactsForCustomer[0] || null;
+        }
+        
         const [createdByUser] = await this.dbInstance.select().from(users).where(eq(users.id, order.createdByUserId));
         return {
             ...order,

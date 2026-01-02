@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -26,7 +26,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown } from "lucide-react";
+import { ArrowLeft, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { CustomerSelect } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
@@ -38,7 +41,6 @@ import { OrderStatusBadge, OrderPriorityBadge, LineItemStatusBadge } from "@/com
 import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
 import { ShipmentForm } from "@/components/ShipmentForm";
 import { PackingSlipModal } from "@/components/PackingSlipModal";
-import { OrderArtworkPanel } from "@/components/OrderArtworkPanel";
 import { useShipments, useDeleteShipment, useUpdateShipment, useGeneratePackingSlip, useSendShipmentEmail, useUpdateFulfillmentStatus } from "@/hooks/useShipments";
 import type { Shipment } from "@shared/schema";
 import { format } from "date-fns";
@@ -47,7 +49,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Page, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
-import { cn } from "@/lib/utils";
+import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -102,6 +104,10 @@ type OrderAddressSnapshotFields = {
 type OrderDetailOrder = HookOrderWithRelations & OrderAddressSnapshotFields;
 type OrderDetailLineItem = HookOrderWithRelations["lineItems"][number];
 
+// Date display style for Due Date and Promised Date in the order details card
+// Future: This will be configurable via organization preferences
+const DATE_DISPLAY_STYLE: "short" | "numeric" = "short";
+
 export default function OrderDetail() {
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
@@ -110,8 +116,9 @@ export default function OrderDetail() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [showCustomerDialog, setShowCustomerDialog] = useState(false);
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
+  const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
+  const [contactSearchQuery, setContactSearchQuery] = useState("");
   const [editingDueDate, setEditingDueDate] = useState(false);
   const [editingPromisedDate, setEditingPromisedDate] = useState(false);
   const [tempDueDate, setTempDueDate] = useState("");
@@ -139,12 +146,27 @@ export default function OrderDetail() {
   const [pendingStatusTransition, setPendingStatusTransition] = useState<{ toStatus: string; requiresReason: boolean } | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
   
-  // Edit Mode state (matches Quotes pattern)
-  const [editMode, setEditMode] = useState(false);
+  // Per-section edit states (replaces global editMode)
+  const [isEditingCustomer, setIsEditingCustomer] = useState(false);
+  const [isEditingContact, setIsEditingContact] = useState(false);
+  const [isEditingFulfillment, setIsEditingFulfillment] = useState(false);
 
   const [rightPanel, setRightPanel] = useState<"collapsed" | "timeline" | "material">("collapsed");
 
   const [showCustomerAddress, setShowCustomerAddress] = useState(true);
+
+  // Auto-open pickers when entering edit mode
+  useEffect(() => {
+    if (isEditingCustomer) {
+      setIsCustomerPickerOpen(true);
+    }
+  }, [isEditingCustomer]);
+
+  useEffect(() => {
+    if (isEditingContact) {
+      setIsContactPickerOpen(true);
+    }
+  }, [isEditingContact]);
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
@@ -182,13 +204,42 @@ export default function OrderDetail() {
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
   
-  // Determine if order fields should be read-only (Edit Mode OFF or locked by status)
-  const readOnly = !editMode || !canEditOrder;
+  // Helper functions to enter edit mode (ensures only one section is editable at a time)
+  const enterCustomerEdit = () => {
+    if (!canEditOrder) return;
+    setIsEditingCustomer(true);
+    setIsEditingContact(false);
+    setIsEditingFulfillment(false);
+    // Open customer picker immediately
+    setIsCustomerPickerOpen(true);
+  };
+
+  const enterContactEdit = () => {
+    if (!canEditOrder) return;
+    setIsEditingCustomer(false);
+    setIsEditingContact(true);
+    setIsEditingFulfillment(false);
+    // Open contact picker immediately
+    setIsContactPickerOpen(true);
+  };
+
+  const enterFulfillmentEdit = () => {
+    if (!canEditOrder) return;
+    setIsEditingCustomer(false);
+    setIsEditingContact(false);
+    setIsEditingFulfillment(true);
+  };
+
+  const exitAllEditModes = () => {
+    setIsEditingCustomer(false);
+    setIsEditingContact(false);
+    setIsEditingFulfillment(false);
+  };
 
   // Calculate incomplete line items for completion workflow
   const incompleteLi = order?.lineItems?.filter(li => li.status !== 'done' && li.status !== 'canceled') || [];
 
-  // Fetch customers for the customer change dialog
+  // Fetch customers for the customer change dialog (kept for backward compat)
   const { data: customers = [] } = useQuery({
     queryKey: ["/api/customers"],
     queryFn: async () => {
@@ -198,13 +249,38 @@ export default function OrderDetail() {
     },
   });
 
+  // Fetch contacts for the current customer
+  const { data: customerContacts = [] } = useQuery({
+    queryKey: ["/api/customers", order?.customerId, "contacts"],
+    queryFn: async () => {
+      if (!order?.customerId) return [];
+      const response = await fetch(`/api/customers/${order.customerId}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch customer");
+      const customer = await response.json();
+      return customer.contacts || [];
+    },
+    enabled: !!order?.customerId,
+  });
+
+  // Filtered contacts based on search
+  const filteredContacts = contactSearchQuery
+    ? customerContacts.filter((contact: any) => {
+        const searchLower = contactSearchQuery.toLowerCase();
+        return (
+          contact.firstName?.toLowerCase().includes(searchLower) ||
+          contact.lastName?.toLowerCase().includes(searchLower) ||
+          contact.email?.toLowerCase().includes(searchLower)
+        );
+      })
+    : customerContacts;
+
   // Customer change mutation
   const changeCustomerMutation = useMutation({
     mutationFn: async (customerId: string) => {
       const response = await fetch(`/api/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId, contactId: null }), // Reset contact when changing customer
+        body: JSON.stringify({ customerId }), // Backend will auto-set contact to primary
         credentials: "include",
       });
       if (!response.ok) throw new Error("Failed to update customer");
@@ -216,8 +292,38 @@ export default function OrderDetail() {
         title: "Success",
         description: "Customer updated successfully",
       });
-      setShowCustomerDialog(false);
-      setSelectedCustomerId(null);
+      setIsCustomerPickerOpen(false);
+      exitAllEditModes(); // Exit edit mode after successful update
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Contact change mutation
+  const changeContactMutation = useMutation({
+    mutationFn: async (contactId: string) => {
+      const response = await fetch(`/api/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactId }),
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to update contact");
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      toast({
+        title: "Success",
+        description: "Contact updated successfully",
+      });
+      setIsContactPickerOpen(false);
+      exitAllEditModes(); // Exit edit mode after successful update
     },
     onError: (error: Error) => {
       toast({
@@ -236,11 +342,25 @@ export default function OrderDetail() {
   };
 
   const formatDate = (dateString: string | null | undefined) => {
-    if (!dateString) return "-";
+    if (!dateString) return "—";
     try {
-      return format(new Date(dateString), "PPP");
+      const date = new Date(dateString);
+      if (DATE_DISPLAY_STYLE === "short") {
+        // Format: "Jan 12, 2026"
+        return new Intl.DateTimeFormat("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        }).format(date);
+      } else {
+        // Format: "01/12/2026" (MM/DD/YYYY)
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        const year = date.getFullYear();
+        return `${month}/${day}/${year}`;
+      }
     } catch {
-      return "-";
+      return "—";
     }
   };
 
@@ -385,17 +505,6 @@ export default function OrderDetail() {
       await updateOrder.mutateAsync(payload);
     } catch (error) {
       // Error toast handled by mutation
-    }
-  };
-
-  const handleCustomerChange = () => {
-    setSelectedCustomerId(order?.customerId || null);
-    setShowCustomerDialog(true);
-  };
-
-  const handleCustomerSelect = () => {
-    if (selectedCustomerId) {
-      changeCustomerMutation.mutate(selectedCustomerId);
     }
   };
 
@@ -711,8 +820,6 @@ export default function OrderDetail() {
     const name = (c.name || c.fullName || c.displayName || `${c.firstName || ""} ${c.lastName || ""}`).trim();
     return name || null;
   })();
-  const contactLineName: string | null =
-    contactNameFromContact && contactNameFromContact !== customerCompanyName ? contactNameFromContact : null;
   const contactLinePhone: string | null = (order.contact as any)?.phone || (order.contact as any)?.phoneNumber || (order.contact as any)?.mobile || null;
 
   const email: string | null = order.contact?.email || order.customer?.email || order.billToEmail || null;
@@ -839,22 +946,6 @@ export default function OrderDetail() {
             </Button>
           )}
 
-          {/* Edit Mode Toggle */}
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={editMode}
-              onCheckedChange={setEditMode}
-              disabled={!canEditOrder}
-              aria-label="Toggle Edit Mode"
-            />
-            <span className="text-xs text-muted-foreground">Edit Mode</span>
-            {isTerminal && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                {canEditOrder ? "Locked (Override)" : "Locked"}
-              </span>
-            )}
-          </div>
-
           {isAdminOrOwner && order.state === 'open' && (
             <CompleteProductionButton orderId={order.id} />
           )}
@@ -865,261 +956,508 @@ export default function OrderDetail() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Main Content */}
           <div className="lg:col-span-2 space-y-4">
-            {/* Customer / Contact */}
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Customer / Contact</CardTitle>
-                  {isAdminOrOwner && editMode && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleCustomerChange}
-                      disabled={changeCustomerMutation.isPending}
-                      title="Change customer will refresh bill to/ship to snapshot"
-                    >
-                      <UserCog className="w-4 h-4 mr-1" />
-                      Change
-                    </Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent className="p-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground">Customer</div>
-                    {order.customer?.id && customerCompanyName ? (
-                      <Link
-                        to={`/customers/${order.customer.id}`}
-                        className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
-                        title={customerCompanyName}
-                      >
-                        {customerCompanyName}
-                      </Link>
-                    ) : (
-                      <div className="block truncate text-sm font-semibold leading-5 text-foreground">
-                        {customerCompanyName || "—"}
-                      </div>
-                    )}
-                    {order.customer?.email && (
-                      <div className="text-[11px] leading-4 text-muted-foreground font-mono" title={order.customer.email}>
-                        {order.customer.email}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground">Contact</div>
-                    <div className="text-sm text-foreground">
-                      {contactLineName || "—"}
-                    </div>
-                    {(order.contact?.email || contactLinePhone) && (
-                      <div className="text-[11px] leading-4 text-muted-foreground">
-                        {order.contact?.email && contactLinePhone ? (
-                          <div className="grid grid-cols-2 gap-3">
-                            <span className="min-w-0 truncate font-mono" title={order.contact.email}>
-                              {order.contact.email}
-                            </span>
-                            <span className="justify-self-end font-mono" title={contactLinePhone}>
-                              {contactLinePhone}
-                            </span>
-                          </div>
-                        ) : order.contact?.email ? (
-                          <span className="font-mono" title={order.contact.email}>
-                            {order.contact.email}
-                          </span>
-                        ) : (
-                          contactLinePhone && (
-                            <span className="font-mono" title={contactLinePhone}>
-                              {contactLinePhone}
-                            </span>
-                          )
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
             {isSameBillShipAddress ? (
               <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">{billToTitle}</CardTitle>
-                    <div className="flex items-center gap-3">
-                      {hasBillAddress && (
-                        <button
-                          type="button"
-                          onClick={() => setShowCustomerAddress((v) => !v)}
-                          className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
-                        >
-                          {showCustomerAddress ? "Hide address" : "Show address"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </CardHeader>
                 <CardContent className="p-4">
-                  <div className="space-y-2 -mt-1">
-                    <div className="min-w-0">
-                      {order.customer?.id && customerCompanyName ? (
-                        <Link
-                          to={`/customers/${order.customer.id}`}
-                          className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
-                          title={customerCompanyName}
-                        >
-                          {customerCompanyName}
-                        </Link>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Left Column: Customer Information */}
+                    <div className="space-y-2">
+                      {isEditingCustomer ? (
+                        <div className="space-y-2">
+                          <Popover open={isCustomerPickerOpen} onOpenChange={(open) => {
+                            setIsCustomerPickerOpen(open);
+                            if (!open) exitAllEditModes();
+                          }}>
+                            <PopoverTrigger asChild>
+                              <Button
+                                variant="outline"
+                                role="combobox"
+                                aria-expanded={isCustomerPickerOpen}
+                                className="w-full justify-between font-normal h-9"
+                              >
+                                <span className="truncate">
+                                  {customerCompanyName || "Select customer..."}
+                                </span>
+                                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[400px] p-0" align="start">
+                              <Command shouldFilter={true}>
+                                <CommandInput placeholder="Search customers..." autoFocus />
+                                <CommandList>
+                                  <CommandEmpty>No customers found.</CommandEmpty>
+                                  {customers.map((customer: any) => {
+                                    const searchValue = [customer.companyName, customer.email].filter(Boolean).join(' ');
+                                    return (
+                                      <CommandItem
+                                        key={customer.id}
+                                        value={searchValue}
+                                        onSelect={() => {
+                                          changeCustomerMutation.mutate(customer.id);
+                                        }}
+                                      >
+                                      <Check
+                                        className={cn(
+                                          "mr-2 h-4 w-4",
+                                          order?.customerId === customer.id ? "opacity-100" : "opacity-0"
+                                        )}
+                                      />
+                                      <div className="flex-1">
+                                        <div className="font-medium">{customer.companyName}</div>
+                                        {customer.email && (
+                                          <div className="text-xs text-muted-foreground">{customer.email}</div>
+                                        )}
+                                      </div>
+                                    </CommandItem>
+                                    );
+                                  })}
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
+                        </div>
                       ) : (
-                        <div className="block truncate text-sm font-semibold leading-5 text-foreground">
-                          {customerCompanyName || '—'}
+                        <div className="flex items-start justify-between gap-2 min-w-0">
+                          <div className="min-w-0 flex-1">
+                            {order.customer?.id && customerCompanyName ? (
+                              <Link
+                                to={`/customers/${order.customer.id}`}
+                                className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
+                                title={customerCompanyName}
+                              >
+                                {customerCompanyName}
+                              </Link>
+                            ) : (
+                              <div className="block truncate text-sm font-semibold leading-5 text-foreground">
+                                {customerCompanyName || '—'}
+                              </div>
+                            )}
+                          </div>
+                          {canEditOrder && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 shrink-0"
+                              onClick={enterCustomerEdit}
+                              title="Edit Customer"
+                            >
+                              <Edit className="h-3 w-3" />
+                            </Button>
+                          )}
                         </div>
                       )}
-                      {contactLineName && (
-                        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-4 text-muted-foreground">
-                          <span className="truncate" title={contactLineName}>
-                            {contactLineName}
-                          </span>
+
+                      {hasBillAddress && (
+                        <div className="text-[11px] leading-4 text-muted-foreground">
+                          <div className="hidden print:block">
+                            {billAddressLine1 && <div>{billAddressLine1}</div>}
+                            {billAddressLine2 && <div>{billAddressLine2}</div>}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {showCustomerAddress && (
+                              <div className="space-y-0.5 print:hidden">
+                                {billAddressLine1 && <div>{billAddressLine1}</div>}
+                                {billAddressLine2 && <div>{billAddressLine2}</div>}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setShowCustomerAddress((v) => !v)}
+                              className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
+                            >
+                              {showCustomerAddress ? "Hide" : "Show"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {email && (
+                        <div className="text-[11px] leading-4">
+                          <a
+                            href={`mailto:${email}`}
+                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                            title={email}
+                          >
+                            {email}
+                          </a>
+                        </div>
+                      )}
+
+                      {metaPhone && (
+                        <div className="text-[11px] leading-4">
+                          <a
+                            href={phoneToTelHref(metaPhone)}
+                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                            title={metaPhone}
+                          >
+                            {formatPhoneForDisplay(metaPhone)}
+                          </a>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right Column: Contact Information */}
+                    <div className="space-y-2">
+                      {isEditingContact ? (
+                        <div className="space-y-2">
+                          <Popover open={isContactPickerOpen} onOpenChange={(open) => {
+                            setIsContactPickerOpen(open);
+                            if (!open) exitAllEditModes();
+                          }}>
+                            <PopoverTrigger asChild>
+                              <Button
+                                variant="outline"
+                                role="combobox"
+                                aria-expanded={isContactPickerOpen}
+                                className="w-full justify-between font-normal h-9"
+                                disabled={!order?.customerId}
+                              >
+                                <span className="truncate">
+                                  {!order?.customerId 
+                                    ? "Select a customer first" 
+                                    : contactNameFromContact || "Select contact..."}
+                                </span>
+                                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[350px] p-0" align="start">
+                              <Command shouldFilter={false}>
+                                <CommandInput 
+                                  placeholder="Search contacts..." 
+                                  value={contactSearchQuery}
+                                  onValueChange={setContactSearchQuery}
+                                  autoFocus 
+                                />
+                                <CommandList>
+                                  <CommandEmpty>
+                                    {!order?.customerId 
+                                      ? "Select a customer first" 
+                                      : "No contacts found."}
+                                  </CommandEmpty>
+                                  {filteredContacts.map((contact: any) => {
+                                    const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(' ');
+                                    return (
+                                      <CommandItem
+                                        key={contact.id}
+                                        value={contactName}
+                                        onSelect={() => {
+                                          changeContactMutation.mutate(contact.id);
+                                        }}
+                                      >
+                                        <Check
+                                          className={cn(
+                                            "mr-2 h-4 w-4",
+                                            order?.contact?.id === contact.id ? "opacity-100" : "opacity-0"
+                                          )}
+                                        />
+                                        <div className="flex-1">
+                                          <div className="font-medium">{contactName}</div>
+                                          {contact.email && (
+                                            <div className="text-xs text-muted-foreground">{contact.email}</div>
+                                          )}
+                                        </div>
+                                      </CommandItem>
+                                    );
+                                  })}
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
+                        </div>
+                      ) : order.contact?.id && contactNameFromContact ? (
+                        <>
+                          <div className="flex items-start justify-between gap-2">
+                            <Link
+                              to={`/contacts/${order.contact.id}`}
+                              className="text-sm font-semibold text-foreground hover:underline flex-1 min-w-0 truncate"
+                              title={contactNameFromContact}
+                            >
+                              {contactNameFromContact}
+                            </Link>
+                            {canEditOrder && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 shrink-0"
+                                onClick={enterContactEdit}
+                                title="Edit Contact"
+                              >
+                                <Edit className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </div>
+                          {order.contact?.email && (
+                            <div className="text-[11px] leading-4">
+                              <a
+                                href={`mailto:${order.contact.email}`}
+                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                title={order.contact.email}
+                              >
+                                {order.contact.email}
+                              </a>
+                            </div>
+                          )}
                           {contactLinePhone && (
-                            <span className="font-mono" title={contactLinePhone}>
-                              {contactLinePhone}
-                            </span>
+                            <div className="text-[11px] leading-4">
+                              <a
+                                href={phoneToTelHref(contactLinePhone)}
+                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                title={contactLinePhone}
+                              >
+                                {formatPhoneForDisplay(contactLinePhone)}
+                              </a>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-sm text-muted-foreground">—</span>
+                          {canEditOrder && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 shrink-0"
+                              onClick={enterContactEdit}
+                              title="Edit Contact"
+                            >
+                              <Edit className="h-3 w-3" />
+                            </Button>
                           )}
                         </div>
                       )}
                     </div>
-
-                    {hasBillAddress && (
-                      <div className="text-[11px] leading-4 text-muted-foreground">
-                        <div className="hidden print:block">
-                          {billAddressLine1 && <div>{billAddressLine1}</div>}
-                          {billAddressLine2 && <div>{billAddressLine2}</div>}
-                        </div>
-                        {showCustomerAddress && (
-                          <div className="space-y-0.5 print:hidden">
-                            {billAddressLine1 && <div>{billAddressLine1}</div>}
-                            {billAddressLine2 && <div>{billAddressLine2}</div>}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {(email || metaPhone) && (
-                      <div className="text-[11px] leading-4 text-muted-foreground">
-                        {email && metaPhone ? (
-                          <div className="grid grid-cols-2 gap-3">
-                            <span className="min-w-0 truncate font-mono" title={email}>
-                              {email}
-                            </span>
-                            <span className="justify-self-end font-mono" title={metaPhone}>
-                              {metaPhone}
-                            </span>
-                          </div>
-                        ) : email ? (
-                          <span className="font-mono" title={email}>
-                            {email}
-                          </span>
-                        ) : (
-                          metaPhone && (
-                            <span className="font-mono" title={metaPhone}>
-                              {metaPhone}
-                            </span>
-                          )
-                        )}
-                      </div>
-                    )}
-
                   </div>
                 </CardContent>
               </Card>
             ) : (
               <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">{billToTitle}</CardTitle>
-                    <div className="flex items-center gap-3">
-                      {hasBillAddress && (
-                        <button
-                          type="button"
-                          onClick={() => setShowCustomerAddress((v) => !v)}
-                          className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
-                        >
-                          {showCustomerAddress ? "Hide address" : "Show address"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </CardHeader>
                 <CardContent className="p-4">
-                  <div className="space-y-2 -mt-1">
-                    <div className="min-w-0">
-                      {order.customer?.id && customerCompanyName ? (
-                        <Link
-                          to={`/customers/${order.customer.id}`}
-                          className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
-                          title={customerCompanyName}
-                        >
-                          {customerCompanyName}
-                        </Link>
-                      ) : (
-                        <div className="block truncate text-sm font-semibold leading-5 text-foreground">
-                          {customerCompanyName || order.billToCompany || '—'}
-                        </div>
-                      )}
-                      {contactLineName && (
-                        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-4 text-muted-foreground">
-                          <span className="truncate" title={contactLineName}>
-                            {contactLineName}
-                          </span>
-                          {contactLinePhone && (
-                            <span className="font-mono" title={contactLinePhone}>
-                              {contactLinePhone}
-                            </span>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Left Column: Customer Information */}
+                    <div className="space-y-2">
+                      <div className="flex items-start justify-between gap-2 min-w-0">
+                        <div className="min-w-0 flex-1">
+                          {order.customer?.id && customerCompanyName ? (
+                            <Link
+                              to={`/customers/${order.customer.id}`}
+                              className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
+                              title={customerCompanyName}
+                            >
+                              {customerCompanyName}
+                            </Link>
+                          ) : (
+                            <div className="block truncate text-sm font-semibold leading-5 text-foreground">
+                              {customerCompanyName || order.billToCompany || '—'}
+                            </div>
                           )}
                         </div>
-                      )}
-                    </div>
+                        {canEditOrder && !isEditingCustomer && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 shrink-0"
+                            onClick={enterCustomerEdit}
+                            title="Edit Customer"
+                          >
+                            <Edit className="h-3 w-3" />
+                          </Button>
+                        )}
+                        {isEditingCustomer && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 shrink-0 text-xs"
+                            onClick={exitAllEditModes}
+                          >
+                            Done
+                          </Button>
+                        )}
+                      </div>
 
-                    {hasBillAddress && (
-                      <div className="text-[11px] leading-4 text-muted-foreground">
-                        <div className="hidden print:block">
-                          {billAddressLine1 && <div>{billAddressLine1}</div>}
-                          {billAddressLine2 && <div>{billAddressLine2}</div>}
-                        </div>
-                        {showCustomerAddress && (
-                          <div className="space-y-0.5 print:hidden">
+                      {hasBillAddress && (
+                        <div className="text-[11px] leading-4 text-muted-foreground">
+                          <div className="hidden print:block">
                             {billAddressLine1 && <div>{billAddressLine1}</div>}
                             {billAddressLine2 && <div>{billAddressLine2}</div>}
                           </div>
-                        )}
-                      </div>
-                    )}
-
-                    {(email || metaPhone) && (
-                      <div className="text-[11px] leading-4 text-muted-foreground">
-                        {email && metaPhone ? (
-                          <div className="grid grid-cols-2 gap-3">
-                            <span className="min-w-0 truncate font-mono" title={email}>
-                              {email}
-                            </span>
-                            <span className="justify-self-end font-mono" title={metaPhone}>
-                              {metaPhone}
-                            </span>
+                          <div className="flex items-center gap-2">
+                            {showCustomerAddress && (
+                              <div className="space-y-0.5 print:hidden">
+                                {billAddressLine1 && <div>{billAddressLine1}</div>}
+                                {billAddressLine2 && <div>{billAddressLine2}</div>}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setShowCustomerAddress((v) => !v)}
+                              className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
+                            >
+                              {showCustomerAddress ? "Hide" : "Show"}
+                            </button>
                           </div>
-                        ) : email ? (
-                          <span className="font-mono" title={email}>
+                        </div>
+                      )}
+
+                      {email && (
+                        <div className="text-[11px] leading-4">
+                          <a
+                            href={`mailto:${email}`}
+                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                            title={email}
+                          >
                             {email}
-                          </span>
-                        ) : (
-                          metaPhone && (
-                            <span className="font-mono" title={metaPhone}>
-                              {metaPhone}
-                            </span>
-                          )
-                        )}
-                      </div>
-                    )}
+                          </a>
+                        </div>
+                      )}
+
+                      {metaPhone && (
+                        <div className="text-[11px] leading-4">
+                          <a
+                            href={phoneToTelHref(metaPhone)}
+                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                            title={metaPhone}
+                          >
+                            {formatPhoneForDisplay(metaPhone)}
+                          </a>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right Column: Contact Information */}
+                    <div className="space-y-2">
+                      {isEditingContact ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label>Contact</Label>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 shrink-0 text-xs"
+                              onClick={exitAllEditModes}
+                            >
+                              Done
+                            </Button>
+                          </div>
+                          <Popover open={isContactPickerOpen} onOpenChange={setIsContactPickerOpen}>
+                            <PopoverTrigger asChild>
+                              <Button
+                                variant="outline"
+                                role="combobox"
+                                aria-expanded={isContactPickerOpen}
+                                className="w-full justify-between"
+                                disabled={!order?.customerId}
+                              >
+                                {!order?.customerId
+                                  ? "Select a customer first"
+                                  : order.contact?.id && contactNameFromContact
+                                  ? contactNameFromContact
+                                  : "Select contact..."}
+                                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-full p-0" align="start">
+                              <Command shouldFilter={false}>
+                                <CommandInput 
+                                  placeholder="Search contacts..." 
+                                  value={contactSearchQuery}
+                                  onValueChange={setContactSearchQuery}
+                                  autoFocus
+                                />
+                                <CommandList>
+                                  <CommandEmpty>
+                                    {!order?.customerId
+                                      ? "Select a customer first"
+                                      : "No contacts found."}
+                                  </CommandEmpty>
+                                  {filteredContacts.map((contact: any) => (
+                                    <CommandItem
+                                      key={contact.id}
+                                      onSelect={() => {
+                                        changeContactMutation.mutate(contact.id);
+                                      }}
+                                    >
+                                      <Check
+                                        className={cn(
+                                          "mr-2 h-4 w-4",
+                                          order.contact?.id === contact.id
+                                            ? "opacity-100"
+                                            : "opacity-0"
+                                        )}
+                                      />
+                                      {contact.firstName && contact.lastName
+                                        ? `${contact.firstName} ${contact.lastName}`
+                                        : contact.email || contact.id}
+                                    </CommandItem>
+                                  ))}
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
+                        </div>
+                      ) : order.contact?.id && contactNameFromContact ? (
+                        <>
+                          <div className="flex items-start justify-between gap-2">
+                            <Link
+                              to={`/contacts/${order.contact.id}`}
+                              className="text-sm font-semibold text-foreground hover:underline flex-1 min-w-0 truncate"
+                              title={contactNameFromContact}
+                            >
+                              {contactNameFromContact}
+                            </Link>
+                            {canEditOrder && !isEditingContact && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 shrink-0"
+                                onClick={enterContactEdit}
+                                title="Edit Contact"
+                              >
+                                <Edit className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </div>
+                          {order.contact?.email && (
+                            <div className="text-[11px] leading-4">
+                              <a
+                                href={`mailto:${order.contact.email}`}
+                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                title={order.contact.email}
+                              >
+                                {order.contact.email}
+                              </a>
+                            </div>
+                          )}
+                          {contactLinePhone && (
+                            <div className="text-[11px] leading-4">
+                              <a
+                                href={phoneToTelHref(contactLinePhone)}
+                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                title={contactLinePhone}
+                              >
+                                {formatPhoneForDisplay(contactLinePhone)}
+                              </a>
+                            </div>
+                          )}
+                        </>
+                      ) : canEditOrder ? (
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-muted-foreground">—</span>
+                          {!isEditingContact && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 shrink-0"
+                              onClick={enterContactEdit}
+                              title="Edit Contact"
+                            >
+                              <Edit className="h-3 w-3" />
+                            </Button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">—</span>
+                      )}
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -1129,46 +1467,48 @@ export default function OrderDetail() {
             <Card className="bg-titan-bg-card border-titan-border-subtle">
               <CardContent className="space-y-4">
                 {/* TitanOS State Architecture */}
-                <div className={cn(
-                  "grid grid-cols-1 gap-4 p-4 bg-muted/50 rounded-lg border border-border",
-                  showPaymentStatus && showRoutedTo ? "md:grid-cols-2" : "md:grid-cols-1"
-                )}>
-                  {showPaymentStatus && (
-                    <div>
-                      <label className="text-sm font-medium text-muted-foreground">Payment</label>
-                      <div className="mt-2">
-                        <Badge variant="outline" className={
-                          order.paymentStatus === 'paid' 
-                            ? 'bg-green-100 text-green-800 border-green-300'
-                            : order.paymentStatus === 'partial'
-                            ? 'bg-yellow-100 text-yellow-800 border-yellow-300'
-                            : 'bg-gray-100 text-gray-800 border-gray-300'
-                        }>
-                          {order.paymentStatus === 'paid' && 'Paid'}
-                          {order.paymentStatus === 'partial' && 'Partial'}
-                          {order.paymentStatus === 'unpaid' && 'Unpaid'}
-                        </Badge>
+                {(showPaymentStatus || showRoutedTo) && (
+                  <div className={cn(
+                    "grid grid-cols-1 gap-4 p-4 bg-muted/50 rounded-lg border border-border",
+                    showPaymentStatus && showRoutedTo ? "md:grid-cols-2" : "md:grid-cols-1"
+                  )}>
+                    {showPaymentStatus && (
+                      <div>
+                        <label className="text-sm font-medium text-muted-foreground">Payment</label>
+                        <div className="mt-2">
+                          <Badge variant="outline" className={
+                            order.paymentStatus === 'paid' 
+                              ? 'bg-green-100 text-green-800 border-green-300'
+                              : order.paymentStatus === 'partial'
+                              ? 'bg-yellow-100 text-yellow-800 border-yellow-300'
+                              : 'bg-gray-100 text-gray-800 border-gray-300'
+                          }>
+                            {order.paymentStatus === 'paid' && 'Paid'}
+                            {order.paymentStatus === 'partial' && 'Partial'}
+                            {order.paymentStatus === 'unpaid' && 'Unpaid'}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Payment status
+                        </p>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Payment status
-                      </p>
-                    </div>
-                  )}
-                  
-                  {showRoutedTo && (
-                    <div>
-                      <label className="text-sm font-medium text-muted-foreground">Routed To</label>
-                      <div className="mt-2">
-                        <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-300">
-                          {order.routingTarget === 'fulfillment' ? 'Fulfillment' : 'Invoicing'}
-                        </Badge>
+                    )}
+                    
+                    {showRoutedTo && (
+                      <div>
+                        <label className="text-sm font-medium text-muted-foreground">Routed To</label>
+                        <div className="mt-2">
+                          <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-300">
+                            {order.routingTarget === 'fulfillment' ? 'Fulfillment' : 'Invoicing'}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Next workflow stage
+                        </p>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Next workflow stage
-                      </p>
-                    </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
                 
                 {/* State Transition Actions */}
                 {isAdminOrOwner && (
@@ -1182,19 +1522,17 @@ export default function OrderDetail() {
                     )}
                   </div>
                 )}
-                
-                <Separator />
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground">Due Date</label>
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Due Date</label>
                     {editingDueDate ? (
-                      <div className="flex items-center gap-2 mt-1">
+                      <div className="flex items-center gap-2 shrink-0">
                         <Input
                           type="date"
                           value={tempDueDate}
                           onChange={(e) => setTempDueDate(e.target.value)}
-                          className="h-8"
+                          className="h-8 w-auto"
                         />
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={handleDueDateSave}>
                           <Check className="h-4 w-4" />
@@ -1204,25 +1542,31 @@ export default function OrderDetail() {
                         </Button>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="text-sm">{formatDate(order.dueDate)}</div>
-                        {!readOnly && (
-                          <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handleDueDateEdit}>
-                            <Edit className="h-3 w-3" />
+                      <div className="inline-flex items-center gap-2 shrink-0">
+                        <div className="text-sm whitespace-nowrap">{formatDate(order.dueDate)}</div>
+                        {canEditOrder && (
+                          <Button 
+                            size="icon" 
+                            variant="ghost" 
+                            className="h-6 w-6 text-muted-foreground hover:text-foreground" 
+                            onClick={handleDueDateEdit}
+                            title="Edit Due Date"
+                          >
+                            <Calendar className="h-3 w-3" />
                           </Button>
                         )}
                       </div>
                     )}
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground">Promised Date</label>
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Promised Date</label>
                     {editingPromisedDate ? (
-                      <div className="flex items-center gap-2 mt-1">
+                      <div className="flex items-center gap-2 shrink-0">
                         <Input
                           type="date"
                           value={tempPromisedDate}
                           onChange={(e) => setTempPromisedDate(e.target.value)}
-                          className="h-8"
+                          className="h-8 w-auto"
                         />
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={handlePromisedDateSave}>
                           <Check className="h-4 w-4" />
@@ -1232,21 +1576,31 @@ export default function OrderDetail() {
                         </Button>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="text-sm">{formatDate(order.promisedDate)}</div>
-                        {!readOnly && (
-                          <Button size="icon" variant="ghost" className="h-6 w-6" onClick={handlePromisedDateEdit}>
-                            <Edit className="h-3 w-3" />
+                      <div className="inline-flex items-center gap-2 shrink-0">
+                        <div className="text-sm whitespace-nowrap">{formatDate(order.promisedDate)}</div>
+                        {canEditOrder && (
+                          <Button 
+                            size="icon" 
+                            variant="ghost" 
+                            className="h-6 w-6 text-muted-foreground hover:text-foreground" 
+                            onClick={handlePromisedDateEdit}
+                            title="Edit Promised Date"
+                          >
+                            <Calendar className="h-3 w-3" />
                           </Button>
                         )}
                       </div>
                     )}
                   </div>
 
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground">Priority</label>
-                    <Select value={order.priority} onValueChange={handlePriorityChange} disabled={readOnly}>
-                      <SelectTrigger className="mt-1">
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Priority</label>
+                    <Select 
+                      value={order.priority} 
+                      onValueChange={handlePriorityChange} 
+                      disabled={!canEditOrder || updateOrder.isPending}
+                    >
+                      <SelectTrigger className="h-8 w-auto min-w-[100px]">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -1266,14 +1620,6 @@ export default function OrderDetail() {
                     </div>
                   </div>
                 )}
-
-                {/* Attachments */}
-                <div>
-                  <label className="text-sm font-medium text-muted-foreground">Attachments</label>
-                  <div className="mt-2">
-                    <OrderAttachmentsPanel orderId={order.id} locked={false} />
-                  </div>
-                </div>
               </CardContent>
             </Card>
 
@@ -1282,7 +1628,7 @@ export default function OrderDetail() {
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div>
-                    <CardTitle className="flex items-center gap-2">
+                    <CardTitle className="flex items-center gap-2 text-lg font-medium">
                       Order Items
                       {!canEditLineItems && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
@@ -1292,7 +1638,7 @@ export default function OrderDetail() {
                     </CardTitle>
                     <CardDescription>{order.lineItems.length} items</CardDescription>
                   </div>
-                  {isAdminOrOwner && canEditLineItems && editMode && (
+                  {isAdminOrOwner && canEditLineItems && (
                     <Button onClick={handleAddLineItem} size="sm">
                       <Plus className="w-4 h-4 mr-2" />
                       Add Item
@@ -1395,7 +1741,7 @@ export default function OrderDetail() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          {isAdminOrOwner && editMode && editingPriceItemId === item.id && editingPriceType === 'unit' ? (
+                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'unit' ? (
                             <div className="flex items-center justify-end gap-1">
                               <Input
                                 type="number"
@@ -1429,15 +1775,15 @@ export default function OrderDetail() {
                             </div>
                           ) : (
                             <div 
-                              className={isAdminOrOwner && editMode ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
-                              onClick={() => isAdminOrOwner && editMode && handleEditPrice(item.id, 'unit', item.unitPrice)}
+                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
+                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'unit', item.unitPrice)}
                             >
                               {formatCurrency(item.unitPrice)}
                             </div>
                           )}
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          {isAdminOrOwner && editMode && editingPriceItemId === item.id && editingPriceType === 'total' ? (
+                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'total' ? (
                             <div className="flex items-center justify-end gap-1">
                               <Input
                                 type="number"
@@ -1471,8 +1817,8 @@ export default function OrderDetail() {
                             </div>
                           ) : (
                             <div 
-                              className={isAdminOrOwner && editMode ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
-                              onClick={() => isAdminOrOwner && editMode && handleEditPrice(item.id, 'total', item.totalPrice)}
+                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
+                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'total', item.totalPrice)}
                             >
                               {formatCurrency(item.totalPrice)}
                             </div>
@@ -1486,7 +1832,7 @@ export default function OrderDetail() {
                                 size="icon"
                                 className="h-8 w-8"
                                 onClick={() => handleEditLineItem(item)}
-                                disabled={!canEditLineItems || !editMode}
+                                disabled={!canEditLineItems}
                               >
                                 <Edit className="h-4 w-4" />
                               </Button>
@@ -1495,7 +1841,7 @@ export default function OrderDetail() {
                                 size="icon"
                                 className="h-8 w-8 text-destructive hover:text-destructive"
                                 onClick={() => setLineItemToDelete(item.id)}
-                                disabled={!canEditLineItems || !editMode}
+                                disabled={!canEditLineItems}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
@@ -1533,9 +1879,6 @@ export default function OrderDetail() {
                 </div>
               </CardContent>
             </Card>
-
-            {/* Artwork & Files */}
-            <OrderArtworkPanel orderId={order.id} isAdminOrOwner={isAdminOrOwner} />
           </div>
 
           {/* Sidebar */}
@@ -1544,10 +1887,30 @@ export default function OrderDetail() {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle>Fulfillment & Shipping</CardTitle>
+                  <CardTitle className="text-lg font-medium">Fulfillment & Shipping</CardTitle>
                   <div className="flex items-center gap-2">
                     {order.fulfillmentStatus && (
                       <FulfillmentStatusBadge status={order.fulfillmentStatus as any} />
+                    )}
+                    {canEditOrder && !isEditingFulfillment && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={enterFulfillmentEdit}
+                        title="Edit Fulfillment"
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {isEditingFulfillment && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={exitAllEditModes}
+                      >
+                        Done
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -1595,7 +1958,7 @@ export default function OrderDetail() {
                 <div className="space-y-3">
                   <div className="text-sm font-medium">Ship To</div>
 
-                  {!editMode ? (
+                  {!isEditingFulfillment ? (
                     <div className="space-y-1 text-sm text-muted-foreground">
                       {(order.shipToCompany || order.shipToName) && (
                         <div className="text-foreground">
@@ -1870,6 +2233,19 @@ export default function OrderDetail() {
               </CardContent>
             </Card>
 
+            {/* Attachments */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg font-medium">Attachments</CardTitle>
+                <CardDescription>
+                  Add POs, instructions, shipping docs, etc.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <OrderAttachmentsPanel orderId={order.id} locked={false} />
+              </CardContent>
+            </Card>
+
             {/* Source Quote */}
             {order.quote && (
               <Card>
@@ -1887,49 +2263,35 @@ export default function OrderDetail() {
             )}
 
             <Card>
-              <CardHeader>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
+              <CardHeader className="py-4 px-6">
+                <div className="flex items-center justify-between">
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    className={cn(
-                      "w-full justify-between px-2",
-                      rightPanel === "timeline" && "bg-muted"
-                    )}
                     onClick={() => setRightPanel(prev => prev === "timeline" ? "collapsed" : "timeline")}
-                  >
-                    <span>Timeline</span>
-                    <ChevronDown
-                      className={cn(
-                        "h-4 w-4 transition-transform",
-                        rightPanel === "timeline" ? "rotate-180" : "rotate-0"
-                      )}
-                    />
-                  </Button>
-
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
                     className={cn(
-                      "w-full justify-between px-2",
-                      rightPanel === "material" && "bg-muted"
+                      "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
+                      rightPanel === "timeline" ? "text-foreground" : "text-muted-foreground"
                     )}
-                    onClick={() => setRightPanel(prev => prev === "material" ? "collapsed" : "material")}
                   >
-                    <span>Material Usage</span>
-                    <ChevronDown
-                      className={cn(
-                        "h-4 w-4 transition-transform",
-                        rightPanel === "material" ? "rotate-180" : "rotate-0"
-                      )}
-                    />
-                  </Button>
+                    Timeline
+                  </button>
+
+                  <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
+
+                  <button
+                    type="button"
+                    onClick={() => setRightPanel(prev => prev === "material" ? "collapsed" : "material")}
+                    className={cn(
+                      "text-lg font-medium transition-colors hover:text-foreground cursor-pointer",
+                      rightPanel === "material" ? "text-foreground" : "text-muted-foreground"
+                    )}
+                  >
+                    Material Usage
+                  </button>
                 </div>
               </CardHeader>
               {rightPanel !== "collapsed" && (
-                <CardContent>
+                <CardContent className="py-4 px-6">
                   {rightPanel === "timeline" && (
                     <TimelinePanel orderId={order.id} quoteId={order.quoteId ?? undefined} />
                   )}
@@ -1947,49 +2309,6 @@ export default function OrderDetail() {
           </div>
         </div>
       </ContentLayout>
-
-      {/* Change Customer Dialog */}
-      <Dialog open={showCustomerDialog} onOpenChange={setShowCustomerDialog}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Change Customer</DialogTitle>
-            <DialogDescription>
-              Select a new customer for this order. The contact will be reset.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="max-h-[400px] overflow-y-auto">
-            <div className="space-y-2">
-              {customers.map((customer: any) => (
-                <div
-                  key={customer.id}
-                  className={`p-3 border rounded-lg cursor-pointer transition-colors ${
-                    selectedCustomerId === customer.id
-                      ? "border-primary bg-primary/5"
-                      : "hover:border-muted-foreground"
-                  }`}
-                  onClick={() => setSelectedCustomerId(customer.id)}
-                >
-                  <div className="font-medium">{customer.companyName}</div>
-                  {customer.email && (
-                    <div className="text-sm text-muted-foreground">{customer.email}</div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCustomerDialog(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCustomerSelect}
-              disabled={!selectedCustomerId || changeCustomerMutation.isPending}
-            >
-              {changeCustomerMutation.isPending ? "Updating..." : "Update Customer"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
