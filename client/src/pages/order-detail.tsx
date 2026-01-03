@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -29,7 +30,7 @@ import {
 import { ArrowLeft, Calendar, Package, DollarSign, Trash2, Edit, Check, X, Plus, UserCog, Truck, ExternalLink, FileText, ChevronDown, Mail, Phone, ChevronsUpDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { CustomerSelect } from "@/components/CustomerSelect";
+import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
@@ -91,8 +92,12 @@ type OrderAddressSnapshotFields = {
   shipToCountry?: string | null;
 
   shippingMethod?: string | null;
+  shippingInstructions?: string | null;
   carrier?: string | null;
   trackingNumber?: string | null;
+
+  // Quote-style tags/flags (fail-soft; may be present in some deployments)
+  tags?: string[] | null;
   
   // TitanOS State Architecture fields
   state?: string;
@@ -103,6 +108,11 @@ type OrderAddressSnapshotFields = {
 
 type OrderDetailOrder = HookOrderWithRelations & OrderAddressSnapshotFields;
 type OrderDetailLineItem = HookOrderWithRelations["lineItems"][number];
+
+const fulfillmentMethods = ["pickup", "ship", "deliver"] as const;
+type FulfillmentMethod = (typeof fulfillmentMethods)[number];
+const isFulfillmentMethod = (value: string): value is FulfillmentMethod =>
+  fulfillmentMethods.some((method) => method === value);
 
 // Date display style for Due Date and Promised Date in the order details card
 // Future: This will be configurable via organization preferences
@@ -126,6 +136,11 @@ export default function OrderDetail() {
   const [showLineItemDialog, setShowLineItemDialog] = useState(false);
   const [editingLineItem, setEditingLineItem] = useState<(OrderDetailLineItem & { product: any; productVariant?: any }) | null>(null);
   const [lineItemToDelete, setLineItemToDelete] = useState<string | null>(null);
+
+  // Order flags (stored in orders.label as comma-separated values)
+  const [flags, setFlags] = useState<string[]>([]);
+  const [flagInput, setFlagInput] = useState("");
+  const flagInputRef = useRef<HTMLInputElement | null>(null);
   
   // Inline price editing state
   const [editingPriceItemId, setEditingPriceItemId] = useState<string | null>(null);
@@ -150,6 +165,20 @@ export default function OrderDetail() {
   const [isEditingCustomer, setIsEditingCustomer] = useState(false);
   const [isEditingContact, setIsEditingContact] = useState(false);
   const [isEditingFulfillment, setIsEditingFulfillment] = useState(false);
+  const [isShipToAutofillOpen, setIsShipToAutofillOpen] = useState(false);
+  const [shipToAutofillQuery, setShipToAutofillQuery] = useState("");
+  const [shipToAutofillDebounced, setShipToAutofillDebounced] = useState("");
+
+  const suppressShipToBlurRef = useRef(false);
+  const shipToCompanyInputRef = useRef<HTMLInputElement>(null);
+  const shipToNameInputRef = useRef<HTMLInputElement>(null);
+  const shipToEmailInputRef = useRef<HTMLInputElement>(null);
+  const shipToPhoneInputRef = useRef<HTMLInputElement>(null);
+  const shipToAddress1InputRef = useRef<HTMLInputElement>(null);
+  const shipToAddress2InputRef = useRef<HTMLInputElement>(null);
+  const shipToCityInputRef = useRef<HTMLInputElement>(null);
+  const shipToStateInputRef = useRef<HTMLInputElement>(null);
+  const shipToPostalCodeInputRef = useRef<HTMLInputElement>(null);
 
   const [rightPanel, setRightPanel] = useState<"collapsed" | "timeline" | "material">("collapsed");
 
@@ -167,6 +196,13 @@ export default function OrderDetail() {
       setIsContactPickerOpen(true);
     }
   }, [isEditingContact]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setShipToAutofillDebounced(shipToAutofillQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [shipToAutofillQuery]);
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
@@ -230,6 +266,40 @@ export default function OrderDetail() {
     setIsEditingFulfillment(true);
   };
 
+  const handleFulfillmentMethodChange = (value: string) => {
+    if (!canEditOrder) return;
+    if (!isFulfillmentMethod(value)) return;
+    void updateOrder.mutateAsync({ shippingMethod: value });
+  };
+
+  const handleAddNewShipToAddress = () => {
+    // Ensure manual entry UI is visible/enabled
+    enterFulfillmentEdit();
+
+    // Clear fields client-side only (do NOT persist)
+    suppressShipToBlurRef.current = true;
+    if (shipToCompanyInputRef.current) shipToCompanyInputRef.current.value = "";
+    if (shipToNameInputRef.current) shipToNameInputRef.current.value = "";
+    if (shipToEmailInputRef.current) shipToEmailInputRef.current.value = "";
+    if (shipToPhoneInputRef.current) shipToPhoneInputRef.current.value = "";
+    if (shipToAddress1InputRef.current) shipToAddress1InputRef.current.value = "";
+    if (shipToAddress2InputRef.current) shipToAddress2InputRef.current.value = "";
+    if (shipToCityInputRef.current) shipToCityInputRef.current.value = "";
+    if (shipToStateInputRef.current) shipToStateInputRef.current.value = "";
+    if (shipToPostalCodeInputRef.current) shipToPostalCodeInputRef.current.value = "";
+
+    // Focus first field if possible (avoid refactor if not)
+    requestAnimationFrame(() => {
+      shipToCompanyInputRef.current?.focus();
+      suppressShipToBlurRef.current = false;
+    });
+  };
+
+  const currentFulfillmentMethod: FulfillmentMethod =
+    order?.shippingMethod && typeof order.shippingMethod === "string" && isFulfillmentMethod(order.shippingMethod)
+      ? order.shippingMethod
+      : "ship";
+
   const exitAllEditModes = () => {
     setIsEditingCustomer(false);
     setIsEditingContact(false);
@@ -260,6 +330,22 @@ export default function OrderDetail() {
       return customer.contacts || [];
     },
     enabled: !!order?.customerId,
+  });
+
+  const { data: shipToAutofillCustomers = [], isLoading: isShipToAutofillCustomersLoading } = useQuery<CustomerWithContacts[]>({
+    queryKey: ["/api/customers", { search: shipToAutofillDebounced }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (shipToAutofillDebounced.trim()) {
+        params.set("search", shipToAutofillDebounced.trim());
+      }
+      const url = `/api/customers${params.toString() ? `?${params.toString()}` : ""}`;
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch customers");
+      return response.json();
+    },
+    staleTime: 30000,
+    enabled: isEditingFulfillment,
   });
 
   // Filtered contacts based on search
@@ -481,6 +567,96 @@ export default function OrderDetail() {
     setTempPromisedDate('');
   };
 
+  const parseFlagsFromLabel = (label: string | null | undefined): string[] => {
+    const raw = (label ?? "").trim();
+    if (!raw) return [];
+
+    const parts = raw
+      .split(/[,\n]/g)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const p of parts) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      unique.push(p);
+    }
+    return unique;
+  };
+
+  const formatFlagsToLabel = (nextFlags: string[]): string | null => {
+    const cleaned = nextFlags.map((f) => f.trim()).filter(Boolean);
+    return cleaned.length ? cleaned.join(", ") : null;
+  };
+
+  useEffect(() => {
+    setFlags(parseFlagsFromLabel(order?.label ?? null));
+  }, [order?.label]);
+
+  const commitFlagInput = (raw: string) => {
+    const parts = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (parts.length === 0) {
+      setFlagInput("");
+      return;
+    }
+
+    void (async () => {
+      const next = [...flags];
+      for (const p of parts) {
+        if (!next.includes(p)) next.push(p);
+      }
+
+      setFlags(next);
+      setFlagInput("");
+
+      try {
+        await updateOrder.mutateAsync({ label: formatFlagsToLabel(next) });
+      } catch {
+        // Error toast handled by mutation
+        setFlags(parseFlagsFromLabel(order?.label ?? null));
+      }
+    })();
+  };
+
+  const handleFlagKeyDown = (e: any) => {
+    const isCommitKey = e.key === "Enter" || e.key === "," || e.key === "Comma";
+    if (isCommitKey) {
+      e.preventDefault();
+      commitFlagInput(flagInput);
+    } else if (e.key === "Backspace" && flagInput === "" && flags.length > 0) {
+      e.preventDefault();
+      void (async () => {
+        const next = flags.slice(0, -1);
+        setFlags(next);
+        try {
+          await updateOrder.mutateAsync({ label: formatFlagsToLabel(next) });
+        } catch {
+          // Error toast handled by mutation
+          setFlags(parseFlagsFromLabel(order?.label ?? null));
+        }
+      })();
+    }
+  };
+
+  const removeFlag = (flag: string) => {
+    void (async () => {
+      const next = flags.filter((f) => f !== flag);
+      setFlags(next);
+      try {
+        await updateOrder.mutateAsync({ label: formatFlagsToLabel(next) });
+      } catch {
+        // Error toast handled by mutation
+        setFlags(parseFlagsFromLabel(order?.label ?? null));
+      }
+    })();
+  };
+
   type ShipToUpdatePayload = Partial<Pick<
     OrderDetailOrder,
     | "shipToCompany"
@@ -506,6 +682,27 @@ export default function OrderDetail() {
     } catch (error) {
       // Error toast handled by mutation
     }
+  };
+
+  const autofillShipToFromCustomer = async (customer: CustomerWithContacts) => {
+    const payload: ShipToUpdatePayload = {
+      shipToCompany: customer.companyName || null,
+      shipToAddress1: customer.shippingStreet1 || null,
+      shipToAddress2: customer.shippingStreet2 || null,
+      shipToCity: customer.shippingCity || null,
+      shipToState: customer.shippingState || null,
+      shipToPostalCode: customer.shippingPostalCode || null,
+      shipToCountry: customer.shippingCountry || null,
+    };
+
+    if (customer.email) {
+      payload.shipToEmail = customer.email;
+    }
+    if (customer.phone) {
+      payload.shipToPhone = customer.phone;
+    }
+
+    await saveShipTo(payload);
   };
 
   const handleAddLineItem = () => {
@@ -1612,6 +1809,51 @@ export default function OrderDetail() {
                   </div>
                 </div>
 
+                <div className="flex items-start gap-2">
+                  <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Flags</label>
+                  <div className="flex-1">
+                    <div
+                      className="min-h-9 rounded-md bg-muted/30 border border-border/50 px-2 py-1 flex flex-wrap items-center gap-1.5 cursor-text focus-within:ring-1 focus-within:ring-ring/20"
+                      onClick={() => flagInputRef.current?.focus()}
+                      role="group"
+                      aria-label="Flags"
+                    >
+                      {flags.map((t) => (
+                        <Badge key={t} variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center gap-1">
+                          {t}
+                          {canEditOrder && !updateOrder.isPending && (
+                            <button
+                              type="button"
+                              onClick={() => removeFlag(t)}
+                              className="ml-1 hover:bg-secondary/80 rounded-full p-1"
+                              aria-label={`Remove flag ${t}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          )}
+                        </Badge>
+                      ))}
+
+                      {!canEditOrder || updateOrder.isPending ? (
+                        flags.length === 0 ? (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        ) : null
+                      ) : (
+                        <Badge variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center">
+                          <input
+                            ref={flagInputRef}
+                            value={flagInput}
+                            onChange={(e) => setFlagInput(e.target.value)}
+                            onKeyDown={handleFlagKeyDown}
+                            placeholder="Add Flag"
+                            className="w-[7rem] min-w-[7rem] bg-transparent outline-none text-xs font-semibold placeholder:text-muted-foreground/70"
+                          />
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 {order.notesInternal && (
                   <div>
                     <label className="text-sm font-medium text-muted-foreground">Internal Notes</label>
@@ -1887,8 +2129,22 @@ export default function OrderDetail() {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg font-medium">Fulfillment & Shipping</CardTitle>
+                  <CardTitle className="text-lg font-medium">Fulfillment</CardTitle>
                   <div className="flex items-center gap-2">
+                    <Select
+                      value={currentFulfillmentMethod}
+                      onValueChange={handleFulfillmentMethodChange}
+                      disabled={!canEditOrder}
+                    >
+                      <SelectTrigger className="h-8 w-[140px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pickup">Pickup</SelectItem>
+                        <SelectItem value="ship">Ship</SelectItem>
+                        <SelectItem value="deliver">Deliver</SelectItem>
+                      </SelectContent>
+                    </Select>
                     {order.fulfillmentStatus && (
                       <FulfillmentStatusBadge status={order.fulfillmentStatus as any} />
                     )}
@@ -1914,305 +2170,401 @@ export default function OrderDetail() {
                     )}
                   </div>
                 </div>
-                <CardDescription>
-                  Track shipments and manage order fulfillment
-                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/* Manual Status Override (Manager+) */}
-                {isManagerOrHigher && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Manual Status Override</label>
-                    <Select
-                      value={order.fulfillmentStatus || "pending"}
-                      onValueChange={(value) => handleFulfillmentStatusChange(value as any)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="pending">Pending</SelectItem>
-                        <SelectItem value="packed">Packed</SelectItem>
-                        <SelectItem value="shipped">Shipped</SelectItem>
-                        <SelectItem value="delivered">Delivered</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
-                {/* Packing Slip */}
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Packing Slip</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleGeneratePackingSlip}
-                    disabled={generatePackingSlip.isPending}
-                  >
-                    <FileText className="h-4 w-4 mr-2" />
-                    {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
-                  </Button>
-                </div>
-
-                {/* Ship To (order-level blind shipping) */}
-                <div className="space-y-3">
-                  <div className="text-sm font-medium">Ship To</div>
-
-                  {!isEditingFulfillment ? (
-                    <div className="space-y-1 text-sm text-muted-foreground">
-                      {(order.shipToCompany || order.shipToName) && (
-                        <div className="text-foreground">
-                          {order.shipToCompany || order.shipToName}
-                        </div>
-                      )}
-                      {order.shipToCompany && order.shipToName && order.shipToCompany !== order.shipToName && (
-                        <div>{order.shipToName}</div>
-                      )}
-
-                      {(order.shipToEmail || order.shipToPhone) && (
-                        <div className="grid grid-cols-1 gap-1 md:grid-cols-2 md:gap-3">
-                          {order.shipToEmail && (
-                            <span className="min-w-0 truncate font-mono" title={order.shipToEmail}>
-                              {order.shipToEmail}
-                            </span>
-                          )}
-                          {order.shipToPhone && (
-                            <span className="md:justify-self-end font-mono" title={order.shipToPhone}>
-                              {order.shipToPhone}
-                            </span>
-                          )}
-                        </div>
-                      )}
-
-                      {(order.shipToAddress1 || order.shipToAddress2) && (
-                        <div>
-                          {order.shipToAddress1 && <div>{order.shipToAddress1}</div>}
-                          {order.shipToAddress2 && <div>{order.shipToAddress2}</div>}
-                        </div>
-                      )}
-
-                      {(order.shipToCity || order.shipToState || order.shipToPostalCode) && (
-                        <div>
-                          {[order.shipToCity, order.shipToState].filter(Boolean).join(", ")}
-                          {order.shipToPostalCode ? ` ${order.shipToPostalCode}` : ""}
-                        </div>
-                      )}
-
-                      {order.shipToCountry && <div>{order.shipToCountry}</div>}
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">Company</label>
-                        <Input
-                          defaultValue={order.shipToCompany ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToCompany ?? null) === nextValue) return;
-                            void saveShipTo({ shipToCompany: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">Contact</label>
-                        <Input
-                          defaultValue={order.shipToName ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToName ?? null) === nextValue) return;
-                            void saveShipTo({ shipToName: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">Email</label>
-                        <Input
-                          defaultValue={order.shipToEmail ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToEmail ?? null) === nextValue) return;
-                            void saveShipTo({ shipToEmail: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">Phone</label>
-                        <Input
-                          defaultValue={order.shipToPhone ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToPhone ?? null) === nextValue) return;
-                            void saveShipTo({ shipToPhone: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1 md:col-span-2">
-                        <label className="text-xs text-muted-foreground">Address 1</label>
-                        <Input
-                          defaultValue={order.shipToAddress1 ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToAddress1 ?? null) === nextValue) return;
-                            void saveShipTo({ shipToAddress1: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1 md:col-span-2">
-                        <label className="text-xs text-muted-foreground">Address 2</label>
-                        <Input
-                          defaultValue={order.shipToAddress2 ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToAddress2 ?? null) === nextValue) return;
-                            void saveShipTo({ shipToAddress2: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">City</label>
-                        <Input
-                          defaultValue={order.shipToCity ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToCity ?? null) === nextValue) return;
-                            void saveShipTo({ shipToCity: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">State</label>
-                        <Input
-                          defaultValue={order.shipToState ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToState ?? null) === nextValue) return;
-                            void saveShipTo({ shipToState: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">Postal Code</label>
-                        <Input
-                          defaultValue={order.shipToPostalCode ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToPostalCode ?? null) === nextValue) return;
-                            void saveShipTo({ shipToPostalCode: nextValue });
-                          }}
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">Country</label>
-                        <Input
-                          defaultValue={order.shipToCountry ?? ""}
-                          onBlur={(e) => {
-                            const nextValue = normalizeNullableString(e.target.value);
-                            if ((order.shipToCountry ?? null) === nextValue) return;
-                            void saveShipTo({ shipToCountry: nextValue });
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <Separator />
-
-                {/* Shipments */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">Shipments ({shipments.length})</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleAddShipment}
-                    >
-                      <Truck className="h-4 w-4 mr-2" />
-                      Add Shipment
-                    </Button>
-                  </div>
-
-                  {shipments.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <Truck className="h-12 w-12 mx-auto mb-3 opacity-20" />
-                      <p className="text-sm">No shipments yet</p>
-                      <p className="text-xs mt-1">Add a shipment to track delivery</p>
-                    </div>
-                  ) : (
+                {currentFulfillmentMethod === "pickup" ? (
                     <div className="space-y-2">
-                      {shipments.map((shipment) => (
-                        <div
-                          key={shipment.id}
-                          className="border rounded-lg p-3 space-y-2"
-                        >
-                          <div className="flex items-start justify-between">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2">
-                                <Badge variant="outline" className="text-xs">
-                                  {shipment.carrier}
-                                </Badge>
-                                {shipment.deliveredAt && (
-                                  <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs">
-                                    Delivered
-                                  </Badge>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-mono">
-                                  {shipment.trackingNumber}
-                                </span>
-                                {shipment.carrier !== "Other" && shipment.trackingNumber && (
-                                  <a
-                                    href={getTrackingUrl(shipment.carrier, shipment.trackingNumber)}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-primary hover:underline"
-                                  >
-                                    <ExternalLink className="h-3 w-3" />
-                                  </a>
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
-                              </div>
-                              {shipment.deliveredAt && (
-                                <div className="text-xs text-muted-foreground">
-                                  Delivered: {format(new Date(shipment.deliveredAt), "MMM d, yyyy h:mm a")}
-                                </div>
-                              )}
-                              {shipment.notes && (
-                                <div className="text-xs text-muted-foreground italic mt-1">
-                                  {shipment.notes}
-                                </div>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1">
-                              {!shipment.deliveredAt && (
+                      <label className="text-sm font-medium">Pickup notes</label>
+                      <Textarea
+                        placeholder="Add pickup instructions, contact info, dock hours, etc."
+                        defaultValue={order.shippingInstructions ?? ""}
+                        disabled={!canEditOrder || !isEditingFulfillment}
+                        onBlur={(e) => {
+                          const nextValue = normalizeNullableString(e.target.value);
+                          if ((order.shippingInstructions ?? null) === nextValue) return;
+                          void updateOrder.mutateAsync({ shippingInstructions: nextValue });
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      {/* Ship To (order-level blind shipping) */}
+                      <div className="space-y-3">
+                        <div className="text-sm font-medium">Ship To</div>
+
+                        {isEditingFulfillment && (
+                          <div className="flex items-center gap-2">
+                            <Popover open={isShipToAutofillOpen} onOpenChange={setIsShipToAutofillOpen}>
+                              <PopoverTrigger asChild>
                                 <Button
-                                  variant="ghost"
+                                  type="button"
+                                  variant="outline"
                                   size="sm"
-                                  onClick={() => handleMarkDelivered(shipment)}
-                                  title="Mark as delivered"
+                                  className="h-8 flex-1 justify-between font-normal"
+                                  aria-expanded={isShipToAutofillOpen}
                                 >
-                                  <Check className="h-4 w-4" />
+                                  <span className="truncate">Search customers...</span>
+                                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                                 </Button>
-                              )}
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleEditShipment(shipment)}
+                              </PopoverTrigger>
+                              <PopoverContent className="w-[460px] p-0" align="start">
+                                <Command shouldFilter={false}>
+                                  <CommandInput
+                                    placeholder="Search customers..."
+                                    value={shipToAutofillQuery}
+                                    onValueChange={setShipToAutofillQuery}
+                                  />
+                                  <CommandList>
+                                    {isShipToAutofillCustomersLoading ? (
+                                      <div className="p-4 text-sm text-muted-foreground text-center">Loading customers...</div>
+                                    ) : (
+                                      <>
+                                        <CommandEmpty>No customers found.</CommandEmpty>
+                                        {shipToAutofillCustomers.map((customer) => {
+                                          const street = customer.shippingStreet1 || "";
+                                          const city = customer.shippingCity || "";
+                                          const state = customer.shippingState || "";
+                                          const postal = customer.shippingPostalCode || "";
+
+                                          const addressLeft = [street, city].filter(Boolean).join(", ");
+                                          const addressRight = [state, postal].filter(Boolean).join(" ");
+                                          const address = [addressLeft, addressRight].filter(Boolean).join(" • ");
+
+                                          const label = `${customer.companyName || customer.email || "Customer"} — ${address || "No shipping address"}`;
+                                          const searchValue = [customer.companyName, customer.email, customer.phone, customer.shippingStreet1, customer.shippingCity]
+                                            .filter(Boolean)
+                                            .join(" ");
+
+                                          return (
+                                            <CommandItem
+                                              key={customer.id}
+                                              value={searchValue}
+                                              onSelect={async () => {
+                                                await autofillShipToFromCustomer(customer);
+                                                setIsShipToAutofillOpen(false);
+                                                setShipToAutofillQuery("");
+                                              }}
+                                            >
+                                              <div className="flex flex-col min-w-0 flex-1">
+                                                <div className="font-medium truncate" title={label}>
+                                                  {label}
+                                                </div>
+                                              </div>
+                                            </CommandItem>
+                                          );
+                                        })}
+                                      </>
+                                    )}
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 ml-auto"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={handleAddNewShipToAddress}
+                            >
+                              Add new address
+                            </Button>
+                          </div>
+                        )}
+
+                        {!isEditingFulfillment ? (
+                          <div className="space-y-1 text-sm text-muted-foreground">
+                            {(order.shipToCompany || order.shipToName) && (
+                              <div className="text-foreground">
+                                {order.shipToCompany || order.shipToName}
+                              </div>
+                            )}
+                            {order.shipToCompany && order.shipToName && order.shipToCompany !== order.shipToName && (
+                              <div>{order.shipToName}</div>
+                            )}
+
+                            {(order.shipToEmail || order.shipToPhone) && (
+                              <div className="grid grid-cols-1 gap-1 md:grid-cols-2 md:gap-3">
+                                {order.shipToEmail && (
+                                  <span className="min-w-0 truncate font-mono" title={order.shipToEmail}>
+                                    {order.shipToEmail}
+                                  </span>
+                                )}
+                                {order.shipToPhone && (
+                                  <span className="md:justify-self-end font-mono" title={order.shipToPhone}>
+                                    {order.shipToPhone}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            {(order.shipToAddress1 || order.shipToAddress2) && (
+                              <div>
+                                {order.shipToAddress1 && <div>{order.shipToAddress1}</div>}
+                                {order.shipToAddress2 && <div>{order.shipToAddress2}</div>}
+                              </div>
+                            )}
+
+                            {(order.shipToCity || order.shipToState || order.shipToPostalCode) && (
+                              <div>
+                                {[order.shipToCity, order.shipToState].filter(Boolean).join(", ")}
+                                {order.shipToPostalCode ? ` ${order.shipToPostalCode}` : ""}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">Company</label>
+                              <Input
+                                ref={shipToCompanyInputRef}
+                                defaultValue={order.shipToCompany ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToCompany ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToCompany: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">Contact</label>
+                              <Input
+                                ref={shipToNameInputRef}
+                                defaultValue={order.shipToName ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToName ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToName: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">Email</label>
+                              <Input
+                                ref={shipToEmailInputRef}
+                                defaultValue={order.shipToEmail ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToEmail ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToEmail: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">Phone</label>
+                              <Input
+                                ref={shipToPhoneInputRef}
+                                defaultValue={order.shipToPhone ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToPhone ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToPhone: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1 md:col-span-2">
+                              <label className="text-xs text-muted-foreground">Address 1</label>
+                              <Input
+                                ref={shipToAddress1InputRef}
+                                defaultValue={order.shipToAddress1 ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToAddress1 ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToAddress1: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1 md:col-span-2">
+                              <label className="text-xs text-muted-foreground">Address 2</label>
+                              <Input
+                                ref={shipToAddress2InputRef}
+                                defaultValue={order.shipToAddress2 ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToAddress2 ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToAddress2: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">City</label>
+                              <Input
+                                ref={shipToCityInputRef}
+                                defaultValue={order.shipToCity ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToCity ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToCity: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">State</label>
+                              <Input
+                                ref={shipToStateInputRef}
+                                defaultValue={order.shipToState ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToState ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToState: nextValue });
+                                }}
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground">Postal Code</label>
+                              <Input
+                                ref={shipToPostalCodeInputRef}
+                                defaultValue={order.shipToPostalCode ?? ""}
+                                onBlur={(e) => {
+                                  if (suppressShipToBlurRef.current) return;
+                                  const nextValue = normalizeNullableString(e.target.value);
+                                  if ((order.shipToPostalCode ?? null) === nextValue) return;
+                                  void saveShipTo({ shipToPostalCode: nextValue });
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Packing Slip */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">Packing Slip</span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleGeneratePackingSlip}
+                          disabled={generatePackingSlip.isPending}
+                        >
+                          <FileText className="h-4 w-4 mr-2" />
+                          {generatePackingSlip.isPending ? "Generating..." : "Generate & View"}
+                        </Button>
+                      </div>
+
+                      {/* Manual Status Override (Manager+) */}
+                      {isManagerOrHigher && (
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">Manual Status Override</label>
+                          <Select
+                            value={order.fulfillmentStatus || "pending"}
+                            onValueChange={(value) => handleFulfillmentStatusChange(value as any)}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="pending">Pending</SelectItem>
+                              <SelectItem value="packed">Packed</SelectItem>
+                              <SelectItem value="shipped">Shipped</SelectItem>
+                              <SelectItem value="delivered">Delivered</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+
+                      <Separator />
+
+                      {/* Shipments */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium">Shipments ({shipments.length})</span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleAddShipment}
+                          >
+                            <Truck className="h-4 w-4 mr-2" />
+                            Add Shipment
+                          </Button>
+                        </div>
+
+                        {shipments.length === 0 ? (
+                          <div className="text-xs text-muted-foreground">No shipments yet.</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {shipments.map((shipment) => (
+                              <div
+                                key={shipment.id}
+                                className="border rounded-lg p-3 space-y-2"
                               >
-                                <Edit className="h-4 w-4" />
-                              </Button>
+                                <div className="flex items-start justify-between">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2">
+                                      <Badge variant="outline" className="text-xs">
+                                        {shipment.carrier}
+                                      </Badge>
+                                      {shipment.deliveredAt && (
+                                        <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs">
+                                          Delivered
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-mono">
+                                        {shipment.trackingNumber}
+                                      </span>
+                                      {shipment.carrier !== "Other" && shipment.trackingNumber && (
+                                        <a
+                                          href={getTrackingUrl(shipment.carrier, shipment.trackingNumber)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-primary hover:underline"
+                                        >
+                                          <ExternalLink className="h-3 w-3" />
+                                        </a>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      Shipped: {format(new Date(shipment.shippedAt), "MMM d, yyyy h:mm a")}
+                                    </div>
+                                    {shipment.deliveredAt && (
+                                      <div className="text-xs text-muted-foreground">
+                                        Delivered: {format(new Date(shipment.deliveredAt), "MMM d, yyyy h:mm a")}
+                                      </div>
+                                    )}
+                                    {shipment.notes && (
+                                      <div className="text-xs text-muted-foreground italic mt-1">
+                                        {shipment.notes}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    {!shipment.deliveredAt && (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleMarkDelivered(shipment)}
+                                        title="Mark as delivered"
+                                      >
+                                        <Check className="h-4 w-4" />
+                                      </Button>
+                                    )}
+
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleEditShipment(shipment)}
+                                      title="Edit shipment"
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                    </Button>
                               {isAdminOrOwner && (
                                 <Button
                                   variant="ghost"
@@ -2230,6 +2582,8 @@ export default function OrderDetail() {
                     </div>
                   )}
                 </div>
+                    </>
+                  )}
               </CardContent>
             </Card>
 
