@@ -220,6 +220,9 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
     }
   };
 
+  const isEmpty = !isLoading && attachments.length === 0;
+  const showEmptyText = isEmpty && !isUploading && uploadItems.length === 0;
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -232,30 +235,67 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           disabled={isUploading || isLocked}
         />
 
-        <div className="text-xs text-titan-text-muted" title={isLocked ? lockedHint : undefined}>
-          {isLocked ? lockedHint : 'Add POs, instructions, shipping docs, etc.'}
-        </div>
+        {isEmpty ? (
+          <div className="w-full flex flex-col items-center gap-2">
+            {isLocked && (
+              <div className="text-xs text-titan-text-muted text-center" title={lockedHint}>
+                {lockedHint}
+              </div>
+            )}
 
-        <Button
-          variant="outline"
-          size="sm"
-          className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isUploading || isLocked}
-          title={isLocked ? lockedHint : 'Upload'}
-        >
-          {isUploading ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Uploading
-            </>
-          ) : (
-            <>
-              <Upload className="w-4 h-4 mr-2" />
-              Upload
-            </>
-          )}
-        </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading || isLocked}
+              title={isLocked ? lockedHint : 'Upload'}
+            >
+              {isUploading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Uploading
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4 mr-2" />
+                  Upload
+                </>
+              )}
+            </Button>
+
+            {showEmptyText && <div className="text-xs text-titan-text-muted text-center">No attachments</div>}
+          </div>
+        ) : (
+          <div className="w-full flex items-center justify-center gap-3">
+            {isLocked && (
+              <div className="text-xs text-titan-text-muted" title={lockedHint}>
+                {lockedHint}
+              </div>
+            )}
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading || isLocked}
+              title={isLocked ? lockedHint : 'Upload'}
+            >
+              {isUploading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Uploading
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4 mr-2" />
+                  Upload
+                </>
+              )}
+            </Button>
+          </div>
+        )}
       </div>
 
       {uploadItems.length > 0 && (
@@ -276,8 +316,6 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
 
       {isLoading ? (
         <div className="text-xs text-titan-text-muted">Loading attachments...</div>
-      ) : attachments.length === 0 ? (
-        <div className="text-xs text-titan-text-muted">No attachments</div>
       ) : (
         <div className="space-y-1">
           {attachments.map((a) => {
