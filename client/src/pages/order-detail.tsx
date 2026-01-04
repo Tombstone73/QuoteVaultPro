@@ -33,10 +33,9 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useDeleteOrder, useUpdateOrder, useUpdateOrderLineItem, useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItemStatus, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
+import { useOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
-import { OrderLineItemDialog } from "@/components/order-line-item-dialog";
 import type { OrderLineItem as HookOrderLineItem, OrderWithRelations as HookOrderWithRelations } from "@/hooks/useOrders";
 import { OrderStatusBadge, OrderPriorityBadge, LineItemStatusBadge } from "@/components/order-status-badge";
 import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
@@ -60,6 +59,7 @@ import {
 } from "@/components/StateTransitionButtons";
 import type { OrderState } from "@/hooks/useOrderState";
 import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
+import { OrderLineItemsSection } from "@/components/orders/OrderLineItemsSection";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -133,23 +133,12 @@ export default function OrderDetail() {
   const [editingPromisedDate, setEditingPromisedDate] = useState(false);
   const [tempDueDate, setTempDueDate] = useState("");
   const [tempPromisedDate, setTempPromisedDate] = useState("");
-  const [showLineItemDialog, setShowLineItemDialog] = useState(false);
-  const [editingLineItem, setEditingLineItem] = useState<(OrderDetailLineItem & { product: any; productVariant?: any }) | null>(null);
-  const [lineItemToDelete, setLineItemToDelete] = useState<string | null>(null);
 
   // Order flags (stored in orders.label as comma-separated values)
   const [flags, setFlags] = useState<string[]>([]);
   const [flagInput, setFlagInput] = useState("");
   const flagInputRef = useRef<HTMLInputElement | null>(null);
   
-  // Inline price editing state
-  const [editingPriceItemId, setEditingPriceItemId] = useState<string | null>(null);
-  const [editingPriceType, setEditingPriceType] = useState<'unit' | 'total' | null>(null);
-  const [tempPrice, setTempPrice] = useState("");
-  
-  // Inline status editing state
-  const [editingStatusItemId, setEditingStatusItemId] = useState<string | null>(null);
-  const [tempStatus, setTempStatus] = useState("");
 
   // Fulfillment state
   const [showShipmentForm, setShowShipmentForm] = useState(false);
@@ -210,11 +199,7 @@ export default function OrderDetail() {
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
-  const updateLineItem = useUpdateOrderLineItem(orderId!);
-  const updateLineItemStatus = useUpdateOrderLineItemStatus(orderId!);
   const bulkUpdateLineItemStatus = useBulkUpdateOrderLineItemStatus(orderId!);
-  const createLineItem = useCreateOrderLineItem(orderId!);
-  const deleteLineItem = useDeleteOrderLineItem(orderId!);
 
   // Fulfillment hooks
   const { data: shipments = [] } = useShipments(orderId!);
@@ -705,43 +690,6 @@ export default function OrderDetail() {
     await saveShipTo(payload);
   };
 
-  const handleAddLineItem = () => {
-    setEditingLineItem(null);
-    setShowLineItemDialog(true);
-  };
-
-  const handleEditLineItem = (lineItem: OrderDetailLineItem & { product: any; productVariant?: any }) => {
-    console.log("handleEditLineItem called with:", lineItem);
-    console.log("productVariantId:", lineItem.productVariantId, "Type:", typeof lineItem.productVariantId);
-    setEditingLineItem(lineItem);
-    setShowLineItemDialog(true);
-  };
-
-  const handleDeleteLineItem = async (lineItemId: string) => {
-    try {
-      await deleteLineItem.mutateAsync(lineItemId);
-      setLineItemToDelete(null);
-      
-      // Recalculate order totals
-      await recalculateOrderTotals();
-    } catch (error) {
-      // Error toast handled by mutation
-    }
-  };
-
-  const handleSaveLineItem = async (data: any) => {
-    if (editingLineItem) {
-      // Edit existing
-      await updateLineItem.mutateAsync({ id: editingLineItem.id, data });
-    } else {
-      // Create new
-      await createLineItem.mutateAsync(data);
-    }
-    
-    // Recalculate order totals
-    await recalculateOrderTotals();
-  };
-
   const recalculateOrderTotals = async () => {
     if (!order) return;
     
@@ -764,93 +712,6 @@ export default function OrderDetail() {
       subtotal: subtotal.toFixed(2),
       total: total.toFixed(2),
     });
-  };
-
-  // Inline price editing handlers
-  const handleEditPrice = (itemId: string, priceType: 'unit' | 'total', currentValue: string) => {
-    if (!canEditLineItems) return; // Block price edits when not in 'new' status
-    setEditingPriceItemId(itemId);
-    setEditingPriceType(priceType);
-    setTempPrice(currentValue);
-  };
-
-  const handleSavePrice = async (item: OrderDetailLineItem) => {
-    if (!tempPrice || !editingPriceType) return;
-
-    try {
-      const newPrice = parseFloat(tempPrice);
-      if (isNaN(newPrice) || newPrice < 0) {
-        toast({
-          title: "Invalid Price",
-          description: "Please enter a valid price",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      let unitPrice: number;
-      let totalPrice: number;
-
-      if (editingPriceType === 'unit') {
-        // User edited unit price, recalculate total
-        unitPrice = newPrice;
-        totalPrice = unitPrice * item.quantity;
-      } else {
-        // User edited total, recalculate unit price
-        totalPrice = newPrice;
-        unitPrice = totalPrice / item.quantity;
-      }
-
-      await updateLineItem.mutateAsync({
-        id: item.id,
-        data: {
-          unitPrice: unitPrice.toFixed(2),
-          totalPrice: totalPrice.toFixed(2),
-        },
-      });
-
-      // Recalculate order totals
-      await recalculateOrderTotals();
-
-      setEditingPriceItemId(null);
-      setEditingPriceType(null);
-      setTempPrice("");
-    } catch (error) {
-      // Error toast handled by mutation
-    }
-  };
-
-  const handleCancelPrice = () => {
-    setEditingPriceItemId(null);
-    setEditingPriceType(null);
-    setTempPrice("");
-  };
-
-  // Inline status editing handlers
-  const handleEditStatus = (itemId: string, currentStatus: string) => {
-    setEditingStatusItemId(itemId);
-    setTempStatus(currentStatus);
-  };
-
-  const handleSaveStatus = async (itemId: string) => {
-    if (!tempStatus) return;
-
-    try {
-      await updateLineItemStatus.mutateAsync({
-        lineItemId: itemId,
-        status: tempStatus,
-      });
-
-      setEditingStatusItemId(null);
-      setTempStatus("");
-    } catch (error) {
-      // Error toast handled by mutation
-    }
-  };
-
-  const handleCancelStatus = () => {
-    setEditingStatusItemId(null);
-    setTempStatus("");
   };
 
   const handleLineItemStatusChange = async (lineItemId: string, newStatus: string) => {
@@ -1865,262 +1726,46 @@ export default function OrderDetail() {
               </CardContent>
             </Card>
 
-            {/* Line Items */}
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="flex items-center gap-2 text-lg font-medium">
-                      Order Items
-                      {!canEditLineItems && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                          Locked
-                        </span>
-                      )}
-                    </CardTitle>
-                    <CardDescription>{order.lineItems.length} items</CardDescription>
-                  </div>
-                  {isAdminOrOwner && canEditLineItems && (
-                    <Button onClick={handleAddLineItem} size="sm">
-                      <Plus className="w-4 h-4 mr-2" />
-                      Add Item
-                    </Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Product</TableHead>
-                      <TableHead>Specs</TableHead>
-                      <TableHead>Quantity</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Unit Price</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                      {isAdminOrOwner && <TableHead className="text-right">Actions</TableHead>}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {order.lineItems.map((item) => (
-                      <TableRow key={item.id}>
-                        <TableCell>
-                          <div>
-                            <div className="font-medium">{item.product.name}</div>
-                            {item.productVariant && (
-                              <div className="text-xs text-muted-foreground">
-                                {item.productVariant.name}
-                              </div>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="text-sm">
-                            {item.width && item.height ? (
-                              <div>{item.width}" × {item.height}"</div>
-                            ) : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
-                            {item.sqft && (
-                              <div className="text-xs text-muted-foreground">
-                                {parseFloat(item.sqft).toFixed(2)} sq ft
-                              </div>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>{item.quantity.toLocaleString()}</TableCell>
-                        <TableCell onClick={(e) => e.stopPropagation()}>
-                          {isAdminOrOwner && editingStatusItemId === item.id ? (
-                            <div className="flex items-center gap-1">
-                              <Select value={tempStatus} onValueChange={setTempStatus}>
-                                <SelectTrigger className="h-8 w-[120px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="queued">Queued</SelectItem>
-                                  <SelectItem value="printing">Printing</SelectItem>
-                                  <SelectItem value="finishing">Finishing</SelectItem>
-                                  <SelectItem value="done">Done</SelectItem>
-                                  <SelectItem value="canceled">Canceled</SelectItem>
-                                </SelectContent>
-                              </Select>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => handleSaveStatus(item.id)}
-                              >
-                                <Check className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={handleCancelStatus}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          ) : (
-                            <div 
-                              className={cn(
-                                "inline-flex items-center gap-1 px-2 py-1 rounded-md transition-colors",
-                                isAdminOrOwner && "cursor-pointer hover:bg-accent/50 hover:ring-1 hover:ring-border"
-                              )}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                if (isAdminOrOwner) {
-                                  handleEditStatus(item.id, item.status);
-                                }
-                              }}
-                            >
-                              <LineItemStatusBadge status={item.status} className="font-medium" />
-                              {isAdminOrOwner && (
-                                <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                              )}
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'unit' ? (
-                            <div className="flex items-center justify-end gap-1">
-                              <Input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={tempPrice}
-                                onChange={(e) => setTempPrice(e.target.value)}
-                                className="h-7 w-24 text-right"
-                                autoFocus
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') handleSavePrice(item);
-                                  if (e.key === 'Escape') handleCancelPrice();
-                                }}
-                              />
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => handleSavePrice(item)}
-                              >
-                                <Check className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={handleCancelPrice}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          ) : (
-                            <div 
-                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
-                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'unit', item.unitPrice)}
-                            >
-                              {formatCurrency(item.unitPrice)}
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right font-medium">
-                          {isAdminOrOwner && editingPriceItemId === item.id && editingPriceType === 'total' ? (
-                            <div className="flex items-center justify-end gap-1">
-                              <Input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={tempPrice}
-                                onChange={(e) => setTempPrice(e.target.value)}
-                                className="h-7 w-24 text-right"
-                                autoFocus
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') handleSavePrice(item);
-                                  if (e.key === 'Escape') handleCancelPrice();
-                                }}
-                              />
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => handleSavePrice(item)}
-                              >
-                                <Check className="h-3 w-3" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={handleCancelPrice}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          ) : (
-                            <div 
-                              className={isAdminOrOwner ? "cursor-pointer hover:bg-muted/50 px-2 py-1 rounded" : ""}
-                              onClick={() => isAdminOrOwner && handleEditPrice(item.id, 'total', item.totalPrice)}
-                            >
-                              {formatCurrency(item.totalPrice)}
-                            </div>
-                          )}
-                        </TableCell>
-                        {isAdminOrOwner && (
-                          <TableCell className="text-right">
-                            <div className="flex items-center justify-end gap-2">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                onClick={() => handleEditLineItem(item)}
-                                disabled={!canEditLineItems}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive hover:text-destructive"
-                                onClick={() => setLineItemToDelete(item.id)}
-                                disabled={!canEditLineItems}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        )}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+            {/* Line Items (Quote-style UI) */}
+            <div className="space-y-4">
+              <OrderLineItemsSection
+                orderId={orderId!}
+                customerId={order.customerId}
+                readOnly={!(isAdminOrOwner && canEditLineItems)}
+                lineItems={order.lineItems as any}
+                onAfterLineItemsChange={recalculateOrderTotals}
+              />
 
-                <Separator className="my-4" />
-
-                {/* Totals */}
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Subtotal</span>
-                    <span>{formatCurrency(order.subtotal)}</span>
-                  </div>
-                  {parseFloat(order.discount) > 0 && (
-                    <div className="flex justify-between text-sm text-red-500">
-                      <span>Discount</span>
-                      <span>-{formatCurrency(order.discount)}</span>
+              {/* Totals */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg font-medium">Totals</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Subtotal</span>
+                      <span>{formatCurrency(order.subtotal)}</span>
                     </div>
-                  )}
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Tax</span>
-                    <span>{formatCurrency(order.tax)}</span>
+                    {parseFloat(order.discount) > 0 && (
+                      <div className="flex justify-between text-sm text-red-500">
+                        <span>Discount</span>
+                        <span>-{formatCurrency(order.discount)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Tax</span>
+                      <span>{formatCurrency(order.tax)}</span>
+                    </div>
+                    <Separator />
+                    <div className="flex justify-between font-bold text-lg">
+                      <span>Total</span>
+                      <span>{formatCurrency(order.total)}</span>
+                    </div>
                   </div>
-                  <Separator />
-                  <div className="flex justify-between font-bold text-lg">
-                    <span>Total</span>
-                    <span>{formatCurrency(order.total)}</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </div>
           </div>
 
           {/* Sidebar */}
@@ -2686,41 +2331,7 @@ export default function OrderDetail() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Delete Line Item Confirmation Dialog */}
-      <AlertDialog open={!!lineItemToDelete} onOpenChange={() => setLineItemToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Line Item</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this line item? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => lineItemToDelete && handleDeleteLineItem(lineItemToDelete)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
-      {/* Line Item Add/Edit Dialog */}
-      <OrderLineItemDialog
-        open={showLineItemDialog}
-        onOpenChange={setShowLineItemDialog}
-        lineItem={editingLineItem ? {
-          ...editingLineItem,
-          productVariantId: editingLineItem.productVariantId,
-          product: editingLineItem.product,
-          productVariant: editingLineItem.productVariant,
-        } : undefined}
-        orderId={orderId!}
-        onSave={handleSaveLineItem}
-        mode={editingLineItem ? "edit" : "add"}
-      />
 
       {/* Shipment Form Dialog */}
       <ShipmentForm

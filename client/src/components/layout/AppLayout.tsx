@@ -63,7 +63,7 @@ export function AppLayout() {
 
         {/* Scrollable page content */}
         <main className="flex-1 overflow-y-auto bg-background">
-          <div className="mx-auto w-full max-w-[1600px] px-4 py-6 md:px-6 md:py-8">
+          <div className="w-full">
             <Outlet />
           </div>
         </main>
