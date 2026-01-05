@@ -3,7 +3,18 @@ import path from 'path';
 import fs from 'fs/promises';
 import sharp from 'sharp';
 import type { Asset } from '../../../shared/schema';
-import { objectStorageClient } from '../../objectStorage';
+import { objectStorageClient, ObjectStorageService } from '../../objectStorage';
+import { isSupabaseConfigured, SupabaseStorageService } from '../../supabaseStorage';
+import { normalizeObjectKeyForDb, tryExtractSupabaseObjectKeyFromUrl } from '../../lib/supabaseObjectHelpers';
+import { resolveLocalStoragePath } from '../localStoragePath';
+
+class AssetSourceNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AssetSourceNotReadyError';
+    Object.setPrototypeOf(this, AssetSourceNotReadyError.prototype);
+  }
+}
 
 /**
  * Asset Preview Generator
@@ -51,23 +62,32 @@ export class AssetPreviewGenerator {
         return;
       }
 
-      // Download original file to temp location
-      const tempDir = path.join(process.cwd(), '.temp', 'asset-previews', asset.id);
-      await fs.mkdir(tempDir, { recursive: true });
-      const tempFilePath = path.join(tempDir, asset.fileName);
-
-      console.log(`[AssetPreviewGenerator] Downloading ${asset.fileKey} to ${tempFilePath}`);
-      await this.downloadFile(asset.fileKey, tempFilePath);
-
-      let imageBuffer: Buffer;
-
-      if (isPdf) {
-        // PDF processing: Render first page to image
-        imageBuffer = await this.renderPdfFirstPage(tempFilePath);
-      } else {
-        // Image processing: Load directly
-        imageBuffer = await fs.readFile(tempFilePath);
+      const normalizedKey = this.normalizeAssetFileKey(asset.fileKey);
+      if (process.env.NODE_ENV === 'development') {
+        const storageRoot = process.env.STORAGE_ROOT || './storage';
+        const storageCandidate = this.resolveStorageRootPath(storageRoot, normalizedKey);
+        const uploadCandidate = this.safeResolveFileStoragePath(normalizedKey);
+        console.log('[AssetPreviewGenerator][DEV] preview start', {
+          assetId: asset.id,
+          orgId: asset.organizationId,
+          key: normalizedKey,
+          storageRoot,
+          storageCandidate,
+          fileStorageCandidate: uploadCandidate,
+        });
       }
+
+      console.log(`[AssetPreviewGenerator] Reading source bytes key=${normalizedKey}`);
+
+      const sourceBytes = await this.readSourceBytes({
+        assetId: asset.id,
+        organizationId: asset.organizationId,
+        fileKey: normalizedKey,
+      });
+
+      const imageBuffer = isPdf
+        ? await this.renderPdfFirstPageFromBuffer(sourceBytes)
+        : sourceBytes;
 
       // Generate thumbnail (320px)
       const thumbBuffer = await sharp(imageBuffer)
@@ -112,72 +132,267 @@ export class AssetPreviewGenerator {
         'ready'
       );
 
-      // Cleanup temp files
-      await fs.rm(tempDir, { recursive: true, force: true });
-
       console.log(`[AssetPreviewGenerator] Successfully processed asset ${asset.id}`);
     } catch (error) {
+      // Common in signed-URL uploads: asset row exists before the object becomes readable.
+      // Keep it pending so the worker retries on the next poll.
+      if (error instanceof AssetSourceNotReadyError) {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('[AssetPreviewGenerator][DEV] source not ready, will retry', {
+            assetId: asset.id,
+            orgId: asset.organizationId,
+            key: this.safeNormalizeForLog(asset.fileKey),
+            reason: error.message,
+          });
+        }
+        await assetRepository.setAssetPreviewKeys(asset.organizationId, asset.id, {
+          previewStatus: 'pending',
+          previewError: null,
+        });
+        return;
+      }
+
       console.error(`[AssetPreviewGenerator] Failed to process asset ${asset.id}:`, error);
+
+      if (process.env.NODE_ENV === 'development') {
+        console.error('[AssetPreviewGenerator][DEV] failure context', {
+          assetId: asset.id,
+          orgId: asset.organizationId,
+          rawFileKey: asset.fileKey,
+          normalizedFileKey: this.safeNormalizeForLog(asset.fileKey),
+          error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
+        });
+      }
 
       await assetRepository.setAssetPreviewKeys(asset.organizationId, asset.id, {
         previewStatus: 'failed',
         previewError: error instanceof Error ? error.message : 'Unknown error',
       });
 
-      // Try to cleanup temp files even on error
-      try {
-        const tempDir = path.join(process.cwd(), '.temp', 'asset-previews', asset.id);
-        await fs.rm(tempDir, { recursive: true, force: true });
-      } catch {}
     }
   }
 
   /**
-   * Parse storage key into bucket and object name
+   * Normalize asset file key into canonical object key format (relative to /objects/*)
    */
-  private parseStorageKey(key: string): { bucketName: string; objectName: string } {
-    let normalizedKey = key;
-    if (!normalizedKey.startsWith('/')) {
-      normalizedKey = `/${normalizedKey}`;
+  private normalizeAssetFileKey(raw: string): string {
+    let key = (raw || '').toString().trim();
+
+    // If a URL got persisted accidentally, strip it down to a key.
+    if (key.startsWith('http://') || key.startsWith('https://')) {
+      if (isSupabaseConfigured()) {
+        const extracted = tryExtractSupabaseObjectKeyFromUrl(key, 'titan-private');
+        if (extracted) return normalizeObjectKeyForDb(extracted);
+      }
+
+      try {
+        const url = new URL(key);
+        key = url.pathname || key;
+      } catch {
+        // ignore
+      }
     }
-    const parts = normalizedKey.split('/');
-    if (parts.length < 3) {
-      throw new Error('Invalid storage key: must contain at least bucket/object');
+
+    key = key.replace(/^\/+/, '');
+    if (key.startsWith('objects/')) key = key.slice('objects/'.length);
+
+    // Remove accidental bucket prefix
+    key = normalizeObjectKeyForDb(key);
+
+    return key;
+  }
+
+  private safeNormalizeForLog(raw: string): string {
+    try {
+      return this.normalizeAssetFileKey(raw);
+    } catch {
+      return (raw || '').toString();
     }
-    return {
-      bucketName: parts[1],
-      objectName: parts.slice(2).join('/'),
-    };
+  }
+
+  private parseObjectPath(fullPath: string): { bucketName: string; objectName: string } {
+    let p = fullPath;
+    if (!p.startsWith('/')) p = `/${p}`;
+    const parts = p.split('/');
+    if (parts.length < 3) throw new Error('Invalid path: must contain at least bucket/object');
+    return { bucketName: parts[1], objectName: parts.slice(2).join('/') };
+  }
+
+  private async readSourceBytes(args: {
+    assetId: string;
+    organizationId: string;
+    fileKey: string;
+  }): Promise<Buffer> {
+    const { assetId, organizationId, fileKey } = args;
+
+    let sawNotFound = false;
+
+    // 1) Local filesystem (STORAGE_ROOT), used by /objects proxy local fallback
+    // This MUST NOT use HTTP (no localhost fetch) for local storage.
+    try {
+      const storageRoot = process.env.STORAGE_ROOT || './storage';
+      const abs = this.resolveStorageRootPath(storageRoot, fileKey);
+      await fs.access(abs);
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[AssetPreviewGenerator][DEV] local STORAGE_ROOT hit', { assetId, organizationId, abs });
+      }
+      return await fs.readFile(abs);
+    } catch {
+      // ignore
+      sawNotFound = true;
+    }
+
+    // 2) Local filesystem (FILE_STORAGE_ROOT), used by fileStorage.ts
+    try {
+      const abs = this.safeResolveFileStoragePath(fileKey);
+      await fs.access(abs);
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[AssetPreviewGenerator][DEV] local fileStorage hit', { assetId, organizationId, abs });
+      }
+      return await fs.readFile(abs);
+    } catch {
+      // ignore
+      sawNotFound = true;
+    }
+
+    // 3) Supabase (when configured). Only attempt after local disk checks to avoid
+    // unnecessary localhost/network requests for local storage keys like "uploads/<uuid>".
+    if (isSupabaseConfigured()) {
+      const looksLikeSupabaseKey =
+        fileKey.startsWith('uploads/') ||
+        fileKey.startsWith('titan-private/uploads/') ||
+        fileKey.includes('/storage/v1/object/');
+
+      if (looksLikeSupabaseKey) {
+        try {
+          const supabase = new SupabaseStorageService('titan-private');
+          const normalized = normalizeObjectKeyForDb(fileKey);
+          const signedUrl = await supabase.getSignedDownloadUrl(normalized, 3600);
+          const resp = await fetch(signedUrl);
+          if (!resp.ok) {
+            // Treat 404-ish as transient (object may not be uploaded yet)
+            if (resp.status === 404) {
+              sawNotFound = true;
+              throw new AssetSourceNotReadyError(`Supabase object not found yet key=${normalized}`);
+            }
+            throw new Error(`[AssetPreviewGenerator] Supabase download failed status=${resp.status} ${resp.statusText} key=${normalized}`);
+          }
+          return Buffer.from(await resp.arrayBuffer());
+        } catch (e: any) {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[AssetPreviewGenerator][DEV] Supabase source miss, falling back', {
+              assetId,
+              organizationId,
+              fileKey,
+              error: e?.message || String(e),
+            });
+          }
+
+          // If we explicitly detected "not ready", bubble it up to retry.
+          if (e instanceof AssetSourceNotReadyError) throw e;
+        }
+      }
+    }
+
+    // 4) Replit Object Storage (GCS) using PRIVATE_OBJECT_DIR
+    // IMPORTANT: This storage client requires the Replit sidecar. Do not attempt it in local dev.
+    const replitId = process.env.REPL_ID;
+    const isLocalDev = !replitId || replitId === 'local-dev-repl-id';
+    if (isLocalDev) {
+      if (sawNotFound) {
+        throw new AssetSourceNotReadyError('Source not found in local storage roots');
+      }
+      throw new Error('Source not readable from local storage roots');
+    }
+
+    try {
+      const objectStorageService = new ObjectStorageService();
+      let privateDir = objectStorageService.getPrivateObjectDir();
+      if (!privateDir.endsWith('/')) privateDir = `${privateDir}/`;
+      const fullPath = `${privateDir}${fileKey}`;
+      const { bucketName, objectName } = this.parseObjectPath(fullPath);
+
+      const file = objectStorageClient.bucket(bucketName).file(objectName);
+      const [exists] = await file.exists();
+      if (!exists) {
+        throw new AssetSourceNotReadyError(`Object not found in ObjectStorage yet bucket=${bucketName} object=${objectName}`);
+      }
+      const [buf] = await file.download();
+      return buf;
+    } catch (e: any) {
+      if (e instanceof AssetSourceNotReadyError) throw e;
+      throw new Error(
+        `[AssetPreviewGenerator] Unable to read source bytes assetId=${assetId} key=${fileKey} (local+supabase+objectStorage attempts failed): ${
+          e?.message || String(e)
+        }`
+      );
+    }
   }
 
   /**
    * Download file from storage to local path
    */
-  private async downloadFile(storageKey: string, localPath: string): Promise<void> {
-    const { bucketName, objectName } = this.parseStorageKey(storageKey);
-    const file = objectStorageClient.bucket(bucketName).file(objectName);
-    await file.download({ destination: localPath });
+  private async uploadBuffer(storageKey: string, buffer: Buffer, contentType: string): Promise<void> {
+    const key = storageKey.replace(/^\/+/, '');
+
+    // Supabase preferred when configured
+    if (isSupabaseConfigured()) {
+      const supabase = new SupabaseStorageService('titan-private');
+      await supabase.uploadFile(key, buffer, contentType);
+      return;
+    }
+
+    // Replit Object Storage if available
+    try {
+      const replitId = process.env.REPL_ID;
+      const isLocalDev = !replitId || replitId === 'local-dev-repl-id';
+      if (isLocalDev) {
+        throw new Error('skip replit object storage in local dev');
+      }
+      const objectStorageService = new ObjectStorageService();
+      let privateDir = objectStorageService.getPrivateObjectDir();
+      if (!privateDir.endsWith('/')) privateDir = `${privateDir}/`;
+      const fullPath = `${privateDir}${key}`;
+      const { bucketName, objectName } = this.parseObjectPath(fullPath);
+      const file = objectStorageClient.bucket(bucketName).file(objectName);
+      await file.save(buffer, { contentType });
+      return;
+    } catch {
+      // fall through to local
+    }
+
+    // Local filesystem (STORAGE_ROOT)
+    const storageRoot = process.env.STORAGE_ROOT || './storage';
+    const abs = this.resolveStorageRootPath(storageRoot, key);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, buffer);
   }
 
-  /**
-   * Upload buffer to storage
-   */
-  private async uploadBuffer(storageKey: string, buffer: Buffer, contentType: string): Promise<void> {
-    const { bucketName, objectName } = this.parseStorageKey(storageKey);
-    const file = objectStorageClient.bucket(bucketName).file(objectName);
-    await file.save(buffer, { contentType });
+  private safeResolveFileStoragePath(storageKey: string): string {
+    // resolveLocalStoragePath already guards against traversal outside FILE_STORAGE_ROOT
+    return resolveLocalStoragePath(storageKey);
+  }
+
+  private resolveStorageRootPath(storageRoot: string, storageKey: string): string {
+    const root = path.resolve(storageRoot);
+    const abs = path.resolve(path.join(root, storageKey));
+    const normalizedRoot = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!abs.startsWith(normalizedRoot)) {
+      throw new Error('Invalid storage key (path traversal)');
+    }
+    return abs;
   }
 
   /**
    * Render first page of PDF to image buffer
    * Uses pdfjs-dist + @napi-rs/canvas
    */
-  private async renderPdfFirstPage(pdfPath: string): Promise<Buffer> {
+  private async renderPdfFirstPageFromBuffer(pdfBytes: Buffer): Promise<Buffer> {
     // Dynamic import to avoid loading heavy PDF.js if not needed
     const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const { createCanvas } = await import('@napi-rs/canvas');
 
-    const data = new Uint8Array(await fs.readFile(pdfPath));
+    const data = new Uint8Array(pdfBytes);
     const pdf = await getDocument({ data }).promise;
     const page = await pdf.getPage(1);
 

@@ -238,3 +238,88 @@ export function useDetachJobFile(jobId: string) {
     },
   });
 }
+
+// ============================================================
+// ORDER LINE ITEM FILES HOOKS
+// ============================================================
+
+/**
+ * Fetch all files for an order line item
+ */
+export function useOrderLineItemFiles(orderId: string | undefined, lineItemId: string | undefined) {
+  return useQuery<{ data: OrderFileWithUser[]; assets: any[] }>({
+    queryKey: ['/api/orders', orderId, 'line-items', lineItemId, 'files'],
+    queryFn: async () => {
+      if (!orderId || !lineItemId) return { data: [], assets: [] };
+      const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to fetch line item files');
+      const json = await res.json();
+      return { data: json.data || [], assets: json.assets || [] };
+    },
+    enabled: !!orderId && !!lineItemId,
+  });
+}
+
+/**
+ * Attach a file to an order line item (assumes file already uploaded)
+ */
+export function useAttachFileToOrderLineItem(orderId: string, lineItemId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: Partial<InsertOrderAttachment> & { fileName: string; fileUrl: string }) => {
+      const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(data),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to attach file');
+      }
+
+      const json = await res.json();
+      return json.data;
+    },
+    onSuccess: () => {
+      // Invalidate relevant queries
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'line-items', lineItemId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+    },
+  });
+}
+
+/**
+ * Delete a file from an order line item
+ */
+export function useDetachOrderLineItemFile(orderId: string, lineItemId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (fileId: string) => {
+      // For now, use the order-level delete endpoint
+      // In future, could add line-item-specific endpoint
+      const res = await fetch(`/api/orders/${orderId}/files/${fileId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to delete file');
+      }
+
+      return true;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'line-items', lineItemId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', orderId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+    },
+  });
+}

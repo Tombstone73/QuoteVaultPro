@@ -40,6 +40,8 @@ import {
   useAttachFileToOrder,
   useDetachOrderFile,
   useOrderFiles,
+  useAttachFileToOrderLineItem,
+  useDetachOrderLineItemFile,
   type OrderFileWithUser,
 } from "@/hooks/useOrderFiles";
 import {
@@ -379,8 +381,8 @@ function OrderLineItemArtworkPanel({
 }) {
   const { toast } = useToast();
   const { data: allFiles = [] } = useOrderFiles(orderId);
-  const attachFile = useAttachFileToOrder(orderId);
-  const detachFile = useDetachOrderFile(orderId);
+  const attachFile = useAttachFileToOrderLineItem(orderId, lineItemId);
+  const detachFile = useDetachOrderLineItemFile(orderId, lineItemId);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
 

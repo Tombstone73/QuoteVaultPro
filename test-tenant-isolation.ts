@@ -79,13 +79,13 @@ async function runTest() {
     console.log('  Creating users...');
     const [userA] = await db.insert(users).values({
       id: TEST_USER_A,
-      username: 'test-user-a',
+      email: 'test-user-a@tenant-isolation.local',
       role: 'admin',
     }).returning();
 
     const [userB] = await db.insert(users).values({
       id: TEST_USER_B,
-      username: 'test-user-b',
+      email: 'test-user-b@tenant-isolation.local',
       role: 'admin',
     }).returning();
 
@@ -109,7 +109,6 @@ async function runTest() {
     const [customerA] = await db.insert(customers).values({
       organizationId: orgA.id,
       companyName: 'Test Customer A',
-      name: 'Test Customer A',
       email: 'customer-a@test.com',
     }).returning();
     console.log(`    ✅ Customer A: ${customerA.id}\n`);
@@ -118,16 +117,17 @@ async function runTest() {
     const [orderA] = await db.insert(orders).values({
       organizationId: orgA.id,
       customerId: customerA.id,
-      orderNumber: 999001,
-      status: 'open',
-      totalAmount: '100.00',
+      orderNumber: '999001',
+      status: 'new',
+      subtotal: '100.00',
+      tax: '0.00',
+      total: '100.00',
       createdByUserId: userA.id,
     }).returning();
     console.log(`    ✅ Order A: ${orderA.id}\n`);
 
     console.log('  Creating order line item in Org A...');
     const [lineItemA] = await db.insert(orderLineItems).values({
-      organizationId: orgA.id,
       orderId: orderA.id,
       productId: product.id,
       productType: 'banners',
@@ -153,12 +153,9 @@ async function runTest() {
 
     console.log('  Creating order attachment in Org A...');
     const [attachmentA] = await db.insert(orderAttachments).values({
-      organizationId: orgA.id,
       orderId: orderA.id,
-      filename: 'test-file-a.pdf',
       fileName: 'test-file-a.pdf',
-      fileUrl: 'https://storage.test/test-file-a.pdf',
-      storageKey: 'test/file-a.pdf',
+      fileUrl: 'uploads/test-file-a.pdf',
       fileSize: 1024,
       mimeType: 'application/pdf',
       uploadedByUserId: userA.id,
