@@ -131,10 +131,17 @@ export async function registerAttachmentRoutes(
     const userId = getUserId(req.user);
     const isDev = process.env.NODE_ENV === "development";
 
+    // Extract and decode object path properly
+    const rawObjectPath = req.params.objectPath || req.params[0] || "";
+    const objectPath = decodeURIComponent(rawObjectPath);
+
+    if (!objectPath) {
+      return res.status(400).json({ error: "Invalid object path" });
+    }
+
     try {
       // Try Supabase first if configured
       if (isSupabaseConfigured()) {
-        const objectPath = req.path.replace("/objects/", "");
         const supabaseService = new SupabaseStorageService();
         const ext = path.extname(objectPath).toLowerCase();
         const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext);
@@ -177,7 +184,6 @@ export async function registerAttachmentRoutes(
 
       // Try local filesystem (STORAGE_ROOT) - common in local dev
       const storageRoot = process.env.STORAGE_ROOT || "./storage";
-      const objectPath = req.path.replace("/objects/", "");
       const localPath = path.join(storageRoot, objectPath);
 
       try {
@@ -213,10 +219,14 @@ export async function registerAttachmentRoutes(
       const hasGCSAccess = process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.REPL_ID !== "local-dev-repl-id";
 
       if (!hasGCSAccess) {
+        if (isDev) {
+          console.log(`[objects] 404 - File not found in any storage. Object path: "${objectPath}"`);
+        }
         return res.status(404).json({
           error: "File not found",
           message: "File not available in Supabase or local storage, and GCS not configured",
           path: req.path,
+          objectPath,
         });
       }
 
@@ -230,7 +240,10 @@ export async function registerAttachmentRoutes(
       });
 
       if (!canAccess) {
-        return res.status(403).json({ error: "Access denied", path: req.path });
+        if (isDev) {
+          console.log(`[objects] 403 - Access denied. Object path: "${objectPath}"`);
+        }
+        return res.status(403).json({ error: "Access denied", path: req.path, objectPath });
       }
 
       objectStorageService.downloadObject(objectFile, res);
@@ -238,7 +251,10 @@ export async function registerAttachmentRoutes(
       console.error("[objects] Error serving object:", error);
 
       if (error instanceof ObjectNotFoundError) {
-        return res.status(404).json({ error: "Object not found", path: req.path });
+        if (isDev) {
+          console.log(`[objects] 404 - Object not found. Object path: "${objectPath}", Error:`, error.message);
+        }
+        return res.status(404).json({ error: "Object not found", path: req.path, objectPath });
       }
 
       // Check if this is a credential/connection error (don't return 500 for config issues)
