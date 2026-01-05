@@ -113,6 +113,15 @@ export type OrderRow = Order & {
   thumbsCount?: number; // Total attachment count
   previewThumbnailUrl?: string | null; // Signed URL for list preview image thumbnail
   previewImageUrl?: string | null; // Back-compat: older field name
+  attachmentsSummary?: {
+    totalCount: number;
+    previews: Array<{
+      id: string;
+      filename: string;
+      mimeType?: string | null;
+      thumbnailUrl?: string | null;
+    }>;
+  };
   // TitanOS State Architecture fields
   state?: string;
   statusPillValue?: string | null;

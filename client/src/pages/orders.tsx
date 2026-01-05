@@ -7,8 +7,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
-import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ArrowLeft, Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -19,7 +19,6 @@ import { Page, PageHeader, ContentLayout, DataCard, ColumnConfig, useColumnSetti
 import { ROUTES } from "@/config/routes";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 // TitanOS State Architecture
-import { OrderStateBadge } from "@/components/OrderStateBadge";
 import { Badge } from "@/components/ui/badge";
 import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -132,9 +131,11 @@ export default function Orders() {
   const [pageSize, setPageSize] = useState(25);
   const [includeThumbnails, setIncludeThumbnails] = useState(true);
   
-  // Attachment viewer state (matches Quotes pattern)
-  const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
-  const [selectedAttachment, setSelectedAttachment] = useState<any>(null);
+  // Attachments dialog state (list of files for an order)
+  const [attachmentsDialogOpen, setAttachmentsDialogOpen] = useState(false);
+  const [attachmentsDialogOrderId, setAttachmentsDialogOrderId] = useState<string | null>(null);
+  const [attachmentsDialogItems, setAttachmentsDialogItems] = useState<any[]>([]);
+  const [attachmentsDialogLoading, setAttachmentsDialogLoading] = useState(false);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
 
   // Inline editing state
@@ -375,46 +376,37 @@ export default function Orders() {
     },
   });
 
-  // Handle thumbnail click - fetch attachment details and open viewer (matches Quotes pattern)
-  const handleThumbnailClick = async (orderId: string) => {
+  // Open attachments dialog - fetch all attachments for the order in one call
+  const openAttachmentsDialog = async (orderId: string) => {
+    setAttachmentsDialogOrderId(orderId);
+    setAttachmentsDialogOpen(true);
+    setAttachmentsDialogItems([]);
+    setAttachmentsDialogLoading(true);
     setLoadingAttachments(orderId);
-    
+
     try {
-      // Fetch all attachments for the order (including line item attachments)
       const response = await fetch(`/api/orders/${orderId}/attachments?includeLineItems=true`, {
-        credentials: 'include'
+        credentials: "include",
       });
-      
+
       if (!response.ok) {
-        throw new Error('Failed to fetch attachments');
+        throw new Error("Failed to fetch attachments");
       }
-      
+
       const result = await response.json();
       const attachments = result.data || [];
-      
-      // For list preview clicks, just open the first attachment available.
-      const matchedAttachment = attachments.length > 0 ? attachments[0] : null;
-      
-      if (matchedAttachment) {
-        // Ensure orderId is available for download
-        setSelectedAttachment({ ...matchedAttachment, orderId });
-        setAttachmentViewerOpen(true);
-      } else {
-        toast({
-          title: "No attachment found",
-          description: "Could not locate the attachment details.",
-          variant: "destructive"
-        });
-      }
+      setAttachmentsDialogItems(Array.isArray(attachments) ? attachments : []);
     } catch (error: any) {
-      console.error('[handleThumbnailClick] Error:', error);
+      console.error("[openAttachmentsDialog] Error:", error);
       toast({
-        title: "Failed to load attachment",
-        description: error.message || "Could not fetch attachment details.",
-        variant: "destructive"
+        title: "Failed to load attachments",
+        description: error?.message || "Could not fetch attachment details.",
+        variant: "destructive",
       });
+      setAttachmentsDialogItems([]);
     } finally {
       setLoadingAttachments(null);
+      setAttachmentsDialogLoading(false);
     }
   };
 
@@ -495,9 +487,19 @@ export default function Orders() {
         return row.label || <span className="text-muted-foreground italic">—</span>;
 
       case "thumbnails": {
-        const previewThumbnailUrl = row.previewThumbnailUrl || null;
+        const summary = row.attachmentsSummary;
+        const previews = summary?.previews ?? [];
+        const totalCount = summary?.totalCount ?? 0;
 
-        if (!previewThumbnailUrl) {
+        const isLikelyImageUrl = (url: string): boolean => {
+          const urlWithoutQuery = url.split("?")[0]?.split("#")[0] ?? "";
+          return /\.(png|jpe?g|webp|gif)$/i.test(urlWithoutQuery);
+        };
+
+        // Back-compat fallback if server doesn't provide summary
+        const fallbackPreviewUrl = row.previewThumbnailUrl || null;
+
+        if (!includeThumbnails) {
           return (
             <div className="flex items-center h-8">
               <span className="text-muted-foreground">—</span>
@@ -505,13 +507,92 @@ export default function Orders() {
           );
         }
 
+        if ((!summary || totalCount === 0) && !fallbackPreviewUrl) {
+          return (
+            <div className="flex items-center h-8">
+              <span className="text-muted-foreground">—</span>
+            </div>
+          );
+        }
+
+        // If we only have the legacy single preview URL, keep the old UI.
+        if ((!summary || totalCount === 0) && fallbackPreviewUrl) {
+          const isLikelyImageUrl = (url: string | null): url is string => {
+            if (typeof url !== "string") return false;
+            const urlWithoutQuery = url.split("?")[0]?.split("#")[0] ?? "";
+            return /\.(png|jpe?g|webp|gif)$/i.test(urlWithoutQuery);
+          };
+
+          return (
+            <button
+              type="button"
+              className="flex items-center h-8"
+              onClick={(e) => {
+                e.stopPropagation();
+                openAttachmentsDialog(row.id);
+              }}
+              disabled={loadingAttachments === row.id}
+              data-stop-row-nav="true"
+              aria-label="Open attachments"
+            >
+              {loadingAttachments === row.id ? (
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+              ) : isLikelyImageUrl(fallbackPreviewUrl) ? (
+                <img
+                  src={fallbackPreviewUrl}
+                  alt="Preview"
+                  className="w-8 h-8 rounded object-cover"
+                />
+              ) : (
+                <FileText className="w-4 h-4 text-muted-foreground" />
+              )}
+            </button>
+          );
+        }
+
+        const shown = previews.slice(0, 3);
+        const extraCount = Math.max(0, totalCount - shown.length);
+
         return (
-          <div className="flex items-center h-8">
-            <img
-              src={previewThumbnailUrl}
-              alt="Preview"
-              className="w-8 h-8 rounded object-cover"
-            />
+          <div className="flex items-center gap-1.5 h-8" data-stop-row-nav="true">
+            {shown.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openAttachmentsDialog(row.id);
+                }}
+                disabled={loadingAttachments === row.id}
+                aria-label={`View attachment ${p.filename}`}
+              >
+                {p.thumbnailUrl && ((p.mimeType?.startsWith("image/") ?? false) || (!p.mimeType && isLikelyImageUrl(p.thumbnailUrl))) ? (
+                  <img
+                    src={p.thumbnailUrl}
+                    alt={p.filename}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <FileText className="w-4 h-4 text-muted-foreground" />
+                )}
+              </button>
+            ))}
+
+            {extraCount > 0 && (
+              <button
+                type="button"
+                className="h-8 px-2 rounded border border-border text-xs text-muted-foreground hover:text-foreground"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openAttachmentsDialog(row.id);
+                }}
+                disabled={loadingAttachments === row.id}
+                aria-label={`View ${extraCount} more attachments`}
+              >
+                +{extraCount}
+              </button>
+            )}
           </div>
         );
       }
@@ -523,10 +604,9 @@ export default function Orders() {
         return row.customer?.companyName || <span className="text-muted-foreground italic">No customer</span>;
 
       case "status": {
-        // TitanOS: Show state badge + editable status pill (org-configured)
+        // TitanOS: Editable status pill (org-configured)
         return (
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <OrderStateBadge state={row.state as OrderState} />
             <OrderStatusPillCell
               orderId={row.id}
               state={row.state as OrderState}
@@ -911,20 +991,79 @@ export default function Orders() {
         </DataCard>
       </ContentLayout>
 
-      {/* Attachment Viewer Dialog (matches Quotes pattern) */}
-      {attachmentViewerOpen && selectedAttachment && (
-        <AttachmentViewerDialog
-          open={attachmentViewerOpen}
-          onOpenChange={setAttachmentViewerOpen}
-          attachment={selectedAttachment}
-          onDownload={async (att) => {
-            // Simple download - open URL in new tab
-            if (att.originalUrl) {
-              window.open(att.originalUrl, '_blank');
-            }
-          }}
-        />
-      )}
+      {/* Attachments Dialog (reuses existing /api/orders/:orderId/attachments endpoint) */}
+      <Dialog
+        open={attachmentsDialogOpen}
+        onOpenChange={(open) => {
+          setAttachmentsDialogOpen(open);
+          if (!open) {
+            setAttachmentsDialogOrderId(null);
+            setAttachmentsDialogItems([]);
+            setAttachmentsDialogLoading(false);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Attachments</DialogTitle>
+          </DialogHeader>
+
+          {attachmentsDialogLoading ? (
+            <div className="flex items-center justify-center py-10 text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              Loading…
+            </div>
+          ) : attachmentsDialogOrderId && attachmentsDialogItems.length === 0 ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">No attachments</div>
+          ) : (
+            <div className="space-y-2">
+              {attachmentsDialogItems.map((att: any) => {
+                const filename = att?.originalFilename || att?.fileName || "Attachment";
+                const thumbUrl = att?.thumbUrl || att?.previewUrl || null;
+                const downloadUrl = att?.originalUrl || null;
+                const hasThumb = typeof thumbUrl === "string" && (thumbUrl.startsWith("http") || thumbUrl.startsWith("/"));
+
+                return (
+                  <div
+                    key={att?.id || filename}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center shrink-0">
+                        {hasThumb ? (
+                          <img src={thumbUrl} alt={filename} className="w-full h-full object-cover" />
+                        ) : (
+                          <FileText className="w-5 h-5 text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{filename}</div>
+                        {att?.mimeType ? (
+                          <div className="text-xs text-muted-foreground truncate">{att.mimeType}</div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      {typeof downloadUrl === "string" && (downloadUrl.startsWith("http") || downloadUrl.startsWith("/")) ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => window.open(downloadUrl, "_blank")}
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          Download
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </Page>
   );
 }
