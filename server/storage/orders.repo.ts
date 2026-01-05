@@ -562,7 +562,26 @@ export class OrdersRepository {
             }
 
             const lineItemsData = data.lineItems.map((li) => {
-                const unit = li.unitPrice;
+                const unitRaw = (li as any).unitPrice ?? (li as any).unit_price;
+                const totalRaw =
+                    (li as any).totalPrice ??
+                    (li as any).total_price ??
+                    (li as any).linePrice ??
+                    (li as any).line_price;
+
+                const unit = Number(unitRaw ?? 0);
+                const totalPriceNum = Number(totalRaw ?? (li as any).linePrice ?? 0);
+
+                const unitSafe = Number.isFinite(unit) ? unit : 0;
+                const totalSafe = Number.isFinite(totalPriceNum) ? totalPriceNum : 0;
+
+                const selectedOptionsRaw = (li as any).selectedOptions;
+                const selectedOptionsSafe = Array.isArray(selectedOptionsRaw) ? selectedOptionsRaw : [];
+
+                const taxAmountRaw = (li as any).taxAmount;
+                const taxAmountSafe = Number.isFinite(Number(taxAmountRaw)) ? Number(taxAmountRaw) : 0;
+                const isTaxableSnapshotRaw = (li as any).isTaxableSnapshot;
+                const isTaxableSnapshotSafe = typeof isTaxableSnapshotRaw === "boolean" ? isTaxableSnapshotRaw : true;
                 return {
                     orderId: order.id,
                     quoteLineItemId: (li as any).quoteLineItemId || null,
@@ -574,15 +593,15 @@ export class OrdersRepository {
                     height: li.height ? li.height.toString() : null,
                     quantity: li.quantity,
                     sqft: (li as any).sqft ? (li as any).sqft.toString() : null,
-                    unitPrice: unit.toString(),
-                    totalPrice: li.totalPrice.toString(),
+                    unitPrice: unitSafe.toString(),
+                    totalPrice: totalSafe.toString(),
                     status: 'queued',
                     specsJson: (li as any).specsJson || null,
-                    selectedOptions: (li as any).selectedOptions || [],
+                    selectedOptions: selectedOptionsSafe,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
                     // Tax fields
-                    taxAmount: (li as any).taxAmount != null ? (li as any).taxAmount.toString() : null,
-                    isTaxableSnapshot: (li as any).isTaxableSnapshot ?? null,
+                    taxAmount: taxAmountSafe.toString(),
+                    isTaxableSnapshot: isTaxableSnapshotSafe,
                 } as typeof orderLineItems.$inferInsert;
             });
             const createdLineItems = lineItemsData.length ? await tx.insert(orderLineItems).values(lineItemsData).returning() : [];

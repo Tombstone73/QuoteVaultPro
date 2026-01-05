@@ -23,27 +23,8 @@ import { apiRequest } from "@/lib/queryClient";
 import type { Product, ProductVariant, ProductOptionItem, Organization } from "@shared/schema";
 import { profileRequiresDimensions, getProfile } from "@shared/pricingProfiles";
 import { cn } from "@/lib/utils";
-
-/**
- * Helper function to format option price label based on priceMode
- */
-function formatOptionPriceLabel(option: ProductOptionItem): string {
-  const amount = option.amount || 0;
-  
-  switch (option.priceMode) {
-    case "percent_of_base":
-      return `+${amount}%`;
-    case "flat_per_item":
-      return `+$${amount.toFixed(2)} ea`;
-    case "per_sqft":
-      return `+$${amount.toFixed(2)}/sqft`;
-    case "per_qty":
-      return `+$${amount.toFixed(2)}/qty`;
-    case "flat":
-    default:
-      return `+$${amount.toFixed(2)}`;
-  }
-}
+import { ProductOptionsPanel } from "@/features/quotes/editor/components/ProductOptionsPanel";
+import type { OptionSelection } from "@/features/quotes/editor/types";
 
 type OrderLineItemDraft = {
   tempId?: string;
@@ -99,7 +80,7 @@ export default function CreateOrder() {
   const [currentHeight, setCurrentHeight] = useState("");
   const [currentQuantity, setCurrentQuantity] = useState("1");
   const [currentNotes, setCurrentNotes] = useState("");
-  const [currentOptions, setCurrentOptions] = useState<Record<string, any>>({});
+  const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [isCalculating, setIsCalculating] = useState(false);
   const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -153,17 +134,60 @@ export default function CreateOrder() {
 
   // Reset current options when product changes
   useEffect(() => {
-    setCurrentOptions({});
+    setOptionSelections({});
   }, [currentProductId]);
 
   // Build selected options payload for pricing API
   const buildSelectedOptionsPayload = useCallback(() => {
     const payload: Record<string, any> = {};
-    Object.entries(currentOptions).forEach(([optionId, selection]) => {
+    Object.entries(optionSelections).forEach(([optionId, selection]) => {
       payload[optionId] = selection;
     });
     return payload;
-  }, [currentOptions]);
+  }, [optionSelections]);
+
+  const buildSelectedOptionsArray = useCallback((
+    productOptions: ProductOptionItem[],
+    width: number,
+    height: number,
+    quantity: number
+  ) => {
+    const arr: any[] = [];
+    for (const [optionId, sel] of Object.entries(optionSelections)) {
+      const opt = productOptions.find((o) => o.id === optionId);
+      if (!opt) continue;
+
+      const amount = opt.amount || 0;
+      let setupCost = 0;
+      let calculatedCost = 0;
+
+      if ((opt as any).priceMode === "flat") {
+        setupCost = amount;
+        calculatedCost = amount;
+      } else if ((opt as any).priceMode === "per_qty") {
+        calculatedCost = amount * quantity;
+      } else if ((opt as any).priceMode === "per_sqft") {
+        calculatedCost = amount * width * height * quantity;
+      }
+
+      arr.push({
+        optionId: opt.id,
+        optionName: (opt as any).label || (opt as any).name || "Option",
+        value: sel.value,
+        note: typeof (sel as any).note === "string" ? (sel as any).note : undefined,
+        setupCost,
+        calculatedCost,
+        grommetsLocation: (sel as any).grommetsLocation,
+        grommetsSpacingCount: (sel as any).grommetsSpacingCount,
+        grommetsPerSign: (sel as any).grommetsPerSign,
+        grommetsSpacingInches: (sel as any).grommetsSpacingInches,
+        customPlacementNote: (sel as any).customPlacementNote,
+        hemsType: (sel as any).hemsType,
+        polePocket: (sel as any).polePocket,
+      });
+    }
+    return arr;
+  }, [optionSelections]);
 
   // Auto-calculate price with debounce
   const triggerAutoCalculate = useCallback(async () => {
@@ -236,6 +260,8 @@ export default function CreateOrder() {
     const heightNum = parseFloat(currentHeight) || 0;
     const quantityNum = parseInt(currentQuantity) || 1;
 
+    const selectedOptionsArray = buildSelectedOptionsArray(productOptionsInline || [], widthNum, heightNum, quantityNum);
+
     const newItem: OrderLineItemDraft = {
       tempId: `temp-${nextTempId}`,
       productId: currentProductId,
@@ -250,7 +276,7 @@ export default function CreateOrder() {
         width: widthNum,
         height: heightNum,
       },
-      selectedOptions: buildSelectedOptionsPayload(),
+      selectedOptions: selectedOptionsArray,
       unitPrice: calculatedPrice / quantityNum,
       linePrice: calculatedPrice,
       priceBreakdown: {},
@@ -268,7 +294,7 @@ export default function CreateOrder() {
     setCurrentHeight("");
     setCurrentQuantity("1");
     setCurrentNotes("");
-    setCurrentOptions({});
+    setOptionSelections({});
     setCalculatedPrice(null);
   };
 
@@ -370,7 +396,7 @@ export default function CreateOrder() {
         description: `${item.productName}${item.variantName ? ` - ${item.variantName}` : ''}`,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
-        linePrice: item.linePrice,
+        totalPrice: item.linePrice,
         productType: item.productType,
         width: item.width,
         height: item.height,
@@ -386,216 +412,210 @@ export default function CreateOrder() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto space-y-3 px-4">
-      {/* Header with navigation */}
-      <div className="flex items-center justify-between py-2">
-        <Button variant="ghost" onClick={() => navigate("/orders")} className="gap-2 h-9">
-          <ArrowLeft className="w-4 h-4" />
-          Back to Orders
-        </Button>
-        <h1 className="text-xl font-semibold">New Order</h1>
-        <div className="w-32" /> {/* Spacer for centering */}
-      </div>
+    <div className="min-h-screen bg-background">
+      <div className="max-w-[1600px] mx-auto px-6 py-4">
+        {/* Layout parity note: mirrors the modern Quote editor shell (QuoteEditorPage) */}
+        <div className="flex items-center justify-between gap-4 py-2 border-b border-border/40">
+          <Button variant="ghost" size="sm" onClick={() => navigate("/orders")} className="gap-2 -ml-2">
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-semibold">New Order</h1>
+          </div>
+          <div className="w-[72px]" />
+        </div>
 
-      {/* 3-Column Command Station Layout */}
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)_minmax(280px,340px)]">
-        
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* LEFT COLUMN: Customer & Order Details */}
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        <div className="space-y-3 order-1 xl:order-1">
-          {/* Customer Card */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Users className="w-4 h-4" />
-                Customer
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-4">
-              <div className="space-y-1.5">
-                <CustomerSelect
-                  value={selectedCustomerId}
-                  onChange={(customerId, customer, contactId) => {
-                    setSelectedCustomerId(customerId ?? "");
-                    setSelectedCustomer(customer);
-                    setSelectedContactId(contactId || null);
-                  }}
-                  autoFocus={true}
-                  label=""
-                  placeholder="Search customers..."
-                />
-                {selectedCustomer && (
-                  <div className="text-xs text-muted-foreground space-y-0.5">
-                    {selectedCustomer.phone && <div>{selectedCustomer.phone}</div>}
-                    {selectedCustomer.email && <div>{selectedCustomer.email}</div>}
-                  </div>
-                )}
-              </div>
-
-              {/* Customer info badges */}
-              {selectedCustomer && (
-                <div className="space-y-3">
-                  {/* Tier badge */}
-                  <div className="flex items-center gap-2">
-                    <Badge variant={pricingTier === 'wholesale' ? 'default' : pricingTier === 'retail' ? 'secondary' : 'outline'}>
-                      {pricingTier.charAt(0).toUpperCase() + pricingTier.slice(1)}
-                    </Badge>
-                    
-                    {/* Pricing modifiers */}
-                    {discountPercent && discountPercent > 0 && (
-                      <Badge variant="outline" className="text-green-600 border-green-300">
-                        -{discountPercent}% disc
-                      </Badge>
-                    )}
-                    {markupPercent && markupPercent > 0 && (
-                      <Badge variant="outline" className="text-blue-600 border-blue-300">
-                        +{markupPercent}% markup
-                      </Badge>
-                    )}
-                    {marginPercent && marginPercent > 0 && (
-                      <Badge variant="outline" className="text-purple-600 border-purple-300">
-                        {marginPercent}% margin
-                      </Badge>
-                    )}
-                  </div>
-
-                  {/* Tax status */}
-                  <div className="flex items-center gap-2 text-sm">
-                    <Shield className="w-3.5 h-3.5 text-muted-foreground" />
-                    {selectedCustomer.isTaxExempt ? (
-                      <span className="text-green-600 font-medium">Tax Exempt</span>
-                    ) : selectedCustomer.taxRateOverride != null ? (
-                      <span>Tax: {(Number(selectedCustomer.taxRateOverride) * 100).toFixed(2)}% (override)</span>
-                    ) : (
-                      <span className="text-muted-foreground">Tax: {(effectiveTaxRate * 100).toFixed(2)}% (default)</span>
-                    )}
-                  </div>
-
-                  {/* Contact selector */}
-                  {contacts && contacts.length > 0 && (
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Contact</Label>
-                      <Select value={selectedContactId || ""} onValueChange={setSelectedContactId}>
-                        <SelectTrigger className="h-8 text-sm">
-                          <SelectValue placeholder="Select contact" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {contacts.map((contact: any) => (
-                            <SelectItem key={contact.id} value={contact.id}>
-                              {contact.firstName} {contact.lastName}
-                              {contact.isPrimary && " ★"}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+        <div className="grid gap-6 mt-6 lg:grid-cols-[1fr_400px]">
+          {/* LEFT: Editor */}
+          <div className="space-y-6">
+            {/* Customer Card */}
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Users className="w-4 h-4" />
+                  Customer
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-4">
+                <div className="space-y-1.5">
+                  <CustomerSelect
+                    value={selectedCustomerId}
+                    onChange={(customerId, customer, contactId) => {
+                      setSelectedCustomerId(customerId ?? "");
+                      setSelectedCustomer(customer);
+                      setSelectedContactId(contactId || null);
+                    }}
+                    autoFocus={true}
+                    label=""
+                    placeholder="Search customers..."
+                  />
+                  {selectedCustomer && (
+                    <div className="text-xs text-muted-foreground space-y-0.5">
+                      {selectedCustomer.phone && <div>{selectedCustomer.phone}</div>}
+                      {selectedCustomer.email && <div>{selectedCustomer.email}</div>}
                     </div>
                   )}
                 </div>
-              )}
 
-              {/* Customer PO # - immediately after customer selection */}
-              <div className="space-y-1.5 pt-2 border-t">
-                <Label className="text-xs text-muted-foreground">Customer PO #</Label>
-                <Input
-                  value={poNumber}
-                  onChange={(e) => setPoNumber(e.target.value)}
-                  placeholder="Enter PO number..."
-                  maxLength={64}
-                  className="h-9 text-sm"
-                />
-              </div>
-            </CardContent>
-          </Card>
+                {/* Customer info badges */}
+                {selectedCustomer && (
+                  <div className="space-y-3">
+                    {/* Tier badge */}
+                    <div className="flex items-center gap-2">
+                      <Badge variant={pricingTier === 'wholesale' ? 'default' : pricingTier === 'retail' ? 'secondary' : 'outline'}>
+                        {pricingTier.charAt(0).toUpperCase() + pricingTier.slice(1)}
+                      </Badge>
 
-          {/* Order Details Card - moved from Column 3 */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <FileText className="w-4 h-4" />
-                Order Details
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-4">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Description / Job Name</Label>
-                <Input
-                  value={orderDescription}
-                  onChange={(e) => setOrderDescription(e.target.value)}
-                  placeholder="Order description..."
-                  className="h-9 text-sm"
-                />
-              </div>
+                      {/* Pricing modifiers */}
+                      {discountPercent && discountPercent > 0 && (
+                        <Badge variant="outline" className="text-green-600 border-green-300">
+                          -{discountPercent}% disc
+                        </Badge>
+                      )}
+                      {markupPercent && markupPercent > 0 && (
+                        <Badge variant="outline" className="text-blue-600 border-blue-300">
+                          +{markupPercent}% markup
+                        </Badge>
+                      )}
+                      {marginPercent && marginPercent > 0 && (
+                        <Badge variant="outline" className="text-purple-600 border-purple-300">
+                          {marginPercent}% margin
+                        </Badge>
+                      )}
+                    </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Requested Due</Label>
+                    {/* Tax status */}
+                    <div className="flex items-center gap-2 text-sm">
+                      <Shield className="w-3.5 h-3.5 text-muted-foreground" />
+                      {selectedCustomer.isTaxExempt ? (
+                        <span className="text-green-600 font-medium">Tax Exempt</span>
+                      ) : selectedCustomer.taxRateOverride != null ? (
+                        <span>Tax: {(Number(selectedCustomer.taxRateOverride) * 100).toFixed(2)}% (override)</span>
+                      ) : (
+                        <span className="text-muted-foreground">Tax: {(effectiveTaxRate * 100).toFixed(2)}% (default)</span>
+                      )}
+                    </div>
+
+                    {/* Contact selector */}
+                    {contacts && contacts.length > 0 && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-muted-foreground">Contact</Label>
+                        <Select value={selectedContactId || ""} onValueChange={setSelectedContactId}>
+                          <SelectTrigger className="h-8 text-sm">
+                            <SelectValue placeholder="Select contact" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {contacts.map((contact: any) => (
+                              <SelectItem key={contact.id} value={contact.id}>
+                                {contact.firstName} {contact.lastName}
+                                {contact.isPrimary && " ★"}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Customer PO # - immediately after customer selection */}
+                <div className="space-y-1.5 pt-2 border-t">
+                  <Label className="text-xs text-muted-foreground">Customer PO #</Label>
                   <Input
-                    type="date"
-                    value={requestedDueDate}
-                    onChange={(e) => setRequestedDueDate(e.target.value)}
+                    value={poNumber}
+                    onChange={(e) => setPoNumber(e.target.value)}
+                    placeholder="Enter PO number..."
+                    maxLength={64}
                     className="h-9 text-sm"
                   />
                 </div>
+              </CardContent>
+            </Card>
+
+            {/* Order Details */}
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  Order Details
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-4">
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Production Due</Label>
+                  <Label className="text-xs text-muted-foreground">Description / Job Name</Label>
                   <Input
-                    type="date"
-                    value={productionDueDate}
-                    onChange={(e) => setProductionDueDate(e.target.value)}
+                    value={orderDescription}
+                    onChange={(e) => setOrderDescription(e.target.value)}
+                    placeholder="Order description..."
                     className="h-9 text-sm"
                   />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Status</Label>
-                  <Select value={orderStatus} onValueChange={setOrderStatus}>
-                    <SelectTrigger className="h-9 text-sm">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="new">New</SelectItem>
-                      <SelectItem value="in_production">In Production</SelectItem>
-                      <SelectItem value="on_hold">On Hold</SelectItem>
-                      <SelectItem value="ready_for_shipment">Ready for Shipment</SelectItem>
-                      <SelectItem value="completed">Completed</SelectItem>
-                    </SelectContent>
-                  </Select>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Requested Due</Label>
+                    <Input
+                      type="date"
+                      value={requestedDueDate}
+                      onChange={(e) => setRequestedDueDate(e.target.value)}
+                      className="h-9 text-sm"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Production Due</Label>
+                    <Input
+                      type="date"
+                      value={productionDueDate}
+                      onChange={(e) => setProductionDueDate(e.target.value)}
+                      className="h-9 text-sm"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Priority</Label>
-                  <Select value={priority} onValueChange={setPriority}>
-                    <SelectTrigger className="h-9 text-sm">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">Low</SelectItem>
-                      <SelectItem value="normal">Normal</SelectItem>
-                      <SelectItem value="high">High</SelectItem>
-                      <SelectItem value="rush">Rush</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
 
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* CENTER COLUMN: Line Item Builder & List */}
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        <div className="space-y-3 order-3 xl:order-2">
-          {/* Add Line Item Card */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Plus className="w-4 h-4" />
-                Add Line Item
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Status</Label>
+                    <Select value={orderStatus} onValueChange={setOrderStatus}>
+                      <SelectTrigger className="h-9 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="new">New</SelectItem>
+                        <SelectItem value="in_production">In Production</SelectItem>
+                        <SelectItem value="on_hold">On Hold</SelectItem>
+                        <SelectItem value="ready_for_shipment">Ready for Shipment</SelectItem>
+                        <SelectItem value="completed">Completed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Priority</Label>
+                    <Select value={priority} onValueChange={setPriority}>
+                      <SelectTrigger className="h-9 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="normal">Normal</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        <SelectItem value="rush">Rush</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Add Line Item */}
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Plus className="w-4 h-4" />
+                  Add Line Item
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-4">
               {/* Product selection */}
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">Product</Label>
@@ -681,6 +701,18 @@ export default function CreateOrder() {
                 </div>
               )}
 
+              {/* Product options (reuse Quote editor panel) */}
+              {currentProductId && Array.isArray(productOptionsInline) && productOptionsInline.length > 0 && (
+                <div className="pt-2 border-t">
+                  <ProductOptionsPanel
+                    product={currentProduct}
+                    productOptions={productOptionsInline}
+                    optionSelections={optionSelections}
+                    onOptionSelectionsChange={setOptionSelections}
+                  />
+                </div>
+              )}
+
               {/* Calculated price display */}
               {currentProductId && (
                 <div className="space-y-1.5">
@@ -731,187 +763,186 @@ export default function CreateOrder() {
             </CardContent>
           </Card>
 
-          {/* Line Items List Card */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <FileText className="w-4 h-4" />
-                Line Items ({lineItems.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-5 pb-4">
-              {lineItems.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground text-sm">
-                  No line items added yet
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs">Product</TableHead>
-                        <TableHead className="text-xs text-right">Size</TableHead>
-                        <TableHead className="text-xs text-right">Qty</TableHead>
-                        <TableHead className="text-xs text-right">Price</TableHead>
-                        <TableHead className="w-[50px]"></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {lineItems.map((item) => (
-                        <TableRow key={item.tempId}>
-                          <TableCell className="text-sm">
-                            <div className="font-medium">{item.productName}</div>
-                            {item.variantName && (
-                              <div className="text-xs text-muted-foreground">{item.variantName}</div>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-sm text-right">
-                            {item.width}" × {item.height}"
-                          </TableCell>
-                          <TableCell className="text-sm text-right">{item.quantity}</TableCell>
-                          <TableCell className="text-sm text-right font-medium">
-                            ${item.linePrice.toFixed(2)}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDeleteLineItem(item.tempId!)}
-                              className="h-8 w-8 p-0"
-                            >
-                              <Trash2 className="w-4 h-4 text-destructive" />
-                            </Button>
-                          </TableCell>
+            {/* Line Items List */}
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  Line Items ({lineItems.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-5 pb-4">
+                {lineItems.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground text-sm">
+                    No line items added yet
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-xs">Product</TableHead>
+                          <TableHead className="text-xs text-right">Size</TableHead>
+                          <TableHead className="text-xs text-right">Qty</TableHead>
+                          <TableHead className="text-xs text-right">Price</TableHead>
+                          <TableHead className="w-[50px]"></TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {lineItems.map((item) => (
+                          <TableRow key={item.tempId}>
+                            <TableCell className="text-sm">
+                              <div className="font-medium">{item.productName}</div>
+                              {item.variantName && (
+                                <div className="text-xs text-muted-foreground">{item.variantName}</div>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-sm text-right">
+                              {item.width}" × {item.height}"
+                            </TableCell>
+                            <TableCell className="text-sm text-right">{item.quantity}</TableCell>
+                            <TableCell className="text-sm text-right font-medium">
+                              ${item.linePrice.toFixed(2)}
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDeleteLineItem(item.tempId!)}
+                                className="h-8 w-8 p-0"
+                              >
+                                <Trash2 className="w-4 h-4 text-destructive" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* RIGHT: Rail */}
+          <div className="space-y-6 lg:sticky lg:top-4 h-fit">
+            {/* Fulfillment */}
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Truck className="w-4 h-4" />
+                  Fulfillment
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Delivery Method</Label>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={deliveryMethod === 'pickup' ? 'default' : 'outline'}
+                      onClick={() => setDeliveryMethod('pickup')}
+                      className="flex-1"
+                    >
+                      <Store className="w-3.5 h-3.5 mr-1.5" />
+                      Pickup
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={deliveryMethod === 'ship' ? 'default' : 'outline'}
+                      onClick={() => setDeliveryMethod('ship')}
+                      className="flex-1"
+                    >
+                      <Truck className="w-3.5 h-3.5 mr-1.5" />
+                      Ship
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={deliveryMethod === 'deliver' ? 'default' : 'outline'}
+                      onClick={() => setDeliveryMethod('deliver')}
+                      className="flex-1"
+                    >
+                      <Building2 className="w-3.5 h-3.5 mr-1.5" />
+                      Deliver
+                    </Button>
+                  </div>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
 
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* RIGHT COLUMN: Fulfillment, Summary & Actions */}
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        <div className="space-y-3 order-2 xl:order-3">
-          {/* Fulfillment Card - moved from Column 1 */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Truck className="w-4 h-4" />
-                Fulfillment
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-5 pb-4">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Delivery Method</Label>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={deliveryMethod === 'pickup' ? 'default' : 'outline'}
-                    onClick={() => setDeliveryMethod('pickup')}
-                    className="flex-1"
-                  >
-                    <Store className="w-3.5 h-3.5 mr-1.5" />
-                    Pickup
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={deliveryMethod === 'ship' ? 'default' : 'outline'}
-                    onClick={() => setDeliveryMethod('ship')}
-                    className="flex-1"
-                  >
-                    <Truck className="w-3.5 h-3.5 mr-1.5" />
-                    Ship
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={deliveryMethod === 'deliver' ? 'default' : 'outline'}
-                    onClick={() => setDeliveryMethod('deliver')}
-                    className="flex-1"
-                  >
-                    <Building2 className="w-3.5 h-3.5 mr-1.5" />
-                    Deliver
-                  </Button>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Special Instructions</Label>
+                  <Textarea
+                    value={shippingInstructions}
+                    onChange={(e) => setShippingInstructions(e.target.value)}
+                    placeholder="Shipping notes, delivery instructions..."
+                    className="min-h-[60px] text-sm"
+                  />
                 </div>
-              </div>
+              </CardContent>
+            </Card>
 
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Special Instructions</Label>
-                <Textarea
-                  value={shippingInstructions}
-                  onChange={(e) => setShippingInstructions(e.target.value)}
-                  placeholder="Shipping notes, delivery instructions..."
-                  className="min-h-[60px] text-sm"
-                />
-              </div>
-            </CardContent>
-          </Card>
+            {/* Order Summary */}
+            <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
+              <CardHeader className="pb-2 px-5 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <DollarSign className="w-4 h-4" />
+                  Order Summary
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 px-5 pb-4">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Subtotal</span>
+                  <span className="font-medium">${subtotal.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">
+                    Tax ({(effectiveTaxRate * 100).toFixed(2)}%)
+                  </span>
+                  <span className="font-medium">${taxAmount.toFixed(2)}</span>
+                </div>
+                <Separator />
+                <div className="flex justify-between text-base">
+                  <span className="font-semibold">Grand Total</span>
+                  <span className="font-bold text-lg">${grandTotal.toFixed(2)}</span>
+                </div>
+              </CardContent>
+            </Card>
 
-          {/* Order Summary Card */}
-          <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
-            <CardHeader className="pb-2 px-5 pt-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <DollarSign className="w-4 h-4" />
-                Order Summary
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 px-5 pb-4">
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Subtotal</span>
-                <span className="font-medium">${subtotal.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">
-                  Tax ({(effectiveTaxRate * 100).toFixed(2)}%)
-                </span>
-                <span className="font-medium">${taxAmount.toFixed(2)}</span>
-              </div>
-              <Separator />
-              <div className="flex justify-between text-base">
-                <span className="font-semibold">Grand Total</span>
-                <span className="font-bold text-lg">${grandTotal.toFixed(2)}</span>
-              </div>
-            </CardContent>
-          </Card>
+            {/* Attachments Panel - disabled until order is saved */}
+            <AttachmentsPanel
+              ownerType="order"
+              ownerId={undefined}
+              title="Attachments"
+              compact
+            />
 
-          {/* Attachments Panel - disabled until order is saved */}
-          <AttachmentsPanel 
-            ownerType="order" 
-            ownerId={undefined} 
-            title="Attachments"
-            compact
-          />
-
-          {/* Action Buttons */}
-          <div className="space-y-2">
-            <Button
-              onClick={handleSaveOrder}
-              disabled={createOrderMutation.isPending || !selectedCustomerId || lineItems.length === 0}
-              className="w-full"
-            >
-              {createOrderMutation.isPending ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                "Save Order"
-              )}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => navigate("/orders")}
-              disabled={createOrderMutation.isPending}
-              className="w-full"
-            >
-              Cancel
-            </Button>
+            {/* Actions */}
+            <div className="space-y-2">
+              <Button
+                onClick={handleSaveOrder}
+                disabled={createOrderMutation.isPending || !selectedCustomerId || lineItems.length === 0}
+                className="w-full"
+              >
+                {createOrderMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  "Save Order"
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => navigate("/orders")}
+                disabled={createOrderMutation.isPending}
+                className="w-full"
+              >
+                Cancel
+              </Button>
+            </div>
           </div>
         </div>
       </div>
