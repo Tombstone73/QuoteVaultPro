@@ -567,7 +567,7 @@ export default function Orders() {
                 disabled={loadingAttachments === row.id}
                 aria-label={`View attachment ${p.filename}`}
               >
-                {p.thumbnailUrl && ((p.mimeType?.startsWith("image/") ?? false) || (!p.mimeType && isLikelyImageUrl(p.thumbnailUrl))) ? (
+                {p.thumbnailUrl ? (
                   <img
                     src={p.thumbnailUrl}
                     alt={p.filename}
