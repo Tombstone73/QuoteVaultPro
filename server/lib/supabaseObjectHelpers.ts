@@ -234,6 +234,7 @@ export async function enrichAttachmentWithUrls(
         originalUrl,
         thumbUrl,
         previewUrl,
+        thumbnailUrl: thumbUrl, // Alias for client compatibility
         pages,
     };
 }

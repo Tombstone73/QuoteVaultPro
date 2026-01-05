@@ -297,9 +297,14 @@ function OrderLineItemArtworkStrip({
   if (files.length === 0) return null;
 
   const getThumbnailUrl = (attachment: AttachmentForPreview): string | null => {
+    // Check thumbnailUrl first (works for all file types including PDF/PNG/JPG)
+    if (attachment.thumbnailUrl && isValidHttpUrl(attachment.thumbnailUrl)) return attachment.thumbnailUrl;
+    
+    // Fallback to PDF-specific thumbnail extraction
     const isPdf = isPdfAttachment(attachment);
     if (isPdf) return getPdfThumbUrl(attachment);
 
+    // Fallback to other preview URLs
     if (attachment.previewUrl && isValidHttpUrl(attachment.previewUrl)) return attachment.previewUrl;
     if (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) return attachment.thumbUrl;
     if (attachment.originalUrl && isValidHttpUrl(attachment.originalUrl)) return attachment.originalUrl;

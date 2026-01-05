@@ -9,3 +9,8 @@ vite.config.ts.*
 **/*_snapshot.json
 **/watery_*.sql
 repair-drizzle-tracking.sql
+
+# Runtime-generated storage artifacts
+storage/thumbs/
+storage/uploads/
+storage/tmp/
