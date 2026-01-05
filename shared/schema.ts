@@ -2062,6 +2062,7 @@ export type OrderStatusPill = typeof orderStatusPills.$inferSelect;
 // Jobs table for production tracking
 export const jobs = pgTable("jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }), // Migration 0014 - direct tenant filtering
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'cascade' }), // added for direct order linkage
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   productType: varchar("product_type", { length: 50 }).notNull(),
@@ -2076,6 +2077,7 @@ export const jobs = pgTable("jobs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("jobs_organization_id_idx").on(table.organizationId, table.createdAt), // Migration 0014
   index("jobs_order_line_item_id_idx").on(table.orderLineItemId),
   index("jobs_product_type_idx").on(table.productType),
   index("jobs_status_key_idx").on(table.statusKey),
@@ -2334,11 +2336,13 @@ export type Shipment = typeof shipments.$inferSelect;
 // Append-only job notes & status log tables (no duplicate jobs table)
 export const jobNotes = pgTable('job_notes', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }), // Migration 0014 - direct tenant filtering
   jobId: varchar('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
   userId: varchar('user_id').references(() => users.id, { onDelete: 'set null' }),
   noteText: text('note_text').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => [
+  index('job_notes_organization_id_idx').on(table.organizationId, table.createdAt), // Migration 0014
   index('job_notes_job_id_idx').on(table.jobId),
   index('job_notes_created_at_idx').on(table.createdAt),
 ]);
@@ -2352,12 +2356,14 @@ export type JobNote = typeof jobNotes.$inferSelect;
 
 export const jobStatusLog = pgTable('job_status_log', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }), // Migration 0014 - direct tenant filtering
   jobId: varchar('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
   oldStatusKey: varchar('old_status_key', { length: 50 }),
   newStatusKey: varchar('new_status_key', { length: 50 }).notNull(),
   userId: varchar('user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => [
+  index('job_status_log_organization_id_idx').on(table.organizationId, table.createdAt), // Migration 0014
   index('job_status_log_job_id_idx').on(table.jobId),
   index('job_status_log_created_at_idx').on(table.createdAt),
 ]);
@@ -2495,12 +2501,15 @@ export type OrderAttachment = typeof orderAttachments.$inferSelect;
 // Job Files table - links files to production jobs
 export const jobFiles = pgTable("job_files", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }), // Migration 0014 - direct tenant filtering
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: 'cascade' }), // Migration 0014 - direct order reference
   jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: 'cascade' }),
   fileId: varchar("file_id").notNull().references(() => orderAttachments.id, { onDelete: 'cascade' }), // Link to order attachment
   role: fileRoleEnum("role").default('artwork'), // production_art, setup_reference, output
   attachedByUserId: varchar("attached_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
+  index("job_files_organization_id_idx").on(table.organizationId, table.createdAt), // Migration 0014
   index("job_files_job_id_idx").on(table.jobId),
   index("job_files_file_id_idx").on(table.fileId),
   index("job_files_role_idx").on(table.role),

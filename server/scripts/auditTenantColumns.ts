@@ -91,7 +91,7 @@ async function auditTenantColumns() {
   const tablesWithBoth = new Set<string>();
 
   for (const row of orgColumns.rows) {
-    const tableName = row.table_name;
+    const tableName = row.table_name as string;
     if (row.column_name === 'organization_id') {
       tablesWithOrganizationId.add(tableName);
     } else if (row.column_name === 'org_id' || row.column_name === 'organizationId') {
@@ -100,7 +100,7 @@ async function auditTenantColumns() {
   }
 
   // Find tables with both
-  for (const table of tablesWithOrgId) {
+  for (const table of Array.from(tablesWithOrgId)) {
     if (tablesWithOrganizationId.has(table)) {
       tablesWithBoth.add(table);
       tablesWithOrgId.delete(table);
@@ -110,7 +110,7 @@ async function auditTenantColumns() {
   // Find tables with neither
   const tablesWithNeither = new Set<string>();
   for (const row of allTables.rows) {
-    const tableName = row.table_name;
+    const tableName = row.table_name as string;
     if (
       !tablesWithOrganizationId.has(tableName) &&
       !tablesWithOrgId.has(tableName) &&
@@ -170,9 +170,9 @@ async function auditTenantColumns() {
       const fks = foreignKeys.rows.filter(fk => fk.table_name === table);
       const parentInfo = fks
         .filter(fk => 
-          tablesWithOrganizationId.has(fk.foreign_table_name) ||
-          tablesWithOrgId.has(fk.foreign_table_name) ||
-          tablesWithBoth.has(fk.foreign_table_name)
+          tablesWithOrganizationId.has(fk.foreign_table_name as string) ||
+          tablesWithOrgId.has(fk.foreign_table_name as string) ||
+          tablesWithBoth.has(fk.foreign_table_name as string)
         )
         .map(fk => `${fk.foreign_table_name}(${fk.column_name})`)
         .join(', ');
@@ -221,9 +221,9 @@ async function auditTenantColumns() {
     .filter(table => {
       const fks = foreignKeys.rows.filter(fk => fk.table_name === table);
       return fks.length === 0 || !fks.some(fk =>
-        tablesWithOrganizationId.has(fk.foreign_table_name) ||
-        tablesWithOrgId.has(fk.foreign_table_name) ||
-        tablesWithBoth.has(fk.foreign_table_name)
+        tablesWithOrganizationId.has(fk.foreign_table_name as string) ||
+        tablesWithOrgId.has(fk.foreign_table_name as string) ||
+        tablesWithBoth.has(fk.foreign_table_name as string)
       );
     });
 
