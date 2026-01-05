@@ -2349,11 +2349,15 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.post('/api/jobs/:id/files', isAuthenticated, async (req: any, res) => {
+    app.post('/api/jobs/:id/files', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const userId = getUserId(req.user);
             if (!userId) {
                 return res.status(401).json({ error: 'User not authenticated' });
+            }
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) {
+                return res.status(400).json({ error: 'Organization context required' });
             }
             const { fileId, role } = req.body;
 
@@ -2366,8 +2370,16 @@ export async function registerOrderRoutes(
                 return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
             }
 
+            // Fetch job to get orderId and verify tenant ownership
+            const job = await storage.getJob(organizationId, req.params.id);
+            if (!job) {
+                return res.status(404).json({ error: 'Job not found' });
+            }
+
             const jobFile = await storage.attachFileToJob({
                 jobId: req.params.id,
+                organizationId,
+                orderId: job.orderId || null,
                 fileId,
                 role: role || 'artwork',
                 attachedByUserId: userId,
