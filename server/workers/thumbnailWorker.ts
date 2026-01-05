@@ -149,16 +149,31 @@ async function pollOnce(): Promise<void> {
 
     for (const row of rows) {
       try {
-        if (!row.fileUrl || isHttpUrl(row.fileUrl)) continue;
+        if (!row.fileUrl || isHttpUrl(row.fileUrl)) {
+          console.log(`[Thumbnail Worker] Skipping ${row.id}: external URL or missing fileUrl`);
+          continue;
+        }
         const fileName = (row.originalFilename ?? row.fileName ?? null) as string | null;
         const storageProvider = row.storageProvider;
-        if (!storageProvider) continue;
+        if (!storageProvider) {
+          console.log(`[Thumbnail Worker] Skipping ${row.id}: no storageProvider`);
+          continue;
+        }
+
+        console.log(`[Thumbnail Worker] Processing ${row.attachmentType} attachment ${row.id}:`, {
+          fileName,
+          mimeType: row.mimeType,
+          fileUrl: row.fileUrl,
+          storageProvider,
+          thumbStatus: row.thumbStatus,
+        });
 
         await claimForProcessing(row);
 
         const isPdf = isPdfLike(row.mimeType, fileName);
         if (isPdf) {
           // Best-effort: PDF -> thumbKey only.
+          console.log(`[Thumbnail Worker] Processing PDF: ${row.id}`);
           await processPdfAttachmentDerivedData({
             orgId: row.organizationId || "",
             attachmentId: row.id,
@@ -167,13 +182,35 @@ async function pollOnce(): Promise<void> {
             mimeType: row.mimeType,
             attachmentType: row.attachmentType,
           });
+          console.log(`[Thumbnail Worker] PDF processing completed for ${row.id}`);
           continue;
         }
 
         const isImage = isSupportedImageType(row.mimeType, fileName);
-        if (!isImage) continue;
-        if (!isThumbnailGenerationEnabled()) continue;
+        if (!isImage) {
+          console.log(`[Thumbnail Worker] Skipping ${row.id}: unsupported type (not PDF, not supported image)`);
+          // Mark as thumb_failed so it doesn't keep reprocessing
+          const baseTable = row.attachmentType === "quote" ? quoteAttachments : orderAttachments;
+          try {
+            await db
+              .update(baseTable)
+              .set({
+                thumbStatus: "thumb_failed",
+                thumbError: `Unsupported file type for thumbnail generation: ${row.mimeType || 'unknown'}`,
+                updatedAt: new Date(),
+              })
+              .where(eq(baseTable.id, row.id));
+          } catch (dbError) {
+            console.error(`[Thumbnail Worker] Failed to update status for unsupported type ${row.id}:`, dbError);
+          }
+          continue;
+        }
+        if (!isThumbnailGenerationEnabled()) {
+          console.log(`[Thumbnail Worker] Skipping ${row.id}: thumbnail generation disabled`);
+          continue;
+        }
 
+        console.log(`[Thumbnail Worker] Processing image: ${row.id}, type: ${row.mimeType}`);
         await generateImageDerivatives(
           row.id,
           row.attachmentType,
@@ -183,6 +220,7 @@ async function pollOnce(): Promise<void> {
           row.organizationId || "",
           fileName
         );
+        console.log(`[Thumbnail Worker] Image processing completed for ${row.id}`);
       } catch (error) {
         console.error(`[Thumbnail Worker] Error processing attachment ${row.id}:`, error);
       }
