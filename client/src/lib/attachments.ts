@@ -3,6 +3,8 @@
  * Single source of truth for filename extraction, PDF detection, and page count handling
  */
 
+import { isValidHttpUrl } from "@/lib/utils";
+
 type AttachmentLike = {
   originalFilename?: string | null;
   fileName?: string;
@@ -12,6 +14,14 @@ type AttachmentLike = {
   url?: string | null;
   mimeType?: string | null;
   pageCount?: number | null;
+};
+
+type AttachmentPreviewLike = AttachmentLike & {
+  previewUrl?: string | null;
+  thumbUrl?: string | null;
+  originalUrl?: string | null;
+  thumbnailUrl?: string | null;
+  pages?: Array<{ thumbUrl?: string | null }>;
 };
 
 /**
@@ -78,6 +88,30 @@ export function getPdfPageCount(att: AttachmentLike | null | undefined): number 
     return pageCount;
   }
 
+  return null;
+}
+
+/**
+ * Resolve a thumbnail/preview URL for rendering, using the same priority order
+ * as Quotes line item attachments.
+ *
+ * - PDFs: pages[0].thumbUrl -> thumbUrl -> thumbnailUrl
+ * - Non-PDF: previewUrl -> thumbUrl -> originalUrl
+ *
+ * Returns null if no usable signed URL is available.
+ */
+export function getAttachmentThumbnailUrl(att: AttachmentPreviewLike | null | undefined): string | null {
+  if (!att) return null;
+
+  const isPdf = isPdfAttachment(att);
+  if (isPdf) {
+    const pdfUrl = att.pages?.[0]?.thumbUrl ?? att.thumbUrl ?? att.thumbnailUrl ?? null;
+    return isValidHttpUrl(pdfUrl) ? pdfUrl : null;
+  }
+
+  if (isValidHttpUrl(att.previewUrl)) return att.previewUrl;
+  if (isValidHttpUrl(att.thumbUrl)) return att.thumbUrl;
+  if (isValidHttpUrl(att.originalUrl)) return att.originalUrl;
   return null;
 }
 

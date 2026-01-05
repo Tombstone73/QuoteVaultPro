@@ -17,7 +17,7 @@
  */
 
 import { db } from "../db";
-import { quoteAttachments } from "@shared/schema";
+import { orderAttachments, quoteAttachments } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { readFile } from "../utils/fileStorage";
@@ -195,16 +195,16 @@ async function uploadThumbnailFile(
 }
 
 /**
- * Generate storage key for thumbnail from original fileKey
+ * Generate storage key for thumbnail.
+ * Format: thumbs/{orgId}/{attachmentType}/{attachmentId}.thumb.jpg
  */
-function generateThumbnailKey(fileKey: string): string {
-  // If fileKey has extension, insert .thumb before extension
-  const extMatch = fileKey.match(/^(.+)(\.[^.]+)$/);
-  if (extMatch) {
-    return `${extMatch[1]}.thumb.jpg`;
-  }
-  // Otherwise append suffix
-  return `${fileKey}.thumb.jpg`;
+function generateThumbnailKey(args: {
+  orgId: string;
+  attachmentType: 'quote' | 'order';
+  attachmentId: string;
+}): string {
+  const { orgId, attachmentType, attachmentId } = args;
+  return `thumbs/${orgId}/${attachmentType}/${attachmentId}.thumb.jpg`;
 }
 
 /**
@@ -217,8 +217,10 @@ export async function processPdfAttachmentDerivedData(args: {
   storageKey: string;
   storageProvider: string;
   mimeType?: string | null;
+  attachmentType?: 'quote' | 'order';
 }): Promise<void> {
   const { orgId, attachmentId, storageKey, storageProvider, mimeType } = args;
+  const attachmentType = args.attachmentType ?? 'quote';
 
   const lowerMimeType = (mimeType ?? '').toLowerCase();
   const isPdfMime = lowerMimeType.includes('pdf');
@@ -244,20 +246,31 @@ export async function processPdfAttachmentDerivedData(args: {
     
     // Mark as failed
     try {
-      await db
-        .update(quoteAttachments)
-        .set({
-          pageCountStatus: 'failed',
-          pageCountError: 'PDF processing dependencies unavailable (pdfjs-dist)',
-          pageCountUpdatedAt: new Date(),
-          thumbStatus: 'thumb_failed',
-          thumbError: 'PDF thumbnail generation dependencies unavailable',
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(quoteAttachments.id, attachmentId),
-          eq(quoteAttachments.organizationId, orgId)
-        ));
+      if (attachmentType === 'quote') {
+        await db
+          .update(quoteAttachments)
+          .set({
+            pageCountStatus: 'failed',
+            pageCountError: 'PDF processing dependencies unavailable (pdfjs-dist)',
+            pageCountUpdatedAt: new Date(),
+            thumbStatus: 'thumb_failed',
+            thumbError: 'PDF thumbnail generation dependencies unavailable',
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(quoteAttachments.id, attachmentId),
+            eq(quoteAttachments.organizationId, orgId)
+          ));
+      } else {
+        await db
+          .update(orderAttachments)
+          .set({
+            thumbStatus: 'thumb_failed',
+            thumbError: 'PDF thumbnail generation dependencies unavailable',
+            updatedAt: new Date(),
+          })
+          .where(eq(orderAttachments.id, attachmentId));
+      }
       console.log(`[PdfProcessing] Marked ${attachmentId} as failed due to missing pdfjs`);
     } catch (dbError: any) {
       console.error(`[PdfProcessing] DB update failed while setting status to failed for ${attachmentId}:`, dbError?.message || dbError);
@@ -277,14 +290,20 @@ export async function processPdfAttachmentDerivedData(args: {
 
   try {
     // Load attachment row to verify it exists and get current state
-    const [attachment] = await db
-      .select()
-      .from(quoteAttachments)
-      .where(and(
-        eq(quoteAttachments.id, attachmentId),
-        eq(quoteAttachments.organizationId, orgId)
-      ))
-      .limit(1);
+    const [attachment] = await (attachmentType === 'quote'
+      ? db
+          .select()
+          .from(quoteAttachments)
+          .where(and(
+            eq(quoteAttachments.id, attachmentId),
+            eq(quoteAttachments.organizationId, orgId)
+          ))
+          .limit(1)
+      : db
+          .select()
+          .from(orderAttachments)
+          .where(eq(orderAttachments.id, attachmentId))
+          .limit(1));
 
     if (!attachment) {
       console.log(`[PdfProcessing] Attachment ${attachmentId} not found, skipping`);
@@ -297,25 +316,38 @@ export async function processPdfAttachmentDerivedData(args: {
       return;
     }
 
-    // Status should already be set to 'detecting' and 'thumb_pending' by upload route for PDFs.
+    // Status should already be set to 'thumb_pending' by upload route for PDFs.
     // For AI attempts, do not change status up-front (fail-soft).
     if (!isAiCandidate) {
-      // If not, update it here as a safety measure
-      if (attachment.pageCountStatus !== 'detecting' || attachment.thumbStatus !== 'thumb_pending') {
-        try {
-          await db
-            .update(quoteAttachments)
-            .set({
-              pageCountStatus: 'detecting',
-              thumbStatus: 'thumb_pending',
-              updatedAt: new Date(),
-            })
-            .where(eq(quoteAttachments.id, attachmentId));
-          console.log(`[PdfProcessing] Updated ${attachmentId} status to detecting/pending`);
-        } catch (dbError: any) {
-          console.error(`[PdfProcessing] DB update failed while setting status to detecting for ${attachmentId}:`, dbError?.message || dbError);
-          // Continue anyway - status might already be correct
+      try {
+        const anyAttachment: any = attachment as any;
+
+        if (attachmentType === 'quote') {
+          if (anyAttachment.pageCountStatus !== 'detecting' || anyAttachment.thumbStatus !== 'thumb_pending') {
+            await db
+              .update(quoteAttachments)
+              .set({
+                pageCountStatus: 'detecting',
+                thumbStatus: 'thumb_pending',
+                updatedAt: new Date(),
+              })
+              .where(eq(quoteAttachments.id, attachmentId));
+            console.log(`[PdfProcessing] Updated ${attachmentId} status to detecting/pending`);
+          }
+        } else {
+          if (anyAttachment.thumbStatus !== 'thumb_pending') {
+            await db
+              .update(orderAttachments)
+              .set({
+                thumbStatus: 'thumb_pending',
+                updatedAt: new Date(),
+              })
+              .where(eq(orderAttachments.id, attachmentId));
+            console.log(`[PdfProcessing] Updated ${attachmentId} status to pending`);
+          }
         }
+      } catch (dbError: any) {
+        console.error(`[PdfProcessing] DB update failed while setting status to pending for ${attachmentId}:`, dbError?.message || dbError);
       }
     }
 
@@ -361,22 +393,24 @@ export async function processPdfAttachmentDerivedData(args: {
     const pageCount = pdfDocument.numPages;
     console.log(`[PdfProcessing] PDF has ${pageCount} pages`);
 
-    // Update page count status to 'known' (PERMANENT)
-    try {
-      await db
-        .update(quoteAttachments)
-        .set({
-          pageCount: pageCount,
-          pageCountStatus: 'known',
-          pageCountError: null,
-          pageCountUpdatedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(quoteAttachments.id, attachmentId));
-      console.log(`[PdfProcessing] Updated pageCountStatus=known`);
-    } catch (dbError: any) {
-      console.error(`[PdfProcessing] DB update failed while setting pageCount for ${attachmentId}:`, dbError?.message || dbError);
-      throw new Error(`Failed to update pageCount in database: ${dbError?.message || dbError}`);
+    // Update page count status to 'known' (PERMANENT) - quote attachments only
+    if (attachmentType === 'quote') {
+      try {
+        await db
+          .update(quoteAttachments)
+          .set({
+            pageCount: pageCount,
+            pageCountStatus: 'known',
+            pageCountError: null,
+            pageCountUpdatedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(quoteAttachments.id, attachmentId));
+        console.log(`[PdfProcessing] Updated pageCountStatus=known`);
+      } catch (dbError: any) {
+        console.error(`[PdfProcessing] DB update failed while setting pageCount for ${attachmentId}:`, dbError?.message || dbError);
+        throw new Error(`Failed to update pageCount in database: ${dbError?.message || dbError}`);
+      }
     }
 
     // Generate thumbnail from page 1 if canvas and sharp are available
@@ -421,7 +455,11 @@ export async function processPdfAttachmentDerivedData(args: {
       console.log(`[PdfProcessing] Sharp resize success, thumbnail size=${thumbBuffer.length} bytes`);
 
       // Generate storage key for thumbnail
-      const thumbKey = generateThumbnailKey(storageKey);
+      const thumbKey = generateThumbnailKey({
+        orgId,
+        attachmentType,
+        attachmentId,
+      });
       console.log(`[PdfProcessing] Generated thumbnail key: ${thumbKey} for ${attachmentId}`);
 
       // Upload thumbnail
@@ -433,15 +471,27 @@ export async function processPdfAttachmentDerivedData(args: {
         
         // Update database with thumbnail key (PERMANENT - final state)
         try {
-          await db
-            .update(quoteAttachments)
-            .set({
-              thumbKey: thumbKey,
-              thumbStatus: 'thumb_ready',
-              thumbError: null,
-              updatedAt: new Date(),
-            })
-            .where(eq(quoteAttachments.id, attachmentId));
+          if (attachmentType === 'quote') {
+            await db
+              .update(quoteAttachments)
+              .set({
+                thumbKey: thumbKey,
+                thumbStatus: 'thumb_ready',
+                thumbError: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(quoteAttachments.id, attachmentId));
+          } else {
+            await db
+              .update(orderAttachments)
+              .set({
+                thumbKey: thumbKey,
+                thumbStatus: 'thumb_ready',
+                thumbError: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(orderAttachments.id, attachmentId));
+          }
 
           console.log(`[PdfProcessing] Thumbnail generated`);
         } catch (dbError: any) {
@@ -456,14 +506,25 @@ export async function processPdfAttachmentDerivedData(args: {
       const reason = !hasCanvas ? 'canvas unavailable' : 'sharp unavailable';
       console.log(`[PdfProcessing] Thumbnail failed: ${reason}`);
       try {
-        await db
-          .update(quoteAttachments)
-          .set({
-            thumbStatus: 'thumb_failed',
-            thumbError: `${reason} for thumbnail generation`,
-            updatedAt: new Date(),
-          })
-          .where(eq(quoteAttachments.id, attachmentId));
+        if (attachmentType === 'quote') {
+          await db
+            .update(quoteAttachments)
+            .set({
+              thumbStatus: 'thumb_failed',
+              thumbError: `${reason} for thumbnail generation`,
+              updatedAt: new Date(),
+            })
+            .where(eq(quoteAttachments.id, attachmentId));
+        } else {
+          await db
+            .update(orderAttachments)
+            .set({
+              thumbStatus: 'thumb_failed',
+              thumbError: `${reason} for thumbnail generation`,
+              updatedAt: new Date(),
+            })
+            .where(eq(orderAttachments.id, attachmentId));
+        }
       } catch (dbError: any) {
         console.error(`[PdfProcessing] DB update failed while setting thumbStatus to failed for ${attachmentId}:`, dbError?.message || dbError);
       }
@@ -475,38 +536,55 @@ export async function processPdfAttachmentDerivedData(args: {
     // Update database with error status (PERMANENT - finalize failure state)
     try {
       // Determine which operations failed by checking current state
-      const [currentAttachment] = await db
-        .select()
-        .from(quoteAttachments)
-        .where(and(
-          eq(quoteAttachments.id, attachmentId),
-          eq(quoteAttachments.organizationId, orgId)
-        ))
-        .limit(1);
+      const [currentAttachment] = await (attachmentType === 'quote'
+        ? db
+            .select()
+            .from(quoteAttachments)
+            .where(and(
+              eq(quoteAttachments.id, attachmentId),
+              eq(quoteAttachments.organizationId, orgId)
+            ))
+            .limit(1)
+        : db
+            .select()
+            .from(orderAttachments)
+            .where(eq(orderAttachments.id, attachmentId))
+            .limit(1));
 
       if (currentAttachment) {
         const updateData: any = {
           updatedAt: new Date(),
         };
 
-        // If page count is still 'detecting' or 'unknown', mark it as failed
-        if (currentAttachment.pageCountStatus === 'detecting' || currentAttachment.pageCountStatus === 'unknown') {
-          updateData.pageCountStatus = 'failed';
-          updateData.pageCountError = errorMessage;
-          updateData.pageCountUpdatedAt = new Date();
+        // If page count is still 'detecting' or 'unknown', mark it as failed (quote only)
+        if (attachmentType === 'quote') {
+          const anyAttachment: any = currentAttachment as any;
+          if (anyAttachment.pageCountStatus === 'detecting' || anyAttachment.pageCountStatus === 'unknown') {
+            updateData.pageCountStatus = 'failed';
+            updateData.pageCountError = errorMessage;
+            updateData.pageCountUpdatedAt = new Date();
+          }
         }
 
         // If thumbnail is still 'thumb_pending' or 'uploaded', mark it as failed
-        if (currentAttachment.thumbStatus === 'thumb_pending' || currentAttachment.thumbStatus === 'uploaded') {
+        const anyAttachment: any = currentAttachment as any;
+        if (anyAttachment.thumbStatus === 'thumb_pending' || anyAttachment.thumbStatus === 'uploaded') {
           updateData.thumbStatus = 'thumb_failed';
           updateData.thumbError = errorMessage;
         }
 
         if (Object.keys(updateData).length > 1) { // More than just updatedAt
-          await db
-            .update(quoteAttachments)
-            .set(updateData)
-            .where(eq(quoteAttachments.id, attachmentId));
+          if (attachmentType === 'quote') {
+            await db
+              .update(quoteAttachments)
+              .set(updateData)
+              .where(eq(quoteAttachments.id, attachmentId));
+          } else {
+            await db
+              .update(orderAttachments)
+              .set(updateData)
+              .where(eq(orderAttachments.id, attachmentId));
+          }
           console.log(`[PdfProcessing] Marked ${attachmentId} as failed in database: ${errorMessage}`);
         }
       } else {

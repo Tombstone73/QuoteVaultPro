@@ -7,7 +7,7 @@ import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
 import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings } from "@shared/schema";
-import { eq, desc, and, isNull, asc, inArray, or, sql } from "drizzle-orm";
+import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
@@ -4460,46 +4460,147 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * Returns originalUrl, thumbUrl (if thumbKey exists), previewUrl (if previewKey exists)
    * For PDFs, also fetches and enriches page data with signed URLs
    */
-  async function enrichAttachmentWithUrls(attachment: any): Promise<any> {
+  function createRequestLogOnce() {
+    const logged = new Set<string>();
+    return (key: string, ...args: any[]) => {
+      if (logged.has(key)) return;
+      logged.add(key);
+      console.warn(...args);
+    };
+  }
+
+  async function enrichAttachmentWithUrls(
+    attachment: any,
+    options?: { logOnce?: (key: string, ...args: any[]) => void }
+  ): Promise<any> {
     let originalUrl: string | null = null;
     let thumbUrl: string | null = null;
     let previewUrl: string | null = null;
 
-    if (isSupabaseConfigured()) {
-      const supabaseService = new SupabaseStorageService();
-      
-      // Generate signed URL for original file
-      if (attachment.fileUrl) {
+    const logOnce = options?.logOnce;
+
+    const rawFileUrl = (attachment.fileUrl ?? '').toString();
+    const isHttpUrl = rawFileUrl.startsWith('http://') || rawFileUrl.startsWith('https://');
+    const storageProvider = (attachment.storageProvider ?? null) as string | null;
+    const bucket = (attachment.bucket ?? undefined) as string | undefined;
+
+    const objectsProxyUrl = (key: string) => `/objects/${key}`;
+
+    // External URL: use as-is.
+    // BUT: Supabase signed upload URLs are http(s) and must never be used for rendering.
+    // If we can recognize a Supabase object URL, convert it to a stable key and sign a download URL.
+    if (rawFileUrl && isHttpUrl) {
+      const maybeSupabaseKey = isSupabaseConfigured()
+        ? tryExtractSupabaseObjectKeyFromUrl(rawFileUrl, bucket || 'titan-private')
+        : null;
+      if (maybeSupabaseKey && isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService(bucket);
         try {
-          originalUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
-        } catch (error) {
-          console.error(`[enrichAttachmentWithUrls] Failed to generate originalUrl for ${attachment.id}:`, error);
+          originalUrl = await supabaseService.getSignedDownloadUrl(maybeSupabaseKey, 3600);
+        } catch (error: any) {
+          if (logOnce) {
+            logOnce(
+              `orig:${attachment.id}`,
+              '[enrichAttachmentWithUrls] Supabase originalUrl missing (fail-soft):',
+              {
+                attachmentId: attachment.id,
+                bucket: bucket || 'default',
+                path: maybeSupabaseKey,
+                message: error?.message || String(error),
+              }
+            );
+          }
+          originalUrl = null;
         }
+      } else {
+        originalUrl = rawFileUrl;
       }
-      
-      // Generate signed URL for thumbnail (only if thumbKey exists)
-      if (attachment.thumbKey) {
+    } else if (rawFileUrl && storageProvider === 'local') {
+      // Local storage: use /objects proxy which serves local files directly.
+      originalUrl = objectsProxyUrl(rawFileUrl);
+    } else if (rawFileUrl && storageProvider === 'supabase' && isSupabaseConfigured()) {
+      // Supabase storage: sign using the attachment's bucket if present.
+      const supabaseService = new SupabaseStorageService(bucket);
+      try {
+        originalUrl = await supabaseService.getSignedDownloadUrl(rawFileUrl, 3600);
+      } catch (error: any) {
+        if (logOnce) {
+          logOnce(
+            `orig:${attachment.id}`,
+            '[enrichAttachmentWithUrls] Supabase originalUrl missing (fail-soft):',
+            {
+              attachmentId: attachment.id,
+              bucket: bucket || 'default',
+              path: rawFileUrl,
+              message: error?.message || String(error),
+            }
+          );
+        } else {
+          console.warn(`[enrichAttachmentWithUrls] Failed to generate originalUrl for ${attachment.id} (fail-soft):`, error);
+        }
+        originalUrl = null;
+      }
+    } else if (rawFileUrl) {
+      // Unknown provider or Supabase not configured: fall back to /objects.
+      // This avoids crashing pages when storageProvider is null/mis-set.
+      originalUrl = objectsProxyUrl(rawFileUrl);
+    }
+
+    // Derivative URLs
+    const thumbKey = (attachment.thumbKey ?? null) as string | null;
+    if (thumbKey) {
+      if (storageProvider === 'local') {
+        thumbUrl = objectsProxyUrl(thumbKey);
+      } else if (storageProvider === 'supabase' && isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService(bucket);
         try {
-          thumbUrl = await supabaseService.getSignedDownloadUrl(attachment.thumbKey, 3600);
-        } catch (error) {
-          console.error(`[enrichAttachmentWithUrls] Failed to generate thumbUrl for ${attachment.id}:`, error);
+          thumbUrl = await supabaseService.getSignedDownloadUrl(thumbKey, 3600);
+        } catch (error: any) {
+          if (logOnce) {
+            logOnce(
+              `thumb:${attachment.id}`,
+              '[enrichAttachmentWithUrls] Supabase thumbUrl missing (fail-soft):',
+              {
+                attachmentId: attachment.id,
+                bucket: bucket || 'default',
+                path: thumbKey,
+                message: error?.message || String(error),
+              }
+            );
+          }
+          thumbUrl = null;
         }
+      } else {
+        thumbUrl = objectsProxyUrl(thumbKey);
       }
-      
-      // Generate signed URL for preview (only if previewKey exists)
-      if (attachment.previewKey) {
+    }
+
+    const previewKey = (attachment.previewKey ?? null) as string | null;
+    if (previewKey) {
+      if (storageProvider === 'local') {
+        previewUrl = objectsProxyUrl(previewKey);
+      } else if (storageProvider === 'supabase' && isSupabaseConfigured()) {
+        const supabaseService = new SupabaseStorageService(bucket);
         try {
-          previewUrl = await supabaseService.getSignedDownloadUrl(attachment.previewKey, 3600);
-        } catch (error) {
-          console.error(`[enrichAttachmentWithUrls] Failed to generate previewUrl for ${attachment.id}:`, error);
+          previewUrl = await supabaseService.getSignedDownloadUrl(previewKey, 3600);
+        } catch (error: any) {
+          if (logOnce) {
+            logOnce(
+              `preview:${attachment.id}`,
+              '[enrichAttachmentWithUrls] Supabase previewUrl missing (fail-soft):',
+              {
+                attachmentId: attachment.id,
+                bucket: bucket || 'default',
+                path: previewKey,
+                message: error?.message || String(error),
+              }
+            );
+          }
+          previewUrl = null;
         }
+      } else {
+        previewUrl = objectsProxyUrl(previewKey);
       }
-    } else {
-      // Fallback for non-Supabase storage: use stored URLs directly
-      originalUrl = attachment.fileUrl;
-      // For non-Supabase, we don't have thumbnail support yet
-      thumbUrl = null;
-      previewUrl = null;
     }
 
     // For PDFs, fetch page data (only if table exists)
@@ -4521,7 +4622,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           // Enrich each page with signed URLs
           if (isSupabaseConfigured()) {
-            const supabaseService = new SupabaseStorageService();
+            const supabaseService = new SupabaseStorageService(bucket);
             pages = await Promise.all(pageRecords.map(async (page) => {
               let pageThumbUrl: string | null = null;
               let pagePreviewUrl: string | null = null;
@@ -4530,7 +4631,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 try {
                   pageThumbUrl = await supabaseService.getSignedDownloadUrl(page.thumbKey, 3600);
                 } catch (error) {
-                  console.error(`[enrichAttachmentWithUrls] Failed to generate page thumbUrl:`, error);
+                  // Fail-soft: if page thumb object missing, just omit URL
+                  if (logOnce) {
+                    logOnce(`pageThumb:${attachment.id}`, '[enrichAttachmentWithUrls] Failed to generate page thumbUrl (fail-soft)', error);
+                  }
                 }
               }
               
@@ -4538,7 +4642,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 try {
                   pagePreviewUrl = await supabaseService.getSignedDownloadUrl(page.previewKey, 3600);
                 } catch (error) {
-                  console.error(`[enrichAttachmentWithUrls] Failed to generate page previewUrl:`, error);
+                  if (logOnce) {
+                    logOnce(`pagePreview:${attachment.id}`, '[enrichAttachmentWithUrls] Failed to generate page previewUrl (fail-soft)', error);
+                  }
                 }
               }
               
@@ -4568,6 +4674,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
   }
 
+  function normalizeObjectKeyForDb(input: string): string {
+    let key = (input || '').toString().trim();
+    key = key.replace(/^\/+/, '');
+    // Strip common accidental bucket prefix when client sends "<bucket>/<path>"
+    if (key.startsWith('titan-private/')) {
+      key = key.slice('titan-private/'.length);
+    }
+    return key;
+  }
+
+  function tryExtractSupabaseObjectKeyFromUrl(inputUrl: string, bucket: string): string | null {
+    const raw = (inputUrl || '').toString().trim();
+    if (!raw) return null;
+
+    // Already a key
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) {
+      return normalizeObjectKeyForDb(raw);
+    }
+
+    try {
+      const url = new URL(raw);
+      const path = url.pathname;
+
+      const markers = [
+        `/storage/v1/object/public/${bucket}/`,
+        `/storage/v1/object/sign/${bucket}/`,
+        `/storage/v1/object/upload/sign/${bucket}/`,
+        `/storage/v1/object/download/${bucket}/`,
+        `/storage/v1/object/${bucket}/`,
+      ];
+
+      for (const marker of markers) {
+        const idx = path.indexOf(marker);
+        if (idx >= 0) {
+          const remainder = path.slice(idx + marker.length);
+          const decoded = decodeURIComponent(remainder);
+          const normalized = normalizeObjectKeyForDb(decoded);
+          return normalized || null;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  }
+
+  function scheduleSupabaseObjectSelfCheck(args: {
+    bucket?: string | null;
+    path: string;
+    context: Record<string, any>;
+  }) {
+    if (!isSupabaseConfigured()) return;
+    const { bucket, path, context } = args;
+    if (!path || path.startsWith('http://') || path.startsWith('https://')) return;
+
+    setImmediate(() => {
+      void (async () => {
+        try {
+          const svc = new SupabaseStorageService(bucket ?? undefined);
+          const exists = await svc.fileExists(path);
+          if (!exists) {
+            console.warn('[SupabaseStorage] Object self-check failed (missing):', {
+              bucket: bucket ?? 'default',
+              path,
+              ...context,
+            });
+          }
+        } catch (error) {
+          console.warn('[SupabaseStorage] Object self-check errored (fail-soft):', {
+            path,
+            ...context,
+            message: (error as any)?.message || String(error),
+          });
+        }
+      })();
+    });
+  }
+
   // Get all attachments for a quote
   app.get("/api/quotes/:id/files", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -4582,8 +4767,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ))
         .orderBy(desc(quoteAttachments.createdAt));
       
+      const logOnce = createRequestLogOnce();
       // Enrich each attachment with signed URLs
-      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
       
       res.json({ success: true, data: enrichedFiles });
     } catch (error) {
@@ -4608,6 +4794,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!assertQuoteEditable(res, quote)) return;
       
       const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename } = req.body;
+
+      // Detect if this is a PDF (by mimeType or filename)
+      const resolvedUploadName = (originalFilename || fileName || '') as string;
+      const lowerMime = (mimeType || '').toString().toLowerCase();
+      const isPdfEarly = lowerMime.includes('pdf') || resolvedUploadName.toLowerCase().endsWith('.pdf');
+
+      // Check if PDF processing columns exist (from startup probe)
+      const { hasPageCountStatusColumn } = await import('./db');
+      const pdfColumnsExist = hasPageCountStatusColumn() === true;
+
+      if (isPdfEarly && !pdfColumnsExist) {
+        console.warn(`[QuoteFiles:POST] PDF detected but page_count_status column missing; PDF processing disabled for ${resolvedUploadName}`);
+      }
       
       // Support both legacy and new upload methods
       if (!fileName && !originalFilename) {
@@ -4651,7 +4850,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           extension: fileMetadata.extension,
           sizeBytes: fileMetadata.sizeBytes,
           checksum: fileMetadata.checksum,
+          thumbStatus: (isPdfEarly && pdfColumnsExist) ? ('thumb_pending' as const) : ('uploaded' as const),
         };
+
+        if (pdfColumnsExist) {
+          attachmentData.pageCountStatus = isPdfEarly ? ('detecting' as const) : ('unknown' as const);
+        }
       }
       // Legacy method (GCS or direct URL)
       else {
@@ -4659,15 +4863,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(400).json({ error: "fileUrl is required for legacy uploads" });
         }
 
-        // Determine storage provider for object-key style uploads (e.g., Supabase uploads/<uuid>)
-        // - If Supabase configured and fileUrl is NOT http(s), treat it as Supabase object key
-        // - If fileUrl is http(s), treat it as external legacy URL
-        // - Otherwise, assume local fallback
+        // Determine storage provider for legacy uploads
+        // - http(s): external legacy URL
+        // - Supabase object key: typically starts with "uploads/" (or bucket-prefixed)
+        // - Otherwise: local storage key
         let storageProvider: string | undefined;
-        if (isSupabaseConfigured() && fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
-          storageProvider = 'supabase';
-        } else if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+        if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
           storageProvider = undefined;
+        } else if (
+          isSupabaseConfigured() &&
+          fileUrl &&
+          (fileUrl.startsWith('uploads/') || fileUrl.startsWith('titan-private/uploads/'))
+        ) {
+          storageProvider = 'supabase';
         } else {
           storageProvider = 'local';
         }
@@ -4675,16 +4883,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         attachmentData = {
           ...attachmentData,
           fileName,
-          fileUrl,
+          fileUrl: (storageProvider === 'supabase' && fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://'))
+            ? normalizeObjectKeyForDb(fileUrl)
+            : fileUrl,
           fileSize: fileSize || null,
           mimeType: mimeType || null,
           originalFilename: originalFilename || fileName || null,
           storageProvider,
           bucket: 'titan-private',
+          thumbStatus: (isPdfEarly && pdfColumnsExist) ? ('thumb_pending' as const) : ('uploaded' as const),
         };
+
+        if (pdfColumnsExist) {
+          attachmentData.pageCountStatus = isPdfEarly ? ('detecting' as const) : ('unknown' as const);
+        }
       }
       
       const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+
+      // Best-effort self-check for Supabase-backed keys (non-blocking)
+      if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
+        res.on('finish', () => {
+          scheduleSupabaseObjectSelfCheck({
+            bucket: 'titan-private',
+            path: attachment.fileUrl,
+            context: { attachmentType: 'quote', quoteId: req.params.id, attachmentId: attachment.id },
+          });
+        });
+      }
       
       // Fire-and-forget thumbnail generation for images (non-blocking)
       // Use isSupportedImageType helper which supports both mimeType and fileName-based detection
@@ -4715,6 +4941,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       } else if (isSupportedImage && (!hasStorageProviderForThumb || !isNotHttpUrlForThumb)) {
         console.log(`[QuoteFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+      }
+
+      // Fire-and-forget PDF thumbnail generation for PDFs (non-blocking)
+      const attachmentFileNameForPdf = ((attachment.originalFilename ?? attachment.fileName ?? '') as string).toLowerCase();
+      const isPdf = (attachment.mimeType ?? '').toLowerCase().includes('pdf') || attachmentFileNameForPdf.endsWith('.pdf');
+      const normalizedStorageProvider =
+        (attachment.storageProvider as any) ??
+        (isSupabaseConfigured() && attachment.fileUrl?.startsWith('uploads/') ? 'supabase' : null);
+
+      if (isPdf && pdfColumnsExist && normalizedStorageProvider && isNotHttpUrlForThumb && attachment.fileUrl) {
+        res.on('finish', () => {
+          setImmediate(() => {
+            void (async () => {
+              try {
+                const { processPdfAttachmentDerivedData } = await import('./services/pdfProcessing');
+                await processPdfAttachmentDerivedData({
+                  orgId: organizationId,
+                  attachmentId: attachment.id,
+                  storageKey: attachment.fileUrl,
+                  storageProvider: normalizedStorageProvider,
+                  mimeType: attachment.mimeType || null,
+                  attachmentType: 'quote',
+                });
+              } catch (error: any) {
+                console.error(`[QuoteFiles:POST] PDF kickoff failed for ${attachment.id}:`, error);
+              }
+            })();
+          });
+        });
       }
       
       res.json({ success: true, data: attachment });
@@ -4936,7 +5191,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(and(...whereConditions))
         .orderBy(desc(quoteAttachments.createdAt));
 
-      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      const logOnce = createRequestLogOnce();
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
       return res.json({ success: true, data: enrichedFiles });
     } catch (error) {
       console.error("[QuoteAttachments:GET] Error:", error);
@@ -5307,7 +5563,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(desc(quoteAttachments.createdAt));
       
       // Enrich each attachment with signed URLs
-      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      const logOnce = createRequestLogOnce();
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
       
       console.log(`[LineItemFiles:GET] Found ${files.length} files for line item ${lineItemId}`);
       res.json({ success: true, data: enrichedFiles });
@@ -5339,7 +5596,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(desc(quoteAttachments.createdAt));
 
       // Enrich each attachment with signed URLs
-      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      const logOnce = createRequestLogOnce();
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
 
       console.log(`[LineItemFiles:GET:Temp] Found ${files.length} files for temp line item ${lineItemId}`);
       res.json({ success: true, data: enrichedFiles });
@@ -5427,7 +5685,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         fileName,
         originalFilename: fileName,
-        fileUrl: storageKey,  // Storage key: uploads/<uuid> for Supabase, or path for local
+        fileUrl: (storageProvider === 'supabase' && storageKey && !storageKey.startsWith('http://') && !storageKey.startsWith('https://'))
+          ? normalizeObjectKeyForDb(storageKey)
+          : storageKey,  // Storage key: uploads/<uuid> for Supabase, or path for local
         fileSize: fileSize || null,
         mimeType: mimeType || null,
         description: description || null,
@@ -5443,6 +5703,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       console.log(`[LineItemFiles:POST] Inserting attachment with quoteLineItemId=${lineItemId}`);
       const [attachment] = await db.insert(quoteAttachments).values(attachmentData).returning();
+
+      // Best-effort self-check for Supabase-backed keys (non-blocking)
+      if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
+        res.on('finish', () => {
+          scheduleSupabaseObjectSelfCheck({
+            bucket: 'titan-private',
+            path: attachment.fileUrl,
+            context: { attachmentType: 'quote', quoteId, lineItemId, attachmentId: attachment.id },
+          });
+        });
+      }
       
       console.log(`[LineItemFiles:POST] Saved attachment storageProvider=${attachment.storageProvider || 'none'} storageKey=${storageKey}`);
       console.log(`[LineItemFiles:POST] Created attachment id=${attachment.id}, quoteLineItemId=${attachment.quoteLineItemId}`);
@@ -7558,6 +7829,123 @@ export async function registerRoutes(app: Express): Promise<Server> {
           includeThumbnails,
         });
 
+        // If thumbnails are requested, return a single previewThumbnailUrl per order.
+        // Rule (per spec): pick the newest LINE-ITEM attachment per order.
+        // - If thumbnail_relative_path exists -> generate a signed thumbnail URL.
+        // - Else if preview_key exists -> generate a signed preview URL via enrichAttachmentWithUrls.
+        // This avoids client-side URL construction and avoids returning attachment arrays in list.
+        if (includeThumbnails && result?.items?.length) {
+          try {
+            const orderIds = result.items.map((o: any) => o.id).filter(Boolean);
+            if (orderIds.length) {
+              const previewCandidates = await db
+                .select({
+                  orderId: orderAttachments.orderId,
+                  id: orderAttachments.id,
+                  fileUrl: orderAttachments.fileUrl,
+                  storageProvider: orderAttachments.storageProvider,
+                  thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+                  thumbKey: orderAttachments.thumbKey,
+                  previewKey: orderAttachments.previewKey,
+                  mimeType: orderAttachments.mimeType,
+                  fileName: orderAttachments.fileName,
+                  originalFilename: orderAttachments.originalFilename,
+                  createdAt: orderAttachments.createdAt,
+                })
+                .from(orderAttachments)
+                .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+                .where(
+                  and(
+                    inArray(orderAttachments.orderId, orderIds),
+                    eq(orders.organizationId, organizationId),
+                    isNotNull(orderAttachments.orderLineItemId),
+                  )
+                )
+                .orderBy(desc(orderAttachments.createdAt));
+
+              const logOnce = createRequestLogOnce();
+              const bestByOrderId: Record<string, any> = {};
+              for (const row of previewCandidates) {
+                const orderId = row.orderId as string;
+                if (!bestByOrderId[orderId]) {
+                  bestByOrderId[orderId] = row;
+                }
+              }
+
+              const previewUrlByOrderId: Record<string, string | null> = {};
+
+              for (const orderId of Object.keys(bestByOrderId)) {
+                const att = bestByOrderId[orderId];
+                const supabase = isSupabaseConfigured() ? new SupabaseStorageService() : null;
+
+                // 1) thumbnail_relative_path -> signed URL
+                const rawThumbRel = (att.thumbnailRelativePath ?? null) as string | null;
+                let previewThumbnailUrl: string | null = null;
+                if (rawThumbRel) {
+                  const raw = rawThumbRel.toString();
+                  const isHttp = raw.startsWith('http://') || raw.startsWith('https://');
+                  const looksLikeSupabaseObjectUrl = raw.includes('/storage/v1/object/');
+
+                  if (isHttp) {
+                    // Never return raw /storage/v1/object/* URLs; re-sign if possible.
+                    if (supabase && looksLikeSupabaseObjectUrl) {
+                      try {
+                        previewThumbnailUrl = await supabase.getSignedDownloadUrl(raw, 3600);
+                      } catch {
+                        previewThumbnailUrl = null;
+                      }
+                    } else {
+                      previewThumbnailUrl = raw;
+                    }
+                  } else if ((att.storageProvider ?? null) === 'local') {
+                    previewThumbnailUrl = `/objects/${raw}`;
+                  } else if (supabase && (att.storageProvider ?? null) === 'supabase') {
+                    try {
+                      previewThumbnailUrl = await supabase.getSignedDownloadUrl(raw, 3600);
+                    } catch {
+                      previewThumbnailUrl = null;
+                    }
+                  } else {
+                    previewThumbnailUrl = `/objects/${raw}`;
+                  }
+                }
+
+                // 2) else if preview_key -> signed previewUrl via enrichAttachmentWithUrls
+                if (!previewThumbnailUrl && att.previewKey) {
+                  const enriched = await enrichAttachmentWithUrls(att, { logOnce });
+                  previewThumbnailUrl = (enriched?.previewUrl as string | null) || null;
+                }
+
+                previewUrlByOrderId[orderId] = previewThumbnailUrl;
+              }
+
+              result.items = result.items.map((o: any) => ({
+                ...o,
+                previewThumbnailUrl: previewUrlByOrderId[o.id] ?? null,
+                // Back-compat: keep existing field aligned.
+                previewImageUrl: previewUrlByOrderId[o.id] ?? null,
+              }));
+            }
+          } catch (error: any) {
+            // Fail-soft: list should still render even if signing fails.
+            console.warn('[OrdersList] Failed to enrich previewThumbnailUrl (fail-soft):', error?.message || String(error));
+            result.items = result.items.map((o: any) => ({
+              ...o,
+              previewThumbnailUrl: null,
+              previewImageUrl: null,
+            }));
+          }
+        }
+
+        // Contract: always include previewThumbnailUrl; null when not available/requested.
+        if (!includeThumbnails && result?.items?.length) {
+          result.items = result.items.map((o: any) => ({
+            ...o,
+            previewThumbnailUrl: null,
+            previewImageUrl: null,
+          }));
+        }
+
         return res.json(result);
       }
 
@@ -7570,8 +7958,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         startDate: req.query.startDate ? new Date(req.query.startDate as string) : undefined,
         endDate: req.query.endDate ? new Date(req.query.endDate as string) : undefined,
       };
-      const orders = await storage.getAllOrders(organizationId, filters);
-      res.json(orders);
+      const ordersList = await storage.getAllOrders(organizationId, filters);
+      res.json(ordersList);
     } catch (error) {
       console.error("Error fetching orders:", error);
       res.status(500).json({ message: "Failed to fetch orders" });
@@ -8949,7 +9337,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(desc(orderAttachments.createdAt));
 
       // Enrich with URLs (same pattern as quotes) using local helper
-      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      const logOnce = createRequestLogOnce();
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
       return res.json({ success: true, data: enrichedFiles });
     } catch (error) {
       console.error("[OrderAttachments:GET] Error:", error);
@@ -9919,12 +10308,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Enrich each attachment with signed URLs using the shared helper
       // This handles originalUrl, thumbUrl (if thumbKey exists), and previewUrl (if previewKey exists)
-      const enrichedFiles = await Promise.all(files.map(enrichAttachmentWithUrls));
+      const logOnce = createRequestLogOnce();
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
       
       res.json({ success: true, data: enrichedFiles });
     } catch (error) {
       console.error('Error fetching order files:', error);
       res.status(500).json({ error: 'Failed to fetch files' });
+    }
+  });
+
+  // List order line-item files (used by LineItemThumbnail for Orders)
+  app.get('/api/orders/:orderId/line-items/:lineItemId/files', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { orderId, lineItemId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      // Validate order belongs to org (prevents cross-tenant access)
+      const [order] = await db
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!order) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+
+      // Validate line item belongs to order
+      const [li] = await db
+        .select({ id: orderLineItems.id })
+        .from(orderLineItems)
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)))
+        .limit(1);
+
+      if (!li) {
+        return res.status(404).json({ error: 'Line item not found' });
+      }
+
+      const files = await db
+        .select()
+        .from(orderAttachments)
+        .where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId)))
+        .orderBy(desc(orderAttachments.createdAt));
+
+      const logOnce = createRequestLogOnce();
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+
+      return res.json({ success: true, data: enrichedFiles });
+    } catch (error) {
+      console.error('[OrdersLineItemFiles:GET] Error:', error);
+      return res.status(500).json({ error: 'Failed to fetch order line item files' });
     }
   });
 
@@ -10019,13 +10454,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(400).json({ error: 'fileUrl is required for legacy uploads' });
         }
         const resolvedFileName = (fileName || originalFilename) as string;
+
+        const bucketName = 'titan-private';
+
+        // If client passes a Supabase signed/public URL, extract the stable object key and
+        // persist storageProvider='supabase' + fileUrl='uploads/...'. Never store time-limited URLs.
+        const supabaseKeyFromUrl =
+          isSupabaseConfigured() && fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))
+            ? tryExtractSupabaseObjectKeyFromUrl(fileUrl, bucketName)
+            : null;
+
+        // Determine storage provider for legacy uploads
+        // - http(s): external legacy URL
+        // - Supabase object key: typically starts with "uploads/" (or bucket-prefixed)
+        // - Otherwise: local storage key
+        let storageProvider: string | undefined;
+        if (supabaseKeyFromUrl) {
+          storageProvider = 'supabase';
+        } else if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+          storageProvider = undefined;
+        } else if (
+          isSupabaseConfigured() &&
+          fileUrl &&
+          (fileUrl.startsWith('uploads/') || fileUrl.startsWith('titan-private/uploads/'))
+        ) {
+          storageProvider = 'supabase';
+        } else {
+          storageProvider = 'local';
+        }
+
+        const stableFileKey =
+          storageProvider === 'supabase'
+            ? (supabaseKeyFromUrl || normalizeObjectKeyForDb(fileUrl))
+            : fileUrl;
+
         attachmentData = {
           ...attachmentData,
           fileName: resolvedFileName,
-          fileUrl,
+          fileUrl: stableFileKey,
           fileSize: fileSize || null,
           mimeType: mimeType || null,
-          thumbnailUrl: thumbnailUrl || null,
+          // Never store legacy thumbnailUrl for internal providers (Supabase/local).
+          // Thumbnails should be served via thumbUrl/previewUrl generated by the API.
+          thumbnailUrl: storageProvider ? null : (thumbnailUrl || null),
+          storageProvider,
+          bucket: bucketName,
         };
       }
 
@@ -10053,6 +10526,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           checksum: orderAttachments.checksum,
           thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
           thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
+          thumbStatus: orderAttachments.thumbStatus,
+          thumbKey: orderAttachments.thumbKey,
+          previewKey: orderAttachments.previewKey,
+          thumbError: orderAttachments.thumbError,
           role: orderAttachments.role,
           side: orderAttachments.side,
           isPrimary: orderAttachments.isPrimary,
@@ -10060,6 +10537,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           createdAt: orderAttachments.createdAt,
           updatedAt: orderAttachments.updatedAt,
         });
+
+      // Best-effort self-check for Supabase-backed keys (non-blocking)
+      if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
+        res.on('finish', () => {
+          scheduleSupabaseObjectSelfCheck({
+            bucket: 'titan-private',
+            path: attachment.fileUrl,
+            context: {
+              attachmentType: 'order',
+              orderId: req.params.id,
+              orderLineItemId: attachment.orderLineItemId,
+              attachmentId: attachment.id,
+            },
+          });
+        });
+      }
 
       await storage.createOrderAuditLog({
         orderId: req.params.id,
@@ -10100,6 +10593,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       } else if (isSupportedImage && (!hasStorageProvider || !isNotHttpUrl)) {
         console.log(`[OrderFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+      }
+
+      // Fire-and-forget PDF thumbnail generation for PDFs (non-blocking)
+      // Orders don't have pageCount fields; we only generate thumbKey/thumbStatus.
+      const fileNameForPdf = ((attachment.originalFilename ?? attachment.fileName ?? '') as string).toLowerCase();
+      const isPdf = (attachment.mimeType ?? '').toLowerCase().includes('pdf') || fileNameForPdf.endsWith('.pdf');
+      const normalizedStorageProvider =
+        (attachment.storageProvider as any) ??
+        (isSupabaseConfigured() && attachment.fileUrl?.startsWith('uploads/') ? 'supabase' : null);
+
+      if (isPdf && normalizedStorageProvider && isNotHttpUrl && attachment.fileUrl) {
+        // Set pending status so UI can show it's processing
+        await db
+          .update(orderAttachments)
+          .set({
+            thumbStatus: 'thumb_pending',
+            thumbError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(orderAttachments.id, attachment.id));
+
+        res.on('finish', () => {
+          setImmediate(() => {
+            void (async () => {
+              try {
+                const { processPdfAttachmentDerivedData } = await import('./services/pdfProcessing');
+                await processPdfAttachmentDerivedData({
+                  orgId: organizationId,
+                  attachmentId: attachment.id,
+                  storageKey: attachment.fileUrl,
+                  storageProvider: normalizedStorageProvider,
+                  mimeType: attachment.mimeType || null,
+                  attachmentType: 'order',
+                });
+              } catch (error: any) {
+                console.error(`[OrderFiles:POST] PDF kickoff failed for ${attachment.id}:`, error);
+              }
+            })();
+          });
+        });
       }
 
       res.json({ success: true, data: attachment });

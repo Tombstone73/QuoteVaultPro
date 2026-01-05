@@ -4,6 +4,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { syncUsersToCustomers } from "./db/syncUsersToCustomers";
 import { startSyncWorker } from "./workers/syncProcessor";
+import { startThumbnailWorker } from "./workers/thumbnailWorker";
 
 const app = express();
 
@@ -111,6 +112,13 @@ process.on('uncaughtException', (error) => {
     server.listen(listenOptions, () => {
       log(`serving on port ${port}`);
       console.log('[Server] Ready to accept connections');
+
+      // Start attachment thumbnail worker (fail-soft)
+      try {
+        startThumbnailWorker();
+      } catch (error) {
+        console.error('[Server] Thumbnail worker failed to start:', error);
+      }
       
       // Start QuickBooks sync worker
       if (process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET) {

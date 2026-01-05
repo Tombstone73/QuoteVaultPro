@@ -132,6 +132,7 @@ export class OrdersRepository {
             }
         }
 
+        // Total attachment count per order (do NOT require thumb_ready)
         const countQuery = await this.dbInstance
             .select({
                 orderId: orderAttachments.orderId,
@@ -142,8 +143,7 @@ export class OrdersRepository {
             .where(
                 and(
                     inArray(orderAttachments.orderId, orderIds),
-                    eq(orders.organizationId, organizationId),
-                    sql`${orderAttachments.thumbStatus} = 'thumb_ready'`
+                    eq(orders.organizationId, organizationId)
                 )
             )
             .groupBy(orderAttachments.orderId);
@@ -153,8 +153,10 @@ export class OrdersRepository {
             countMap.set(row.orderId, row.count);
         }
 
-        for (const orderIdKey of Array.from(groupedAttachments.keys())) {
-            const attachments = groupedAttachments.get(orderIdKey)!;
+        // Populate previewData for all requested orders.
+        // Thumbnails are only from thumb_ready attachments, but totalCount is ALL attachments.
+        for (const orderIdKey of orderIds) {
+            const attachments = groupedAttachments.get(orderIdKey) || [];
             const thumbnails = attachments
                 .map((att) => att.previewKey || att.thumbKey)
                 .filter((key: string | null): key is string => !!key);

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText } from "lucide-react";
-import { isValidHttpUrl } from "@/lib/utils";
+import { getAttachmentThumbnailUrl, isPdfAttachment } from "@/lib/attachments";
 
 type LineItemThumbnailProps = {
   /** Either quoteId (for quotes) or orderId (for orders) */
@@ -21,26 +21,14 @@ type AttachmentData = {
   fileName?: string;
   mimeType?: string | null;
   thumbUrl?: string | null;
+  previewUrl?: string | null;
   originalUrl?: string | null;
+  thumbnailUrl?: string | null;
   pages?: Array<{ thumbUrl?: string | null }>;
 };
 
-/**
- * Extract PDF thumbnail URL from attachment data
- */
-function getPdfThumbUrl(attachment: AttachmentData): string | null {
-  if (!attachment) return null;
-  // Prefer first page thumbnail
-  const firstPage = attachment.pages?.[0];
-  if (firstPage?.thumbUrl && isValidHttpUrl(firstPage.thumbUrl)) {
-    return firstPage.thumbUrl;
-  }
-  // Fallback to attachment-level thumbUrl
-  if (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) {
-    return attachment.thumbUrl;
-  }
-  return null;
-}
+// DEV-only: de-dupe missing-thumbnail logs
+const __missingBestUrlLoggedIds = new Set<string>();
 
 /**
  * Reusable line item thumbnail component for Quote and Order lists.
@@ -54,6 +42,14 @@ export function LineItemThumbnail({
   placeholderOnly = false
 }: LineItemThumbnailProps) {
   const [imageError, setImageError] = useState(false);
+
+  const isRenderableUrl = (value: unknown): value is string => {
+    if (typeof value !== "string") return false;
+    if (value.startsWith("http://") || value.startsWith("https://")) return true;
+    // Local storage proxy
+    if (value.startsWith("/objects/")) return true;
+    return false;
+  };
 
   // Build API path based on parent type
   const filesApiPath = parentId
@@ -81,7 +77,30 @@ export function LineItemThumbnail({
 
   // Use provided attachments if available, otherwise use fetched
   const attachments = providedAttachments ?? fetchedAttachments;
-  const first = attachments[0];
+
+  // Orders: tolerate more field name variants (some APIs return thumbnailUrl but not thumbUrl/previewUrl)
+  // Quotes: keep existing behavior via getAttachmentThumbnailUrl() to avoid regressions.
+  const getBestUrl = (att: AttachmentData | null | undefined): string | null => {
+    if (!att) return null;
+
+    if (parentType !== 'order') {
+      return getAttachmentThumbnailUrl(att);
+    }
+
+    // Orders: ONLY use URLs returned by the API (signed URLs or /objects proxy).
+    // Prefer derivative URLs first.
+    if (isRenderableUrl(att.thumbUrl)) return att.thumbUrl;
+    if (isRenderableUrl(att.previewUrl)) return att.previewUrl;
+    if (isRenderableUrl(att.originalUrl)) return att.originalUrl;
+    // Legacy field (avoid relative '/storage/v1/object/...')
+    if (isRenderableUrl(att.thumbnailUrl)) return att.thumbnailUrl;
+    // PDFs sometimes return page thumbs
+    const page0 = att.pages?.[0]?.thumbUrl ?? null;
+    if (isRenderableUrl(page0)) return page0;
+    return null;
+  };
+
+  const first = attachments.find((a) => !!getBestUrl(a)) ?? attachments[0] ?? null;
 
   // No attachments - show placeholder
   if (!first) {
@@ -92,31 +111,40 @@ export function LineItemThumbnail({
     );
   }
 
-  const isImage = first?.mimeType?.startsWith?.("image/");
-  const isPdf =
-    first?.mimeType === "application/pdf" ||
-    (first?.fileName || "").toLowerCase().endsWith(".pdf");
+  const isPdf = isPdfAttachment(first);
+  const imageUrl = !imageError ? getBestUrl(first) : null;
 
-  // Determine image URL - ONLY use signed URLs from server
-  let imageUrl: string | null = null;
-  if (!imageError && first) {
-    if (isImage) {
-      // Only use signed URLs - thumbUrl or originalUrl (both from server)
-      const candidateUrl = first?.thumbUrl || first?.originalUrl;
-      if (
-        candidateUrl &&
-        typeof candidateUrl === "string" &&
-        candidateUrl.startsWith("http")
-      ) {
-        imageUrl = candidateUrl;
-      }
-    } else if (isPdf) {
-      imageUrl = getPdfThumbUrl(first);
-    }
+  if (import.meta.env.DEV && first?.id && !imageUrl && !__missingBestUrlLoggedIds.has(first.id)) {
+    __missingBestUrlLoggedIds.add(first.id);
+    // eslint-disable-next-line no-console
+    console.log('[OrderLineItemThumbnail] missing bestUrl', {
+      filesApiPath,
+      id: first.id,
+      thumbnailUrl: (first as any)?.thumbnailUrl ?? null,
+      thumbUrl: (first as any)?.thumbUrl ?? null,
+      previewUrl: (first as any)?.previewUrl ?? null,
+      originalUrl: (first as any)?.originalUrl ?? null,
+      thumbKey: (first as any)?.thumbKey ?? null,
+      previewKey: (first as any)?.previewKey ?? null,
+      fileUrl: (first as any)?.fileUrl ?? null,
+      pages0ThumbUrl: (first as any)?.pages?.[0]?.thumbUrl ?? null,
+    });
   }
 
+  const devTitle =
+    import.meta.env.DEV && !imageUrl
+      ? `No preview URL found. fields: previewUrl=${String((first as any)?.previewUrl ?? "")}, thumbUrl=${String(
+          (first as any)?.thumbUrl ?? ""
+        )}, originalUrl=${String((first as any)?.originalUrl ?? "")}, thumbnailUrl=${String(
+          (first as any)?.thumbnailUrl ?? ""
+        )}, pages0ThumbUrl=${String((first as any)?.pages?.[0]?.thumbUrl ?? "")}`
+      : undefined;
+
   return (
-    <div className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0">
+    <div
+      className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0"
+      title={devTitle}
+    >
       {imageUrl ? (
         <img
           src={imageUrl}

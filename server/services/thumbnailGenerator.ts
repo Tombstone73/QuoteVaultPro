@@ -11,39 +11,34 @@
  */
 
 import { db } from "../db";
-import { quoteAttachments } from "@shared/schema";
+import { orderAttachments, quoteAttachments } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { readFile } from "../utils/fileStorage";
 import path from "path";
 import * as fsPromises from "fs/promises";
+import { createRequire } from "module";
 
-// Lazy-load sharp with graceful failure
-// Use 'any' type to avoid TypeScript errors when sharp is not installed
+// Load sharp once at module init (ESM-safe). Never throw: thumbnails stay fail-soft.
+// Use 'any' type to avoid TypeScript errors when sharp is not installed.
+const require = createRequire(import.meta.url);
 let sharpModule: any = null;
 let sharpAvailable = false;
-let sharpWarningLogged = false;
+
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const sharpImport = require('sharp');
+  sharpModule = sharpImport?.default ?? sharpImport;
+  sharpAvailable = true;
+  console.log('[ThumbnailGenerator] sharp loaded OK');
+} catch (error) {
+  sharpModule = null;
+  sharpAvailable = false;
+  console.warn('[ThumbnailGenerator] sharp not installed/failed to load; thumbnails disabled. Error:', error);
+}
 
 export async function ensureSharp(): Promise<boolean> {
-  if (sharpModule !== null) {
-    return sharpAvailable;
-  }
-
-  try {
-    // Dynamic import using string to avoid TypeScript compile-time errors when sharp is not installed
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sharpImport = await Promise.resolve().then(() => require('sharp'));
-    sharpModule = sharpImport.default || sharpImport;
-    sharpAvailable = true;
-    return true;
-  } catch (error) {
-    sharpAvailable = false;
-    if (!sharpWarningLogged) {
-      console.warn('[ThumbnailGenerator] sharp unavailable; image thumbnails disabled. Error:', error);
-      sharpWarningLogged = true;
-    }
-    return false;
-  }
+  return sharpAvailable;
 }
 
 // Feature flag: Check if thumbnail generation is enabled
@@ -91,17 +86,17 @@ export function isSupportedImageType(mimeType: string | null | undefined, fileNa
 }
 
 /**
- * Generate storage key for thumbnail/preview from original fileKey
- * Format: {fileKey}.thumb.jpg or {fileKey}.preview.jpg
+ * Generate storage key for thumbnail/preview.
+ * Format: thumbs/{orgId}/{attachmentType}/{attachmentId}.{thumb|preview}.jpg
  */
-function generateDerivativeKey(fileKey: string, type: 'thumb' | 'preview'): string {
-  // If fileKey has extension, insert suffix before extension
-  const extMatch = fileKey.match(/^(.+)(\.[^.]+)$/);
-  if (extMatch) {
-    return `${extMatch[1]}.${type}.jpg`;
-  }
-  // Otherwise append suffix
-  return `${fileKey}.${type}.jpg`;
+function generateDerivativeKey(args: {
+  organizationId: string;
+  attachmentType: 'quote' | 'order';
+  attachmentId: string;
+  variant: 'thumb' | 'preview';
+}): string {
+  const { organizationId, attachmentType, attachmentId, variant } = args;
+  return `thumbs/${organizationId}/${attachmentType}/${attachmentId}.${variant}.jpg`;
 }
 
 /**
@@ -109,23 +104,63 @@ function generateDerivativeKey(fileKey: string, type: 'thumb' | 'preview'): stri
  */
 async function downloadOriginalFile(fileKey: string, storageProvider: string): Promise<Buffer | null> {
   try {
-    if (isSupabaseConfigured() && storageProvider !== 'local') {
-      // Supabase storage
+    if (isSupabaseConfigured() && storageProvider === 'supabase') {
+      // Supabase storage (preferred for supabase provider)
       const supabaseService = new SupabaseStorageService();
       const signedUrl = await supabaseService.getSignedDownloadUrl(fileKey, 3600);
       const response = await fetch(signedUrl);
       if (!response.ok) {
-        throw new Error(`Failed to download from Supabase: ${response.statusText}`);
+        throw new Error(`Failed to download from Supabase: status=${response.status} ${response.statusText}`);
       }
       const arrayBuffer = await response.arrayBuffer();
       return Buffer.from(arrayBuffer);
-    } else {
-      // Local file storage
-      const buffer = await readFile(fileKey);
-      return buffer;
     }
+
+    // Local file storage
+    const localBuffer = await readFile(fileKey);
+    if (localBuffer) return localBuffer;
+
+    // Fail-soft: some legacy rows may have storageProvider='local' but a Supabase-style key.
+    // If so, attempt Supabase download before giving up.
+    const looksLikeSupabaseKey =
+      fileKey.startsWith('uploads/') ||
+      fileKey.startsWith('titan-private/uploads/') ||
+      fileKey.includes('/storage/v1/object/');
+
+    if (isSupabaseConfigured() && looksLikeSupabaseKey) {
+      try {
+        const supabaseService = new SupabaseStorageService();
+        const signedUrl = await supabaseService.getSignedDownloadUrl(fileKey, 3600);
+        const response = await fetch(signedUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to download from Supabase: status=${response.status} ${response.statusText}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        console.warn(`[ThumbnailGenerator] Local read returned null; Supabase fallback succeeded for ${fileKey}`);
+        return Buffer.from(arrayBuffer);
+      } catch (error) {
+        console.warn(`[ThumbnailGenerator] Local read returned null; Supabase fallback failed for ${fileKey}:`, error);
+      }
+    }
+
+    console.error(`[ThumbnailGenerator] Local read returned null for ${fileKey} (storageProvider=${storageProvider})`);
+    return null;
   } catch (error) {
-    console.error(`[ThumbnailGenerator] Failed to download original file ${fileKey}:`, error);
+    // Fail-soft fallback: Some legacy order attachments may have local file keys but incorrect storageProvider.
+    // If Supabase download failed, try local read before giving up.
+    if (storageProvider === 'supabase') {
+      try {
+        const buffer = await readFile(fileKey);
+        if (buffer) {
+          console.warn(`[ThumbnailGenerator] Supabase download failed; local fallback succeeded for ${fileKey}`);
+          return buffer;
+        }
+      } catch {
+        // ignore and report original error below
+      }
+    }
+
+    console.error(`[ThumbnailGenerator] Failed to download original file ${fileKey} (storageProvider=${storageProvider}):`, error);
     return null;
   }
 }
@@ -177,33 +212,24 @@ export async function generateImageDerivatives(
   organizationId: string,
   fileName?: string | null
 ): Promise<void> {
-  // NOTE: Some deployments do not have derivative columns (e.g. order_attachments.thumb_key).
-  // Until schema parity is ensured, skip order attachment derivatives to avoid runtime SQL errors.
-  if (attachmentType === 'order') {
-    console.log(`[ThumbnailGenerator] Skipping ${attachmentId}: order derivatives disabled (schema mismatch protection)`);
-    return;
-  }
-
   // Early exit if sharp is unavailable
-  const hasSharp = await ensureSharp();
-  if (!hasSharp) {
-    console.log(`[ThumbnailGenerator] Skipping ${attachmentId}: sharp unavailable`);
-    return;
-  }
+  if (!sharpAvailable) return;
 
   try {
     // Load attachment row to check idempotency and get fileName if needed
+    const baseTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
+
     const [attachment] = await db
       .select({
-        id: quoteAttachments.id,
-        fileUrl: quoteAttachments.fileUrl,
-        fileName: quoteAttachments.fileName,
-        originalFilename: quoteAttachments.originalFilename,
-        thumbKey: quoteAttachments.thumbKey,
-        previewKey: quoteAttachments.previewKey,
+        id: baseTable.id,
+        fileUrl: baseTable.fileUrl,
+        fileName: baseTable.fileName,
+        originalFilename: baseTable.originalFilename,
+        thumbKey: baseTable.thumbKey,
+        previewKey: baseTable.previewKey,
       })
-      .from(quoteAttachments)
-      .where(eq(quoteAttachments.id, attachmentId))
+      .from(baseTable)
+      .where(eq(baseTable.id, attachmentId))
       .limit(1);
 
     if (!attachment) {
@@ -239,7 +265,7 @@ export async function generateImageDerivatives(
     }
 
     // Generate thumbnail (320px width, maintain aspect ratio)
-    const sharp = sharpModule.default || sharpModule;
+    const sharp = sharpModule;
     const thumbBuffer = await sharp(originalBuffer)
       .resize(320, undefined, {
         fit: 'inside',
@@ -258,8 +284,18 @@ export async function generateImageDerivatives(
       .toBuffer();
 
     // Generate storage keys
-    const thumbKey = generateDerivativeKey(fileKey, 'thumb');
-    const previewKey = generateDerivativeKey(fileKey, 'preview');
+    const thumbKey = generateDerivativeKey({
+      organizationId,
+      attachmentType,
+      attachmentId,
+      variant: 'thumb',
+    });
+    const previewKey = generateDerivativeKey({
+      organizationId,
+      attachmentType,
+      attachmentId,
+      variant: 'preview',
+    });
 
     // Upload both derivatives (all-or-nothing approach)
     const thumbUploaded = await uploadDerivativeFile(thumbKey, thumbBuffer, storageProvider, organizationId);
@@ -279,7 +315,7 @@ export async function generateImageDerivatives(
 
     // Update database with derivative keys (all-or-nothing)
     await db
-      .update(quoteAttachments)
+      .update(baseTable)
       .set({
         thumbKey,
         previewKey,
@@ -287,25 +323,23 @@ export async function generateImageDerivatives(
         thumbError: null,
         updatedAt: new Date(),
       })
-      .where(eq(quoteAttachments.id, attachmentId));
+      .where(eq(baseTable.id, attachmentId));
 
     console.log(`[ThumbnailGenerator] Successfully generated derivatives for ${attachmentId}`);
   } catch (error: any) {
     console.error(`[ThumbnailGenerator] Error generating derivatives for ${attachmentId}:`, error);
     
-    // Update database with error status (only for quote attachments, order attachments don't have thumbStatus)
+    // Update database with error status (fail-soft)
     try {
-      if (attachmentType === 'quote') {
-        await db
-          .update(quoteAttachments)
-          .set({
-            thumbStatus: 'thumb_failed',
-            thumbError: error.message?.substring(0, 500) || 'Thumbnail generation failed',
-            updatedAt: new Date(),
-          })
-          .where(eq(quoteAttachments.id, attachmentId));
-      }
-      // Order attachments don't have thumbStatus field, so we just log the error
+      const baseTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
+      await db
+        .update(baseTable)
+        .set({
+          thumbStatus: 'thumb_failed',
+          thumbError: error.message?.substring(0, 500) || 'Thumbnail generation failed',
+          updatedAt: new Date(),
+        })
+        .where(eq(baseTable.id, attachmentId));
     } catch (dbError) {
       console.error(`[ThumbnailGenerator] Failed to update error status for ${attachmentId}:`, dbError);
     }
