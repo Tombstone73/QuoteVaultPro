@@ -32,6 +32,7 @@ import { ProductOptionsPanel } from "@/features/quotes/editor/components/Product
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { getAttachmentDisplayName, getPdfPageCount, isPdfAttachment } from "@/lib/attachments";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
@@ -296,21 +297,6 @@ function OrderLineItemArtworkStrip({
 }) {
   if (files.length === 0) return null;
 
-  const getThumbnailUrl = (attachment: AttachmentForPreview): string | null => {
-    // Check thumbnailUrl first (works for all file types including PDF/PNG/JPG)
-    if (attachment.thumbnailUrl && isValidHttpUrl(attachment.thumbnailUrl)) return attachment.thumbnailUrl;
-    
-    // Fallback to PDF-specific thumbnail extraction
-    const isPdf = isPdfAttachment(attachment);
-    if (isPdf) return getPdfThumbUrl(attachment);
-
-    // Fallback to other preview URLs
-    if (attachment.previewUrl && isValidHttpUrl(attachment.previewUrl)) return attachment.previewUrl;
-    if (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) return attachment.thumbUrl;
-    if (attachment.originalUrl && isValidHttpUrl(attachment.originalUrl)) return attachment.originalUrl;
-    return null;
-  };
-
   const getFileIcon = (mimeType: string | null | undefined) => {
     if (!mimeType) return FileText;
     if (mimeType.startsWith("image/")) return Image;
@@ -321,7 +307,7 @@ function OrderLineItemArtworkStrip({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {files.map((attachment) => {
-        const thumbUrl = getThumbnailUrl(attachment);
+        const thumbSrc = getThumbSrc(attachment);
         const FileIcon = getFileIcon(attachment.mimeType);
         const hasPreviewUrl = attachment.previewUrl && isValidHttpUrl(attachment.previewUrl);
         const hasOriginalUrl = attachment.originalUrl && isValidHttpUrl(attachment.originalUrl);
@@ -350,9 +336,9 @@ function OrderLineItemArtworkStrip({
               title={fileName}
               aria-label={canPreview ? `Preview ${fileName}` : `${fileName} (no preview available)`}
             >
-              {thumbUrl ? (
+              {thumbSrc ? (
                 <img
-                  src={thumbUrl}
+                  src={thumbSrc}
                   alt={fileName}
                   title={fileName}
                   className="w-full h-full object-cover pointer-events-none"

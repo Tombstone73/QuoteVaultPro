@@ -4,6 +4,7 @@ import { Download, FileText, Loader2 } from "lucide-react";
 import { getAttachmentDisplayName, isPdfAttachment } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { isValidHttpUrl } from "@/lib/utils";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 
 type AttachmentPage = {
   id: string;
@@ -54,56 +55,15 @@ export function AttachmentViewerDialog({
 }: AttachmentViewerDialogProps) {
   if (!attachment) return null;
 
+  // Unified thumbnail logic - check for any thumbnail URL
+  const thumbSrc = getThumbSrc(attachment);
+  const hasThumb = Boolean(thumbSrc);
+
+  // File type checks for fallback icons
   const isPdf = isPdfAttachment(attachment);
-  const isImage = attachment.mimeType?.startsWith("image/") ?? false;
-  const isTiff =
-    /image\/tiff/i.test(attachment.mimeType ?? "") ||
-    /\.(tif|tiff)$/i.test(attachment.fileName ?? "");
-  const isAi =
-    /\.(ai)$/i.test(attachment.fileName ?? "") ||
-    /(illustrator|postscript)/i.test(attachment.mimeType ?? "");
-  const isPsd =
-    /\.(psd)$/i.test(attachment.fileName ?? "") ||
-    /(photoshop|x-photoshop)/i.test(attachment.mimeType ?? "");
-
-  const isRenderableImageUrl = (url: string | null): url is string => {
-    if (typeof url !== "string" || !isValidHttpUrl(url)) return false;
-    const urlWithoutQuery = url.split("?")[0]?.split("#")[0] ?? "";
-    return /\.(png|jpe?g|webp|gif)$/i.test(urlWithoutQuery);
-  };
-
+  
   const originalUrl =
     attachment.originalUrl ?? (attachment as any).originalURL ?? (attachment as any).url ?? attachment.fileUrl ?? null;
-  const previewUrl = attachment.previewUrl ?? null;
-
-  const imagePreviewUrl =
-    (typeof previewUrl === "string" && isValidHttpUrl(previewUrl) ? previewUrl : null) ??
-    (typeof originalUrl === "string" && isValidHttpUrl(originalUrl) ? originalUrl : null);
-
-  const tiffPreviewUrl =
-    (isRenderableImageUrl(previewUrl) ? previewUrl : null) ??
-    (isRenderableImageUrl(attachment.thumbUrl ?? null) ? (attachment.thumbUrl as string) : null);
-
-  const aiPsdPreviewUrl =
-    (isRenderableImageUrl(previewUrl) ? previewUrl : null) ??
-    (isRenderableImageUrl(attachment.thumbUrl ?? null) ? (attachment.thumbUrl as string) : null);
-
-  const modalPreviewUrl = isPdf
-    ? null
-    : isTiff
-    ? tiffPreviewUrl
-    : isAi || isPsd
-    ? aiPsdPreviewUrl
-    : isImage
-    ? imagePreviewUrl
-    : null;
-
-  const hasValidPreview = typeof modalPreviewUrl === "string" && isValidHttpUrl(modalPreviewUrl);
-  const pdfThumbUrl =
-    attachment.pages?.[0]?.thumbUrl ??
-    attachment.thumbUrl ??
-    null;
-  const hasPdfThumb = isPdf && typeof pdfThumbUrl === "string" && isValidHttpUrl(pdfThumbUrl);
   const hasValidOriginal = typeof originalUrl === "string" && isValidHttpUrl(originalUrl);
   const fileName = getAttachmentDisplayName(attachment);
 
@@ -148,34 +108,10 @@ export function AttachmentViewerDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          {isPdf ? (
-            hasPdfThumb ? (
-              <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                <img
-                  src={pdfThumbUrl!}
-                  alt={fileName}
-                  className="max-w-full max-h-[60vh] object-contain"
-                />
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                <FileText className="w-16 h-16 mb-4 opacity-50" />
-                <p className="text-sm mb-4">PDF preview not available</p>
-                {hasValidOriginal && (
-                  <div className="flex flex-col items-center gap-1">
-                    <Button onClick={handleDownloadClick} variant="outline">
-                      <Download className="w-4 h-4 mr-2" />
-                      Download PDF
-                    </Button>
-                    <span className="text-xs text-muted-foreground">Downloads original file</span>
-                  </div>
-                )}
-              </div>
-            )
-          ) : hasValidPreview ? (
+          {hasThumb ? (
             <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-              <img 
-                src={modalPreviewUrl!} 
+              <img
+                src={thumbSrc!}
                 alt={fileName}
                 className="max-w-full max-h-[60vh] object-contain"
               />
@@ -183,7 +119,16 @@ export function AttachmentViewerDialog({
           ) : (
             <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
               <FileText className="w-16 h-16 mb-4 opacity-50" />
-              <p className="text-sm">Preview not available for this file</p>
+              <p className="text-sm mb-4">{isPdf ? 'PDF' : 'File'} preview not available</p>
+              {hasValidOriginal && (
+                <div className="flex flex-col items-center gap-1">
+                  <Button onClick={handleDownloadClick} variant="outline">
+                    <Download className="w-4 h-4 mr-2" />
+                    Download {isPdf ? 'PDF' : 'file'}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">Downloads original file</span>
+                </div>
+              )}
             </div>
           )}
           

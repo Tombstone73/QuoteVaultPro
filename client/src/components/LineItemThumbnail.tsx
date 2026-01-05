@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText } from "lucide-react";
-import { getAttachmentThumbnailUrl, isPdfAttachment } from "@/lib/attachments";
+import { isPdfAttachment } from "@/lib/attachments";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 
 type LineItemThumbnailProps = {
   /** Either quoteId (for quotes) or orderId (for orders) */
@@ -78,29 +79,8 @@ export function LineItemThumbnail({
   // Use provided attachments if available, otherwise use fetched
   const attachments = providedAttachments ?? fetchedAttachments;
 
-  // Orders: tolerate more field name variants (some APIs return thumbnailUrl but not thumbUrl/previewUrl)
-  // Quotes: keep existing behavior via getAttachmentThumbnailUrl() to avoid regressions.
-  const getBestUrl = (att: AttachmentData | null | undefined): string | null => {
-    if (!att) return null;
-
-    if (parentType !== 'order') {
-      return getAttachmentThumbnailUrl(att);
-    }
-
-    // Orders: ONLY use URLs returned by the API (signed URLs or /objects proxy).
-    // Prefer derivative URLs first.
-    if (isRenderableUrl(att.thumbUrl)) return att.thumbUrl;
-    if (isRenderableUrl(att.previewUrl)) return att.previewUrl;
-    if (isRenderableUrl(att.originalUrl)) return att.originalUrl;
-    // Legacy field (avoid relative '/storage/v1/object/...')
-    if (isRenderableUrl(att.thumbnailUrl)) return att.thumbnailUrl;
-    // PDFs sometimes return page thumbs
-    const page0 = att.pages?.[0]?.thumbUrl ?? null;
-    if (isRenderableUrl(page0)) return page0;
-    return null;
-  };
-
-  const first = attachments.find((a) => !!getBestUrl(a)) ?? attachments[0] ?? null;
+  // Find first attachment with a thumbnail URL (using unified helper)
+  const first = attachments.find((a) => !!getThumbSrc(a)) ?? attachments[0] ?? null;
 
   // No attachments - show placeholder
   if (!first) {
@@ -112,9 +92,9 @@ export function LineItemThumbnail({
   }
 
   const isPdf = isPdfAttachment(first);
-  const imageUrl = !imageError ? getBestUrl(first) : null;
+  const thumbSrc = !imageError ? getThumbSrc(first) : null;
 
-  if (import.meta.env.DEV && first?.id && !imageUrl && !__missingBestUrlLoggedIds.has(first.id)) {
+  if (import.meta.env.DEV && first?.id && !thumbSrc && !__missingBestUrlLoggedIds.has(first.id)) {
     __missingBestUrlLoggedIds.add(first.id);
     // eslint-disable-next-line no-console
     console.log('[OrderLineItemThumbnail] missing bestUrl', {
@@ -132,12 +112,10 @@ export function LineItemThumbnail({
   }
 
   const devTitle =
-    import.meta.env.DEV && !imageUrl
+    import.meta.env.DEV && !thumbSrc
       ? `No preview URL found. fields: previewUrl=${String((first as any)?.previewUrl ?? "")}, thumbUrl=${String(
           (first as any)?.thumbUrl ?? ""
-        )}, originalUrl=${String((first as any)?.originalUrl ?? "")}, thumbnailUrl=${String(
-          (first as any)?.thumbnailUrl ?? ""
-        )}, pages0ThumbUrl=${String((first as any)?.pages?.[0]?.thumbUrl ?? "")}`
+        )}, originalUrl=${String((first as any)?.originalUrl ?? "")}`
       : undefined;
 
   return (
@@ -145,9 +123,9 @@ export function LineItemThumbnail({
       className="h-11 w-11 rounded-md border border-border/60 bg-muted/30 overflow-hidden shrink-0"
       title={devTitle}
     >
-      {imageUrl ? (
+      {thumbSrc ? (
         <img
-          src={imageUrl}
+          src={thumbSrc}
           alt=""
           className="h-full w-full object-cover"
           onError={() => setImageError(true)}
