@@ -4364,8 +4364,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const logOnce = createRequestLogOnce();
       const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
 
-      console.log(`[LineItemFiles:GET] Found ${files.length} files for line item ${lineItemId}`);
-      res.json({ success: true, data: enrichedFiles });
+      // PHASE 2: Include linked assets with enriched URLs
+      const { assetRepository } = await import('./services/assets/AssetRepository');
+      const { enrichAssetsWithRoles } = await import('./services/assets/enrichAssetWithUrls');
+      const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'quote_line_item', lineItemId);
+      const enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+
+      console.log(`[LineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
+      res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });
     } catch (error) {
       console.error("[LineItemFiles:GET] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });
@@ -4515,6 +4521,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[LineItemFiles:POST] Saved attachment storageProvider=${attachment.storageProvider || 'none'} storageKey=${storageKey}`);
       console.log(`[LineItemFiles:POST] Created attachment id=${attachment.id}, quoteLineItemId=${attachment.quoteLineItemId}`);
+
+      // PHASE 2: Create asset + link (fail-soft: errors logged but don't block response)
+      try {
+        const { assetRepository } = await import('./services/assets/AssetRepository');
+        const asset = await assetRepository.createAsset(organizationId, {
+          fileKey: attachment.fileUrl, // Storage key
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType || undefined,
+          sizeBytes: attachment.fileSize || undefined,
+        });
+        await assetRepository.linkAsset(organizationId, asset.id, 'quote_line_item', lineItemId, 'primary');
+        console.log(`[LineItemFiles:POST] Created asset ${asset.id} + linked to quote_line_item ${lineItemId}`);
+      } catch (assetError) {
+        console.error(`[LineItemFiles:POST] Asset creation failed (non-blocking):`, assetError);
+      }
 
       // Robust PDF detection using both mimeType and filename
       const attachmentFileName =
