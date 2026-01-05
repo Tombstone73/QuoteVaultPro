@@ -1292,6 +1292,22 @@ export async function registerOrderRoutes(
                 description: description || null,
                 storageProvider: fileUrl.startsWith('http') ? undefined : 'local',
             }).returning();
+
+            // PHASE 2: Create asset + link to order (fail-soft)
+            try {
+                const { assetRepository } = await import('../services/assets/AssetRepository');
+                const asset = await assetRepository.createAsset(organizationId, {
+                    fileKey: fileUrl,
+                    fileName: fileName,
+                    mimeType: mimeType || undefined,
+                    sizeBytes: fileSize || undefined,
+                });
+                await assetRepository.linkAsset(organizationId, asset.id, 'order', orderId, 'attachment');
+                console.log(`[OrderAttachments:POST] Created asset ${asset.id} + linked to order ${orderId}`);
+            } catch (assetError) {
+                console.error(`[OrderAttachments:POST] Asset creation failed (non-blocking):`, assetError);
+            }
+
             return res.json({ success: true, data: attachment });
         } catch (error) {
             console.error("[OrderAttachments:POST] Error:", error);
@@ -1930,12 +1946,27 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.get('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
+    app.get('/api/orders/:id/files', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
+            const organizationId = getRequestOrganizationId(req);
             const files = await storage.listOrderFiles(req.params.id);
             const logOnce = createRequestLogOnce();
             const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
-            res.json({ success: true, data: enrichedFiles });
+
+            // PHASE 2: Include linked assets for order-level attachments
+            let enrichedAssets: any[] = [];
+            if (organizationId) {
+                try {
+                    const { assetRepository } = await import('../services/assets/AssetRepository');
+                    const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
+                    const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order', req.params.id);
+                    enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+                } catch (assetError) {
+                    console.error('[OrderFiles:GET] Asset enrichment failed:', assetError);
+                }
+            }
+
+            res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });
         } catch (error) {
             console.error('Error fetching order files:', error);
             res.status(500).json({ error: 'Failed to fetch files' });

@@ -58,6 +58,8 @@ const ORDER_ATTACHMENT_SAFE_SELECT = {
     checksum: orderAttachments.checksum,
     thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
     thumbnailGeneratedAt: orderAttachments.thumbnailGeneratedAt,
+    thumbKey: orderAttachments.thumbKey, // Required for thumbnail URL enrichment
+    previewKey: orderAttachments.previewKey, // Required for preview URL enrichment
     role: orderAttachments.role,
     side: orderAttachments.side,
     isPrimary: orderAttachments.isPrimary,
@@ -561,7 +563,7 @@ export class OrdersRepository {
                 }
             }
 
-            const lineItemsData = data.lineItems.map((li) => {
+            const lineItemsData = data.lineItems.map((li, index) => {
                 const unitRaw = (li as any).unitPrice ?? (li as any).unit_price;
                 const totalRaw =
                     (li as any).totalPrice ??
@@ -599,6 +601,7 @@ export class OrdersRepository {
                     specsJson: (li as any).specsJson || null,
                     selectedOptions: selectedOptionsSafe,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
+                    sortOrder: (li as any).sortOrder ?? index, // Use provided sortOrder or default to index
                     // Tax fields
                     taxAmount: taxAmountSafe.toString(),
                     isTaxableSnapshot: isTaxableSnapshotSafe,
@@ -699,7 +702,7 @@ export class OrdersRepository {
         if (quoteLines.length === 0) throw new Error('Quote has no line items');
 
         // Convert quote line items to order line items
-        const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql) => ({
+        const orderLineItemsData: Omit<InsertOrderLineItem, 'orderId'>[] = quoteLines.map((ql, index) => ({
             quoteLineItemId: ql.id,
             productId: ql.productId,
             productVariantId: ql.variantId,
@@ -717,6 +720,7 @@ export class OrdersRepository {
             nestingConfigSnapshot: null,
             requiresInventory: false,
             materialId: null,
+            sortOrder: ql.displayOrder ?? index, // Use quote displayOrder or default to index
             taxAmount: ql.taxAmount || '0',
             isTaxableSnapshot: ql.isTaxableSnapshot,
         }));
@@ -748,6 +752,51 @@ export class OrdersRepository {
                 convertedToOrderId: createdOrder.id
             })
             .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
+
+        // PHASE 2: Copy asset_links from quote line items to order line items (fail-soft)
+        try {
+            const { assetRepository } = await import('../services/assets/AssetRepository');
+            
+            // Build mapping of quoteLineItemId → orderLineItemId
+            const lineItemMap = new Map<string, string>();
+            for (const orderLineItem of createdOrder.lineItems || []) {
+                if (orderLineItem.quoteLineItemId) {
+                    lineItemMap.set(orderLineItem.quoteLineItemId, orderLineItem.id);
+                }
+            }
+
+            // Query asset_links for all source quote line items
+            const sourceQuoteLineItemIds = Array.from(lineItemMap.keys());
+            if (sourceQuoteLineItemIds.length > 0) {
+                const assetsMap = await assetRepository.listAssetsForParents(
+                    organizationId,
+                    'quote_line_item',
+                    sourceQuoteLineItemIds
+                );
+
+                // Create new asset_links for order line items
+                const newLinks: any[] = [];
+                for (const [quoteLineItemId, orderLineItemId] of lineItemMap.entries()) {
+                    const sourceAssets = assetsMap.get(quoteLineItemId) || [];
+                    for (const asset of sourceAssets) {
+                        newLinks.push({
+                            organizationId,
+                            assetId: asset.id,
+                            parentType: 'order_line_item',
+                            parentId: orderLineItemId,
+                            role: asset.role, // Preserve role from quote
+                        });
+                    }
+                }
+
+                if (newLinks.length > 0) {
+                    await assetRepository.linkAssetsBatch(newLinks);
+                    console.log(`[CONVERT QUOTE] Copied ${newLinks.length} asset_links from quote to order`);
+                }
+            }
+        } catch (assetLinkError) {
+            console.error('[CONVERT QUOTE] Failed to copy asset_links (non-blocking):', assetLinkError);
+        }
 
         // Create timeline entry for the conversion (fail-soft)
         try {
@@ -838,6 +887,7 @@ export class OrdersRepository {
             materialUsageJson,
             materialUsages,
             requiresInventory: lineItem.requiresInventory ?? undefined,
+            sortOrder: lineItem.sortOrder ?? 0, // Default to 0 if not provided
             // In schema this is optional (defaultable) but not nullable: use undefined (omit) rather than null.
             taxAmount: lineItem.taxAmount == null ? undefined : String(lineItem.taxAmount),
             isTaxableSnapshot: lineItem.isTaxableSnapshot ?? undefined,
@@ -898,33 +948,22 @@ export class OrdersRepository {
             .where(eq(orderAttachments.orderId, orderId))
             .orderBy(desc(orderAttachments.createdAt));
 
-        // Keep response shape stable even when derivative columns are not in DB.
-        return rows.map((r) => ({
-            ...(r as any),
-            thumbKey: null,
-            previewKey: null,
-        })) as any;
+        return rows as any;
     }
 
     async createOrderAttachment(attachment: InsertOrderAttachment): Promise<OrderAttachment> {
-        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeInsert } = attachment as any;
         const [newAttachment] = await this.dbInstance
             .insert(orderAttachments)
-            .values(safeInsert)
+            .values(attachment)
             .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
-        return ({
-            ...(newAttachment as any),
-            thumbKey: null,
-            previewKey: null,
-        }) as any;
+        return newAttachment as any;
     }
 
     async updateOrderAttachment(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment> {
-        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeUpdates } = updates as any;
         const [updated] = await this.dbInstance
             .update(orderAttachments)
-            .set(safeUpdates)
+            .set(updates)
             .where(eq(orderAttachments.id, id))
             .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
@@ -932,11 +971,7 @@ export class OrdersRepository {
             throw new Error(`Order attachment ${id} not found`);
         }
 
-        return ({
-            ...(updated as any),
-            thumbKey: null,
-            previewKey: null,
-        }) as any;
+        return updated as any;
     }
 
     async deleteOrderAttachment(id: string): Promise<void> {
@@ -957,8 +992,6 @@ export class OrdersRepository {
 
         return files.map(f => ({
             ...(f.file as any),
-            thumbKey: null,
-            previewKey: null,
             uploadedByUser: f.user || null,
         })) as any;
     }
@@ -979,17 +1012,12 @@ export class OrdersRepository {
                 );
         }
 
-        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeInsert } = data as any;
         const [newAttachment] = await this.dbInstance
             .insert(orderAttachments)
-            .values(safeInsert)
+            .values(data)
             .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
-        return ({
-            ...(newAttachment as any),
-            thumbKey: null,
-            previewKey: null,
-        }) as any;
+        return newAttachment as any;
     }
 
     async updateOrderFileMeta(id: string, updates: UpdateOrderAttachment): Promise<OrderAttachment> {
@@ -1020,10 +1048,9 @@ export class OrdersRepository {
             }
         }
 
-        const { thumbKey: _thumbKey, previewKey: _previewKey, ...safeUpdates } = updates as any;
         const [updated] = await this.dbInstance
             .update(orderAttachments)
-            .set(safeUpdates)
+            .set(updates)
             .where(eq(orderAttachments.id, id))
             .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
@@ -1031,11 +1058,7 @@ export class OrdersRepository {
             throw new Error(`Order file ${id} not found`);
         }
 
-        return ({
-            ...(updated as any),
-            thumbKey: null,
-            previewKey: null,
-        }) as any;
+        return updated as any;
     }
 
     async detachOrderFile(id: string): Promise<void> {
@@ -1058,11 +1081,7 @@ export class OrdersRepository {
             )
             .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt));
 
-        const files = rows.map((r) => ({
-            ...(r as any),
-            thumbKey: null,
-            previewKey: null,
-        })) as any as OrderAttachment[];
+        const files = rows as any as OrderAttachment[];
 
         const front = files.find(f => f.side === 'front' && f.isPrimary) || files.find(f => f.side === 'front') || null;
         const back = files.find(f => f.side === 'back' && f.isPrimary) || files.find(f => f.side === 'back') || null;
