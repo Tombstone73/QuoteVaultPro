@@ -776,7 +776,8 @@ export class OrdersRepository {
 
                 // Create new asset_links for order line items
                 const newLinks: any[] = [];
-                for (const [quoteLineItemId, orderLineItemId] of lineItemMap.entries()) {
+                for (const quoteLineItemId of Array.from(lineItemMap.keys())) {
+                    const orderLineItemId = lineItemMap.get(quoteLineItemId)!;
                     const sourceAssets = assetsMap.get(quoteLineItemId) || [];
                     for (const asset of sourceAssets) {
                         newLinks.push({

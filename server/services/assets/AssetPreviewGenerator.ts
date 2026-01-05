@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import sharp from 'sharp';
 import type { Asset } from '../../../shared/schema';
-import { getObjectStorage } from '../../objectStorage';
+import { objectStorageClient } from '../../objectStorage';
 
 /**
  * Asset Preview Generator
@@ -31,7 +31,6 @@ export class AssetPreviewGenerator {
     console.log(`[AssetPreviewGenerator] Processing asset ${asset.id} (${asset.fileName})`);
 
     try {
-      const storage = getObjectStorage();
       const mimeType = asset.mimeType?.toLowerCase() || '';
 
       // Determine if we can generate previews
@@ -58,7 +57,7 @@ export class AssetPreviewGenerator {
       const tempFilePath = path.join(tempDir, asset.fileName);
 
       console.log(`[AssetPreviewGenerator] Downloading ${asset.fileKey} to ${tempFilePath}`);
-      await storage.downloadToFile(asset.fileKey, tempFilePath);
+      await this.downloadFile(asset.fileKey, tempFilePath);
 
       let imageBuffer: Buffer;
 
@@ -77,7 +76,7 @@ export class AssetPreviewGenerator {
         .toBuffer();
 
       const thumbKey = `thumbs/org_${asset.organizationId}/asset/${asset.id}/thumb.jpg`;
-      await storage.uploadFromBuffer(thumbKey, thumbBuffer, 'image/jpeg');
+      await this.uploadBuffer(thumbKey, thumbBuffer, 'image/jpeg');
       console.log(`[AssetPreviewGenerator] Uploaded thumbnail to ${thumbKey}`);
 
       // Generate preview (1600px)
@@ -87,7 +86,7 @@ export class AssetPreviewGenerator {
         .toBuffer();
 
       const previewKey = `thumbs/org_${asset.organizationId}/asset/${asset.id}/preview.jpg`;
-      await storage.uploadFromBuffer(previewKey, previewBuffer, 'image/jpeg');
+      await this.uploadBuffer(previewKey, previewBuffer, 'image/jpeg');
       console.log(`[AssetPreviewGenerator] Uploaded preview to ${previewKey}`);
 
       // Update asset record
@@ -131,6 +130,42 @@ export class AssetPreviewGenerator {
         await fs.rm(tempDir, { recursive: true, force: true });
       } catch {}
     }
+  }
+
+  /**
+   * Parse storage key into bucket and object name
+   */
+  private parseStorageKey(key: string): { bucketName: string; objectName: string } {
+    let normalizedKey = key;
+    if (!normalizedKey.startsWith('/')) {
+      normalizedKey = `/${normalizedKey}`;
+    }
+    const parts = normalizedKey.split('/');
+    if (parts.length < 3) {
+      throw new Error('Invalid storage key: must contain at least bucket/object');
+    }
+    return {
+      bucketName: parts[1],
+      objectName: parts.slice(2).join('/'),
+    };
+  }
+
+  /**
+   * Download file from storage to local path
+   */
+  private async downloadFile(storageKey: string, localPath: string): Promise<void> {
+    const { bucketName, objectName } = this.parseStorageKey(storageKey);
+    const file = objectStorageClient.bucket(bucketName).file(objectName);
+    await file.download({ destination: localPath });
+  }
+
+  /**
+   * Upload buffer to storage
+   */
+  private async uploadBuffer(storageKey: string, buffer: Buffer, contentType: string): Promise<void> {
+    const { bucketName, objectName } = this.parseStorageKey(storageKey);
+    const file = objectStorageClient.bucket(bucketName).file(objectName);
+    await file.save(buffer, { contentType });
   }
 
   /**
