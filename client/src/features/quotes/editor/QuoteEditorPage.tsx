@@ -758,7 +758,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
 
     return (
         <div className="min-h-screen bg-background">
-            <div className="max-w-[1600px] mx-auto px-6 py-4">
+            <div className="mx-auto w-full max-w-[1600px] px-6 py-4">
                 {/* Top bar: Back + Quote # + Status + Actions */}
                 <QuoteHeader
                     quoteNumber={(state.quote as any)?.quoteNumber || ""}
