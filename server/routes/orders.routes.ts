@@ -1,0 +1,2361 @@
+import type { Express } from "express";
+import { db } from "../db";
+import {
+    orders,
+    orderAttachments,
+    orderAuditLog,
+    orderLineItems,
+    organizations,
+    customers,
+    products,
+    customerContacts,
+    jobs,
+    orderStatusPills,
+    orderListNotes,
+    users,
+    auditLogs,
+    customerVisibleProducts,
+    materials,
+    inventoryAdjustments,
+    orderMaterialUsage,
+    insertOrderSchema,
+    updateOrderSchema,
+    insertOrderLineItemSchema,
+    updateOrderLineItemSchema,
+    insertMaterialSchema,
+    updateMaterialSchema,
+    insertInventoryAdjustmentSchema,
+    type InsertOrder
+} from "@shared/schema";
+import { eq, desc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
+import { storage } from "../storage";
+import { z } from "zod";
+import { fromZodError } from "zod-validation-error";
+import Papa from "papaparse";
+import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInput } from "../quoteOrderPricing";
+import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
+import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
+import { updateOrderFulfillmentStatus } from "../fulfillmentService";
+import { portalContext, getPortalCustomer } from "../tenantContext";
+import {
+    createRequestLogOnce,
+    enrichAttachmentWithUrls,
+    normalizeObjectKeyForDb,
+    scheduleSupabaseObjectSelfCheck,
+    tryExtractSupabaseObjectKeyFromUrl
+} from "../lib/supabaseObjectHelpers";
+import type { FileRole, FileSide } from "../lib/supabaseObjectHelpers";
+
+// Helper function to get userId from request user object
+function getUserId(user: any): string | undefined {
+    return user?.claims?.sub || user?.id;
+}
+
+// Helper to get organizationId from request (matches server/routes.ts behavior)
+function getRequestOrganizationId(req: any): string | undefined {
+    return req.organizationId || req.headers['x-organization-id'] as string;
+}
+
+/**
+ * Snapshot customer data for quotes and orders
+ */
+async function snapshotCustomerData(
+    organizationId: string,
+    customerId: string,
+    contactId?: string | null,
+    shippingMethod?: string | null,
+    shippingMode?: string | null
+): Promise<Record<string, any>> {
+    const [customer] = await db
+        .select()
+        .from(customers)
+        .where(and(
+            eq(customers.id, customerId),
+            eq(customers.organizationId, organizationId)
+        ))
+        .limit(1);
+
+    if (!customer) {
+        throw new Error(`Customer not found: ${customerId}`);
+    }
+
+    let contact = null;
+    if (contactId) {
+        const [foundContact] = await db
+            .select()
+            .from(customerContacts as any)
+            .where(eq((customerContacts as any).id, contactId))
+            .limit(1);
+        contact = foundContact;
+    }
+
+    const billToName = contact
+        ? `${contact.firstName} ${contact.lastName}`.trim()
+        : customer.companyName;
+
+    const billToSnapshot = {
+        billToName,
+        billToCompany: customer.companyName,
+        billToAddress1: customer.billingStreet1 || customer.billingAddress || null,
+        billToAddress2: customer.billingStreet2 || null,
+        billToCity: customer.billingCity || null,
+        billToState: customer.billingState || null,
+        billToPostalCode: customer.billingPostalCode || null,
+        billToCountry: customer.billingCountry || 'US',
+        billToPhone: customer.phone || null,
+        billToEmail: customer.email || null,
+    };
+
+    const finalShippingMethod = shippingMethod || 'ship';
+    const finalShippingMode = shippingMode || 'single_shipment';
+
+    let shipToSnapshot: Record<string, any>;
+
+    if (finalShippingMethod === 'pickup') {
+        shipToSnapshot = {
+            shipToName: billToName,
+            shipToCompany: customer.companyName,
+            shipToAddress1: customer.billingStreet1 || customer.billingAddress || null,
+            shipToAddress2: customer.billingStreet2 || null,
+            shipToCity: customer.billingCity || null,
+            shipToState: customer.billingState || null,
+            shipToPostalCode: customer.billingPostalCode || null,
+            shipToCountry: customer.billingCountry || 'US',
+            shipToPhone: customer.phone || null,
+            shipToEmail: customer.email || null,
+        };
+    } else {
+        const hasShippingAddress = !!customer.shippingStreet1 || !!customer.shippingAddress;
+
+        shipToSnapshot = {
+            shipToName: billToName,
+            shipToCompany: customer.companyName,
+            shipToAddress1: hasShippingAddress
+                ? (customer.shippingStreet1 || customer.shippingAddress || null)
+                : (customer.billingStreet1 || customer.billingAddress || null),
+            shipToAddress2: hasShippingAddress
+                ? (customer.shippingStreet2 || null)
+                : (customer.billingStreet2 || null),
+            shipToCity: hasShippingAddress
+                ? (customer.shippingCity || null)
+                : (customer.billingCity || null),
+            shipToState: hasShippingAddress
+                ? (customer.shippingState || null)
+                : (customer.billingState || null),
+            shipToPostalCode: hasShippingAddress
+                ? (customer.shippingPostalCode || null)
+                : (customer.billingPostalCode || null),
+            shipToCountry: hasShippingAddress
+                ? (customer.shippingCountry || 'US')
+                : (customer.billingCountry || 'US'),
+            shipToPhone: customer.phone || null,
+            shipToEmail: customer.email || null,
+        };
+    }
+
+    return {
+        ...billToSnapshot,
+        ...shipToSnapshot,
+        shippingMethod: finalShippingMethod,
+        shippingMode: finalShippingMode,
+    };
+}
+
+
+
+// Helper: Get organization preferences
+async function getOrgPreferences(organizationId: string): Promise<any> {
+    try {
+        const [org] = await db
+            .select({ settings: organizations.settings })
+            .from(organizations)
+            .where(eq(organizations.id, organizationId))
+            .limit(1);
+
+        if (!org) return {};
+        return (org.settings as any)?.preferences || {};
+    } catch (error) {
+        console.error('[getOrgPreferences] Error:', error);
+        return {};
+    }
+}
+
+export async function registerOrderRoutes(
+    app: Express,
+    deps: {
+        isAuthenticated: any;
+        tenantContext: any;
+        isAdmin: any;
+        isAdminOrOwner: any;
+    }
+) {
+    const { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner } = deps;
+
+    // Orders routes
+    app.get("/api/orders", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const pageRaw = req.query.page as string | undefined;
+            const pageSizeRaw = req.query.pageSize as string | undefined;
+            const includeThumbnailsRaw = req.query.includeThumbnails as string | undefined;
+            const sortBy = req.query.sortBy as string | undefined;
+            const sortDir = (req.query.sortDir as string | undefined) === 'asc' ? 'asc' : 'desc';
+
+            const hasPaging = pageRaw !== undefined || pageSizeRaw !== undefined;
+
+            if (hasPaging) {
+                // Paginated response (match Quotes pattern)
+                const page = Math.max(1, parseInt(pageRaw || '1', 10) || 1);
+                const pageSize = Math.min(200, Math.max(1, parseInt(pageSizeRaw || '25', 10) || 25));
+                // Default to false to avoid breaking page load if thumbnails schema is incomplete
+                const includeThumbnails = includeThumbnailsRaw === 'true' || includeThumbnailsRaw === '1';
+
+                const result = await storage.getAllOrdersPaginated(organizationId, {
+                    search: req.query.search as string | undefined,
+                    status: req.query.status as string | undefined,
+                    priority: req.query.priority as string | undefined,
+                    customerId: req.query.customerId as string | undefined,
+                    startDate: req.query.startDate as string | undefined,
+                    endDate: req.query.endDate as string | undefined,
+                    sortBy,
+                    sortDir,
+                    page,
+                    pageSize,
+                    includeThumbnails,
+                });
+
+                // If thumbnails are requested, return:
+                // - attachmentsSummary: totalCount + up to 3 preview thumbs per order
+                // - previewThumbnailUrl: back-compat single preview (first preview thumb)
+                // Server generates usable URLs (no client-side URL construction).
+                if (includeThumbnails && result?.items?.length) {
+                    try {
+                        const orderIds = result.items.map((o: any) => o.id).filter(Boolean);
+                        if (orderIds.length) {
+                            const attachmentRows = await db
+                                .select({
+                                    orderId: orderAttachments.orderId,
+                                    id: orderAttachments.id,
+                                    fileUrl: orderAttachments.fileUrl,
+                                    storageProvider: orderAttachments.storageProvider,
+                                    thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+                                    thumbKey: orderAttachments.thumbKey,
+                                    previewKey: orderAttachments.previewKey,
+                                    mimeType: orderAttachments.mimeType,
+                                    fileName: orderAttachments.fileName,
+                                    originalFilename: orderAttachments.originalFilename,
+                                    createdAt: orderAttachments.createdAt,
+                                })
+                                .from(orderAttachments)
+                                .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+                                .where(
+                                    and(
+                                        inArray(orderAttachments.orderId, orderIds),
+                                        eq(orders.organizationId, organizationId),
+                                    )
+                                )
+                                .orderBy(desc(orderAttachments.createdAt));
+
+                            const logOnce = createRequestLogOnce();
+                            const countsByOrderId: Record<string, number> = {};
+                            const previewsByOrderId: Record<string, any[]> = {};
+
+                            for (const row of attachmentRows) {
+                                const orderId = row.orderId as string;
+                                countsByOrderId[orderId] = (countsByOrderId[orderId] ?? 0) + 1;
+                                if (!previewsByOrderId[orderId]) previewsByOrderId[orderId] = [];
+                                if (previewsByOrderId[orderId].length < 3) {
+                                    previewsByOrderId[orderId].push(row);
+                                }
+                            }
+
+                            const attachmentsSummaryByOrderId: Record<
+                                string,
+                                { totalCount: number; previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> }
+                            > = {};
+
+                            const previewUrlByOrderId: Record<string, string | null> = {};
+
+                            for (const orderId of orderIds) {
+                                const totalCount = countsByOrderId[orderId] ?? 0;
+                                const previewRows = previewsByOrderId[orderId] ?? [];
+                                const supabase = isSupabaseConfigured() ? new SupabaseStorageService() : null;
+
+                                const previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> = [];
+                                for (const att of previewRows) {
+                                    // 1) thumbnail_relative_path -> signed URL
+                                    const rawThumbRel = (att.thumbnailRelativePath ?? null) as string | null;
+                                    let thumbnailUrl: string | null = null;
+                                    if (rawThumbRel) {
+                                        const raw = rawThumbRel.toString();
+                                        const isHttp = raw.startsWith('http://') || raw.startsWith('https://');
+                                        const looksLikeSupabaseObjectUrl = raw.includes('/storage/v1/object/');
+
+                                        if (isHttp) {
+                                            // Never return raw /storage/v1/object/* URLs; re-sign if possible.
+                                            if (supabase && looksLikeSupabaseObjectUrl) {
+                                                const extracted = tryExtractSupabaseObjectKeyFromUrl(raw, 'titan-private');
+                                                thumbnailUrl = extracted ? `/objects/${extracted}` : null;
+                                            } else {
+                                                thumbnailUrl = raw;
+                                            }
+                                        } else if ((att.storageProvider ?? null) === 'local') {
+                                            thumbnailUrl = `/objects/${raw}`;
+                                        } else if (supabase && (att.storageProvider ?? null) === 'supabase') {
+                                            thumbnailUrl = `/objects/${raw}`;
+                                        } else {
+                                            thumbnailUrl = `/objects/${raw}`;
+                                        }
+                                    }
+
+                                    // 2) else if preview_key -> signed previewUrl via enrichAttachmentWithUrls
+                                    if (!thumbnailUrl && att.previewKey) {
+                                        const enriched = await enrichAttachmentWithUrls(att, { logOnce });
+                                        thumbnailUrl =
+                                            (enriched?.previewUrl as string | null) ||
+                                            (enriched?.originalUrl as string | null) ||
+                                            null;
+                                    }
+
+                                    previews.push({
+                                        id: String(att.id),
+                                        filename: String(att.originalFilename ?? att.fileName ?? 'Attachment'),
+                                        mimeType: (att.mimeType ?? null) as string | null,
+                                        thumbnailUrl,
+                                    });
+                                }
+
+                                attachmentsSummaryByOrderId[orderId] = {
+                                    totalCount,
+                                    previews,
+                                };
+
+                                previewUrlByOrderId[orderId] = previews[0]?.thumbnailUrl ?? null;
+                            }
+
+                            result.items = result.items.map((o: any) => ({
+                                ...o,
+                                attachmentsSummary: attachmentsSummaryByOrderId[o.id] ?? { totalCount: 0, previews: [] },
+                                previewThumbnailUrl: previewUrlByOrderId[o.id] ?? null,
+                                // Back-compat: keep existing field aligned.
+                                previewImageUrl: previewUrlByOrderId[o.id] ?? null,
+                            }));
+                        }
+                    } catch (error: any) {
+                        // Fail-soft: list should still render even if signing fails.
+                        console.warn('[OrdersList] Failed to enrich previewThumbnailUrl (fail-soft):', error?.message || String(error));
+                        result.items = result.items.map((o: any) => ({
+                            ...o,
+                            attachmentsSummary: { totalCount: 0, previews: [] },
+                            previewThumbnailUrl: null,
+                            previewImageUrl: null,
+                        }));
+                    }
+                }
+
+                // Contract: always include previewThumbnailUrl; null when not available/requested.
+                if (!includeThumbnails && result?.items?.length) {
+                    result.items = result.items.map((o: any) => ({
+                        ...o,
+                        previewThumbnailUrl: null,
+                        previewImageUrl: null,
+                    }));
+                }
+
+                return res.json(result);
+            }
+
+            // Legacy non-paginated response (for backward compatibility)
+            const filters = {
+                search: req.query.search as string | undefined,
+                status: req.query.status as string | undefined,
+                priority: req.query.priority as string | undefined,
+                customerId: req.query.customerId as string | undefined,
+                startDate: req.query.startDate ? new Date(req.query.startDate as string) : undefined,
+                endDate: req.query.endDate ? new Date(req.query.endDate as string) : undefined,
+            };
+            const ordersList = await storage.getAllOrders(organizationId, filters);
+            res.json(ordersList);
+        } catch (error) {
+            console.error("Error fetching orders:", error);
+            res.status(500).json({ message: "Failed to fetch orders" });
+        }
+    });
+
+    app.get("/api/orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const order = await storage.getOrderById(organizationId, req.params.id);
+            if (!order) {
+                return res.status(404).json({ message: "Order not found" });
+            }
+            res.json(order);
+        } catch (error) {
+            console.error("Error fetching order:", error);
+            res.status(500).json({ message: "Failed to fetch order" });
+        }
+    });
+
+    app.post("/api/orders", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) {
+                return res.status(401).json({ message: "User not authenticated" });
+            }
+
+            // Validate the order data (excluding line items for now)
+            const { lineItems, ...orderFields } = req.body;
+
+            if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+                return res.status(400).json({ message: "At least one line item is required" });
+            }
+
+            // Load organization for tax settings
+            const [org] = await db
+                .select()
+                .from(organizations)
+                .where(eq(organizations.id, organizationId))
+                .limit(1);
+
+            if (!org) {
+                return res.status(500).json({ message: "Organization not found" });
+            }
+
+            const orgTaxSettings = getOrganizationTaxSettings(org);
+
+            // Load customer for tax calculation (if applicable)
+            let customer = null;
+            if (orderFields.customerId) {
+                [customer] = await db
+                    .select()
+                    .from(customers)
+                    .where(and(
+                        eq(customers.id, orderFields.customerId),
+                        eq(customers.organizationId, organizationId)
+                    ))
+                    .limit(1);
+            }
+
+            // Load products for each line item to get isTaxable flag
+            const productIds = Array.from(new Set(lineItems.map((item: any) => item.productId)));
+            const productMap = new Map<string, typeof products.$inferSelect>();
+            for (const productId of productIds) {
+                const [product] = await db
+                    .select()
+                    .from(products)
+                    .where(eq(products.id, productId))
+                    .limit(1);
+                if (product) {
+                    productMap.set(productId, product);
+                }
+            }
+
+            // Prepare line items with tax info (including tax category for SaaS tax)
+            const lineItemsForTaxCalc: LineItemInput[] = lineItems.map((item: any) => {
+                const product = productMap.get(item.productId);
+                return {
+                    productId: item.productId,
+                    variantId: item.variantId || null,
+                    linePrice: parseFloat(item.linePrice),
+                    isTaxable: product?.isTaxable ?? true,
+                    taxCategoryId: (item as any).taxCategoryId || null,
+                };
+            });
+
+            // Get ship-to address from customer if available (for SaaS tax zones)
+            const shipTo = customer
+                ? {
+                    country: (customer as any).country || "US",
+                    state: (customer as any).state || org.settings?.timezone?.split("/")[0] || "CA",
+                    city: (customer as any).city,
+                    postalCode: (customer as any).postalCode,
+                }
+                : null;
+
+            // Calculate totals with tax (async for SaaS tax zone lookup)
+            const totalsResult = await calculateQuoteOrderTotals(
+                lineItemsForTaxCalc,
+                orgTaxSettings,
+                customer,
+                null, // shipFrom - use org address if needed later
+                shipTo
+            );
+
+            // Merge tax data into line items
+            const lineItemsWithTax = lineItems.map((item: any, index: number) => {
+                const taxData = totalsResult.lineItemsWithTax[index];
+                return {
+                    ...item,
+                    taxAmount: taxData.taxAmount,
+                    isTaxableSnapshot: taxData.isTaxableSnapshot,
+                };
+            });
+
+            // Sanitize timestamp fields to avoid Drizzle toISOString errors
+            const sanitizeDateField = (value: any): string | null => {
+                if (!value) return null;
+                if (value instanceof Date) return value.toISOString();
+                if (typeof value === 'string') return value;
+                return null;
+            };
+
+            // Generate customer/shipping snapshot if customerId is provided
+            let snapshotData: Record<string, any> = {};
+            if (orderFields.customerId) {
+                try {
+                    snapshotData = await snapshotCustomerData(
+                        organizationId,
+                        orderFields.customerId,
+                        orderFields.contactId || null,
+                        orderFields.shippingMethod || null,
+                        orderFields.shippingMode || null
+                    );
+                } catch (error) {
+                    console.error('[OrderCreation] Snapshot failed:', error);
+                    // Continue without snapshot - fields will be null
+                }
+            }
+
+            // Create order with line items and tax totals
+            const order = await storage.createOrder(organizationId, {
+                ...orderFields,
+                dueDate: sanitizeDateField(orderFields.dueDate),
+                promisedDate: sanitizeDateField(orderFields.promisedDate),
+                requestedDueDate: sanitizeDateField(orderFields.requestedDueDate),
+                productionDueDate: sanitizeDateField(orderFields.productionDueDate),
+                shippedAt: sanitizeDateField(orderFields.shippedAt),
+                createdByUserId: userId,
+                lineItems: lineItemsWithTax,
+                // Tax totals
+                taxRate: totalsResult.taxRate,
+                taxAmount: totalsResult.taxAmount,
+                taxableSubtotal: totalsResult.taxableSubtotal,
+                // Snapshot fields
+                status: orderFields.status || 'new',
+                ...snapshotData,
+                trackingNumber: orderFields.trackingNumber || undefined,
+                carrier: orderFields.carrier || undefined,
+                carrierAccountNumber: orderFields.carrierAccountNumber || undefined,
+                shippingInstructions: orderFields.shippingInstructions || undefined,
+            });
+
+            // Create audit log
+            await storage.createAuditLog(organizationId, {
+                userId,
+                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                actionType: 'CREATE',
+                entityType: 'order',
+                entityId: order.id,
+                entityName: order.orderNumber,
+                description: `Created order ${order.orderNumber}`,
+                newValues: order,
+            });
+
+            res.json(order);
+        } catch (error) {
+            if (error instanceof z.ZodError) {
+                console.error("Zod validation error:", error.errors);
+                return res.status(400).json({ message: fromZodError(error).message });
+            }
+            console.error("Error creating order:", error);
+            res.status(500).json({ message: "Failed to create order", error: (error as Error).message });
+        }
+    });
+
+    app.patch("/api/orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            const userRole = req.user?.role || 'customer';
+
+            // BLOCK status changes - must use /transition endpoint
+            if (req.body.status !== undefined) {
+                return res.status(400).json({
+                    message: "Status changes must use the /api/orders/:id/transition endpoint for proper validation and side effects.",
+                    code: "USE_TRANSITION_ENDPOINT"
+                });
+            }
+
+            // Get order to check current status
+            const existingOrder = await storage.getOrderById(organizationId, req.params.id);
+            if (!existingOrder) {
+                return res.status(404).json({ message: "Order not found" });
+            }
+
+            // Check if order is terminal (completed/canceled)
+            const isTerminal = existingOrder.status === 'completed' || existingOrder.status === 'canceled';
+
+            // Enforce allowCompletedOrderEdits setting for terminal orders
+            if (isTerminal) {
+                const isAdminOrOwnerResult = ['owner', 'admin'].includes(userRole);
+
+                if (!isAdminOrOwnerResult) {
+                    return res.status(403).json({
+                        message: "Cannot edit completed or canceled orders",
+                        code: "ORDER_LOCKED"
+                    });
+                }
+
+                // Admin/Owner must have setting enabled
+                const [org] = await db
+                    .select({ settings: organizations.settings })
+                    .from(organizations)
+                    .where(eq(organizations.id, organizationId))
+                    .limit(1);
+
+                const preferences = (org?.settings as any)?.preferences || {};
+                const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
+
+                if (!allowCompletedOrderEdits) {
+                    return res.status(403).json({
+                        message: "Editing completed/canceled orders is disabled. Enable 'Allow Completed Order Edits' in organization settings.",
+                        code: "ORDER_LOCKED_SETTING_DISABLED"
+                    });
+                }
+            }
+
+            // Validate customerId if provided
+            if (req.body.customerId) {
+                const customer = await storage.getCustomerById(organizationId, req.body.customerId);
+                if (!customer) {
+                    return res.status(400).json({ message: "Invalid customer ID" });
+                }
+
+                // Auto-set contactId to primary contact when customer changes
+                if (req.body.customerId !== existingOrder.customerId) {
+                    // Find primary contact for new customer, or fallback to newest
+                    const contacts = await db
+                        .select()
+                        .from(customerContacts)
+                        .where(eq(customerContacts.customerId, req.body.customerId))
+                        .orderBy(
+                            sql`CASE WHEN ${customerContacts.isPrimary} = true THEN 0 ELSE 1 END`,
+                            sql`${customerContacts.createdAt} DESC`
+                        );
+
+                    // Set contactId to primary contact or null if none exist
+                    req.body.contactId = contacts[0]?.id || null;
+                }
+            }
+
+            const orderData = updateOrderSchema.parse({
+                ...req.body,
+                id: req.params.id,
+            });
+            const { id, ...updateData } = orderData;
+
+            // NOTE: updateOrderSchema may strip fields we still support updating via PATCH.
+            // Customer/contact changes are validated above and also used for snapshot refresh.
+            const updateDataWithCustomer = {
+                ...updateData,
+                ...(req.body.customerId !== undefined ? { customerId: req.body.customerId } : {}),
+                ...(req.body.contactId !== undefined ? { contactId: req.body.contactId } : {}),
+            };
+
+            // Get old values for audit
+            const oldOrder = await storage.getOrderById(organizationId, req.params.id);
+
+            // Determine if we need to refresh snapshots
+            const customerChanged = req.body.customerId && req.body.customerId !== oldOrder?.customerId;
+            const shippingMethodChanged = req.body.shippingMethod && req.body.shippingMethod !== oldOrder?.shippingMethod;
+            const shippingModeChanged = req.body.shippingMode && req.body.shippingMode !== oldOrder?.shippingMode;
+            const shouldRefreshSnapshot = customerChanged || shippingMethodChanged || shippingModeChanged;
+
+            let snapshotData: Record<string, any> = {};
+            if (shouldRefreshSnapshot && oldOrder) {
+                const finalCustomerId = req.body.customerId || oldOrder.customerId;
+                const finalContactId = req.body.contactId !== undefined ? req.body.contactId : oldOrder.contactId;
+                const finalShippingMethod = req.body.shippingMethod || oldOrder.shippingMethod;
+                const finalShippingMode = req.body.shippingMode || oldOrder.shippingMode;
+
+                if (finalCustomerId) {
+                    try {
+                        snapshotData = await snapshotCustomerData(
+                            organizationId,
+                            finalCustomerId,
+                            finalContactId,
+                            finalShippingMethod,
+                            finalShippingMode
+                        );
+                        console.log(`[PATCH /api/orders/${req.params.id}] Refreshed snapshot due to changes`);
+                    } catch (error) {
+                        console.error('[OrderUpdate] Snapshot refresh failed:', error);
+                        // Continue without snapshot refresh
+                    }
+                }
+            }
+
+            // Update order - now returns full OrderWithRelations
+            const order = await storage.updateOrder(organizationId, req.params.id, {
+                ...updateDataWithCustomer,
+                ...snapshotData,
+            });
+
+            // Create audit log entries
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+
+            if (userId) {
+                await storage.createAuditLog(organizationId, {
+                    userId,
+                    userName,
+                    actionType: 'UPDATE',
+                    entityType: 'order',
+                    entityId: order.id,
+                    entityName: order.orderNumber,
+                    description: `Updated order ${order.orderNumber}`,
+                    oldValues: oldOrder,
+                    newValues: order,
+                });
+
+                if (oldOrder) {
+                    if (updateData.priority !== undefined && oldOrder.priority !== updateData.priority) {
+                        await storage.createOrderAuditLog({
+                            orderId: order.id,
+                            userId,
+                            userName,
+                            actionType: 'priority_change',
+                            fromStatus: null,
+                            toStatus: null,
+                            note: null,
+                            metadata: { oldValue: oldOrder.priority, newValue: updateData.priority },
+                        });
+                    }
+
+                    if (updateData.dueDate !== undefined && oldOrder.dueDate !== updateData.dueDate) {
+                        await storage.createOrderAuditLog({
+                            orderId: order.id,
+                            userId,
+                            userName,
+                            actionType: 'due_date_change',
+                            fromStatus: null,
+                            toStatus: null,
+                            note: null,
+                            metadata: {
+                                oldValue: oldOrder.dueDate ? new Date(oldOrder.dueDate).toISOString().split('T')[0] : null,
+                                newValue: updateData.dueDate ? new Date(updateData.dueDate).toISOString().split('T')[0] : null
+                            },
+                        });
+                    }
+                }
+            }
+
+            res.json(order);
+        } catch (error) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ message: fromZodError(error).message });
+            }
+            console.error("Error updating order:", error);
+            res.status(500).json({ message: "Failed to update order" });
+        }
+    });
+
+    // Bulk Line Item Status Update Endpoint
+    app.patch("/api/orders/:orderId/line-items/status", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+            const { orderId } = req.params;
+            const { status, lineItemIds } = req.body;
+
+            if (!status || typeof status !== 'string') {
+                return res.status(400).json({ message: "status is required" });
+            }
+
+            const validStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+            if (!validStatuses.includes(status)) {
+                return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+            }
+
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const allLineItems = await db
+                .select()
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId));
+
+            let itemsToUpdate = allLineItems;
+            if (lineItemIds && Array.isArray(lineItemIds) && lineItemIds.length > 0) {
+                itemsToUpdate = allLineItems.filter(li => lineItemIds.includes(li.id));
+            } else {
+                itemsToUpdate = allLineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+            }
+
+            if (itemsToUpdate.length === 0) {
+                return res.json({ success: true, message: "No line items to update", updatedCount: 0 });
+            }
+
+            const updatePromises = itemsToUpdate.map(li =>
+                db
+                    .update(orderLineItems)
+                    .set({
+                        status: status as any,
+                        updatedAt: sql`now()`
+                    })
+                    .where(eq(orderLineItems.id, li.id))
+            );
+
+            await Promise.all(updatePromises);
+
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+            await storage.createOrderAuditLog({
+                orderId: order.id,
+                userId,
+                userName,
+                actionType: 'bulk_line_item_status_update',
+                fromStatus: null,
+                toStatus: null,
+                note: `Bulk updated ${itemsToUpdate.length} line item(s) to status: ${status}`,
+                metadata: {
+                    status,
+                    count: itemsToUpdate.length,
+                    lineItemIds: itemsToUpdate.map(li => li.id),
+                },
+            });
+
+            res.json({
+                success: true,
+                message: `Updated ${itemsToUpdate.length} line item(s) to ${status}`,
+                updatedCount: itemsToUpdate.length,
+            });
+        } catch (error) {
+            console.error("Error bulk updating line item status:", error);
+            res.status(500).json({ message: "Failed to update line item statuses" });
+        }
+    });
+
+    // Order Status Transition Endpoint
+    app.post("/api/orders/:orderId/transition", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+            const { orderId } = req.params;
+            const { toStatus, reason } = req.body;
+
+            if (!toStatus || typeof toStatus !== 'string') {
+                return res.status(400).json({ success: false, message: "toStatus is required" });
+            }
+
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+
+            const lineItems = await db
+                .select()
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId));
+
+            const attachments = await db
+                .select()
+                .from(orderAttachments)
+                .where(eq(orderAttachments.orderId, orderId));
+
+            let jobsCount = 0;
+            try {
+                const jobRecords = await db
+                    .select()
+                    .from(jobs)
+                    .where(eq(jobs.orderId, orderId));
+                jobsCount = jobRecords.length;
+            } catch (err) {
+                console.warn('[OrderTransition] Could not load jobs count:', err);
+            }
+
+            const orgPreferences = await getOrgPreferences(organizationId);
+
+            if (toStatus === 'completed') {
+                const requireLineItemsDone = orgPreferences?.orders?.requireLineItemsDoneToComplete ?? true;
+                if (requireLineItemsDone) {
+                    const incompleteLi = lineItems.filter(li => li.status !== 'done' && li.status !== 'canceled');
+                    if (incompleteLi.length > 0) {
+                        return res.status(400).json({
+                            success: false,
+                            message: `Cannot complete order: ${incompleteLi.length} line item(s) are not finished.`,
+                            code: 'LINE_ITEMS_NOT_COMPLETE',
+                            incompleteCount: incompleteLi.length,
+                        });
+                    }
+                }
+            }
+
+            const { validateOrderTransition } = await import('../services/orderTransition');
+            const validation = validateOrderTransition(order.status, toStatus, {
+                order,
+                lineItemsCount: lineItems.length,
+                attachmentsCount: attachments.length,
+                fulfillmentStatus: order.fulfillmentStatus,
+                jobsCount,
+                hasShippedAt: !!order.shippedAt,
+                orgPreferences,
+            });
+
+            if (!validation.ok) {
+                return res.status(400).json({
+                    success: false,
+                    message: validation.message,
+                    code: validation.code,
+                });
+            }
+
+            const updateData: Partial<InsertOrder> = {
+                status: toStatus as any,
+            };
+
+            const now = new Date().toISOString();
+            if (order.status === 'new' && toStatus === 'in_production') {
+                try {
+                    await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, orderId, userId);
+                } catch (invErr) {
+                    console.error('[OrderTransition] Inventory deduction failed:', invErr);
+                    validation.warnings = validation.warnings || [];
+                    validation.warnings.push('Inventory deduction failed - please verify stock levels manually.');
+                }
+                updateData.startedProductionAt = now;
+            }
+
+            const updatedOrder = await storage.updateOrder(organizationId, orderId, updateData);
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+
+            await storage.createAuditLog(organizationId, {
+                userId,
+                userName,
+                actionType: 'UPDATE',
+                entityType: 'order',
+                entityId: updatedOrder.id,
+                entityName: updatedOrder.orderNumber,
+                description: `Changed order status from ${order.status} to ${toStatus}${reason ? `: ${reason}` : ''}`,
+                oldValues: { status: order.status },
+                newValues: { status: toStatus, reason },
+            });
+
+            await storage.createOrderAuditLog({
+                orderId: updatedOrder.id,
+                userId,
+                userName,
+                actionType: 'status_transition',
+                fromStatus: order.status,
+                toStatus: toStatus,
+                note: reason || null,
+                metadata: null,
+            });
+
+            return res.json({
+                success: true,
+                data: updatedOrder,
+                message: `Order status changed to ${toStatus}`,
+                warnings: validation.warnings,
+            });
+        } catch (error: any) {
+            console.error('[OrderTransition] Error:', error);
+            return res.status(500).json({ success: false, message: "Failed to transition order status", error: error?.message });
+        }
+    });
+
+    // TitanOS State Transitions
+    app.post("/api/orders/:orderId/complete-production", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+            const { orderId } = req.params;
+            const { autoMarkRemainingDone } = req.body || {};
+
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+
+            if (order.state !== 'open') {
+                return res.status(400).json({ success: false, code: 'INVALID_STATE', message: `Cannot complete production from ${order.state} state.` });
+            }
+
+            const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+            const remainingLineItems = lineItems.filter((li: any) => li.status !== 'done' && li.status !== 'canceled');
+            const remainingCount = remainingLineItems.length;
+            const remainingIds = remainingLineItems.map((li: any) => li.id);
+
+            const orgPreferences = await getOrgPreferences(organizationId);
+            const requireAllLineItemsDoneToComplete = orgPreferences?.orders?.requireAllLineItemsDoneToComplete ?? true;
+
+            const shouldAutoMark = requireAllLineItemsDoneToComplete ? autoMarkRemainingDone === true : true;
+
+            if (requireAllLineItemsDoneToComplete && remainingCount > 0 && !shouldAutoMark) {
+                return res.status(409).json({ success: false, code: 'LINE_ITEMS_NOT_COMPLETE', remainingCount, canOverride: true });
+            }
+
+            const { determineRoutingTarget, mapStateToLegacyStatus } = await import('../services/orderStateService');
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+            const nowIso = new Date().toISOString();
+
+            const result = await db.transaction(async (tx) => {
+                let didAutoMark = false;
+                let autoMarkedCount = 0;
+
+                if (remainingCount > 0 && shouldAutoMark) {
+                    didAutoMark = true;
+                    autoMarkedCount = remainingCount;
+                    await tx.update(orderLineItems).set({ status: 'done', updatedAt: sql`now()` as any }).where(and(eq(orderLineItems.orderId, orderId), inArray(orderLineItems.id, remainingIds)));
+                }
+
+                const routingTarget = determineRoutingTarget(order as any);
+                const legacyStatus = mapStateToLegacyStatus('production_complete' as any);
+
+                const [updatedOrder] = await tx.update(orders).set({
+                    state: 'production_complete' as any,
+                    status: legacyStatus as any,
+                    productionCompletedAt: nowIso,
+                    routingTarget,
+                    updatedAt: sql`now()` as any,
+                }).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId))).returning();
+
+                return { updatedOrder, didAutoMark, autoMarkedCount };
+            });
+
+            return res.json({ success: true, data: result.updatedOrder, didAutoMark: result.didAutoMark, autoMarkedCount: result.autoMarkedCount, message: 'Order production completed' });
+        } catch (error: any) {
+            console.error('[CompleteProduction] Error:', error);
+            return res.status(500).json({ success: false, message: 'Failed to complete production', error: error?.message });
+        }
+    });
+
+    app.patch("/api/orders/:orderId/state", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+            const { orderId } = req.params;
+            const { nextState, notes } = req.body;
+
+            if (!nextState) return res.status(400).json({ success: false, message: "nextState is required" });
+
+            const { validateOrderStateTransition, transitionOrderState, isTerminalState } = await import('../services/orderStateService');
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+
+            if (isTerminalState(order.state as any)) {
+                return res.status(400).json({ success: false, message: `Cannot transition from ${order.state} state.`, code: 'TERMINAL_STATE' });
+            }
+
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+            const updatedOrder = await transitionOrderState({
+                organizationId,
+                orderId,
+                nextState: nextState as any,
+                actorUserId: userId,
+                actorUserName: userName,
+                notes,
+            });
+
+            return res.json({ success: true, data: updatedOrder, message: `Order transitioned to ${nextState}` });
+        } catch (error: any) {
+            console.error('[OrderStateTransition] Error:', error);
+            return res.status(500).json({ success: false, message: "Failed to transition order state", error: error?.message });
+        }
+    });
+
+    app.get(["/api/orders/status-pills", "/api/order-status-pills"], isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const stateScope = (req.query.stateScope ?? req.query.state) as string;
+            if (!stateScope) return res.status(400).json({ success: false, message: "state parameter is required" });
+            const { listStatusPills } = await import('../services/orderStatusPillService');
+            const pills = await listStatusPills(organizationId, stateScope as any, true);
+            return res.json({ success: true, data: pills, pills });
+        } catch (error: any) {
+            console.error('[StatusPills:GET] Error:', error);
+            return res.status(500).json({ success: false, message: "Failed to fetch status pills", error: error?.message });
+        }
+    });
+
+    app.post("/api/orders/status-pills", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const { createStatusPill } = await import('../services/orderStatusPillService');
+            const pill = await createStatusPill(organizationId, req.body);
+            res.json({ success: true, data: pill });
+        } catch (error: any) {
+            res.status(400).json({ success: false, message: error.message });
+        }
+    });
+
+    app.patch("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const { updateStatusPill } = await import('../services/orderStatusPillService');
+            const pill = await updateStatusPill(organizationId, req.params.pillId, req.body);
+            res.json({ success: true, data: pill });
+        } catch (error: any) {
+            res.status(400).json({ success: false, message: error.message });
+        }
+    });
+
+    app.delete("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const { deleteStatusPill } = await import('../services/orderStatusPillService');
+            await deleteStatusPill(organizationId, req.params.pillId);
+            res.json({ success: true });
+        } catch (error: any) {
+            res.status(400).json({ success: false, message: error.message });
+        }
+    });
+
+    app.post("/api/orders/status-pills/:pillId/make-default", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const { setDefaultPill } = await import('../services/orderStatusPillService');
+            await setDefaultPill(organizationId, req.params.pillId);
+            res.json({ success: true });
+        } catch (error: any) {
+            res.status(400).json({ success: false, message: error.message });
+        }
+    });
+
+    // Assign Status Pill
+    app.patch("/api/orders/:orderId/status-pill", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+            const { orderId } = req.params;
+            const value = (req.body?.value ?? req.body?.statusPillValue) as string | null;
+            const { assignOrderStatusPill } = await import('../services/orderStatusPillService');
+            const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+
+            await assignOrderStatusPill({
+                organizationId,
+                orderId,
+                statusPillValue: value,
+                actorUserId: userId,
+                actorUserName: userName,
+            });
+
+            const updatedOrder = await storage.getOrderById(organizationId, orderId);
+            return res.json({ success: true, data: updatedOrder, message: value ? `Status pill set to "${value}"` : 'Status pill cleared' });
+        } catch (error: any) {
+            console.error('[StatusPill:PATCH] Error:', error);
+            return res.status(500).json({ success: false, message: error?.message || "Failed to update status pill" });
+        }
+    });
+
+    // Order List Notes
+    app.get("/api/orders/:id/list-note", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const [note] = await db.select().from(orderListNotes).where(and(eq(orderListNotes.organizationId, organizationId), eq(orderListNotes.orderId, req.params.id))).limit(1);
+            res.json({ listLabel: note?.listLabel || null });
+        } catch (error) {
+            console.error("Error fetching order list note:", error);
+            res.status(500).json({ message: "Failed to fetch list note" });
+        }
+    });
+
+    app.put("/api/orders/:id/list-note", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ message: "User not authenticated" });
+            const { id: orderId } = req.params;
+            const { listLabel } = req.body;
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ message: "Order not found" });
+            const [updated] = await db.insert(orderListNotes).values({ organizationId, orderId, listLabel: listLabel || null, updatedByUserId: userId }).onConflictDoUpdate({ target: [orderListNotes.organizationId, orderListNotes.orderId], set: { listLabel: listLabel || null, updatedByUserId: userId, updatedAt: new Date() } }).returning();
+            res.json({ success: true, listLabel: updated.listLabel });
+        } catch (error) {
+            console.error("Error updating order list note:", error);
+            res.status(500).json({ message: "Failed to update list note" });
+        }
+    });
+
+    // Order Attachments
+    app.get("/api/orders/:orderId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const { orderId } = req.params;
+            const { includeLineItems } = req.query;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ error: "Order not found" });
+            const whereConditions: any[] = [eq(orderAttachments.orderId, orderId)];
+            if (includeLineItems !== 'true') whereConditions.push(isNull(orderAttachments.orderLineItemId));
+            const files = await db.select().from(orderAttachments).where(and(...whereConditions)).orderBy(desc(orderAttachments.createdAt));
+            const logOnce = createRequestLogOnce();
+            const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+            return res.json({ success: true, data: enrichedFiles });
+        } catch (error) {
+            console.error("[OrderAttachments:GET] Error:", error);
+            return res.status(500).json({ error: "Failed to fetch order attachments" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const { orderId } = req.params;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+            const { uploadId, files, description, fileName, fileUrl, fileSize, mimeType } = req.body;
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ error: "Order not found" });
+
+            if (uploadId) {
+                const { loadUploadSessionMeta, saveUploadSessionMeta, deleteUploadSession } = await import('../services/chunkedUploads');
+                const meta = await loadUploadSessionMeta(uploadId);
+                if (meta.organizationId !== organizationId) return res.status(404).json({ error: 'Upload not found' });
+                if (!meta.relativePath) return res.status(400).json({ error: 'Upload not finalized' });
+
+                const [created] = await db.insert(orderAttachments).values({
+                    orderId,
+                    quoteId: order.quoteId || null,
+                    uploadedByUserId: userId,
+                    uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    description: description || null,
+                    fileName: meta.originalFilename,
+                    fileUrl: meta.relativePath!,
+                    fileSize: meta.sizeBytes,
+                    mimeType: meta.mimeType,
+                    originalFilename: meta.originalFilename,
+                    relativePath: meta.relativePath!,
+                    storageProvider: 'local',
+                    sizeBytes: meta.sizeBytes,
+                }).returning();
+                await deleteUploadSession(uploadId);
+                const enriched = await enrichAttachmentWithUrls(created);
+                return res.json({ success: true, data: [enriched] });
+            }
+
+            if (Array.isArray(files) && files.length > 0) {
+                const { processUploadedFile } = await import('../utils/fileStorage.js');
+                const inserted = await db.transaction(async (tx) => {
+                    const results = [];
+                    for (const f of files) {
+                        const fileMetadata = await processUploadedFile({ originalFilename: f.fileName, buffer: Buffer.from(f.fileBufferBase64, 'base64'), mimeType: f.mimeType, organizationId, resourceType: 'order', resourceId: orderId });
+                        const [created] = await tx.insert(orderAttachments).values({
+                            orderId,
+                            quoteId: order.quoteId || null,
+                            uploadedByUserId: userId,
+                            uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                            description: description || null,
+                            fileName: f.fileName,
+                            fileUrl: fileMetadata.relativePath,
+                            fileSize: fileMetadata.sizeBytes,
+                            mimeType: f.mimeType,
+                            originalFilename: fileMetadata.originalFilename,
+                            relativePath: fileMetadata.relativePath,
+                            storageProvider: 'local',
+                            sizeBytes: fileMetadata.sizeBytes,
+                        }).returning();
+                        results.push(created);
+                    }
+                    return results;
+                });
+                return res.json({ success: true, data: inserted });
+            }
+
+            if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
+            if (!fileName) return res.status(400).json({ error: "fileName is required" });
+
+            const [attachment] = await db.insert(orderAttachments).values({
+                orderId,
+                quoteId: order.quoteId || null,
+                uploadedByUserId: userId,
+                uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                fileName,
+                originalFilename: fileName,
+                fileUrl,
+                fileSize: fileSize || null,
+                mimeType: mimeType || null,
+                description: description || null,
+                storageProvider: fileUrl.startsWith('http') ? undefined : 'local',
+            }).returning();
+            return res.json({ success: true, data: attachment });
+        } catch (error) {
+            console.error("[OrderAttachments:POST] Error:", error);
+            return res.status(500).json({ error: "Failed to attach file to order" });
+        }
+    });
+
+    // Inventory Management Routes
+    app.get('/api/materials', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const list = await storage.getAllMaterials(organizationId);
+            res.json({ success: true, data: list });
+        } catch (err) {
+            console.error('Error listing materials', err);
+            res.status(500).json({ error: 'Failed to list materials' });
+        }
+    });
+
+    app.get('/api/materials/csv-template', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+        try {
+            const templateData = [
+                {
+                    'Material ID': '',
+                    Name: '13oz Vinyl',
+                    SKU: 'VINYL-13OZ',
+                    Type: 'roll',
+                    Category: 'Vinyl',
+                    'Unit Of Measure': 'sqft',
+                    Width: '54',
+                    Height: '',
+                    Thickness: '',
+                    'Thickness Unit': 'mil',
+                    Color: 'White',
+                    'Cost Per Unit': '0.2500',
+                    'Wholesale Base Rate': '',
+                    'Wholesale Min Charge': '',
+                    'Retail Base Rate': '',
+                    'Retail Min Charge': '',
+                    'Stock Quantity': '0',
+                    'Min Stock Alert': '0',
+                    'Is Active': 'true',
+                    'Preferred Vendor ID': '',
+                    'Vendor SKU': '',
+                    'Vendor Cost Per Unit': '',
+                    'Roll Length Ft': '150',
+                    'Cost Per Roll': '225.00',
+                    'Edge Waste In Per Side': '0',
+                    'Lead Waste Ft': '0',
+                    'Tail Waste Ft': '0',
+                },
+            ];
+            const csv = Papa.unparse(templateData);
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', 'attachment; filename="material-import-template.csv"');
+            res.send(csv);
+        } catch (error) {
+            console.error('Error generating material CSV template:', error);
+            res.status(500).json({ error: 'Failed to generate CSV template' });
+        }
+    });
+
+    app.get('/api/materials/export', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const list = await storage.getAllMaterials(organizationId);
+
+            const exportData = (list || []).map((m: any) => ({
+                'Material ID': m.id,
+                Name: m.name || '',
+                SKU: m.sku || '',
+                Type: m.type || '',
+                Category: m.category || '',
+                'Unit Of Measure': m.unitOfMeasure || '',
+                Width: m.width ?? '',
+                Height: m.height ?? '',
+                Thickness: m.thickness ?? '',
+                'Thickness Unit': m.thicknessUnit ?? '',
+                Color: m.color ?? '',
+                'Cost Per Unit': m.costPerUnit ?? '',
+                'Wholesale Base Rate': m.wholesaleBaseRate ?? '',
+                'Wholesale Min Charge': m.wholesaleMinCharge ?? '',
+                'Retail Base Rate': m.retailBaseRate ?? '',
+                'Retail Min Charge': m.retailMinCharge ?? '',
+                'Stock Quantity': m.stockQuantity ?? '',
+                'Min Stock Alert': m.minStockAlert ?? '',
+                'Is Active': m.isActive === false ? 'false' : 'true',
+                'Preferred Vendor ID': m.preferredVendorId ?? '',
+                'Vendor SKU': m.vendorSku ?? '',
+                'Vendor Cost Per Unit': m.vendorCostPerUnit ?? '',
+                'Roll Length Ft': m.rollLengthFt ?? '',
+                'Cost Per Roll': m.costPerRoll ?? '',
+                'Edge Waste In Per Side': m.edgeWasteInPerSide ?? '',
+                'Lead Waste Ft': m.leadWasteFt ?? '',
+                'Tail Waste Ft': m.tailWasteFt ?? '',
+            }));
+
+            const csv = Papa.unparse(exportData);
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', 'attachment; filename="materials.csv"');
+            res.send(csv);
+        } catch (error) {
+            console.error('Error exporting materials:', error);
+            res.status(500).json({ error: 'Failed to export materials' });
+        }
+    });
+
+    app.post('/api/materials/import', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+            const { csvData, dryRun } = req.body as { csvData?: unknown; dryRun?: unknown };
+            if (!csvData || typeof csvData !== 'string') {
+                return res.status(400).json({ error: 'CSV data is required' });
+            }
+
+            const parseResult = Papa.parse(csvData, {
+                header: true,
+                skipEmptyLines: true,
+                transformHeader: (header: string) => header.trim(),
+            });
+
+            if (parseResult.errors.length > 0) {
+                return res.status(400).json({
+                    error: 'CSV parsing failed',
+                    errors: parseResult.errors.map((e) => e.message),
+                });
+            }
+
+            const rows = parseResult.data as Record<string, string>[];
+            if (rows.length === 0) {
+                return res.status(400).json({ error: 'CSV must contain at least one data row' });
+            }
+
+            const parseBool = (v: unknown) => {
+                if (v == null) return undefined;
+                const s = String(v).trim().toLowerCase();
+                if (s === '') return undefined;
+                if (['true', '1', 'yes', 'y'].includes(s)) return true;
+                if (['false', '0', 'no', 'n'].includes(s)) return false;
+                return undefined;
+            };
+
+            const parseNum = (v: unknown) => {
+                if (v == null) return undefined;
+                const s = String(v).trim();
+                if (s === '') return undefined;
+                const n = Number(s);
+                return Number.isFinite(n) ? n : undefined;
+            };
+
+            let created = 0;
+            let updated = 0;
+            let skipped = 0;
+            const rowErrors: Array<{ row: number; message: string }> = [];
+
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const materialId = (row['Material ID'] || row['ID'] || '').trim();
+                const name = (row['Name'] || '').trim();
+                const sku = (row['SKU'] || '').trim();
+                const type = (row['Type'] || '').trim();
+                const unitOfMeasure = (row['Unit Of Measure'] || '').trim();
+
+                if (!name || !sku || !type || !unitOfMeasure) {
+                    skipped++;
+                    continue;
+                }
+
+                const payload: any = {
+                    name,
+                    sku,
+                    type,
+                    category: (row['Category'] || '').trim() || undefined,
+                    unitOfMeasure,
+                    width: parseNum(row['Width']),
+                    height: parseNum(row['Height']),
+                    thickness: parseNum(row['Thickness']),
+                    thicknessUnit: (row['Thickness Unit'] || '').trim() || undefined,
+                    color: (row['Color'] || '').trim() || undefined,
+                    costPerUnit: parseNum(row['Cost Per Unit']),
+                    wholesaleBaseRate: parseNum(row['Wholesale Base Rate']),
+                    wholesaleMinCharge: parseNum(row['Wholesale Min Charge']),
+                    retailBaseRate: parseNum(row['Retail Base Rate']),
+                    retailMinCharge: parseNum(row['Retail Min Charge']),
+                    stockQuantity: parseNum(row['Stock Quantity']),
+                    minStockAlert: parseNum(row['Min Stock Alert']),
+                    isActive: parseBool(row['Is Active']),
+                    preferredVendorId: (row['Preferred Vendor ID'] || '').trim() || undefined,
+                    vendorSku: (row['Vendor SKU'] || '').trim() || undefined,
+                    vendorCostPerUnit: parseNum(row['Vendor Cost Per Unit']),
+                    rollLengthFt: parseNum(row['Roll Length Ft']),
+                    costPerRoll: parseNum(row['Cost Per Roll']),
+                    edgeWasteInPerSide: parseNum(row['Edge Waste In Per Side']),
+                    leadWasteFt: parseNum(row['Lead Waste Ft']),
+                    tailWasteFt: parseNum(row['Tail Waste Ft']),
+                };
+
+                try {
+                    if (materialId) {
+                        const parsedUpdate = updateMaterialSchema.parse(payload);
+                        if (!dryRun) {
+                            await storage.updateMaterial(organizationId, materialId, parsedUpdate);
+                        }
+                        updated++;
+                    } else {
+                        const parsedCreate = insertMaterialSchema.parse(payload);
+                        const { organizationId: _orgId, ...materialData } =
+                            parsedCreate as typeof parsedCreate & { organizationId?: string };
+                        if (!dryRun) {
+                            await storage.createMaterial(organizationId, materialData);
+                        }
+                        created++;
+                    }
+                } catch (err: any) {
+                    const message = err instanceof z.ZodError ? fromZodError(err).message : (err?.message || 'Unknown error');
+                    rowErrors.push({ row: i + 2, message });
+                }
+            }
+
+            res.json({
+                message: dryRun ? 'Material import validated' : 'Materials imported successfully',
+                imported: { created, updated, skipped },
+                errors: rowErrors,
+            });
+        } catch (error) {
+            console.error('Error importing materials:', error);
+            res.status(500).json({ error: 'Failed to import materials' });
+        }
+    });
+
+    app.get('/api/materials/low-stock', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const alerts = await storage.getMaterialLowStockAlerts(organizationId);
+            res.json({ success: true, data: alerts });
+        } catch (err) {
+            console.error('Error getting low stock alerts', err);
+            res.status(500).json({ error: 'Failed to get low stock alerts' });
+        }
+    });
+
+    app.get('/api/materials/:id', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const material = await storage.getMaterialById(organizationId, req.params.id);
+            if (!material) return res.status(404).json({ error: 'Material not found' });
+            res.json({ success: true, data: material });
+        } catch (err) {
+            console.error('Error fetching material', err);
+            res.status(500).json({ error: 'Failed to fetch material' });
+        }
+    });
+
+    app.post('/api/materials', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const parsed = insertMaterialSchema.parse(req.body);
+            const { organizationId: _orgId, ...materialData } =
+                parsed as typeof parsed & { organizationId?: string };
+            const created = await storage.createMaterial(organizationId, materialData);
+            res.json({ success: true, data: created });
+        } catch (err) {
+            if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            res.status(500).json({ error: 'Failed to create material' });
+        }
+    });
+
+    app.patch('/api/materials/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const parsed = updateMaterialSchema.parse(req.body);
+            const { organizationId: _orgId, ...materialData } =
+                parsed as typeof parsed & { organizationId?: string };
+            const updated = await storage.updateMaterial(organizationId, req.params.id, materialData);
+            res.json({ success: true, data: updated });
+        } catch (err) {
+            if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            res.status(500).json({ error: 'Failed to update material' });
+        }
+    });
+
+    app.delete('/api/materials/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            await storage.deleteMaterial(organizationId, req.params.id);
+            res.json({ success: true });
+        } catch (err) {
+            res.status(500).json({ error: 'Failed to delete material' });
+        }
+    });
+
+    app.post('/api/materials/:id/adjust', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const material = await storage.getMaterialById(organizationId, req.params.id);
+            if (!material) return res.status(404).json({ error: 'Material not found' });
+            const parsed = insertInventoryAdjustmentSchema.parse({ ...req.body, materialId: req.params.id });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+            const adjustment = await storage.adjustInventory(organizationId, parsed.materialId, parsed.type as any, parsed.quantityChange, userId, parsed.reason || undefined, parsed.orderId || undefined);
+            res.json({ success: true, data: adjustment });
+        } catch (err) {
+            if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
+            res.status(500).json({ error: 'Failed to adjust inventory' });
+        }
+    });
+
+    app.get('/api/materials/:id/adjustments', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const adjustments = await storage.getInventoryAdjustments(req.params.id);
+            res.json({ success: true, data: adjustments });
+        } catch (err) {
+            res.status(500).json({ error: 'Failed to fetch adjustments' });
+        }
+    });
+
+    app.get('/api/materials/:id/usage', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const usage = await storage.getMaterialUsageByMaterial(req.params.id);
+            res.json({ success: true, data: usage });
+        } catch (err) {
+            res.status(500).json({ error: 'Failed to fetch material usage' });
+        }
+    });
+
+    // Material usage subroutes for orders
+    app.get('/api/orders/:id/material-usage', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const usage = await storage.getMaterialUsageByOrder(req.params.id);
+            res.json({ success: true, data: usage });
+        } catch (err) {
+            console.error('Error fetching material usage', err);
+            res.status(500).json({ error: 'Failed to fetch material usage' });
+        }
+    });
+
+    app.post('/api/orders/:id/deduct-inventory', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+            await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, req.params.id, userId);
+            const usage = await storage.getMaterialUsageByOrder(req.params.id);
+            res.json({ success: true, data: usage });
+        } catch (err) {
+            console.error('Error deducting inventory manually', err);
+            res.status(500).json({ error: 'Failed to deduct inventory' });
+        }
+    });
+
+    app.delete("/api/orders/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            const order = await storage.getOrderById(organizationId, req.params.id);
+            await storage.deleteOrder(organizationId, req.params.id);
+            if (userId && order) {
+                await storage.createAuditLog(organizationId, { userId, userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email, actionType: 'DELETE', entityType: 'order', entityId: req.params.id, entityName: order.orderNumber, description: `Deleted order ${order.orderNumber}` });
+            }
+            res.json({ message: "Order deleted successfully" });
+        } catch (error) {
+            console.error("Error deleting order:", error);
+            res.status(500).json({ message: "Failed to delete order" });
+        }
+    });
+
+    app.post("/api/quotes/:id/convert-to-order", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ success: false, message: "User not authenticated" });
+            const { dueDate, promisedDate, priority, notesInternal } = req.body || {};
+            const order = await storage.convertQuoteToOrder(organizationId, req.params.id, userId, { dueDate: dueDate ? new Date(dueDate) : undefined, promisedDate: promisedDate ? new Date(promisedDate) : undefined, priority: priority || "normal", notesInternal: notesInternal ?? undefined });
+            res.status(201).json({ success: true, data: { order } });
+        } catch (error: any) {
+            console.error("[QUOTE TO ORDER CONVERSION] failed", error);
+            res.status(error?.message?.includes('already converted') ? 409 : 500).json({ success: false, message: error?.message || "Failed to convert quote to order" });
+        }
+    });
+
+    // Convert quote to order (LEGACY ENDPOINT - kept for backward compatibility)
+    app.post("/api/orders/from-quote/:quoteId", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) {
+                return res.status(401).json({ message: "User not authenticated" });
+            }
+
+            const { quoteId } = req.params;
+            const { dueDate, promisedDate, priority, notesInternal, customerId, contactId } = req.body;
+            const userRole = req.user.role || 'employee';
+
+            console.log('[CONVERT QUOTE TO ORDER] Starting conversion:', {
+                quoteId,
+                userId,
+                userRole,
+                providedCustomerId: customerId,
+                providedContactId: contactId,
+                dueDate,
+                promisedDate,
+                priority,
+            });
+
+            // Get the quote to check its source and customerId
+            const quote = await storage.getQuoteById(organizationId, quoteId);
+            if (!quote) {
+                console.error('[CONVERT QUOTE TO ORDER] Quote not found:', quoteId);
+                return res.status(404).json({ message: "Quote not found" });
+            }
+
+            console.log('[CONVERT QUOTE TO ORDER] Quote details:', {
+                quoteId: quote.id,
+                quoteNumber: quote.quoteNumber,
+                quoteCustomerId: quote.customerId,
+                quoteContactId: quote.contactId,
+                quoteSource: quote.source,
+                lineItemsCount: quote.lineItems?.length || 0,
+            });
+
+            let finalCustomerId: string;
+            let finalContactId: string | null;
+
+            // Handle customer quick quote differently
+            if (quote.source === 'customer_quick_quote') {
+                if (quote.customerId) {
+                    finalCustomerId = quote.customerId;
+                    finalContactId = null;
+                } else if (userRole === 'customer' || !['owner', 'admin', 'manager', 'employee'].includes(userRole)) {
+                    try {
+                        finalCustomerId = await ensureCustomerForUser(userId);
+                        finalContactId = null;
+                    } catch (error) {
+                        return res.status(400).json({
+                            message: "Cannot convert quote to order: No customer account found. Please contact support to set up your customer account."
+                        });
+                    }
+                } else {
+                    finalCustomerId = customerId;
+                    finalContactId = contactId || null;
+                    if (!finalCustomerId) {
+                        return res.status(400).json({ message: "Customer ID is required to convert this quote to an order" });
+                    }
+                }
+            } else {
+                finalCustomerId = customerId || quote.customerId;
+                finalContactId = contactId || quote.contactId;
+
+                if (!finalCustomerId) {
+                    return res.status(400).json({
+                        message: "This quote is missing a customer. Please edit the quote and select a customer before converting to an order."
+                    });
+                }
+            }
+
+            if (quote.customerId !== finalCustomerId || quote.contactId !== finalContactId) {
+                await storage.updateQuote(organizationId, quoteId, {
+                    customerId: finalCustomerId,
+                    contactId: finalContactId,
+                });
+            }
+
+            const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
+                dueDate: dueDate || undefined,
+                promisedDate: promisedDate || undefined,
+                priority,
+                notesInternal,
+            });
+
+            await storage.createAuditLog(organizationId, {
+                userId,
+                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                actionType: 'CREATE',
+                entityType: 'order',
+                entityId: order.id,
+                entityName: order.orderNumber,
+                description: `Created order ${order.orderNumber} from quote ${quote.quoteNumber}`,
+                newValues: order,
+            });
+
+            res.json(order);
+        } catch (error: any) {
+            console.error("[CONVERT QUOTE TO ORDER] Error:", error);
+            if (error?.message?.includes('already converted')) {
+                return res.status(409).json({
+                    message: error.message,
+                    error: error.message
+                });
+            }
+            res.status(500).json({ message: "Failed to convert quote to order", error: error.message });
+        }
+    });
+
+    app.patch('/api/orders/:id/fulfillment-status', isAuthenticated, async (req: any, res) => {
+        try {
+            if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
+                return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
+            }
+            const { status } = req.body;
+            if (!['pending', 'packed', 'shipped', 'delivered'].includes(status)) {
+                return res.status(400).json({ error: 'Invalid fulfillment status' });
+            }
+            await updateOrderFulfillmentStatus(req.params.id, status);
+            res.json({ success: true, message: 'Fulfillment status updated successfully' });
+        } catch (error) {
+            console.error('Error updating fulfillment status:', error);
+            res.status(500).json({ error: 'Failed to update fulfillment status' });
+        }
+    });
+
+    // Customer portal: My Quotes (customer_quick_quote only)
+    app.get('/api/portal/my-quotes', isAuthenticated, portalContext, async (req: any, res) => {
+        try {
+            const portalCustomer = getPortalCustomer(req);
+            if (!portalCustomer) {
+                return res.status(403).json({ error: 'No customer account linked to this user' });
+            }
+            const { organizationId, id: customerId } = portalCustomer;
+            const quotes = await storage.getQuotesForCustomer(organizationId, customerId, { source: 'customer_quick_quote' });
+            res.json({ success: true, data: quotes });
+        } catch (error) {
+            console.error('Error fetching portal quotes:', error);
+            res.status(500).json({ error: 'Failed to fetch quotes' });
+        }
+    });
+
+    // Customer portal: My Orders
+    app.get('/api/portal/my-orders', isAuthenticated, portalContext, async (req: any, res) => {
+        try {
+            const portalCustomer = getPortalCustomer(req);
+            if (!portalCustomer) {
+                return res.status(403).json({ error: 'No customer account linked to this user' });
+            }
+            const { organizationId, id: customerId } = portalCustomer;
+            const orders = await storage.getAllOrders(organizationId, { customerId });
+            res.json({ success: true, data: orders });
+        } catch (error) {
+            console.error('Error fetching portal orders:', error);
+            res.status(500).json({ error: 'Failed to fetch orders' });
+        }
+    });
+
+    // Customer portal: Convert quote
+    app.post('/api/portal/convert-quote/:id', isAuthenticated, portalContext, async (req: any, res) => {
+        try {
+            const portalCustomer = getPortalCustomer(req);
+            if (!portalCustomer) {
+                return res.status(403).json({ error: 'No customer account linked to this user' });
+            }
+            const { organizationId, id: customerId } = portalCustomer;
+            const quoteId = req.params.id;
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+            const quote = await storage.getQuoteById(organizationId, quoteId, userId);
+            if (!quote) return res.status(404).json({ error: 'Quote not found' });
+            if (quote.customerId !== customerId) {
+                return res.status(403).json({ error: 'Quote does not belong to this customer' });
+            }
+
+            const existingState = await storage.getQuoteWorkflowState(quoteId);
+            if (!existingState || existingState.status !== 'customer_approved') {
+                await storage.updateQuoteWorkflowState(quoteId, { status: 'customer_approved', approvedByCustomerUserId: userId, customerNotes: req.body?.customerNotes || null });
+            }
+            const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
+                priority: req.body?.priority,
+                dueDate: req.body?.dueDate || undefined,
+                promisedDate: req.body?.promisedDate || undefined,
+                notesInternal: req.body?.internalNotes,
+            });
+            await storage.createOrderAuditLog({
+                orderId: order.id,
+                userId,
+                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                actionType: 'converted_by_customer',
+                fromStatus: 'pending_customer_approval',
+                toStatus: 'new',
+                note: req.body?.note || null,
+                metadata: null,
+            });
+            res.json({ success: true, data: order });
+        } catch (error: any) {
+            console.error('Error converting quote (portal):', error);
+            if (error?.message?.includes('already converted')) {
+                return res.status(409).json({ error: error.message });
+            }
+            res.status(500).json({ error: 'Failed to convert quote' });
+        }
+    });
+
+    // Order-specific Audit & Files
+    app.get('/api/orders/:id/audit', isAuthenticated, async (req: any, res) => {
+        try {
+            const auditEntries = await storage.getOrderAuditLog(req.params.id);
+            res.json({ success: true, data: auditEntries });
+        } catch (error) {
+            console.error('Error fetching order audit:', error);
+            res.status(500).json({ error: 'Failed to fetch audit trail' });
+        }
+    });
+
+    app.post('/api/orders/:id/audit', isAuthenticated, async (req: any, res) => {
+        try {
+            const userId = getUserId(req.user);
+            const { actionType, fromStatus, toStatus, note, metadata } = req.body;
+            const entry = await storage.createOrderAuditLog({
+                orderId: req.params.id,
+                userId,
+                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                actionType: actionType || 'note_added',
+                fromStatus: fromStatus || null,
+                toStatus: toStatus || null,
+                note: note || null,
+                metadata: metadata || null,
+            });
+            res.json({ success: true, data: entry });
+        } catch (error) {
+            console.error('Error adding audit entry:', error);
+            res.status(500).json({ error: 'Failed to add audit entry' });
+        }
+    });
+
+    app.get('/api/orders/:id/files', isAuthenticated, async (req: any, res) => {
+        try {
+            const files = await storage.listOrderFiles(req.params.id);
+            const logOnce = createRequestLogOnce();
+            const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+            res.json({ success: true, data: enrichedFiles });
+        } catch (error) {
+            console.error('Error fetching order files:', error);
+            res.status(500).json({ error: 'Failed to fetch files' });
+        }
+    });
+
+    app.get('/api/orders/:orderId/line-items/:lineItemId/files', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const { orderId, lineItemId } = req.params;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ error: 'Order not found' });
+
+            const [li] = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)))
+                .limit(1);
+
+            if (!li) return res.status(404).json({ error: 'Line item not found' });
+
+            const files = await db
+                .select()
+                .from(orderAttachments)
+                .where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId)))
+                .orderBy(desc(orderAttachments.createdAt));
+
+            const logOnce = createRequestLogOnce();
+            const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+            return res.json({ success: true, data: enrichedFiles });
+        } catch (error) {
+            console.error('[OrdersLineItemFiles:GET] Error:', error);
+            return res.status(500).json({ error: 'Failed to fetch order line item files' });
+        }
+    });
+
+    app.post('/api/orders/:id/files', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+
+            const {
+                fileName,
+                fileUrl,
+                fileSize,
+                mimeType,
+                description,
+                quoteId,
+                orderLineItemId,
+                role,
+                side,
+                isPrimary,
+                thumbnailUrl,
+                fileBuffer,
+                originalFilename,
+                orderNumber
+            } = req.body;
+
+            if (!fileName && !originalFilename) {
+                return res.status(400).json({ error: 'fileName or originalFilename is required' });
+            }
+
+            const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
+            const validSides = ['front', 'back', 'na'];
+
+            if (role && !validRoles.includes(role)) {
+                return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
+            }
+
+            if (side && !validSides.includes(side)) {
+                return res.status(400).json({ error: `Invalid side. Must be one of: ${validSides.join(', ')}` });
+            }
+
+            let attachmentData: any = {
+                orderId: req.params.id,
+                orderLineItemId: orderLineItemId || null,
+                quoteId: quoteId || null,
+                uploadedByUserId: userId,
+                uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                description: description || null,
+                role: (role || 'other') as FileRole,
+                side: (side || 'na') as FileSide,
+                isPrimary: isPrimary || false,
+            };
+
+            if (fileBuffer && originalFilename) {
+                const { processUploadedFile } = await import('../utils/fileStorage.js');
+                const buffer = Buffer.from(fileBuffer, 'base64');
+
+                const fileMetadata = await processUploadedFile({
+                    originalFilename,
+                    buffer,
+                    mimeType: mimeType || 'application/octet-stream',
+                    organizationId,
+                    orderNumber,
+                    lineItemId: orderLineItemId,
+                });
+
+                attachmentData = {
+                    ...attachmentData,
+                    fileName: originalFilename,
+                    fileUrl: fileMetadata.relativePath,
+                    fileSize: fileMetadata.sizeBytes,
+                    mimeType: mimeType || 'application/octet-stream',
+                    thumbnailUrl: thumbnailUrl || null,
+                    originalFilename: fileMetadata.originalFilename,
+                    storedFilename: fileMetadata.storedFilename,
+                    relativePath: fileMetadata.relativePath,
+                    storageProvider: 'local',
+                    extension: fileMetadata.extension,
+                    sizeBytes: fileMetadata.sizeBytes,
+                    checksum: fileMetadata.checksum,
+                };
+            }
+            else {
+                if (!fileUrl) {
+                    return res.status(400).json({ error: 'fileUrl is required for legacy uploads' });
+                }
+                const resolvedFileName = (fileName || originalFilename) as string;
+                const bucketName = 'titan-private';
+                const supabaseKeyFromUrl = isSupabaseConfigured() && fileUrl && (fileUrl.startsWith('http')) ? tryExtractSupabaseObjectKeyFromUrl(fileUrl, 'titan-private') : null;
+
+                let storageProvider: string | undefined;
+                if (supabaseKeyFromUrl) {
+                    storageProvider = 'supabase';
+                } else if (fileUrl && (fileUrl.startsWith('http'))) {
+                    storageProvider = undefined;
+                } else {
+                    storageProvider = 'local';
+                }
+
+                attachmentData = {
+                    ...attachmentData,
+                    fileName: resolvedFileName,
+                    fileUrl: fileUrl,
+                    fileSize: fileSize || null,
+                    mimeType: mimeType || null,
+                    thumbnailUrl: storageProvider ? null : (thumbnailUrl || null),
+                    storageProvider,
+                    bucket: bucketName,
+                };
+            }
+
+            const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+
+            await storage.createOrderAuditLog({
+                orderId: req.params.id,
+                userId,
+                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                actionType: 'file_uploaded',
+                fromStatus: null,
+                toStatus: null,
+                note: `File attached: ${originalFilename || fileName} (${role || 'other'})`,
+                metadata: { fileId: attachment.id, fileName: originalFilename || fileName, role, side } as any,
+            });
+
+            res.json({ success: true, data: attachment });
+        } catch (error) {
+            console.error('Error attaching file to order:', error);
+            res.status(500).json({ error: 'Failed to attach file to order' });
+        }
+    });
+
+    app.patch('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
+        try {
+            const userId = getUserId(req.user);
+            const { role, side, isPrimary, description } = req.body;
+            const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
+            const validSides = ['front', 'back', 'na'];
+
+            if (role && !validRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+            if (side && !validSides.includes(side)) return res.status(400).json({ error: 'Invalid side' });
+
+            const updates: any = {};
+            if (role !== undefined) updates.role = role;
+            if (side !== undefined) updates.side = side;
+            if (isPrimary !== undefined) updates.isPrimary = isPrimary;
+            if (description !== undefined) updates.description = description;
+
+            const updated = await storage.updateOrderFileMeta(req.params.fileId, updates);
+            await storage.createOrderAuditLog({
+                orderId: req.params.orderId,
+                userId,
+                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                actionType: 'file_updated',
+                fromStatus: null,
+                toStatus: null,
+                note: `File metadata updated: ${updated.fileName}`,
+                metadata: { fileId: updated.id, updates } as any,
+            });
+            res.json({ success: true, data: updated });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to update file metadata' });
+        }
+    });
+
+    app.delete('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
+        try {
+            const userId = getUserId(req.user);
+            const files = await storage.getOrderAttachments(req.params.orderId);
+            const file = files.find(f => f.id === req.params.fileId);
+            await storage.detachOrderFile(req.params.fileId);
+            if (file) {
+                await storage.createOrderAuditLog({
+                    orderId: req.params.orderId,
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    actionType: 'file_deleted',
+                    fromStatus: null,
+                    toStatus: null,
+                    note: `File removed: ${file.fileName}`,
+                    metadata: { fileId: file.id, fileName: file.fileName } as any,
+                });
+            }
+            res.json({ success: true });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to delete file' });
+        }
+    });
+
+    app.get('/api/orders/:id/artwork-summary', isAuthenticated, async (req: any, res) => {
+        try {
+            const summary = await storage.getOrderArtworkSummary(req.params.id);
+            res.json({ success: true, data: summary });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to fetch artwork summary' });
+        }
+    });
+
+    // Order Line Items routes
+    app.get("/api/orders/:orderId/line-items", isAuthenticated, async (req, res) => {
+        try {
+            const lineItems = await storage.getOrderLineItems(req.params.orderId);
+            res.json(lineItems);
+        } catch (error) {
+            res.status(500).json({ message: "Failed to fetch order line items" });
+        }
+    });
+
+    app.get("/api/order-line-items/:id", isAuthenticated, async (req, res) => {
+        try {
+            const lineItem = await storage.getOrderLineItemById(req.params.id);
+            if (!lineItem) return res.status(404).json({ message: "Order line item not found" });
+            res.json(lineItem);
+        } catch (error) {
+            res.status(500).json({ message: "Failed to fetch order line item" });
+        }
+    });
+
+    app.post("/api/order-line-items", isAuthenticated, async (req, res) => {
+        try {
+            const lineItemData = insertOrderLineItemSchema.parse(req.body);
+            const lineItem = await storage.createOrderLineItem(lineItemData);
+            res.json(lineItem);
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            res.status(500).json({ message: "Failed to create order line item" });
+        }
+    });
+
+    app.patch("/api/order-line-items/:id", isAuthenticated, async (req: any, res) => {
+        try {
+            const userId = getUserId(req.user);
+            const lineItemData = updateOrderLineItemSchema.parse({ ...req.body, id: req.params.id });
+            const { id, ...updateData } = lineItemData;
+            const oldLineItem = await storage.getOrderLineItemById(req.params.id);
+            const lineItem = await storage.updateOrderLineItem(req.params.id, updateData);
+
+            if (oldLineItem && updateData.status !== undefined && oldLineItem.status !== updateData.status && userId) {
+                const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+                await storage.createOrderAuditLog({
+                    orderId: lineItem.orderId,
+                    userId,
+                    userName,
+                    actionType: 'line_item_status_change',
+                    fromStatus: null,
+                    toStatus: null,
+                    note: null,
+                    metadata: { lineItemId: lineItem.id, oldStatus: oldLineItem.status, newStatus: updateData.status },
+                });
+            }
+            res.json(lineItem);
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            res.status(500).json({ message: "Failed to update order line item" });
+        }
+    });
+
+    app.patch("/api/orders/:orderId/line-items/:lineItemId/status", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            const { orderId, lineItemId } = req.params;
+            const { status } = req.body;
+            const validStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+            if (!status || !validStatuses.includes(status)) return res.status(400).json({ message: "Invalid status" });
+
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const oldLineItem = await storage.getOrderLineItemById(lineItemId);
+            if (!oldLineItem || oldLineItem.orderId !== orderId) return res.status(404).json({ message: "Line item not found" });
+
+            const updatedLineItem = await storage.updateOrderLineItem(lineItemId, { status });
+            if (userId && oldLineItem.status !== status) {
+                const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+                await storage.createOrderAuditLog({
+                    orderId: order.id,
+                    userId,
+                    userName,
+                    actionType: 'line_item_status_change',
+                    fromStatus: null,
+                    toStatus: null,
+                    note: null,
+                    metadata: { lineItemId: updatedLineItem.id, oldStatus: oldLineItem.status, newStatus: status },
+                });
+            }
+            res.json({ success: true, data: updatedLineItem });
+        } catch (error) {
+            res.status(500).json({ message: "Failed to update line item status" });
+        }
+    });
+
+    app.delete("/api/order-line-items/:id", isAuthenticated, isAdminOrOwner, async (req, res) => {
+        try {
+            await storage.deleteOrderLineItem(req.params.id);
+            res.json({ message: "Order line item deleted successfully" });
+        } catch (error) {
+            res.status(500).json({ message: "Failed to delete order line item" });
+        }
+    });
+
+    // Customer portal: Products (filtered by visibility settings)
+    app.get('/api/portal/products', isAuthenticated, portalContext, async (req: any, res) => {
+        try {
+            const portalCustomer = getPortalCustomer(req);
+            if (!portalCustomer) {
+                return res.status(403).json({ error: 'No customer account linked to this user' });
+            }
+            const { organizationId, id: customerId, productVisibilityMode } =
+                portalCustomer as any;
+
+            const allProducts = await storage.getAllProducts(organizationId);
+            let visibleProducts = allProducts;
+
+            if (productVisibilityMode === 'linked-only') {
+                const visibleProductIds = await db
+                    .select({ productId: customerVisibleProducts.productId })
+                    .from(customerVisibleProducts)
+                    .where(eq(customerVisibleProducts.customerId, customerId));
+
+                const visibleIdSet = new Set(visibleProductIds.map(row => row.productId));
+                visibleProducts = allProducts.filter(p => visibleIdSet.has(p.id));
+            }
+
+            res.json({ success: true, data: visibleProducts });
+        } catch (error) {
+            console.error('Error fetching portal products:', error);
+            res.status(500).json({ error: 'Failed to fetch products' });
+        }
+    });
+
+    // Job file routes
+    app.get('/api/jobs/:id/files', isAuthenticated, async (req: any, res) => {
+        try {
+            const files = await storage.listJobFiles(req.params.id);
+            res.json({ success: true, data: files });
+        } catch (error) {
+            console.error('Error fetching job files:', error);
+            res.status(500).json({ error: 'Failed to fetch job files' });
+        }
+    });
+
+    app.post('/api/jobs/:id/files', isAuthenticated, async (req: any, res) => {
+        try {
+            const userId = getUserId(req.user);
+            if (!userId) {
+                return res.status(401).json({ error: 'User not authenticated' });
+            }
+            const { fileId, role } = req.body;
+
+            if (!fileId) {
+                return res.status(400).json({ error: 'fileId is required' });
+            }
+
+            const validRoles = ['artwork', 'proof', 'reference', 'customer_po', 'setup', 'output', 'other'];
+            if (role && !validRoles.includes(role)) {
+                return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
+            }
+
+            const jobFile = await storage.attachFileToJob({
+                jobId: req.params.id,
+                fileId,
+                role: role || 'artwork',
+                attachedByUserId: userId,
+            });
+
+            res.json({ success: true, data: jobFile });
+        } catch (error) {
+            console.error('Error attaching file to job:', error);
+            res.status(500).json({ error: 'Failed to attach file to job' });
+        }
+    });
+
+    app.delete('/api/jobs/:jobId/files/:fileId', isAuthenticated, async (req: any, res) => {
+        try {
+            await storage.detachJobFile(req.params.fileId);
+            res.json({ success: true });
+        } catch (error) {
+            console.error('Error detaching file from job:', error);
+            res.status(500).json({ error: 'Failed to detach file from job' });
+        }
+    });
+}
