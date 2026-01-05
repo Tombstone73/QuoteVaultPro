@@ -297,10 +297,11 @@ export async function registerAttachmentRoutes(
 
       // Fall back to Replit ObjectStorage (only works on Replit platform)
       const objectStorageService = new ObjectStorageService();
-      const uploadURL = await objectStorageService.getObjectEntityUploadURL();
+      const { url, path } = await objectStorageService.getObjectEntityUploadURL();
       res.json({
         method: "PUT",
-        url: uploadURL,
+        url,
+        path,
       });
     } catch (error) {
       console.error("Error getting upload URL:", error);

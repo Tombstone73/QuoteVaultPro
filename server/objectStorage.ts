@@ -119,7 +119,7 @@ export class ObjectStorageService {
     }
   }
 
-  async getObjectEntityUploadURL(): Promise<string> {
+  async getObjectEntityUploadURL(): Promise<{ url: string; path: string }> {
     const privateObjectDir = this.getPrivateObjectDir();
     if (!privateObjectDir) {
       throw new Error(
@@ -133,12 +133,16 @@ export class ObjectStorageService {
 
     const { bucketName, objectName } = parseObjectPath(fullPath);
 
-    return signObjectURL({
+    const url = await signObjectURL({
       bucketName,
       objectName,
       method: "PUT",
       ttlSec: 900,
     });
+
+    // Canonical object key doctrine: store keys relative to /objects/*
+    // i.e. client should persist "uploads/<uuid>", not a signed URL.
+    return { url, path: `uploads/${objectId}` };
   }
 
   async getObjectEntityFile(objectPath: string): Promise<File> {

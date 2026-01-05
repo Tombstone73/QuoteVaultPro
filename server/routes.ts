@@ -7633,6 +7633,291 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ===== ORDER LINE ITEM FILE ROUTES =====
+
+  // Get files for an order line item (mirroring quote line item pattern)
+  app.get("/api/orders/:orderId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { orderId, lineItemId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      console.log(`[OrderLineItemFiles:GET] orderId=${orderId}, lineItemId=${lineItemId}, orgId=${organizationId}`);
+
+      // Validate the order belongs to the organization
+      const [order] = await db.select({ id: orders.id }).from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!order) {
+        console.log(`[OrderLineItemFiles:GET] Order not found or doesn't belong to organization`);
+        return res.status(404).json({ error: "Order not found" });
+      }
+
+      // Validate the line item exists and belongs to this order
+      const [lineItem] = await db.select().from(orderLineItems)
+        .where(and(
+          eq(orderLineItems.id, lineItemId),
+          eq(orderLineItems.orderId, orderId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        console.log(`[OrderLineItemFiles:GET] Line item not found or doesn't belong to order`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      // Query attachments by orderLineItemId (no direct organizationId column, validated via order)
+      const files = await db.select().from(orderAttachments)
+        .where(eq(orderAttachments.orderLineItemId, lineItemId))
+        .orderBy(desc(orderAttachments.createdAt));
+
+      // Enrich each attachment with signed URLs
+      const logOnce = createRequestLogOnce();
+      const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+
+      // PHASE 2: Include linked assets with enriched URLs
+      const { assetRepository } = await import('./services/assets/AssetRepository');
+      const { enrichAssetsWithRoles } = await import('./services/assets/enrichAssetWithUrls');
+      const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
+      const enrichedAssets = enrichAssetsWithRoles(linkedAssets);
+
+      console.log(`[OrderLineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
+      res.json({ success: true, data: enrichedFiles, assets: enrichedAssets });
+    } catch (error) {
+      console.error("[OrderLineItemFiles:GET] Error:", error);
+      res.status(500).json({ error: "Failed to fetch line item files" });
+    }
+  });
+
+  // Upload file to an order line item (mirroring quote line item pattern)
+  app.post("/api/orders/:orderId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { orderId, lineItemId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const { fileName, fileUrl, fileSize, mimeType, description } = req.body;
+
+      console.log(`[OrderLineItemFiles:POST] orderId=${orderId}, lineItemId=${lineItemId}, fileName=${fileName}`);
+
+      if (!fileName) {
+        return res.status(400).json({ error: "fileName is required" });
+      }
+      if (!fileUrl) {
+        return res.status(400).json({ error: "fileUrl is required" });
+      }
+
+      // Validate the line item exists and belongs to this order
+      const [lineItem] = await db.select().from(orderLineItems)
+        .where(and(
+          eq(orderLineItems.id, lineItemId),
+          eq(orderLineItems.orderId, orderId)
+        ))
+        .limit(1);
+
+      if (!lineItem) {
+        console.log(`[OrderLineItemFiles:POST] Line item not found or doesn't belong to order`);
+        return res.status(404).json({ error: "Line item not found" });
+      }
+
+      // Detect if this is a PDF (by mimeType or filename)
+      const isPdfEarly = (mimeType && mimeType.toLowerCase().includes('pdf')) ||
+        (fileName && fileName.toLowerCase().endsWith('.pdf'));
+
+      // Check if PDF processing columns exist (from startup probe)
+      const { hasPageCountStatusColumn } = await import('./db');
+      const pdfColumnsExist = hasPageCountStatusColumn() === true;
+
+      if (isPdfEarly && !pdfColumnsExist) {
+        console.warn(`[OrderLineItemFiles:POST] PDF detected but page_count_status column missing; PDF processing disabled for ${fileName}`);
+      }
+
+      // Determine storage provider (same logic as quote uploads)
+      let storageProvider: string | undefined;
+      const storageKey = fileUrl;
+
+      if (isSupabaseConfigured() && fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
+        storageProvider = 'supabase';
+      } else if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+        storageProvider = undefined;
+      } else {
+        storageProvider = 'local';
+      }
+
+      const attachmentData: any = {
+        orderId,
+        orderLineItemId: lineItemId,
+        organizationId,
+        uploadedByUserId: userId,
+        uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+        fileName,
+        originalFilename: fileName,
+        fileUrl: (storageProvider === 'supabase' && storageKey && !storageKey.startsWith('http://') && !storageKey.startsWith('https://'))
+          ? normalizeObjectKeyForDb(storageKey)
+          : storageKey,
+        fileSize: fileSize || null,
+        mimeType: mimeType || null,
+        description: description || null,
+        bucket: 'titan-private',
+        storageProvider: storageProvider,
+        thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
+      };
+
+      // Only include PDF-specific fields if columns exist
+      if (pdfColumnsExist) {
+        attachmentData.pageCountStatus = isPdfEarly ? ('detecting' as const) : ('unknown' as const);
+      }
+
+      console.log(`[OrderLineItemFiles:POST] Inserting attachment with orderLineItemId=${lineItemId}`);
+      const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+
+      // Best-effort self-check for Supabase-backed keys (non-blocking)
+      if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
+        res.on('finish', () => {
+          scheduleSupabaseObjectSelfCheck({
+            bucket: 'titan-private',
+            path: attachment.fileUrl,
+            context: { attachmentType: 'order_line_item', orderId, lineItemId, attachmentId: attachment.id },
+          });
+        });
+      }
+
+      console.log(`[OrderLineItemFiles:POST] Saved attachment storageProvider=${attachment.storageProvider || 'none'} storageKey=${storageKey}`);
+      console.log(`[OrderLineItemFiles:POST] Created attachment id=${attachment.id}, orderLineItemId=${attachment.orderLineItemId}`);
+
+      // PHASE 2: Create asset + link (fail-soft: errors logged but don't block response)
+      try {
+        const { assetRepository } = await import('./services/assets/AssetRepository');
+        const asset = await assetRepository.createAsset(organizationId, {
+          fileKey: attachment.fileUrl,
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType || undefined,
+          sizeBytes: attachment.fileSize || undefined,
+        });
+        await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, 'primary');
+        console.log(`[OrderLineItemFiles:POST] Created asset ${asset.id} + linked to order_line_item ${lineItemId}`);
+      } catch (assetError) {
+        console.error(`[OrderLineItemFiles:POST] Asset creation failed (non-blocking):`, assetError);
+      }
+
+      // Robust PDF detection using both mimeType and filename
+      const attachmentFileName =
+        (attachment.originalFilename ?? attachment.fileName ?? '').toString();
+
+      const isPdfByMime = (attachment.mimeType ?? '').toLowerCase().includes('pdf');
+      const isPdfByName = attachmentFileName.toLowerCase().endsWith('.pdf');
+      const isPdf = isPdfByMime || isPdfByName;
+
+      // Best-effort AI detection for PDF-compatible .ai files
+      const lowerMimeType = (attachment.mimeType ?? '').toLowerCase();
+      const isAiByName = attachmentFileName.toLowerCase().endsWith('.ai');
+      const isAiByMime = /illustrator/i.test(lowerMimeType) || (/postscript/i.test(lowerMimeType) && isAiByName);
+      const isAi = isAiByName || isAiByMime;
+
+      const hasStorageProvider = !!attachment.storageProvider;
+      const isNotHttpUrl =
+        !!attachment.fileUrl &&
+        !attachment.fileUrl.startsWith('http://') &&
+        !attachment.fileUrl.startsWith('https://');
+
+      console.log('[OrderLineItemFiles:POST][Detect]', {
+        attachmentId: attachment.id,
+        fileName: attachmentFileName,
+        mimeType: attachment.mimeType ?? null,
+        storageProvider: attachment.storageProvider ?? null,
+        fileUrl: attachment.fileUrl ?? null,
+        isPdfByMime,
+        isPdfByName,
+        isPdf,
+        isAiByName,
+        isAiByMime,
+        isAi,
+        hasStorageProvider,
+        isNotHttpUrl,
+        pdfColumnsExist,
+      });
+
+      // Fire-and-forget thumbnail generation for images (non-blocking)
+      const { isSupportedImageType } = await import('./services/thumbnailGenerator');
+      const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
+      const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
+
+      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && attachment.fileUrl) {
+        const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
+        if (isThumbnailGenerationEnabled()) {
+          void generateImageDerivatives(
+            attachment.id,
+            'order',
+            attachment.fileUrl,
+            attachment.mimeType || null,
+            attachment.storageProvider!,
+            organizationId,
+            attachmentFileNameForThumb
+          ).catch((error) => {
+            console.error(`[OrderLineItemFiles:POST] Thumbnail generation failed for ${attachment.id}:`, error);
+          });
+        } else {
+          console.log(`[OrderLineItemFiles:POST] Thumbnail generation disabled, skipping for ${attachment.id}`);
+        }
+      } else if (isSupportedImage && (!hasStorageProvider || !isNotHttpUrl)) {
+        console.log(`[OrderLineItemFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
+      }
+
+      // Fire-and-forget PDF processing for PDFs (non-blocking)
+      const normalizedStorageProvider =
+        attachment.storageProvider ??
+        (isSupabaseConfigured() && attachment.fileUrl?.startsWith("uploads/")
+          ? "supabase"
+          : null);
+
+      if (isPdf || isAi) {
+        if (!pdfColumnsExist) {
+          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but pdf columns missing; skipping processing for attachmentId=${attachment.id}`);
+        } else if (!normalizedStorageProvider) {
+          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but storageProvider missing; skipping processing for attachmentId=${attachment.id}`);
+        } else if (!isNotHttpUrl) {
+          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but fileUrl is http(s); skipping processing for attachmentId=${attachment.id}`);
+        } else if (!attachment.fileUrl) {
+          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
+        } else {
+          console.log(`[OrderLineItemFiles:POST] PDF/AI detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
+
+          res.on("finish", () => {
+            setImmediate(() => {
+              void (async () => {
+                try {
+                  console.log(`[OrderLineItemFiles:POST] Starting PDF processing for attachmentId=${attachment.id}`);
+                  const { processPdfAttachmentDerivedData } = await import('./services/pdfProcessing');
+                  await processPdfAttachmentDerivedData({
+                    orgId: organizationId,
+                    attachmentId: attachment.id,
+                    storageKey: attachment.fileUrl,
+                    storageProvider: normalizedStorageProvider,
+                    mimeType: attachment.mimeType || null,
+                  });
+                } catch (error: any) {
+                  console.error(`[OrderLineItemFiles:POST] PDF kickoff failed for ${attachment.id}:`, error);
+                }
+              })();
+            });
+          });
+        }
+      }
+
+      // Enrich and return
+      const enrichedAttachment = await enrichAttachmentWithUrls(attachment, { logOnce: createRequestLogOnce() });
+      res.json({ success: true, data: enrichedAttachment });
+    } catch (error: any) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({ error: 'Invalid attachment data', details: error.errors });
+      }
+      console.error("[OrderLineItemFiles:POST] Error:", error);
+      res.status(500).json({ error: "Failed to upload line item file" });
+    }
+  });
+
   // =============================
   // Vendor Routes
   // =============================

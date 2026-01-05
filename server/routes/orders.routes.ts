@@ -5,6 +5,7 @@ import {
     orderAttachments,
     orderAuditLog,
     orderLineItems,
+    quoteAttachments,
     organizations,
     customers,
     products,
@@ -1312,6 +1313,199 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error("[OrderAttachments:POST] Error:", error);
             return res.status(500).json({ error: "Failed to attach file to order" });
+        }
+    });
+
+    app.delete("/api/orders/:orderId/attachments/:attachmentId", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const { orderId, attachmentId } = req.params;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            // Validate order belongs to tenant
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ error: "Order not found" });
+
+            // Only delete order-level (non-line-item) attachments from this endpoint
+            const [attachment] = await db
+                .select()
+                .from(orderAttachments)
+                .where(
+                    and(
+                        eq(orderAttachments.id, attachmentId),
+                        eq(orderAttachments.orderId, orderId),
+                        isNull(orderAttachments.orderLineItemId)
+                    )
+                )
+                .limit(1);
+
+            if (!attachment) return res.status(404).json({ error: "Attachment not found" });
+
+            // Remove DB link
+            await db
+                .delete(orderAttachments)
+                .where(
+                    and(
+                        eq(orderAttachments.id, attachmentId),
+                        eq(orderAttachments.orderId, orderId),
+                        isNull(orderAttachments.orderLineItemId)
+                    )
+                );
+
+            // Best-effort cleanup: delete storage objects only when safe
+            // Safe means: no other attachment rows reference the same storage key, and no remaining Asset links reference that file.
+            try {
+                const storageKeyRaw = (attachment as any).fileUrl as string | null | undefined;
+                const storageProviderRaw = (attachment as any).storageProvider as
+                    | "local"
+                    | "s3"
+                    | "gcs"
+                    | "supabase"
+                    | null
+                    | undefined;
+
+                const storageKey = storageKeyRaw ? String(storageKeyRaw) : "";
+                const storageProvider = storageProviderRaw ?? null;
+
+                if (
+                    storageKey &&
+                    !storageKey.startsWith("http://") &&
+                    !storageKey.startsWith("https://")
+                ) {
+                    if (!storageProvider) {
+                        // No known storage provider -> nothing safe to delete
+                    } else {
+                        const storageProviderForQuery: "local" | "s3" | "gcs" | "supabase" = storageProvider;
+
+                        const [{ orderRefs = 0 } = {}] = await db
+                            .select({ orderRefs: sql<number>`count(*)` })
+                            .from(orderAttachments)
+                            .where(and(eq(orderAttachments.fileUrl, storageKey), eq(orderAttachments.storageProvider, storageProviderForQuery)));
+
+                        const [{ quoteRefs = 0 } = {}] = await db
+                            .select({ quoteRefs: sql<number>`count(*)` })
+                            .from(quoteAttachments)
+                            .where(
+                                and(
+                                    eq(quoteAttachments.organizationId, organizationId),
+                                    eq(quoteAttachments.fileUrl, storageKey),
+                                    eq(quoteAttachments.storageProvider, storageProviderForQuery)
+                                )
+                            );
+
+                        const remainingAttachmentRefs = Number(orderRefs) + Number(quoteRefs);
+
+                    // Asset cleanup (PHASE 2 pipeline): unlink matching assets from this order,
+                    // and delete the asset+variants only if the asset is no longer linked anywhere.
+                        let hasRemainingAssetLinksForFile = false;
+                        const normalizedFileKey = normalizeObjectKeyForDb(storageKey);
+
+                        try {
+                            const { assets, assetLinks, assetVariants } = await import("@shared/schema");
+
+                        const matchingAssets = await db
+                            .select({ id: assets.id, fileKey: assets.fileKey })
+                            .from(assets)
+                            .where(and(eq(assets.organizationId, organizationId), eq(assets.fileKey, normalizedFileKey)));
+
+                        if (matchingAssets.length > 0) {
+                            // Unlink all matching assets from this order
+                            await Promise.all(
+                                matchingAssets.map((a) =>
+                                    db
+                                        .delete(assetLinks)
+                                        .where(
+                                            and(
+                                                eq(assetLinks.organizationId, organizationId),
+                                                eq(assetLinks.assetId, a.id),
+                                                eq(assetLinks.parentType, "order"),
+                                                eq(assetLinks.parentId, orderId)
+                                            )
+                                        )
+                                )
+                            );
+
+                            // Determine whether any of these assets remain linked elsewhere
+                            const linkCounts = await Promise.all(
+                                matchingAssets.map(async (a) => {
+                                    const [{ cnt = 0 } = {}] = await db
+                                        .select({ cnt: sql<number>`count(*)` })
+                                        .from(assetLinks)
+                                        .where(and(eq(assetLinks.organizationId, organizationId), eq(assetLinks.assetId, a.id)));
+                                    return { assetId: a.id, count: Number(cnt) };
+                                })
+                            );
+
+                            hasRemainingAssetLinksForFile = linkCounts.some((c) => c.count > 0);
+
+                            // If assets are now unlinked everywhere AND no other attachment rows reference the file,
+                            // delete asset variants objects + asset rows.
+                            if (!hasRemainingAssetLinksForFile && remainingAttachmentRefs === 0) {
+                                const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
+
+                                const deleteKeys = async (keys: string[]) => {
+                                    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+                                    if (uniqueKeys.length === 0) return;
+
+                                    if (storageProvider === "supabase" && isSupabaseConfigured()) {
+                                        const supabase = new SupabaseStorageService();
+                                        await Promise.all(uniqueKeys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
+                                    } else if (storageProvider === "local") {
+                                        await Promise.all(uniqueKeys.map((k) => deleteLocalFile(k).catch(() => false)));
+                                    }
+                                };
+
+                                for (const a of matchingAssets) {
+                                    const variants = await db
+                                        .select({ key: assetVariants.key })
+                                        .from(assetVariants)
+                                        .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, a.id)));
+
+                                    await deleteKeys([
+                                        ...(variants.map((v) => v.key || "")),
+                                        normalizedFileKey,
+                                    ]);
+
+                                    await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, a.id)));
+                                }
+                            }
+                        }
+                        } catch (assetCleanupError) {
+                            // fail-soft: asset pipeline is optional and should not block attachment deletion
+                            console.error("[OrderAttachments:DELETE] Asset cleanup failed (non-blocking):", assetCleanupError);
+                        }
+
+                    // If the file is still referenced anywhere, do not delete storage blobs.
+                    // Also avoid deleting blobs if any asset still links to the file.
+                        if (remainingAttachmentRefs === 0 && !hasRemainingAssetLinksForFile) {
+                            const { deleteFile: deleteLocalFile } = await import("../utils/fileStorage.js");
+
+                        const keysToDelete: string[] = [];
+                        keysToDelete.push(storageKey);
+                        const thumbKey = (attachment as any).thumbKey as string | null | undefined;
+                        const previewKey = (attachment as any).previewKey as string | null | undefined;
+                        if (thumbKey) keysToDelete.push(thumbKey);
+                        if (previewKey) keysToDelete.push(previewKey);
+
+                        const uniqueKeys = Array.from(new Set(keysToDelete.map((k) => String(k)).filter(Boolean)));
+
+                            if (storageProviderForQuery === "supabase" && isSupabaseConfigured()) {
+                                const supabase = new SupabaseStorageService();
+                                await Promise.all(uniqueKeys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
+                            } else if (storageProviderForQuery === "local") {
+                                await Promise.all(uniqueKeys.map((k) => deleteLocalFile(k).catch(() => false)));
+                            }
+                        }
+                    }
+                }
+            } catch (cleanupError) {
+                console.error("[OrderAttachments:DELETE] Storage cleanup failed (non-blocking):", cleanupError);
+            }
+
+            return res.json({ success: true });
+        } catch (error) {
+            console.error("[OrderAttachments:DELETE] Error:", error);
+            return res.status(500).json({ error: "Failed to delete order attachment" });
         }
     });
 

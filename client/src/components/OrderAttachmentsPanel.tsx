@@ -4,8 +4,19 @@ import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { isValidHttpUrl } from "@/lib/utils";
-import { Download, Loader2, Upload, X } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Download, Loader2, Trash2, Upload } from "lucide-react";
 import { orderTimelineQueryKey } from "@/hooks/useOrders";
+import { useDeleteOrderAttachment } from "@/hooks/useOrderAttachments";
 
 
 type OrderAttachment = {
@@ -32,9 +43,12 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [attachmentToDelete, setAttachmentToDelete] = useState<OrderAttachment | null>(null);
   const [uploadItems, setUploadItems] = useState<
     Array<{ key: string; name: string; percent: number; error?: string | null }>
   >([]);
+
+  const deleteAttachment = useDeleteOrderAttachment(orderId);
 
   const attachmentsApiPath = `/api/orders/${orderId}/attachments`;
 
@@ -223,6 +237,22 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
   const isEmpty = !isLoading && attachments.length === 0;
   const showEmptyText = isEmpty && !isUploading && uploadItems.length === 0;
 
+  const handleConfirmDelete = async () => {
+    const target = attachmentToDelete;
+    if (!target) return;
+    try {
+      await deleteAttachment.mutateAsync(target.id);
+      toast({ title: "Deleted", description: "Attachment removed from order." });
+      setAttachmentToDelete(null);
+    } catch (error: any) {
+      toast({
+        title: "Delete Failed",
+        description: error?.message || "Failed to delete attachment.",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -346,12 +376,48 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                   >
                     <Download className="w-4 h-4" />
                   </Button>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0"
+                    onClick={() => setAttachmentToDelete(a)}
+                    title={isLocked ? lockedHint : "Delete"}
+                    disabled={isLocked || deleteAttachment.isPending}
+                  >
+                    {deleteAttachment.isPending && attachmentToDelete?.id === a.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4 text-destructive" />
+                    )}
+                  </Button>
                 </div>
               </div>
             );
           })}
         </div>
       )}
+
+      <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => (!open ? setAttachmentToDelete(null) : undefined)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete attachment</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove the attachment from this order.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteAttachment.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDelete}
+              disabled={deleteAttachment.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteAttachment.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -52,6 +52,13 @@ export class AssetPreviewWorker {
       await assetPreviewGenerator.processAllPendingAssets();
     } catch (error) {
       console.error('[AssetPreviewWorker] Error processing queue:', error);
+      if (process.env.NODE_ENV === 'development') {
+        console.error('[AssetPreviewWorker][DEV] Queue failure details:',
+          error instanceof Error
+            ? { message: error.message, stack: error.stack }
+            : String(error)
+        );
+      }
     } finally {
       this.isRunning = false;
     }

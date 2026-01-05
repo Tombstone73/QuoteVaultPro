@@ -2,6 +2,11 @@ import { db } from '../../db';
 import { assets, assetVariants, assetLinks } from '../../../shared/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import type { Asset, InsertAsset, AssetVariant, AssetLink } from '../../../shared/schema';
+import { isSupabaseConfigured } from '../../supabaseStorage';
+import {
+  normalizeObjectKeyForDb,
+  tryExtractSupabaseObjectKeyFromUrl,
+} from '../../lib/supabaseObjectHelpers';
 
 /**
  * Asset Repository
@@ -10,6 +15,50 @@ import type { Asset, InsertAsset, AssetVariant, AssetLink } from '../../../share
  * All methods enforce multi-tenant isolation via organizationId.
  */
 export class AssetRepository {
+  private normalizeAssetFileKey(raw: string): string {
+    let key = (raw || '').toString().trim();
+
+    // Prefer extracting canonical object keys from URLs.
+    if (key.startsWith('http://') || key.startsWith('https://')) {
+      // Supabase URL patterns (public/sign/auth/download/etc)
+      if (isSupabaseConfigured()) {
+        const extracted = tryExtractSupabaseObjectKeyFromUrl(key, 'titan-private');
+        if (extracted) return normalizeObjectKeyForDb(extracted);
+      }
+
+      // Generic URL: use pathname (drop protocol/host/query)
+      try {
+        const url = new URL(key);
+        key = url.pathname || key;
+      } catch {
+        // ignore
+      }
+    }
+
+    // Allow clients to accidentally send "/objects/<key>" or "objects/<key>"
+    key = key.replace(/^\/+/, '');
+    if (key.startsWith('objects/')) {
+      key = key.slice('objects/'.length);
+    }
+    if (key.startsWith('objects\\')) {
+      key = key.slice('objects\\'.length);
+    }
+
+    // Normalize bucket-prefixed keys like "titan-private/uploads/..."
+    key = normalizeObjectKeyForDb(key);
+    return key;
+  }
+
+  private getInitialPreviewState(mimeType: string | undefined | null):
+    | { previewStatus: 'pending' }
+    | { previewStatus: 'failed'; previewError: string } {
+    const mt = (mimeType || '').toLowerCase();
+    const isImage = mt.startsWith('image/') && !mt.includes('svg') && !mt.includes('tiff');
+    const isPdf = mt === 'application/pdf';
+    if (isImage || isPdf) return { previewStatus: 'pending' };
+    return { previewStatus: 'failed', previewError: `Unsupported file type: ${mt || 'unknown'}` };
+  }
+
   /**
    * Create a new asset record
    * Called after uploading a file to storage
@@ -22,6 +71,8 @@ export class AssetRepository {
       .insert(assets)
       .values({
         ...data,
+        fileKey: this.normalizeAssetFileKey((data as any).fileKey),
+        ...this.getInitialPreviewState((data as any).mimeType),
         organizationId,
       })
       .returning();
