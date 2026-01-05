@@ -1979,6 +1979,7 @@ export const orderLineItems = pgTable("order_line_items", {
   }>>(), // snapshot of materials used
   materialUsages: jsonb("material_usages").$type<LineItemMaterialUsage[]>().default(sql`'[]'::jsonb`).notNull(), // structured material usage tracking
   requiresInventory: boolean("requires_inventory").notNull().default(true), // flag if inventory tracking is needed
+  sortOrder: integer("sort_order").notNull().default(0), // Display order in UI (for drag-and-drop reordering)
   // Tax system fields
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
@@ -3253,3 +3254,150 @@ export const orderListNotes = pgTable('order_list_notes', {
 
 export type OrderListNote = typeof orderListNotes.$inferSelect;
 export type InsertOrderListNote = typeof orderListNotes.$inferInsert;
+// ============================================================
+// CANONICAL ASSET PIPELINE (Migration 0013)
+// Unified file management for quotes, orders, invoices, and future modules
+// ============================================================
+
+// Asset status enum
+export const assetStatusEnum = pgEnum('asset_status', ['uploaded', 'analyzed', 'prepress_ready', 'prepress_failed']);
+
+// Asset preview status enum
+export const assetPreviewStatusEnum = pgEnum('asset_preview_status', ['pending', 'ready', 'failed']);
+
+// Asset variant kind enum
+export const assetVariantKindEnum = pgEnum('asset_variant_kind', ['thumb', 'preview', 'prepress_normalized', 'prepress_report']);
+
+// Asset variant status enum
+export const assetVariantStatusEnum = pgEnum('asset_variant_status', ['pending', 'ready', 'failed']);
+
+// Asset link parent type enum
+export const assetLinkParentTypeEnum = pgEnum('asset_link_parent_type', ['quote_line_item', 'order', 'order_line_item', 'invoice', 'note']);
+
+// Asset link role enum
+export const assetLinkRoleEnum = pgEnum('asset_link_role', ['primary', 'attachment', 'proof', 'reference', 'other']);
+
+// Assets table: Canonical file records
+export const assets = pgTable('assets', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  fileKey: text('file_key').notNull(), // uploads/org_<orgId>/asset/<assetId>/<filename>
+  fileName: text('file_name').notNull(),
+  mimeType: text('mime_type'),
+  sizeBytes: integer('size_bytes'),
+  sha256: text('sha256'), // Optional: for future deduplication
+  status: assetStatusEnum('status').notNull().default('uploaded'),
+  previewKey: text('preview_key'), // thumbs/org_<orgId>/asset/<assetId>/preview.jpg
+  thumbKey: text('thumb_key'), // thumbs/org_<orgId>/asset/<assetId>/thumb.jpg
+  previewStatus: assetPreviewStatusEnum('preview_status').notNull().default('pending'),
+  previewError: text('preview_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('assets_org_id_idx').on(table.organizationId),
+  index('assets_org_asset_idx').on(table.organizationId, table.id),
+  index('assets_file_key_idx').on(table.fileKey),
+  index('assets_preview_status_idx').on(table.organizationId, table.previewStatus),
+]);
+
+// Asset variants table: Derived files
+export const assetVariants = pgTable('asset_variants', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  assetId: varchar('asset_id').notNull().references(() => assets.id, { onDelete: 'cascade' }),
+  kind: assetVariantKindEnum('kind').notNull(),
+  key: text('key').notNull(), // Storage key for this variant
+  status: assetVariantStatusEnum('status').notNull().default('pending'),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('asset_variants_org_id_idx').on(table.organizationId),
+  index('asset_variants_asset_id_idx').on(table.assetId),
+  index('asset_variants_org_asset_idx').on(table.organizationId, table.assetId),
+  index('asset_variants_status_idx').on(table.organizationId, table.status),
+  uniqueIndex('asset_variants_unique').on(table.assetId, table.kind),
+]);
+
+// Asset links table: Connects assets to consumers
+export const assetLinks = pgTable('asset_links', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  assetId: varchar('asset_id').notNull().references(() => assets.id, { onDelete: 'cascade' }),
+  parentType: assetLinkParentTypeEnum('parent_type').notNull(),
+  parentId: varchar('parent_id').notNull(),
+  role: assetLinkRoleEnum('role').notNull().default('other'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('asset_links_org_id_idx').on(table.organizationId),
+  index('asset_links_asset_id_idx').on(table.assetId),
+  index('asset_links_parent_idx').on(table.organizationId, table.parentType, table.parentId),
+  index('asset_links_org_parent_role_idx').on(table.organizationId, table.parentType, table.parentId, table.role),
+]);
+
+// Zod schemas for assets
+export const insertAssetSchema = createInsertSchema(assets).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateAssetSchema = insertAssetSchema.partial();
+
+export type Asset = typeof assets.$inferSelect;
+export type InsertAsset = z.infer<typeof insertAssetSchema>;
+export type UpdateAsset = z.infer<typeof updateAssetSchema>;
+
+// Zod schemas for asset variants
+export const insertAssetVariantSchema = createInsertSchema(assetVariants).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateAssetVariantSchema = insertAssetVariantSchema.partial();
+
+export type AssetVariant = typeof assetVariants.$inferSelect;
+export type InsertAssetVariant = z.infer<typeof insertAssetVariantSchema>;
+export type UpdateAssetVariant = z.infer<typeof updateAssetVariantSchema>;
+
+// Zod schemas for asset links
+export const insertAssetLinkSchema = createInsertSchema(assetLinks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type AssetLink = typeof assetLinks.$inferSelect;
+export type InsertAssetLink = z.infer<typeof insertAssetLinkSchema>;
+
+// Relations for assets
+export const assetsRelations = relations(assets, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [assets.organizationId],
+    references: [organizations.id],
+  }),
+  variants: many(assetVariants),
+  links: many(assetLinks),
+}));
+
+export const assetVariantsRelations = relations(assetVariants, ({ one }) => ({
+  asset: one(assets, {
+    fields: [assetVariants.assetId],
+    references: [assets.id],
+  }),
+  organization: one(organizations, {
+    fields: [assetVariants.organizationId],
+    references: [organizations.id],
+  }),
+}));
+
+export const assetLinksRelations = relations(assetLinks, ({ one }) => ({
+  asset: one(assets, {
+    fields: [assetLinks.assetId],
+    references: [assets.id],
+  }),
+  organization: one(organizations, {
+    fields: [assetLinks.organizationId],
+    references: [organizations.id],
+  }),
+}));

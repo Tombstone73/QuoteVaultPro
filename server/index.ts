@@ -5,6 +5,7 @@ import { setupVite, serveStatic, log } from "./vite";
 import { syncUsersToCustomers } from "./db/syncUsersToCustomers";
 import { startSyncWorker } from "./workers/syncProcessor";
 import { startThumbnailWorker } from "./workers/thumbnailWorker";
+import { assetPreviewWorker } from "./workers/assetPreviewWorker";
 
 const app = express();
 
@@ -118,6 +119,13 @@ process.on('uncaughtException', (error) => {
         startThumbnailWorker();
       } catch (error) {
         console.error('[Server] Thumbnail worker failed to start:', error);
+      }
+
+      // Start canonical asset preview worker (Phase 1: alongside legacy worker)
+      try {
+        assetPreviewWorker.start();
+      } catch (error) {
+        console.error('[Server] Asset preview worker failed to start:', error);
       }
       
       // Start QuickBooks sync worker
