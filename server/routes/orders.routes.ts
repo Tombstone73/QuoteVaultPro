@@ -311,12 +311,13 @@ export async function registerOrderRoutes(
                                         }
                                     }
 
-                                    // 2) else if preview_key -> signed previewUrl via enrichAttachmentWithUrls
-                                    if (!thumbnailUrl && att.previewKey) {
+                                    // 2) else if thumb_key/preview_key -> signed derivative URL via enrichAttachmentWithUrls
+                                    // NOTE: Prefer thumbUrl/previewUrl only; do not fall back to originalUrl (could be a PDF).
+                                    if (!thumbnailUrl && (att.thumbKey || att.previewKey)) {
                                         const enriched = await enrichAttachmentWithUrls(att, { logOnce });
                                         thumbnailUrl =
+                                            (enriched?.thumbUrl as string | null) ||
                                             (enriched?.previewUrl as string | null) ||
-                                            (enriched?.originalUrl as string | null) ||
                                             null;
                                     }
 
