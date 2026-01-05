@@ -947,71 +947,72 @@ export default function OrderDetail() {
   const hasBillAddress = Boolean(billAddressLine1 || billAddressLine2);
 
   return (
-    <Page>
-      <div className="flex items-center justify-between mb-6 pb-3">
-        <div className="flex items-center gap-4 min-w-0">
-          <Link to="/orders">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              Back
-            </Button>
-          </Link>
+    <Page maxWidth="full">
+      <div className="mx-auto w-full max-w-[1600px]">
+        <div className="flex items-center justify-between mb-6 pb-3">
+          <div className="flex items-center gap-4 min-w-0">
+            <Link to="/orders">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+              >
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back
+              </Button>
+            </Link>
 
-          <div className="flex flex-col justify-center min-w-0">
-            <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
-              {`Order ${titleText}`}
-            </h1>
-            <p className="text-titan-sm text-titan-text-muted mt-1">
-              {`Created ${formatDate(order.createdAt)}`}
-            </p>
+            <div className="flex flex-col justify-center min-w-0">
+              <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
+                {`Order ${titleText}`}
+              </h1>
+              <p className="text-titan-sm text-titan-text-muted mt-1">
+                {`Created ${formatDate(order.createdAt)}`}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-1 items-center justify-center px-4">
+            <OrderStatusPillSelector
+              orderId={order.id}
+              currentState={order.state as OrderState}
+              currentPillValue={order.statusPillValue}
+              disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
+              className="h-10 w-[260px] rounded-full text-base"
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* Mark Completed Button */}
+            {isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed') && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => {
+                  // If strict mode and incomplete items, show dialog
+                  if (requireLineItemsDone && incompleteLi.length > 0) {
+                    setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
+                    return;
+                  }
+                  // Otherwise show regular confirmation
+                  setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
+                }}
+                disabled={transitionStatus.isPending}
+                className="rounded-titan-md bg-green-600 hover:bg-green-700 text-white"
+              >
+                <Check className="w-4 h-4 mr-2" />
+                Mark Completed
+              </Button>
+            )}
+
+            {isAdminOrOwner && order.state === 'open' && (
+              <CompleteProductionButton orderId={order.id} />
+            )}
           </div>
         </div>
 
-        <div className="flex flex-1 items-center justify-center px-4">
-          <OrderStatusPillSelector
-            orderId={order.id}
-            currentState={order.state as OrderState}
-            currentPillValue={order.statusPillValue}
-            disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
-            className="h-10 w-[260px] rounded-full text-base"
-          />
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Mark Completed Button */}
-          {isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed') && (
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => {
-                // If strict mode and incomplete items, show dialog
-                if (requireLineItemsDone && incompleteLi.length > 0) {
-                  setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
-                  return;
-                }
-                // Otherwise show regular confirmation
-                setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
-              }}
-              disabled={transitionStatus.isPending}
-              className="rounded-titan-md bg-green-600 hover:bg-green-700 text-white"
-            >
-              <Check className="w-4 h-4 mr-2" />
-              Mark Completed
-            </Button>
-          )}
-
-          {isAdminOrOwner && order.state === 'open' && (
-            <CompleteProductionButton orderId={order.id} />
-          )}
-        </div>
-      </div>
-
-      <ContentLayout>
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.8fr)_minmax(360px,0.8fr)]">
+        <ContentLayout>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
           {/* Main Content */}
           <div className="min-w-0 space-y-4">
             {isSameBillShipAddress ? (
@@ -2429,6 +2430,7 @@ export default function OrderDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      </div>
     </Page>
   );
 }

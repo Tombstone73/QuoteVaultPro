@@ -4649,7 +4649,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
               };
             }));
           } else {
-            pages = pageRecords;
+            // Not Supabase: use same-origin proxy for page thumbnails (local/GCS storage)
+            pages = pageRecords.map((page) => ({
+              ...page,
+              thumbUrl: page.thumbKey ? objectsProxyUrl(page.thumbKey) : null,
+              previewUrl: page.previewKey ? objectsProxyUrl(page.previewKey) : null,
+            }));
           }
         } catch (error) {
           console.error(`[enrichAttachmentWithUrls] Failed to fetch pages for ${attachment.id}:`, error);
