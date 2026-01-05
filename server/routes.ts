@@ -710,10 +710,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (isSupabaseConfigured()) {
         const objectPath = req.path.replace('/objects/', '');
         const supabaseService = new SupabaseStorageService();
+        const ext = path.extname(objectPath).toLowerCase();
+        const isImage = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext);
+        const contentTypes: { [key: string]: string } = {
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.png': 'image/png',
+          '.gif': 'image/gif',
+          '.webp': 'image/webp',
+        };
         
         try {
           const signedUrl = await supabaseService.getSignedDownloadUrl(objectPath, 3600);
-          // Redirect to signed URL
+
+          // For images, proxy bytes so we can ensure an inline-capable Content-Type.
+          // This avoids issues where upstream object metadata is set to application/octet-stream + nosniff.
+          if (isImage) {
+            const upstream = await fetch(signedUrl);
+            if (!upstream.ok) {
+              throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+            }
+
+            res.setHeader('Content-Type', contentTypes[ext] || 'image/*');
+            res.setHeader('Content-Disposition', 'inline');
+            res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day cache
+
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            return res.send(buf);
+          }
+
+          // Non-images: keep redirect behavior.
           return res.redirect(signedUrl);
         } catch (supabaseError: any) {
           // If file not found in Supabase, fall through to local/GCS
@@ -4552,24 +4578,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (storageProvider === 'local') {
         thumbUrl = objectsProxyUrl(thumbKey);
       } else if (storageProvider === 'supabase' && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService(bucket);
-        try {
-          thumbUrl = await supabaseService.getSignedDownloadUrl(thumbKey, 3600);
-        } catch (error: any) {
-          if (logOnce) {
-            logOnce(
-              `thumb:${attachment.id}`,
-              '[enrichAttachmentWithUrls] Supabase thumbUrl missing (fail-soft):',
-              {
-                attachmentId: attachment.id,
-                bucket: bucket || 'default',
-                path: thumbKey,
-                message: error?.message || String(error),
-              }
-            );
-          }
-          thumbUrl = null;
-        }
+        // Use same-origin proxy so images can render inline reliably.
+        thumbUrl = objectsProxyUrl(thumbKey);
       } else {
         thumbUrl = objectsProxyUrl(thumbKey);
       }
@@ -4580,24 +4590,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (storageProvider === 'local') {
         previewUrl = objectsProxyUrl(previewKey);
       } else if (storageProvider === 'supabase' && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService(bucket);
-        try {
-          previewUrl = await supabaseService.getSignedDownloadUrl(previewKey, 3600);
-        } catch (error: any) {
-          if (logOnce) {
-            logOnce(
-              `preview:${attachment.id}`,
-              '[enrichAttachmentWithUrls] Supabase previewUrl missing (fail-soft):',
-              {
-                attachmentId: attachment.id,
-                bucket: bucket || 'default',
-                path: previewKey,
-                message: error?.message || String(error),
-              }
-            );
-          }
-          previewUrl = null;
-        }
+        // Use same-origin proxy so images can render inline reliably.
+        previewUrl = objectsProxyUrl(previewKey);
       } else {
         previewUrl = objectsProxyUrl(previewKey);
       }
@@ -7829,16 +7823,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           includeThumbnails,
         });
 
-        // If thumbnails are requested, return a single previewThumbnailUrl per order.
-        // Rule (per spec): pick the newest LINE-ITEM attachment per order.
-        // - If thumbnail_relative_path exists -> generate a signed thumbnail URL.
-        // - Else if preview_key exists -> generate a signed preview URL via enrichAttachmentWithUrls.
-        // This avoids client-side URL construction and avoids returning attachment arrays in list.
+        // If thumbnails are requested, return:
+        // - attachmentsSummary: totalCount + up to 3 preview thumbs per order
+        // - previewThumbnailUrl: back-compat single preview (first preview thumb)
+        // Server generates usable URLs (no client-side URL construction).
         if (includeThumbnails && result?.items?.length) {
           try {
             const orderIds = result.items.map((o: any) => o.id).filter(Boolean);
             if (orderIds.length) {
-              const previewCandidates = await db
+              const attachmentRows = await db
                 .select({
                   orderId: orderAttachments.orderId,
                   id: orderAttachments.id,
@@ -7858,69 +7851,90 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   and(
                     inArray(orderAttachments.orderId, orderIds),
                     eq(orders.organizationId, organizationId),
-                    isNotNull(orderAttachments.orderLineItemId),
                   )
                 )
                 .orderBy(desc(orderAttachments.createdAt));
 
               const logOnce = createRequestLogOnce();
-              const bestByOrderId: Record<string, any> = {};
-              for (const row of previewCandidates) {
+              const countsByOrderId: Record<string, number> = {};
+              const previewsByOrderId: Record<string, any[]> = {};
+
+              for (const row of attachmentRows) {
                 const orderId = row.orderId as string;
-                if (!bestByOrderId[orderId]) {
-                  bestByOrderId[orderId] = row;
+                countsByOrderId[orderId] = (countsByOrderId[orderId] ?? 0) + 1;
+                if (!previewsByOrderId[orderId]) previewsByOrderId[orderId] = [];
+                if (previewsByOrderId[orderId].length < 3) {
+                  previewsByOrderId[orderId].push(row);
                 }
               }
 
+              const attachmentsSummaryByOrderId: Record<
+                string,
+                { totalCount: number; previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> }
+              > = {};
+
               const previewUrlByOrderId: Record<string, string | null> = {};
 
-              for (const orderId of Object.keys(bestByOrderId)) {
-                const att = bestByOrderId[orderId];
+              for (const orderId of orderIds) {
+                const totalCount = countsByOrderId[orderId] ?? 0;
+                const previewRows = previewsByOrderId[orderId] ?? [];
                 const supabase = isSupabaseConfigured() ? new SupabaseStorageService() : null;
 
-                // 1) thumbnail_relative_path -> signed URL
-                const rawThumbRel = (att.thumbnailRelativePath ?? null) as string | null;
-                let previewThumbnailUrl: string | null = null;
-                if (rawThumbRel) {
-                  const raw = rawThumbRel.toString();
-                  const isHttp = raw.startsWith('http://') || raw.startsWith('https://');
-                  const looksLikeSupabaseObjectUrl = raw.includes('/storage/v1/object/');
+                const previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> = [];
+                for (const att of previewRows) {
+                  // 1) thumbnail_relative_path -> signed URL
+                  const rawThumbRel = (att.thumbnailRelativePath ?? null) as string | null;
+                  let thumbnailUrl: string | null = null;
+                  if (rawThumbRel) {
+                    const raw = rawThumbRel.toString();
+                    const isHttp = raw.startsWith('http://') || raw.startsWith('https://');
+                    const looksLikeSupabaseObjectUrl = raw.includes('/storage/v1/object/');
 
-                  if (isHttp) {
-                    // Never return raw /storage/v1/object/* URLs; re-sign if possible.
-                    if (supabase && looksLikeSupabaseObjectUrl) {
-                      try {
-                        previewThumbnailUrl = await supabase.getSignedDownloadUrl(raw, 3600);
-                      } catch {
-                        previewThumbnailUrl = null;
+                    if (isHttp) {
+                      // Never return raw /storage/v1/object/* URLs; re-sign if possible.
+                      if (supabase && looksLikeSupabaseObjectUrl) {
+                        const extracted = tryExtractSupabaseObjectKeyFromUrl(raw, 'titan-private');
+                        thumbnailUrl = extracted ? `/objects/${extracted}` : null;
+                      } else {
+                        thumbnailUrl = raw;
                       }
+                    } else if ((att.storageProvider ?? null) === 'local') {
+                      thumbnailUrl = `/objects/${raw}`;
+                    } else if (supabase && (att.storageProvider ?? null) === 'supabase') {
+                      thumbnailUrl = `/objects/${raw}`;
                     } else {
-                      previewThumbnailUrl = raw;
+                      thumbnailUrl = `/objects/${raw}`;
                     }
-                  } else if ((att.storageProvider ?? null) === 'local') {
-                    previewThumbnailUrl = `/objects/${raw}`;
-                  } else if (supabase && (att.storageProvider ?? null) === 'supabase') {
-                    try {
-                      previewThumbnailUrl = await supabase.getSignedDownloadUrl(raw, 3600);
-                    } catch {
-                      previewThumbnailUrl = null;
-                    }
-                  } else {
-                    previewThumbnailUrl = `/objects/${raw}`;
                   }
+
+                  // 2) else if preview_key -> signed previewUrl via enrichAttachmentWithUrls
+                  if (!thumbnailUrl && att.previewKey) {
+                    const enriched = await enrichAttachmentWithUrls(att, { logOnce });
+                    thumbnailUrl =
+                      (enriched?.previewUrl as string | null) ||
+                      (enriched?.originalUrl as string | null) ||
+                      null;
+                  }
+
+                  previews.push({
+                    id: String(att.id),
+                    filename: String(att.originalFilename ?? att.fileName ?? 'Attachment'),
+                    mimeType: (att.mimeType ?? null) as string | null,
+                    thumbnailUrl,
+                  });
                 }
 
-                // 2) else if preview_key -> signed previewUrl via enrichAttachmentWithUrls
-                if (!previewThumbnailUrl && att.previewKey) {
-                  const enriched = await enrichAttachmentWithUrls(att, { logOnce });
-                  previewThumbnailUrl = (enriched?.previewUrl as string | null) || null;
-                }
+                attachmentsSummaryByOrderId[orderId] = {
+                  totalCount,
+                  previews,
+                };
 
-                previewUrlByOrderId[orderId] = previewThumbnailUrl;
+                previewUrlByOrderId[orderId] = previews[0]?.thumbnailUrl ?? null;
               }
 
               result.items = result.items.map((o: any) => ({
                 ...o,
+                attachmentsSummary: attachmentsSummaryByOrderId[o.id] ?? { totalCount: 0, previews: [] },
                 previewThumbnailUrl: previewUrlByOrderId[o.id] ?? null,
                 // Back-compat: keep existing field aligned.
                 previewImageUrl: previewUrlByOrderId[o.id] ?? null,
@@ -7931,6 +7945,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.warn('[OrdersList] Failed to enrich previewThumbnailUrl (fail-soft):', error?.message || String(error));
             result.items = result.items.map((o: any) => ({
               ...o,
+              attachmentsSummary: { totalCount: 0, previews: [] },
               previewThumbnailUrl: null,
               previewImageUrl: null,
             }));
