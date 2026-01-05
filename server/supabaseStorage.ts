@@ -45,6 +45,44 @@ export class SupabaseStorageService {
     this.bucket = bucket || SUPABASE_BUCKET;
   }
 
+  private normalizeObjectPath(inputPath: string): string {
+    let p = (inputPath || '').toString().trim();
+
+    // Handle accidental full URLs (public or signed) by extracting the object key.
+    // Examples:
+    // - https://<host>/storage/v1/object/public/<bucket>/<path>
+    // - https://<host>/storage/v1/object/sign/<bucket>/<path>?token=...
+    try {
+      if (p.startsWith('http://') || p.startsWith('https://')) {
+        const url = new URL(p);
+        const markerPublic = `/storage/v1/object/public/${this.bucket}/`;
+        const markerSign = `/storage/v1/object/sign/${this.bucket}/`;
+        const markerUploadSign = `/storage/v1/object/upload/sign/${this.bucket}/`;
+        if (url.pathname.includes(markerPublic)) {
+          p = url.pathname.split(markerPublic)[1] || '';
+        } else if (url.pathname.includes(markerSign)) {
+          p = url.pathname.split(markerSign)[1] || '';
+        } else if (url.pathname.includes(markerUploadSign)) {
+          p = url.pathname.split(markerUploadSign)[1] || '';
+        }
+      }
+    } catch {
+      // ignore parse errors and treat as raw path
+    }
+
+    // Trim leading slashes
+    p = p.replace(/^\/+/, '');
+
+    // If the stored key accidentally includes bucket prefix, strip it.
+    // e.g. "titan-private/uploads/abc" -> "uploads/abc"
+    const bucketPrefix = `${this.bucket}/`;
+    if (p.startsWith(bucketPrefix)) {
+      p = p.slice(bucketPrefix.length);
+    }
+
+    return p;
+  }
+
   /**
    * Generate a signed upload URL for client-side uploads
    * @param options Upload options
@@ -90,9 +128,11 @@ export class SupabaseStorageService {
   async getSignedDownloadUrl(path: string, expiresIn = 3600): Promise<string> {
     const client = getSupabaseClient();
 
+    const normalizedPath = this.normalizeObjectPath(path);
+
     const { data, error } = await client.storage
       .from(this.bucket)
-      .createSignedUrl(path, expiresIn);
+      .createSignedUrl(normalizedPath, expiresIn);
 
     if (error) {
       throw new Error(`Failed to create signed download URL: ${error.message}`);
@@ -117,9 +157,11 @@ export class SupabaseStorageService {
   }> {
     const client = getSupabaseClient();
 
+    const normalizedPath = this.normalizeObjectPath(path);
+
     const { data, error } = await client.storage
       .from(this.bucket)
-      .upload(path, buffer, {
+      .upload(normalizedPath, buffer, {
         contentType,
         upsert: true,
       });
@@ -132,6 +174,20 @@ export class SupabaseStorageService {
     const { data: urlData } = client.storage
       .from(this.bucket)
       .getPublicUrl(data.path);
+
+    // Best-effort self-check: confirm object exists at expected bucket/path
+    // (Do not throw; uploads must remain fail-soft.)
+    try {
+      const exists = await this.fileExists(data.path);
+      if (!exists) {
+        console.warn('[SupabaseStorage] Upload self-check failed (object missing):', {
+          bucket: this.bucket,
+          path: data.path,
+        });
+      }
+    } catch {
+      // ignore
+    }
 
     return {
       path: data.path,
@@ -146,9 +202,11 @@ export class SupabaseStorageService {
   async deleteFile(path: string): Promise<boolean> {
     const client = getSupabaseClient();
 
+    const normalizedPath = this.normalizeObjectPath(path);
+
     const { error } = await client.storage
       .from(this.bucket)
-      .remove([path]);
+      .remove([normalizedPath]);
 
     if (error) {
       console.error('Failed to delete file:', error);
@@ -170,9 +228,11 @@ export class SupabaseStorageService {
   }>> {
     const client = getSupabaseClient();
 
+    const normalizedFolder = this.normalizeObjectPath(folder);
+
     const { data, error } = await client.storage
       .from(this.bucket)
-      .list(folder);
+      .list(normalizedFolder);
 
     if (error) {
       throw new Error(`Failed to list files: ${error.message}`);
@@ -192,9 +252,11 @@ export class SupabaseStorageService {
    */
   async fileExists(path: string): Promise<boolean> {
     const client = getSupabaseClient();
+
+    const normalizedPath = this.normalizeObjectPath(path);
     
     // Extract folder and filename
-    const parts = path.split('/');
+    const parts = normalizedPath.split('/');
     const filename = parts.pop() || '';
     const folder = parts.join('/');
 
@@ -218,7 +280,8 @@ export class SupabaseStorageService {
    */
   getPublicUrl(path: string): string {
     const client = getSupabaseClient();
-    const { data } = client.storage.from(this.bucket).getPublicUrl(path);
+    const normalizedPath = this.normalizeObjectPath(path);
+    const { data } = client.storage.from(this.bucket).getPublicUrl(normalizedPath);
     return data.publicUrl;
   }
 }

@@ -1011,9 +1011,9 @@ export default function OrderDetail() {
       </div>
 
       <ContentLayout>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.8fr)_minmax(360px,0.8fr)]">
           {/* Main Content */}
-          <div className="lg:col-span-2 space-y-4">
+          <div className="min-w-0 space-y-4">
             {isSameBillShipAddress ? (
               <Card>
                 <CardContent className="p-4">
@@ -1769,7 +1769,7 @@ export default function OrderDetail() {
           </div>
 
           {/* Sidebar */}
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             {/* Fulfillment & Shipping */}
             <Card>
               <CardHeader>

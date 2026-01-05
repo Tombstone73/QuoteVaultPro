@@ -434,7 +434,7 @@ function OrderLineItemArtworkPanel({
           throw new Error(errorData.message || "Failed to get upload URL");
         }
 
-        const { url, method } = await urlResponse.json();
+        const { url, method, path } = await urlResponse.json();
 
         const uploadResponse = await fetch(url, {
           method: method || "PUT",
@@ -448,7 +448,9 @@ function OrderLineItemArtworkPanel({
           throw new Error(`Failed to upload ${file.name}`);
         }
 
-        const fileUrl = url.split("?")[0];
+        // Persist storage key (bucket-relative path) — never persist signed URLs.
+        // Supabase returns { url, path, token }. Replit fallback returns only { url }.
+        const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
 
         await attachFile.mutateAsync({
           fileName: file.name,
@@ -999,11 +1001,18 @@ export function OrderLineItemsSection({
                               <GripVertical className="h-4 w-4" />
                             </div>
 
-                            <button
-                              type="button"
+                            <div
+                              role="button"
+                              tabIndex={0}
                               className="min-w-0 flex-1 text-left px-2.5 py-2 hover:bg-muted/15 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-md"
                               onClick={() => {
                                 setExpandedId(isExpanded ? null : itemKey);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setExpandedId(isExpanded ? null : itemKey);
+                                }
                               }}
                               aria-expanded={isExpanded}
                               aria-controls={contentId}
@@ -1018,7 +1027,7 @@ export function OrderLineItemsSection({
                                         parentId={orderId}
                                         lineItemId={item.id}
                                         parentType="order"
-                                        attachments={attachmentsForThumb as any}
+                                        attachments={attachmentsForThumb.length ? (attachmentsForThumb as any) : undefined}
                                       />
                                       <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-1.5">
@@ -1091,7 +1100,7 @@ export function OrderLineItemsSection({
                                     </div>
                                   </div>
                                 </div>
-                            </button>
+                            </div>
                           </div>
 
                           {isExpanded && expandedItem && expandedItem.id === item.id && (

@@ -119,7 +119,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
             throw new Error(errorData.message || "Failed to get upload URL");
           }
 
-          const { url, method } = await urlResponse.json();
+          const { url, method, path } = await urlResponse.json();
 
           // Step 2: Upload file to storage
           const uploadResponse = await fetch(url, {
@@ -135,8 +135,9 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
             throw new Error(`Failed to upload ${file.name}`);
           }
 
-          // Step 3: Extract the file URL (remove query params)
-          const fileUrl = url.split("?")[0];
+          // Step 3: Persist storage key (bucket-relative path) — never persist signed URLs.
+          // Supabase returns { url, path, token }. Replit fallback returns only { url }.
+          const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
 
           // Step 4: Attach file to order
           await attachFile.mutateAsync({

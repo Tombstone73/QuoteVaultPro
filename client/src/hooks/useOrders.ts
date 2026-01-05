@@ -111,6 +111,8 @@ export type OrderRow = Order & {
   listLabel?: string | null; // List-only note (always editable)
   previewThumbnails?: string[]; // GCS thumbnail keys
   thumbsCount?: number; // Total attachment count
+  previewThumbnailUrl?: string | null; // Signed URL for list preview image thumbnail
+  previewImageUrl?: string | null; // Back-compat: older field name
   // TitanOS State Architecture fields
   state?: string;
   statusPillValue?: string | null;

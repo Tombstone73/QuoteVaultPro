@@ -136,16 +136,16 @@ export default function Orders() {
   const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
   const [selectedAttachment, setSelectedAttachment] = useState<any>(null);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
-  
+
   // Inline editing state
   const [editingPriorityOrderId, setEditingPriorityOrderId] = useState<string | null>(null);
-  
+
   // Column settings - scoped per user (matches Quotes pattern)
-  const storageKey = user?.id 
-    ? `titan:listview:orders:user_${user.id}` 
+  const storageKey = user?.id
+    ? `titan:listview:orders:user_${user.id}`
     : "orders_column_settings"; // fallback for loading state
   const [columnSettings, setColumnSettings] = useColumnSettings(ORDER_COLUMNS, storageKey);
-  
+
   // Sorting state
   const [sortKey, setSortKey] = useState<SortKey>("date");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
@@ -154,17 +154,17 @@ export default function Orders() {
   useEffect(() => {
     const shouldShowPayment = stateFilter === 'closed' || stateFilter === 'canceled';
     const currentSettings = columnSettings['paymentStatus'];
-    const isCurrentlyVisible = currentSettings && typeof currentSettings === 'object' && 'visible' in currentSettings 
-      ? currentSettings.visible 
+    const isCurrentlyVisible = currentSettings && typeof currentSettings === 'object' && 'visible' in currentSettings
+      ? (currentSettings as any).visible
       : false;
-    
+
     if (shouldShowPayment !== isCurrentlyVisible) {
       setColumnSettings(prev => ({
         ...prev,
         paymentStatus: {
-          ...(typeof prev['paymentStatus'] === 'object' ? prev['paymentStatus'] as any : {}),
+          ...(typeof prev['paymentStatus'] === 'object' ? (prev['paymentStatus'] as any) : {}),
           visible: shouldShowPayment,
-        }
+        },
       }));
     }
   }, [stateFilter, columnSettings, setColumnSettings]);
@@ -193,15 +193,18 @@ export default function Orders() {
   // Fetch orders with pagination support
   const { data: ordersData, isLoading, error } = useOrders(ordersFilters);
 
-  // Determine if paginated response
-  const isPaginated = ordersData && typeof ordersData === 'object' && 'items' in ordersData;
-  const orders: OrderRow[] = isPaginated 
-    ? (ordersData as OrdersListResponse).items 
-    : (ordersData ? (ordersData as OrderRow[]) : []);
-  const totalCount = isPaginated ? (ordersData as OrdersListResponse).totalCount : orders.length;
-  const totalPages = isPaginated ? (ordersData as OrdersListResponse).totalPages : 1;
-  const hasNext = isPaginated ? (ordersData as OrdersListResponse).hasNext : false;
-  const hasPrev = isPaginated ? (ordersData as OrdersListResponse).hasPrev : false;
+  const isOrdersListResponse = (data: unknown): data is OrdersListResponse => {
+    return !!data && typeof data === 'object' && !Array.isArray(data) && 'items' in data;
+  };
+
+  const isPaginated = isOrdersListResponse(ordersData);
+  const orders: OrderRow[] = isPaginated
+    ? (ordersData.items as OrderRow[])
+    : ((ordersData as OrderRow[] | undefined) ?? []);
+  const totalCount = isPaginated ? ordersData.totalCount : orders.length;
+  const totalPages = isPaginated ? ordersData.totalPages : 1;
+  const hasNext = isPaginated ? ordersData.hasNext : false;
+  const hasPrev = isPaginated ? ordersData.hasPrev : false;
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
 
@@ -373,7 +376,7 @@ export default function Orders() {
   });
 
   // Handle thumbnail click - fetch attachment details and open viewer (matches Quotes pattern)
-  const handleThumbnailClick = async (orderId: string, thumbKey: string) => {
+  const handleThumbnailClick = async (orderId: string) => {
     setLoadingAttachments(orderId);
     
     try {
@@ -389,23 +392,8 @@ export default function Orders() {
       const result = await response.json();
       const attachments = result.data || [];
       
-      // Find the attachment matching this thumbnail
-      // thumbKey format: "uploads/org_xxx/orders/order_xxx/attachment_xxx.thumb.jpg"
-      let matchedAttachment = attachments.find((att: any) => att.thumbKey === thumbKey);
-      
-      // Fallback: if no exact match, try finding by attachment ID in thumbKey
-      if (!matchedAttachment && thumbKey.includes('attachment_')) {
-        const attachmentIdMatch = thumbKey.match(/attachment_([^.\/]+)/);
-        if (attachmentIdMatch) {
-          const attachmentId = attachmentIdMatch[1];
-          matchedAttachment = attachments.find((att: any) => att.id.includes(attachmentId));
-        }
-      }
-      
-      // If still no match, use first attachment as fallback
-      if (!matchedAttachment && attachments.length > 0) {
-        matchedAttachment = attachments[0];
-      }
+      // For list preview clicks, just open the first attachment available.
+      const matchedAttachment = attachments.length > 0 ? attachments[0] : null;
       
       if (matchedAttachment) {
         // Ensure orderId is available for download
@@ -507,40 +495,23 @@ export default function Orders() {
         return row.label || <span className="text-muted-foreground italic">—</span>;
 
       case "thumbnails": {
-        const thumbs = row.previewThumbnails || [];
-        const thumbsCount = row.thumbsCount || 0;
-        const isLoadingThis = loadingAttachments === row.id;
-        
-        if (thumbsCount === 0) {
-          return <span className="text-muted-foreground italic text-xs">No attachments</span>;
+        const previewThumbnailUrl = row.previewThumbnailUrl || null;
+
+        if (!previewThumbnailUrl) {
+          return (
+            <div className="flex items-center h-8">
+              <span className="text-muted-foreground">—</span>
+            </div>
+          );
         }
-        
+
         return (
-          <div className="flex items-center gap-1">
-            {isLoadingThis && (
-              <Loader2 className="w-4 h-4 animate-spin text-primary" />
-            )}
-            {thumbs.slice(0, 3).map((thumbKey, idx) => (
-              <button
-                key={idx}
-                type="button"
-                className="w-8 h-8 rounded border border-border overflow-hidden hover:ring-2 hover:ring-primary transition-all disabled:opacity-50"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleThumbnailClick(row.id, thumbKey);
-                }}
-                disabled={isLoadingThis}
-              >
-                <img
-                  src={thumbKey}
-                  alt={`Preview ${idx + 1}`}
-                  className="w-full h-full object-cover"
-                />
-              </button>
-            ))}
-            {thumbsCount > 3 && (
-              <span className="text-xs text-muted-foreground ml-1">+{thumbsCount - 3}</span>
-            )}
+          <div className="flex items-center h-8">
+            <img
+              src={previewThumbnailUrl}
+              alt="Preview"
+              className="w-8 h-8 rounded object-cover"
+            />
           </div>
         );
       }
