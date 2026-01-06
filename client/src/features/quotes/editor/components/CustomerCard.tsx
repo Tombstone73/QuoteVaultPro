@@ -1,5 +1,5 @@
 import { forwardRef, useRef, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -97,8 +97,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     };
 
     return (
-        <Card className="rounded-lg border border-border/40 bg-card/50">
-            <CardContent className="space-y-3 px-4 pt-4 pb-4">
+        <DocumentMetaCard>
                 <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
                         <Label className="text-xs text-muted-foreground">Customer</Label>
@@ -225,8 +224,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                         )}
                     </div>
                 )}
-            </CardContent>
-        </Card>
+        </DocumentMetaCard>
     );
 });
 
