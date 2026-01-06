@@ -292,6 +292,7 @@ export function OrderLineItemsSection({
 
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [savedItemId, setSavedItemId] = useState<string | null>(null);
+  const [pdfEmbedError, setPdfEmbedError] = useState(false);
 
   const savedSnapshotRef = useRef<
     Record<
@@ -315,6 +316,11 @@ export function OrderLineItemsSection({
   const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
 
   const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
+
+  // Reset PDF embed error when preview file changes
+  useEffect(() => {
+    setPdfEmbedError(false);
+  }, [previewFile?.id]);
 
   const artworkModalLineItem = useMemo(
     () => lineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
@@ -1065,34 +1071,62 @@ export function OrderLineItemsSection({
 
           {previewFile && (() => {
             const isPdf = isPdfAttachment(previewFile as any);
+            const fileName = previewFile.originalFilename || previewFile.fileName;
+            
+            // Construct same-origin view URL for iframe (PDFs must use /objects proxy)
+            const objectPath = (previewFile as any).objectPath as string | null | undefined;
+            let iframeViewUrl: string | null = null;
+            
+            if (isPdf && typeof objectPath === "string" && objectPath.length) {
+              iframeViewUrl = `/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`;
+            } else if (isPdf && previewFile.originalUrl && previewFile.originalUrl.startsWith('/objects/')) {
+              iframeViewUrl = previewFile.originalUrl;
+            }
+            
+            // Non-PDF preview URL
             const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl;
             const hasValidPreview = !isPdf && previewUrl && isValidHttpUrl(previewUrl);
-            const pdfThumbUrl = getPdfThumbUrl(previewFile);
-            const hasPdfThumb = isPdf && typeof pdfThumbUrl === "string" && isValidHttpUrl(pdfThumbUrl);
-            const originalUrl = previewFile.originalUrl ?? (previewFile as any).url ?? null;
-            const canDownloadOriginal = typeof originalUrl === "string" && isValidHttpUrl(originalUrl);
-            const fileName = previewFile.originalFilename || previewFile.fileName;
+            
+            // Construct download URL
+            let downloadUrl: string | null = null;
+            if (typeof objectPath === "string" && objectPath.length) {
+              downloadUrl = `/objects/${objectPath}?download=1&filename=${encodeURIComponent(fileName)}`;
+            } else if (previewFile.originalUrl) {
+              downloadUrl = previewFile.originalUrl;
+            }
 
             return (
               <div className="space-y-4">
-                {isPdf ? (
-                  hasPdfThumb ? (
-                    <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                      <img src={pdfThumbUrl!} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                      <FileText className="w-16 h-16 mb-4 opacity-50" />
-                      <p className="text-sm mb-4">PDF preview not available</p>
-                      {canDownloadOriginal && (
-                        <div className="flex flex-col items-center gap-1">
+                {isPdf && iframeViewUrl ? (
+                  <div className="bg-muted/30 rounded-lg p-2 space-y-2">
+                    {!pdfEmbedError ? (
+                      <iframe
+                        title={fileName}
+                        src={`${iframeViewUrl}#toolbar=1&navpanes=0`}
+                        className="w-full h-[60vh] rounded-md border border-border bg-background"
+                        style={{ width: '100%', height: '60vh', border: 0 }}
+                        allow="fullscreen"
+                        onLoad={() => {
+                          console.log('[OrderLineItemsSection] PDF iframe loaded:', iframeViewUrl);
+                        }}
+                        onError={(e) => {
+                          setPdfEmbedError(true);
+                          console.error("[OrderLineItemsSection] PDF iframe failed to load", {
+                            src: iframeViewUrl,
+                            fileName,
+                          });
+                        }}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                        <FileText className="w-16 h-16 mb-4 opacity-50" />
+                        <p className="text-sm mb-2">PDF failed to render inline</p>
+                        {downloadUrl && (
                           <Button
                             onClick={() => {
                               const anchor = document.createElement("a");
-                              anchor.href = originalUrl!;
+                              anchor.href = downloadUrl!;
                               anchor.download = fileName;
-                              anchor.target = "_blank";
-                              anchor.rel = "noreferrer";
                               anchor.style.display = "none";
                               document.body.appendChild(anchor);
                               anchor.click();
@@ -1101,13 +1135,35 @@ export function OrderLineItemsSection({
                             variant="outline"
                           >
                             <Download className="w-4 h-4 mr-2" />
-                            Download original
+                            Download
                           </Button>
-                          <span className="text-xs text-muted-foreground">Downloads original file</span>
-                        </div>
-                      )}
-                    </div>
-                  )
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : isPdf && !iframeViewUrl ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                    <FileText className="w-16 h-16 mb-4 opacity-50" />
+                    <p className="text-sm mb-2">PDF preview unavailable</p>
+                    <p className="text-xs mb-4">No same-origin URL available</p>
+                    {downloadUrl && (
+                      <Button
+                        onClick={() => {
+                          const anchor = document.createElement("a");
+                          anchor.href = downloadUrl!;
+                          anchor.download = fileName;
+                          anchor.style.display = "none";
+                          document.body.appendChild(anchor);
+                          anchor.click();
+                          document.body.removeChild(anchor);
+                        }}
+                        variant="outline"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Download
+                      </Button>
+                    )}
+                  </div>
                 ) : hasValidPreview ? (
                   <div className="flex justify-center bg-muted/30 rounded-lg p-4">
                     <img src={previewUrl} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
@@ -1133,15 +1189,13 @@ export function OrderLineItemsSection({
                     )}
                   </div>
 
-                  {canDownloadOriginal && (
+                  {downloadUrl && (
                     <div className="flex flex-col items-end gap-1">
                       <Button
                         onClick={() => {
                           const anchor = document.createElement("a");
-                          anchor.href = originalUrl!;
+                          anchor.href = downloadUrl!;
                           anchor.download = fileName;
-                          anchor.target = "_blank";
-                          anchor.rel = "noreferrer";
                           anchor.style.display = "none";
                           document.body.appendChild(anchor);
                           anchor.click();

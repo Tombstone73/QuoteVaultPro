@@ -102,7 +102,13 @@ export async function enrichAttachmentWithUrls(
     const storageProvider = (attachment.storageProvider ?? null) as string | null;
     const bucket = (options?.bucket || attachment.bucket || undefined) as string | undefined;
 
-    const objectsProxyUrl = (key: string) => `/objects/${key}`;
+    const objectsProxyUrl = (key: string, params?: { download?: boolean; filename?: string; bucket?: string }) => {
+        const download = params?.download ? "download=1" : "";
+        const filename = params?.filename ? `filename=${encodeURIComponent(params.filename)}` : "";
+        const bucketParam = params?.bucket ? `bucket=${encodeURIComponent(params.bucket)}` : "";
+        const query = [download, filename, bucketParam].filter(Boolean).join("&");
+        return `/objects/${key}${query ? `?${query}` : ""}`;
+    };
 
     // External URL: use as-is, unless it's a Supabase URL that needs signing.
     if (rawFileUrl && isHttpUrl) {
@@ -114,25 +120,8 @@ export async function enrichAttachmentWithUrls(
             objectPath = maybeSupabaseKey;
         }
 
-        if (maybeSupabaseKey && isSupabaseConfigured()) {
-            const supabaseService = new SupabaseStorageService(bucket);
-            try {
-                originalUrl = await supabaseService.getSignedDownloadUrl(maybeSupabaseKey, 3600);
-            } catch (error: any) {
-                if (logOnce) {
-                    logOnce(
-                        `orig:${attachment.id}`,
-                        "[enrichAttachmentWithUrls] Supabase originalUrl missing (fail-soft):",
-                        {
-                            attachmentId: attachment.id,
-                            bucket: bucket || "default",
-                            path: maybeSupabaseKey,
-                            message: error?.message || String(error),
-                        }
-                    );
-                }
-                originalUrl = null;
-            }
+        if (maybeSupabaseKey) {
+            originalUrl = objectsProxyUrl(maybeSupabaseKey, { bucket });
         } else {
             originalUrl = rawFileUrl;
         }
@@ -140,31 +129,8 @@ export async function enrichAttachmentWithUrls(
         originalUrl = objectsProxyUrl(rawFileUrl);
         objectPath = normalizeObjectKeyForDb(rawFileUrl);
     } else if (rawFileUrl && storageProvider === "supabase" && isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService(bucket);
-        try {
-            originalUrl = await supabaseService.getSignedDownloadUrl(rawFileUrl, 3600);
-        } catch (error: any) {
-            if (logOnce) {
-                logOnce(
-                    `orig:${attachment.id}`,
-                    "[enrichAttachmentWithUrls] Supabase originalUrl missing (fail-soft):",
-                    {
-                        attachmentId: attachment.id,
-                        bucket: bucket || "default",
-                        path: rawFileUrl,
-                        message: error?.message || String(error),
-                    }
-                );
-            } else {
-                console.warn(
-                    `[enrichAttachmentWithUrls] Failed to generate originalUrl for ${attachment.id} (fail-soft):`,
-                    error
-                );
-            }
-            originalUrl = null;
-        }
-
         objectPath = normalizeObjectKeyForDb(rawFileUrl);
+        originalUrl = objectPath ? objectsProxyUrl(objectPath, { bucket }) : null;
     } else if (rawFileUrl) {
         originalUrl = objectsProxyUrl(rawFileUrl);
         objectPath = normalizeObjectKeyForDb(rawFileUrl);
@@ -173,8 +139,7 @@ export async function enrichAttachmentWithUrls(
     // Same-origin forced download URL (server enforces tenant scoping via key prefix)
     if (objectPath && objectPath.length) {
         const fileNameForDownload = String(attachment?.originalFilename ?? attachment?.fileName ?? "download");
-        const bucketParam = bucket ? `&bucket=${encodeURIComponent(String(bucket))}` : "";
-        downloadUrl = `/api/objects/download?key=${encodeURIComponent(objectPath)}&filename=${encodeURIComponent(fileNameForDownload)}${bucketParam}`;
+        downloadUrl = objectsProxyUrl(objectPath, { download: true, filename: fileNameForDownload, bucket });
     }
 
     // Derivative URLs (Thumbnails/Previews)

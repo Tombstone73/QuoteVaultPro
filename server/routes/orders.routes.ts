@@ -1439,6 +1439,10 @@ export async function registerOrderRoutes(
 
             const attachmentItems = (enrichedAttachments as any[]).map((att) => {
                 const filename = String(att?.originalFilename ?? att?.fileName ?? 'Attachment');
+                const objectPath = (att?.objectPath as string | null) ?? null;
+                const objectsUrl = typeof objectPath === 'string' && objectPath.length
+                    ? `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`
+                    : null;
                 const previewThumbnailUrl =
                     (att?.previewThumbnailUrl as string | null) ??
                     (att?.thumbnailUrl as string | null) ??
@@ -1449,9 +1453,13 @@ export async function registerOrderRoutes(
                 return {
                     id: String(att?.id),
                     filename,
-                    originalUrl: (att?.originalUrl as string | null) ?? null,
-                    objectPath: (att?.objectPath as string | null) ?? null,
-                    downloadUrl: (att?.downloadUrl as string | null) ?? null,
+                    mimeType: (att?.mimeType as string | null) ?? null,
+                    fileSize: (att?.fileSize as number | null) ?? null,
+                    originalUrl: objectsUrl ?? ((att?.originalUrl as string | null) ?? null),
+                    objectPath,
+                    downloadUrl:
+                        (att?.downloadUrl as string | null) ??
+                        (objectPath ? `/objects/${objectPath}?download=1&filename=${encodeURIComponent(filename)}` : null),
                     previewThumbnailUrl,
                     createdAt: att?.createdAt ?? null,
                     source: 'order' as const,
@@ -1532,11 +1540,16 @@ export async function registerOrderRoutes(
                             return {
                                 id: String(link.assetId),
                                 filename,
-                                originalUrl: (enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null,
+                                mimeType: (enriched as any).mimeType ?? (asset as any)?.mimeType ?? null,
+                                fileSize: (enriched as any).fileSize ?? (asset as any)?.fileSize ?? null,
                                 objectPath: typeof (asset as any)?.fileKey === 'string' ? String((asset as any).fileKey) : null,
+                                originalUrl:
+                                    typeof (asset as any)?.fileKey === 'string'
+                                        ? `/objects/${String((asset as any).fileKey)}?filename=${encodeURIComponent(filename)}`
+                                        : ((enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null),
                                 downloadUrl:
                                     typeof (asset as any)?.fileKey === 'string'
-                                        ? `/api/objects/download?key=${encodeURIComponent(String((asset as any).fileKey))}&filename=${encodeURIComponent(filename)}`
+                                        ? `/objects/${String((asset as any).fileKey)}?download=1&filename=${encodeURIComponent(filename)}`
                                         : null,
                                 previewThumbnailUrl,
                                 createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,

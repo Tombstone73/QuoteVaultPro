@@ -53,6 +53,8 @@ type LineItemAttachment = {
   originalUrl?: string | null;
   thumbUrl?: string | null;
   previewUrl?: string | null;
+  // Object path for constructing /objects URLs (same-origin proxy)
+  objectPath?: string | null;
   // PDF multi-page support
   pageCount?: number | null;
   pages?: AttachmentPage[];
@@ -155,6 +157,7 @@ export function LineItemAttachmentsPanel({
           mimeType: a.mimeType ?? null,
           createdAt: a.createdAt || new Date().toISOString(),
           originalUrl: a.originalUrl ?? null,
+          downloadUrl: a.downloadUrl ?? null,
           thumbUrl: a.thumbUrl ?? a.thumbnailUrl ?? null,
           previewUrl: a.previewUrl ?? null,
           // Contract aliases (server-side applyThumbnailContract)
@@ -508,17 +511,43 @@ export function LineItemAttachmentsPanel({
     try {
       if (parentType === "order") {
         const file = attachments.find((f) => f.id === fileId) || null;
-        const directUrl = file?.originalUrl ?? file?.previewUrl;
-        if (typeof directUrl === "string") {
-          const isDirectDownloadable =
-            directUrl.startsWith("/objects/") ||
-            directUrl.startsWith("http://") ||
-            directUrl.startsWith("https://");
+        
+        // Construct download URL from objectPath (preferred) or fall back to other URLs
+        let downloadUrl: string | null = null;
+        
+        if (file?.objectPath) {
+          downloadUrl = `/objects/${file.objectPath}?download=1&filename=${encodeURIComponent(fileName)}`;
+        } else {
+          const directUrl = file?.originalUrl ?? file?.previewUrl;
+          if (typeof directUrl === "string") {
+            const isDirectDownloadable =
+              directUrl.startsWith("/objects/") ||
+              directUrl.startsWith("http://") ||
+              directUrl.startsWith("https://");
 
-          if (isDirectDownloadable) {
-            await downloadFileFromUrl(directUrl, fileName);
-            return;
+            if (isDirectDownloadable) {
+              // Prefer an explicit forced-download URL when possible.
+              if (directUrl.startsWith("/objects/") && !/([?&]download=1)|([?&]disposition=attachment)/i.test(directUrl)) {
+                try {
+                  const url = new URL(directUrl, window.location.origin);
+                  url.searchParams.set("download", "1");
+                  if (!url.searchParams.get("filename")) {
+                    url.searchParams.set("filename", fileName);
+                  }
+                  downloadUrl = url.toString();
+                } catch {
+                  downloadUrl = directUrl;
+                }
+              } else {
+                downloadUrl = directUrl;
+              }
+            }
           }
+        }
+        
+        if (downloadUrl) {
+          void downloadFileFromUrl(downloadUrl, fileName);
+          return;
         }
 
         toast({
@@ -532,7 +561,7 @@ export function LineItemAttachmentsPanel({
       // Quote behavior: proxy endpoint streams file with correct filename
       const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
 
-      await downloadFileFromUrl(proxyUrl, fileName, { credentials: "include" });
+      void downloadFileFromUrl(proxyUrl, fileName);
     } catch (error: any) {
       console.error("[handleDownloadFile] Error:", error);
       toast({
