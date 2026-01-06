@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 
@@ -491,13 +492,7 @@ export default function Orders() {
         const previews = summary?.previews ?? [];
         const totalCount = summary?.totalCount ?? 0;
 
-        const isLikelyImageUrl = (url: string): boolean => {
-          const urlWithoutQuery = url.split("?")[0]?.split("#")[0] ?? "";
-          return /\.(png|jpe?g|webp|gif)$/i.test(urlWithoutQuery);
-        };
-
-        // Back-compat fallback if server doesn't provide summary
-        const fallbackPreviewUrl = row.previewThumbnailUrl || null;
+        const rowThumbSrc = getThumbSrc(row);
 
         if (!includeThumbnails) {
           return (
@@ -507,7 +502,7 @@ export default function Orders() {
           );
         }
 
-        if ((!summary || totalCount === 0) && !fallbackPreviewUrl) {
+        if ((!summary || totalCount === 0) && !rowThumbSrc) {
           return (
             <div className="flex items-center h-8">
               <span className="text-muted-foreground">—</span>
@@ -515,14 +510,8 @@ export default function Orders() {
           );
         }
 
-        // If we only have the legacy single preview URL, keep the old UI.
-        if ((!summary || totalCount === 0) && fallbackPreviewUrl) {
-          const isLikelyImageUrl = (url: string | null): url is string => {
-            if (typeof url !== "string") return false;
-            const urlWithoutQuery = url.split("?")[0]?.split("#")[0] ?? "";
-            return /\.(png|jpe?g|webp|gif)$/i.test(urlWithoutQuery);
-          };
-
+        // If we only have a single preview thumbnail URL, keep the compact UI.
+        if ((!summary || totalCount === 0) && rowThumbSrc) {
           return (
             <button
               type="button"
@@ -537,14 +526,12 @@ export default function Orders() {
             >
               {loadingAttachments === row.id ? (
                 <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-              ) : isLikelyImageUrl(fallbackPreviewUrl) ? (
+              ) : (
                 <img
-                  src={fallbackPreviewUrl}
+                  src={rowThumbSrc}
                   alt="Preview"
                   className="w-8 h-8 rounded object-cover"
                 />
-              ) : (
-                <FileText className="w-4 h-4 text-muted-foreground" />
               )}
             </button>
           );
@@ -567,9 +554,9 @@ export default function Orders() {
                 disabled={loadingAttachments === row.id}
                 aria-label={`View attachment ${p.filename}`}
               >
-                {p.thumbnailUrl ? (
+                {getThumbSrc(p) ? (
                   <img
-                    src={p.thumbnailUrl}
+                    src={getThumbSrc(p) as string}
                     alt={p.filename}
                     className="w-full h-full object-cover"
                   />

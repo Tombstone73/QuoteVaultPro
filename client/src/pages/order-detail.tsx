@@ -50,6 +50,7 @@ import { Page, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
+import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -134,7 +135,10 @@ export default function OrderDetail() {
   const [tempDueDate, setTempDueDate] = useState("");
   const [tempPromisedDate, setTempPromisedDate] = useState("");
 
-  // Order flags (stored in orders.label as comma-separated values)
+  const [jobLabelDraft, setJobLabelDraft] = useState("");
+  const [poNumberDraft, setPoNumberDraft] = useState("");
+
+  // Order flags (stored in order_list_notes.listLabel as comma-separated values)
   const [flags, setFlags] = useState<string[]>([]);
   const [flagInput, setFlagInput] = useState("");
   const flagInputRef = useRef<HTMLInputElement | null>(null);
@@ -224,6 +228,35 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+
+  const listNoteQuery = useQuery<{ listLabel: string | null }>(
+    {
+      queryKey: ["orders", "list-note", orderId],
+      enabled: !!orderId,
+      queryFn: async () => {
+        const response = await fetch(`/api/orders/${orderId}/list-note`, { credentials: "include" });
+        if (!response.ok) throw new Error("Failed to load list note");
+        return response.json();
+      },
+      staleTime: 30_000,
+    }
+  );
+
+  const updateListNoteMutation = useMutation({
+    mutationFn: async ({ listLabel }: { listLabel: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/list-note`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ listLabel }),
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to update list note");
+      return response.json() as Promise<{ success: true; listLabel: string | null }>;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["orders", "list-note", orderId], { listLabel: data.listLabel ?? null });
+    },
+  });
   
   // Helper functions to enter edit mode (ensures only one section is editable at a time)
   const enterCustomerEdit = () => {
@@ -577,8 +610,16 @@ export default function OrderDetail() {
   };
 
   useEffect(() => {
-    setFlags(parseFlagsFromLabel(order?.label ?? null));
+    setJobLabelDraft(order?.label ?? "");
   }, [order?.label]);
+
+  useEffect(() => {
+    setPoNumberDraft(order?.poNumber ?? "");
+  }, [order?.poNumber]);
+
+  useEffect(() => {
+    setFlags(parseFlagsFromLabel(listNoteQuery.data?.listLabel ?? null));
+  }, [listNoteQuery.data?.listLabel]);
 
   const commitFlagInput = (raw: string) => {
     const parts = raw
@@ -601,10 +642,9 @@ export default function OrderDetail() {
       setFlagInput("");
 
       try {
-        await updateOrder.mutateAsync({ label: formatFlagsToLabel(next) });
+        await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
-        // Error toast handled by mutation
-        setFlags(parseFlagsFromLabel(order?.label ?? null));
+        setFlags(parseFlagsFromLabel(listNoteQuery.data?.listLabel ?? null));
       }
     })();
   };
@@ -620,10 +660,9 @@ export default function OrderDetail() {
         const next = flags.slice(0, -1);
         setFlags(next);
         try {
-          await updateOrder.mutateAsync({ label: formatFlagsToLabel(next) });
+          await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
         } catch {
-          // Error toast handled by mutation
-          setFlags(parseFlagsFromLabel(order?.label ?? null));
+          setFlags(parseFlagsFromLabel(listNoteQuery.data?.listLabel ?? null));
         }
       })();
     }
@@ -634,12 +673,29 @@ export default function OrderDetail() {
       const next = flags.filter((f) => f !== flag);
       setFlags(next);
       try {
-        await updateOrder.mutateAsync({ label: formatFlagsToLabel(next) });
+        await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
-        // Error toast handled by mutation
-        setFlags(parseFlagsFromLabel(order?.label ?? null));
+        setFlags(parseFlagsFromLabel(listNoteQuery.data?.listLabel ?? null));
       }
     })();
+  };
+
+  const commitJobLabel = async () => {
+    if (!orderId) return;
+    try {
+      await updateOrder.mutateAsync({ label: normalizeNullableString(jobLabelDraft) });
+    } catch {
+      setJobLabelDraft(order?.label ?? "");
+    }
+  };
+
+  const commitPoNumber = async () => {
+    if (!orderId) return;
+    try {
+      await updateOrder.mutateAsync({ poNumber: normalizeNullableString(poNumberDraft) });
+    } catch {
+      setPoNumberDraft(order?.poNumber ?? "");
+    }
   };
 
   type ShipToUpdatePayload = Partial<Pick<
@@ -1523,8 +1579,7 @@ export default function OrderDetail() {
             )}
 
             {/* Order Details */}
-            <Card className="bg-titan-bg-card border-titan-border-subtle">
-              <CardContent className="space-y-4">
+            <DocumentMetaCard className="bg-titan-bg-card border-titan-border-subtle" contentClassName="space-y-4">
                 {/* TitanOS State Architecture */}
                 {(showPaymentStatus || showRoutedTo) && (
                   <div className={cn(
@@ -1584,6 +1639,62 @@ export default function OrderDetail() {
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">PO #</label>
+                    <Input
+                      value={poNumberDraft}
+                      onChange={(e) => setPoNumberDraft(e.target.value)}
+                      onBlur={() => void commitPoNumber()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          (e.target as HTMLInputElement).blur();
+                        }
+                      }}
+                      className="h-8 w-auto min-w-[120px]"
+                      disabled={!canEditOrder || updateOrder.isPending}
+                      placeholder="—"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 min-w-0">
+                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Job Label</label>
+                    <Input
+                      value={jobLabelDraft}
+                      onChange={(e) => setJobLabelDraft(e.target.value)}
+                      onBlur={() => void commitJobLabel()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          (e.target as HTMLInputElement).blur();
+                        }
+                      }}
+                      className="h-8 w-full min-w-0"
+                      disabled={!canEditOrder || updateOrder.isPending}
+                      placeholder="—"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Priority</label>
+                    <Select 
+                      value={order.priority} 
+                      onValueChange={handlePriorityChange} 
+                      disabled={!canEditOrder || updateOrder.isPending}
+                    >
+                      <SelectTrigger className="h-8 w-auto min-w-[100px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="rush">Rush</SelectItem>
+                        <SelectItem value="normal">Normal</SelectItem>
+                        <SelectItem value="low">Low</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Due Date</label>
                     {editingDueDate ? (
                       <div className="flex items-center gap-2 shrink-0">
@@ -1604,10 +1715,10 @@ export default function OrderDetail() {
                       <div className="inline-flex items-center gap-2 shrink-0">
                         <div className="text-sm whitespace-nowrap">{formatDate(order.dueDate)}</div>
                         {canEditOrder && (
-                          <Button 
-                            size="icon" 
-                            variant="ghost" 
-                            className="h-6 w-6 text-muted-foreground hover:text-foreground" 
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-muted-foreground hover:text-foreground"
                             onClick={handleDueDateEdit}
                             title="Edit Due Date"
                           >
@@ -1617,6 +1728,7 @@ export default function OrderDetail() {
                       </div>
                     )}
                   </div>
+
                   <div className="flex items-center gap-2">
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Promised Date</label>
                     {editingPromisedDate ? (
@@ -1638,10 +1750,10 @@ export default function OrderDetail() {
                       <div className="inline-flex items-center gap-2 shrink-0">
                         <div className="text-sm whitespace-nowrap">{formatDate(order.promisedDate)}</div>
                         {canEditOrder && (
-                          <Button 
-                            size="icon" 
-                            variant="ghost" 
-                            className="h-6 w-6 text-muted-foreground hover:text-foreground" 
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-muted-foreground hover:text-foreground"
                             onClick={handlePromisedDateEdit}
                             title="Edit Promised Date"
                           >
@@ -1650,24 +1762,6 @@ export default function OrderDetail() {
                         )}
                       </div>
                     )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Priority</label>
-                    <Select 
-                      value={order.priority} 
-                      onValueChange={handlePriorityChange} 
-                      disabled={!canEditOrder || updateOrder.isPending}
-                    >
-                      <SelectTrigger className="h-8 w-auto min-w-[100px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="rush">Rush</SelectItem>
-                        <SelectItem value="normal">Normal</SelectItem>
-                        <SelectItem value="low">Low</SelectItem>
-                      </SelectContent>
-                    </Select>
                   </div>
                 </div>
 
@@ -1696,7 +1790,7 @@ export default function OrderDetail() {
                         </Badge>
                       ))}
 
-                      {!canEditOrder || updateOrder.isPending ? (
+                      {!canEditOrder || updateOrder.isPending || updateListNoteMutation.isPending ? (
                         flags.length === 0 ? (
                           <span className="text-xs text-muted-foreground">—</span>
                         ) : null
@@ -1724,8 +1818,7 @@ export default function OrderDetail() {
                     </div>
                   </div>
                 )}
-              </CardContent>
-            </Card>
+            </DocumentMetaCard>
 
             {/* Line Items (Quote-style UI) */}
             <div className="space-y-4">

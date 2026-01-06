@@ -1098,7 +1098,7 @@ export function OrderLineItemsSection({
 
                           {isExpanded && expandedItem && expandedItem.id === item.id && (
                             <div id={contentId} className="px-2.5 pb-2.5">
-                              <div className="rounded-md border border-border/40 bg-muted/20 p-3 min-h-[400px]">
+                              <div className="rounded-md border border-border/40 bg-background/30 p-3">
                                 <div className="flex flex-wrap items-end gap-3">
                                   <div className="flex items-center gap-2">
                                     <div className="flex items-center gap-2">
