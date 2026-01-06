@@ -3169,8 +3169,8 @@ export async function registerOrderRoutes(
                     id: orderAttachments.id,
                     fileName: orderAttachments.fileName,
                     originalFilename: orderAttachments.originalFilename,
-                    fileKey: orderAttachments.fileKey,
-                    objectPath: orderAttachments.objectPath,
+                    fileUrl: orderAttachments.fileUrl,
+                    relativePath: orderAttachments.relativePath,
                 })
                 .from(orderAttachments)
                 .where(eq(orderAttachments.orderId, orderId))
@@ -3216,7 +3216,13 @@ export async function registerOrderRoutes(
 
             for (const att of attachmentRows) {
                 const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
-                const objectPath = (att.objectPath ?? att.fileKey) as string | null;
+                // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
+                let objectPath: string | null = null;
+                if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
+                    objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
+                } else if (att.relativePath) {
+                    objectPath = att.relativePath;
+                }
                 if (objectPath) files.push({ filename, objectPath });
             }
 

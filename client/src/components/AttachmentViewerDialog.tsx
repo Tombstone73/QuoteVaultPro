@@ -162,9 +162,10 @@ export function AttachmentViewerDialog({
             <div className="flex justify-center bg-muted/30 rounded-lg p-4">
               <img src={imageViewUrl} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
             </div>
+          ) : null}
           
           {/* PDFs: Chrome-proof rendering with fallback */}
-          ) : isPdf && pdfViewUrl && !showFallback ? (
+          {isPdf && pdfViewUrl && !showFallback ? (
             <div className="bg-muted/30 rounded-lg p-2 space-y-2">
               {/* PACK P1-P2: NO SANDBOX, same-origin /objects URL only */}
               <iframe
@@ -196,9 +197,10 @@ export function AttachmentViewerDialog({
                 </button>
               </div>
             </div>
+          ) : null}
           
           {/* PACK P3: Fallback UI (no iframe, just actions) */}
-          ) : isPdf && (showFallback || !pdfViewUrl) ? (
+          {isPdf && (showFallback || !pdfViewUrl) ? (
             <div className="flex flex-col items-center justify-center py-12 text-center space-y-4 bg-muted/30 rounded-lg">
               <FileText className="w-16 h-16 opacity-50 text-muted-foreground" />
               <div className="space-y-2">
@@ -244,9 +246,10 @@ export function AttachmentViewerDialog({
                 </button>
               )}
             </div>
+          ) : null}
           
           {/* Generic fallback for other file types */}
-          ) : (
+          {!isImage && !isPdf ? (
             <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
               <FileText className="w-16 h-16 mb-4 opacity-50" />
               <p className="text-sm mb-4">Preview not available</p>
@@ -257,7 +260,7 @@ export function AttachmentViewerDialog({
                 </Button>
               )}
             </div>
-          )}
+          ) : null}
           
           <div className="flex items-center justify-between text-sm">
             <div className="space-y-1">

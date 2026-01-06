@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, Download, FileText, Image as ImageIcon } from "lucide-react";
+import { Search, Download, FileText, Image as ImageIcon, Trash2 } from "lucide-react";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { format } from "date-fns";
 
@@ -33,6 +33,8 @@ interface ViewAllAttachmentsDialogProps {
   lineItemAttachments: AttachmentWithContext[];
   onViewAttachment: (attachment: AttachmentWithContext) => void;
   onDownloadAll?: () => void;
+  onDeleteAttachment?: (attachment: AttachmentWithContext) => void;
+  canDelete?: boolean;
 }
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -48,6 +50,8 @@ export function ViewAllAttachmentsDialog({
   orderAttachments,
   lineItemAttachments,
   onViewAttachment,
+  onDeleteAttachment,
+  canDelete = true,
   onDownloadAll,
 }: ViewAllAttachmentsDialogProps) {
   const [searchQuery, setSearchQuery] = useState("");
@@ -121,6 +125,22 @@ export function ViewAllAttachmentsDialog({
             </div>
           </div>
         </div>
+
+        {/* Delete button (only for order attachments) */}
+        {canDelete && a.source === "order" && onDeleteAttachment && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDeleteAttachment(a);
+            }}
+            title="Delete attachment"
+          >
+            <Trash2 className="w-4 h-4 text-destructive" />
+          </Button>
+        )}
       </div>
     );
   };

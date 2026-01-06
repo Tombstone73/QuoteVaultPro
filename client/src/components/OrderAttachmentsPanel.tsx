@@ -394,6 +394,20 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                         <Eye className="w-6 h-6 text-white" />
                       </div>
 
+                      {/* Delete button (top-right) */}
+                      {!isLocked && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAttachmentToDelete(a);
+                          }}
+                          className="absolute top-2 right-2 p-1.5 bg-destructive/90 hover:bg-destructive rounded-md opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          title="Delete attachment"
+                        >
+                          <Trash2 className="w-4 h-4 text-white" />
+                        </button>
+                      )}
+
                       {/* Filename overlay at bottom */}
                       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
                         <div className="text-xs text-white truncate">{displayName}</div>
@@ -416,25 +430,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
               )}
             </div>
           )}
-        </       className="h-8 w-8 p-0"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setAttachmentToDelete(a);
-                    }}
-                    title={isLocked ? lockedHint : "Delete"}
-                    disabled={isLocked || deleteAttachment.isPending}
-                  >
-                    {deleteAttachment.isPending && attachmentToDelete?.id === a.id ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="w-4 h-4 text-destructive" />
-                    )}
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        </>
       )}
 
       <AttachmentViewerDialog
@@ -446,10 +442,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
         }}
       />
 
-      <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => (!open ? setAttachmentToDelete(null) : undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-       ViewAllAttachmentsDialog
+      <ViewAllAttachmentsDialog
         open={viewAllOpen}
         onOpenChange={setViewAllOpen}
         orderAttachments={attachments.map((a) => ({ ...a, source: "order" as const }))}
@@ -459,9 +452,14 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           setViewerOpen(true);
         }}
         onDownloadAll={attachments.length > 0 ? handleDownloadAllZip : undefined}
+        onDeleteAttachment={(a) => setAttachmentToDelete(a as any)}
+        canDelete={!isLocked}
       />
 
-      <     <AlertDialogTitle>Delete attachment</AlertDialogTitle>
+      <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => (!open ? setAttachmentToDelete(null) : undefined)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete attachment</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently remove the attachment from this order.
             </AlertDialogDescription>
