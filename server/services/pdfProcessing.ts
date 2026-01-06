@@ -137,16 +137,29 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
       // Local file storage - resolve path and read directly
       const resolvedPath = resolveLocalStoragePath(fileKey);
       console.log(`[PdfProcessing] Local read resolved: ${fileKey} -> ${resolvedPath}`);
-      try {
-        const buffer = await fsPromises.readFile(resolvedPath);
-        console.log(`[PdfProcessing] Read from local storage: ${fileKey}, size=${buffer.length} bytes`);
-        return buffer;
-      } catch (readError: any) {
-        if (readError.code === 'ENOENT') {
-          throw new Error(`File not found: storageKey=${fileKey}, resolvedPath=${resolvedPath}`);
+      
+      // PACK 2: Retry logic for local files (handle timing issues after upload finalize)
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const buffer = await fsPromises.readFile(resolvedPath);
+          console.log(`[PdfProcessing] Read from local storage: ${fileKey}, size=${buffer.length} bytes (attempt ${attempt})`);
+          return buffer;
+        } catch (readError: any) {
+          lastError = readError;
+          if (readError.code === 'ENOENT') {
+            if (attempt < 2) {
+              // File not found on first attempt - wait and retry (may still be flushing)
+              console.log(`[PdfProcessing] File not found on attempt ${attempt}, retrying after 200ms...`);
+              await new Promise(resolve => setTimeout(resolve, 200));
+              continue;
+            }
+            throw new Error(`File not found after ${attempt} attempts: storageKey=${fileKey}, resolvedPath=${resolvedPath}`);
+          }
+          throw readError;
         }
-        throw readError;
       }
+      throw lastError || new Error('Unexpected retry loop exit');
     } else {
       // Unknown or legacy storage provider
       throw new Error(`Unsupported storage provider: ${storageProvider || 'none'}`);
