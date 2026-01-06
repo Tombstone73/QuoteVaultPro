@@ -6,6 +6,8 @@ import {
     orderAuditLog,
     orderLineItems,
     assetLinks,
+    assets,
+    assetVariants,
     quoteAttachments,
     organizations,
     customers,
@@ -231,6 +233,7 @@ export async function registerOrderRoutes(
                 // If thumbnails are requested, return:
                 // - attachmentsSummary: totalCount + up to 3 preview thumbs per order
                 // - previewThumbnailUrl: back-compat single preview (first preview thumb)
+                // - previewThumbnailUrls: up to 3 preview thumbs per order (prefer attachments, else line-item assets)
                 // Server generates usable URLs (no client-side URL construction).
                 if (includeThumbnails && result?.items?.length) {
                     try {
@@ -279,6 +282,8 @@ export async function registerOrderRoutes(
                             > = {};
 
                             const previewUrlByOrderId: Record<string, string | null> = {};
+                            const previewUrlsByOrderId: Record<string, string[]> = {};
+                            const previewCountByOrderId: Record<string, number> = {};
 
                             for (const orderId of orderIds) {
                                 const totalCount = countsByOrderId[orderId] ?? 0;
@@ -335,13 +340,187 @@ export async function registerOrderRoutes(
                                     previews,
                                 };
 
-                                previewUrlByOrderId[orderId] = previews[0]?.thumbnailUrl ?? null;
+                                previewCountByOrderId[orderId] = totalCount;
+
+                                const urls = Array.from(
+                                    new Set(
+                                        previews
+                                            .map((p) => p.thumbnailUrl)
+                                            .filter((u): u is string => typeof u === 'string' && u.length > 0)
+                                    )
+                                ).slice(0, 3);
+
+                                previewUrlsByOrderId[orderId] = urls;
+                                previewUrlByOrderId[orderId] = urls[0] ?? null;
+                            }
+
+                            // Fallback: if an order has no order-level attachment previews,
+                            // use the first available order_line_item asset thumbnail (batched; no N+1).
+                            const needsFallbackOrderIds = orderIds.filter((id) => (previewUrlsByOrderId[id]?.length ?? 0) === 0);
+                            if (needsFallbackOrderIds.length) {
+                                try {
+                                    const lineItemRows = await db
+                                        .select({
+                                            orderId: orderLineItems.orderId,
+                                            lineItemId: orderLineItems.id,
+                                        })
+                                        .from(orderLineItems)
+                                        .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                                        .where(
+                                            and(
+                                                inArray(orderLineItems.orderId, needsFallbackOrderIds),
+                                                eq(orders.organizationId, organizationId)
+                                            )
+                                        );
+
+                                    const lineItemIds = lineItemRows.map((r) => r.lineItemId).filter(Boolean) as string[];
+                                    if (lineItemIds.length) {
+                                        const linkRows = await db
+                                            .select({
+                                                orderId: orderLineItems.orderId,
+                                                assetId: assetLinks.assetId,
+                                                role: assetLinks.role,
+                                                createdAt: assetLinks.createdAt,
+                                            })
+                                            .from(assetLinks)
+                                            .innerJoin(orderLineItems, eq(orderLineItems.id, assetLinks.parentId))
+                                            .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                                            .where(
+                                                and(
+                                                    eq(assetLinks.organizationId, organizationId),
+                                                    eq(assetLinks.parentType, 'order_line_item'),
+                                                    inArray(assetLinks.parentId, lineItemIds),
+                                                    inArray(orderLineItems.orderId, needsFallbackOrderIds),
+                                                    eq(orders.organizationId, organizationId)
+                                                )
+                                            )
+                                            .orderBy(desc(assetLinks.createdAt));
+
+                                        const assetIds = Array.from(
+                                            new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[])
+                                        );
+
+                                        if (assetIds.length) {
+                                            const [assetRows, variantRows] = await Promise.all([
+                                                db
+                                                    .select()
+                                                    .from(assets)
+                                                    .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
+                                                db
+                                                    .select()
+                                                    .from(assetVariants)
+                                                    .where(
+                                                        and(
+                                                            eq(assetVariants.organizationId, organizationId),
+                                                            inArray(assetVariants.assetId, assetIds)
+                                                        )
+                                                    ),
+                                            ]);
+
+                                            const variantsByAssetId = new Map<string, any[]>();
+                                            for (const v of variantRows as any[]) {
+                                                const key = String(v.assetId);
+                                                const list = variantsByAssetId.get(key) ?? [];
+                                                list.push(v);
+                                                variantsByAssetId.set(key, list);
+                                            }
+
+                                            const assetsById = new Map<string, any>();
+                                            for (const a of assetRows as any[]) {
+                                                assetsById.set(String(a.id), {
+                                                    ...a,
+                                                    variants: variantsByAssetId.get(String(a.id)) ?? [],
+                                                });
+                                            }
+
+                                            const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+
+                                            const thumbByAssetId = new Map<string, string | null>();
+                                            for (const assetId of assetIds) {
+                                                const asset = assetsById.get(assetId);
+                                                if (!asset) continue;
+                                                const enriched = enrichAssetWithUrls(asset);
+                                                const thumb =
+                                                    (enriched as any).previewThumbnailUrl ??
+                                                    (enriched as any).thumbnailUrl ??
+                                                    (enriched as any).thumbUrl ??
+                                                    null;
+                                                thumbByAssetId.set(assetId, typeof thumb === 'string' && thumb.length ? thumb : null);
+                                            }
+
+                                            const linksByOrderId: Record<string, Array<{ assetId: string; role: string }>> = {};
+                                            for (const row of linkRows as any[]) {
+                                                const orderId = String(row.orderId);
+                                                const assetId = String(row.assetId);
+                                                const role = String(row.role ?? 'other');
+                                                if (!linksByOrderId[orderId]) linksByOrderId[orderId] = [];
+                                                linksByOrderId[orderId].push({ assetId, role });
+                                            }
+
+                                            // For overflow indicator: count distinct assets per order (even if thumb not ready).
+                                            for (const orderId of needsFallbackOrderIds) {
+                                                if ((previewCountByOrderId[orderId] ?? 0) > 0) continue;
+                                                const links = linksByOrderId[orderId] ?? [];
+                                                const uniqueAssetCount = new Set(links.map((l) => l.assetId).filter(Boolean)).size;
+                                                if (uniqueAssetCount > 0) previewCountByOrderId[orderId] = uniqueAssetCount;
+                                            }
+
+                                            const logOnce = createRequestLogOnce();
+                                            let appliedFallbackCount = 0;
+
+                                            for (const orderId of needsFallbackOrderIds) {
+                                                if ((previewUrlsByOrderId[orderId]?.length ?? 0) > 0) continue;
+
+                                                const links = linksByOrderId[orderId] ?? [];
+                                                if (!links.length) continue;
+
+                                                const primaryLinks = links.filter((l) => l.role === 'primary');
+                                                const otherLinks = links.filter((l) => l.role !== 'primary');
+                                                const candidates = [...primaryLinks, ...otherLinks];
+
+                                                const picked: string[] = [];
+                                                const seen = new Set<string>();
+                                                for (const c of candidates) {
+                                                    const url = thumbByAssetId.get(c.assetId) ?? null;
+                                                    if (!url) continue;
+                                                    if (seen.has(url)) continue;
+                                                    seen.add(url);
+                                                    picked.push(url);
+                                                    if (picked.length >= 3) break;
+                                                }
+
+                                                if (picked.length) {
+                                                    previewUrlsByOrderId[orderId] = picked;
+                                                    previewUrlByOrderId[orderId] = picked[0] ?? null;
+                                                    appliedFallbackCount += 1;
+                                                }
+                                            }
+
+                                            if (appliedFallbackCount > 0) {
+                                                logOnce(
+                                                    'orders-list-line-item-thumb-fallback',
+                                                    '[OrdersList] Using line-item asset thumbnails as fallback for',
+                                                    appliedFallbackCount,
+                                                    'orders'
+                                                );
+                                            }
+                                        }
+                                    }
+                                } catch (fallbackError: any) {
+                                    // Fail-soft: thumbnails are optional.
+                                    console.warn(
+                                        '[OrdersList] Line-item asset thumbnail fallback failed (fail-soft):',
+                                        fallbackError?.message || String(fallbackError)
+                                    );
+                                }
                             }
 
                             result.items = result.items.map((o: any) => ({
                                 ...o,
                                 attachmentsSummary: attachmentsSummaryByOrderId[o.id] ?? { totalCount: 0, previews: [] },
                                 previewThumbnailUrl: previewUrlByOrderId[o.id] ?? null,
+                                previewThumbnailUrls: previewUrlsByOrderId[o.id] ?? [],
+                                previewThumbnailCount: previewCountByOrderId[o.id] ?? 0,
                                 // Back-compat: keep existing field aligned.
                                 previewImageUrl: previewUrlByOrderId[o.id] ?? null,
                             }));
@@ -353,6 +532,8 @@ export async function registerOrderRoutes(
                             ...o,
                             attachmentsSummary: { totalCount: 0, previews: [] },
                             previewThumbnailUrl: null,
+                            previewThumbnailUrls: [],
+                            previewThumbnailCount: 0,
                             previewImageUrl: null,
                         }));
                     }
@@ -363,6 +544,8 @@ export async function registerOrderRoutes(
                     result.items = result.items.map((o: any) => ({
                         ...o,
                         previewThumbnailUrl: null,
+                        previewThumbnailUrls: [],
+                        previewThumbnailCount: 0,
                         previewImageUrl: null,
                     }));
                 }
@@ -1210,6 +1393,166 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error("[OrderAttachments:GET] Error:", error);
             return res.status(500).json({ error: "Failed to fetch order attachments" });
+        }
+    });
+
+    // Unified attachments for Orders list modal: order-level attachments + line-item artwork assets
+    app.get('/api/orders/:orderId/attachments-unified', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const { orderId } = req.params;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const [orderRow] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!orderRow) return res.status(404).json({ error: 'Order not found' });
+
+            const logOnce = createRequestLogOnce();
+
+            // 1) Order-level attachments (legacy order_attachments rows)
+            const attachmentRows = await db
+                .select({
+                    id: orderAttachments.id,
+                    fileName: orderAttachments.fileName,
+                    originalFilename: orderAttachments.originalFilename,
+                    fileUrl: orderAttachments.fileUrl,
+                    storageProvider: orderAttachments.storageProvider,
+                    thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+                    thumbKey: orderAttachments.thumbKey,
+                    previewKey: orderAttachments.previewKey,
+                    mimeType: orderAttachments.mimeType,
+                    createdAt: orderAttachments.createdAt,
+                    orderLineItemId: orderAttachments.orderLineItemId,
+                })
+                .from(orderAttachments)
+                .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+                .where(and(eq(orderAttachments.orderId, orderId), eq(orders.organizationId, organizationId)))
+                .orderBy(desc(orderAttachments.createdAt));
+
+            const enrichedAttachments = await Promise.all(
+                attachmentRows.map((a) => enrichAttachmentWithUrls(a as any, { logOnce }))
+            );
+
+            const attachmentItems = (enrichedAttachments as any[]).map((att) => {
+                const filename = String(att?.originalFilename ?? att?.fileName ?? 'Attachment');
+                const previewThumbnailUrl =
+                    (att?.previewThumbnailUrl as string | null) ??
+                    (att?.thumbnailUrl as string | null) ??
+                    (att?.thumbUrl as string | null) ??
+                    (att?.previewUrl as string | null) ??
+                    null;
+
+                return {
+                    id: String(att?.id),
+                    filename,
+                    originalUrl: (att?.originalUrl as string | null) ?? null,
+                    previewThumbnailUrl,
+                    createdAt: att?.createdAt ?? null,
+                    source: 'order' as const,
+                };
+            });
+
+            // 2) Line-item assets linked via asset_links (PHASE 2 pipeline)
+            const lineItemRows = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId));
+
+            const lineItemIds = lineItemRows.map((r) => r.id).filter(Boolean) as string[];
+
+            let lineItemAssetItems: any[] = [];
+            if (lineItemIds.length) {
+                const linkRows = await db
+                    .select({
+                        lineItemId: assetLinks.parentId,
+                        assetId: assetLinks.assetId,
+                        role: assetLinks.role,
+                        createdAt: assetLinks.createdAt,
+                    })
+                    .from(assetLinks)
+                    .where(
+                        and(
+                            eq(assetLinks.organizationId, organizationId),
+                            eq(assetLinks.parentType, 'order_line_item'),
+                            inArray(assetLinks.parentId, lineItemIds)
+                        )
+                    )
+                    .orderBy(desc(assetLinks.createdAt));
+
+                const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
+
+                if (assetIds.length) {
+                    const [assetRows, variantRows] = await Promise.all([
+                        db
+                            .select()
+                            .from(assets)
+                            .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
+                        db
+                            .select()
+                            .from(assetVariants)
+                            .where(and(eq(assetVariants.organizationId, organizationId), inArray(assetVariants.assetId, assetIds))),
+                    ]);
+
+                    const variantsByAssetId = new Map<string, any[]>();
+                    for (const v of variantRows as any[]) {
+                        const key = String(v.assetId);
+                        const list = variantsByAssetId.get(key) ?? [];
+                        list.push(v);
+                        variantsByAssetId.set(key, list);
+                    }
+
+                    const assetsById = new Map<string, any>();
+                    for (const a of assetRows as any[]) {
+                        assetsById.set(String(a.id), {
+                            ...a,
+                            variants: variantsByAssetId.get(String(a.id)) ?? [],
+                        });
+                    }
+
+                    const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+
+                    lineItemAssetItems = (linkRows as any[])
+                        .map((link) => {
+                            const asset = assetsById.get(String(link.assetId));
+                            if (!asset) return null;
+                            const enriched = enrichAssetWithUrls(asset);
+                            const filename = String((enriched as any).fileName ?? 'Artwork');
+                            const previewThumbnailUrl =
+                                (enriched as any).previewThumbnailUrl ??
+                                (enriched as any).thumbnailUrl ??
+                                (enriched as any).thumbUrl ??
+                                null;
+
+                            return {
+                                id: String(link.assetId),
+                                filename,
+                                originalUrl: (enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null,
+                                previewThumbnailUrl,
+                                createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
+                                source: 'line_item' as const,
+                                parentLineItemId: String(link.lineItemId),
+                                role: String(link.role ?? 'other'),
+                            };
+                        })
+                        .filter(Boolean);
+                }
+            }
+
+            const allItems = [...attachmentItems, ...lineItemAssetItems]
+                .sort((a, b) => {
+                    const at = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+                    const bt = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+                    return bt - at;
+                });
+
+            return res.json({ success: true, data: allItems });
+        } catch (error) {
+            console.error('[OrderAttachmentsUnified:GET] Error:', error);
+            return res.status(500).json({ error: 'Failed to fetch attachments' });
         }
     });
 

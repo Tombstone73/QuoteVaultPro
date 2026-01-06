@@ -7,6 +7,7 @@ import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 
@@ -154,11 +155,25 @@ export function LineItemAttachmentsPanel({
           originalUrl: a.originalUrl ?? null,
           thumbUrl: a.thumbUrl ?? a.thumbnailUrl ?? null,
           previewUrl: a.previewUrl ?? null,
+          // Contract aliases (server-side applyThumbnailContract)
+          thumbnailUrl: a.thumbnailUrl ?? null,
+          previewThumbnailUrl: a.previewThumbnailUrl ?? null,
+
+          // Map canonical asset preview pipeline state into existing attachment-style fields
+          // so the existing polling logic continues to work for order assets.
+          thumbStatus:
+            a.previewStatus === "ready"
+              ? ("thumb_ready" as const)
+              : a.previewStatus === "pending"
+              ? ("thumb_pending" as const)
+              : a.previewStatus === "failed"
+              ? ("thumb_failed" as const)
+              : undefined,
+          thumbError: a.previewError ?? a.thumbError,
+
           // Preserve optional fields if present
-          thumbStatus: a.thumbStatus,
           thumbKey: a.thumbKey,
           previewKey: a.previewKey,
-          thumbError: a.thumbError,
           pageCount: a.pageCount,
           pages: a.pages,
         } as LineItemAttachment));
@@ -846,41 +861,30 @@ export function LineItemAttachmentsPanel({
                   /\.(psd)$/i.test(file.fileName ?? "") ||
                   /(photoshop|x-photoshop)/i.test(file.mimeType ?? "");
 
-                const isRenderableImageUrl = (url: string | null): url is string => {
-                  if (typeof url !== "string" || !isValidHttpUrl(url)) return false;
-                  const urlWithoutQuery = url.split("?")[0]?.split("#")[0] ?? "";
-                  return /\.(png|jpe?g|webp|gif)$/i.test(urlWithoutQuery);
-                };
-
                 const originalUrl = file.originalUrl ?? (file as any).originalURL ?? (file as any).url ?? null;
                 const previewUrl = file.previewUrl ?? null;
                 const thumbUrl = file.thumbUrl ?? null;
                 const pdfThumbUrl = file.pages?.[0]?.thumbUrl ?? thumbUrl ?? null;
 
-                const imagePreviewUrl =
-                  (typeof previewUrl === "string" && isValidHttpUrl(previewUrl) ? previewUrl : null) ??
-                  (typeof originalUrl === "string" && isValidHttpUrl(originalUrl) ? originalUrl : null);
+                // Unified thumb resolver that works for both signed http(s) URLs and /objects/*.
+                const unifiedThumbUrl = getThumbSrc(file);
 
-                const tiffPreviewUrl =
-                  (isRenderableImageUrl(previewUrl) ? previewUrl : null) ??
-                  (isRenderableImageUrl(thumbUrl) ? thumbUrl : null);
-
-                const aiPsdPreviewUrl =
-                  (isRenderableImageUrl(previewUrl) ? previewUrl : null) ??
-                  (isRenderableImageUrl(thumbUrl) ? thumbUrl : null);
-
-                const pdfPreviewThumbUrl =
-                  typeof pdfThumbUrl === "string" && isValidHttpUrl(pdfThumbUrl) ? pdfThumbUrl : null;
-
-                const thumbnailUrl = isPdf
-                  ? pdfPreviewThumbUrl
-                  : isTiff
-                  ? tiffPreviewUrl
-                  : isAi || isPsd
-                  ? aiPsdPreviewUrl
-                  : isImage
-                  ? imagePreviewUrl
-                  : null;
+                // Prefer the unified thumb source; fall back to older heuristics.
+                // This is critical for order assets, where thumbs are usually served via /objects/*.
+                const thumbnailUrl =
+                  unifiedThumbUrl ??
+                  (isPdf
+                    ? (typeof pdfThumbUrl === "string" && (pdfThumbUrl.startsWith("/objects/") || isValidHttpUrl(pdfThumbUrl))
+                        ? pdfThumbUrl
+                        : null)
+                    : (isImage
+                        ? ((typeof previewUrl === "string" && (previewUrl.startsWith("/objects/") || isValidHttpUrl(previewUrl))
+                            ? previewUrl
+                            : null) ??
+                          (typeof originalUrl === "string" && (originalUrl.startsWith("/objects/") || isValidHttpUrl(originalUrl))
+                            ? originalUrl
+                            : null))
+                        : null));
 
                 const hasAnyThumbnail = !!thumbnailUrl;
                 const fileName = getAttachmentDisplayName(file);

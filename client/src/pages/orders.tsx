@@ -386,7 +386,7 @@ export default function Orders() {
     setLoadingAttachments(orderId);
 
     try {
-      const response = await fetch(`/api/orders/${orderId}/attachments?includeLineItems=true`, {
+      const response = await fetch(`/api/orders/${orderId}/attachments-unified`, {
         credentials: "include",
       });
 
@@ -492,6 +492,12 @@ export default function Orders() {
         const previews = summary?.previews ?? [];
         const totalCount = summary?.totalCount ?? 0;
 
+        const rowPreviewThumbnailUrls = Array.isArray((row as any).previewThumbnailUrls)
+          ? ((row as any).previewThumbnailUrls as any[])
+              .filter((u) => typeof u === 'string' && u.length > 0)
+              .slice(0, 3)
+          : [];
+
         const rowThumbSrc = getThumbSrc(row);
 
         if (!includeThumbnails) {
@@ -506,6 +512,55 @@ export default function Orders() {
           return (
             <div className="flex items-center h-8">
               <span className="text-muted-foreground">—</span>
+            </div>
+          );
+        }
+
+        // If we have explicit preview thumbnails (attachments or line-item assets), show up to 3.
+        // Keep the existing attachmentsSummary UI when attachments exist (it includes +N count).
+        if ((!summary || totalCount === 0) && rowPreviewThumbnailUrls.length > 0) {
+          const totalForOverflow =
+            typeof (row as any).previewThumbnailCount === 'number'
+              ? ((row as any).previewThumbnailCount as number)
+              : rowPreviewThumbnailUrls.length;
+          const extra = Math.max(0, totalForOverflow - rowPreviewThumbnailUrls.length);
+
+          return (
+            <div className="flex items-center gap-1.5 h-8" data-stop-row-nav="true">
+              {rowPreviewThumbnailUrls.map((src, idx) => (
+                <button
+                  key={`${row.id}-preview-${idx}`}
+                  type="button"
+                  className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openAttachmentsDialog(row.id);
+                  }}
+                  disabled={loadingAttachments === row.id}
+                  aria-label="Open attachments"
+                >
+                  {loadingAttachments === row.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                  ) : (
+                    <img src={src} alt="Preview" className="w-full h-full object-cover" />
+                  )}
+                </button>
+              ))}
+
+              {extra > 0 && (
+                <button
+                  type="button"
+                  className="h-8 px-2 rounded border border-border text-xs text-muted-foreground hover:text-foreground"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openAttachmentsDialog(row.id);
+                  }}
+                  disabled={loadingAttachments === row.id}
+                  aria-label={`View ${extra} more attachments`}
+                >
+                  +{extra}
+                </button>
+              )}
             </div>
           );
         }
@@ -1005,8 +1060,8 @@ export default function Orders() {
           ) : (
             <div className="space-y-2">
               {attachmentsDialogItems.map((att: any) => {
-                const filename = att?.originalFilename || att?.fileName || "Attachment";
-                const thumbUrl = att?.thumbUrl || att?.previewUrl || null;
+                const filename = att?.filename || att?.originalFilename || att?.fileName || "Attachment";
+                const thumbUrl = getThumbSrc(att);
                 const downloadUrl = att?.originalUrl || null;
                 const hasThumb = typeof thumbUrl === "string" && (thumbUrl.startsWith("http") || thumbUrl.startsWith("/"));
 
@@ -1018,7 +1073,7 @@ export default function Orders() {
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-10 h-10 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center shrink-0">
                         {hasThumb ? (
-                          <img src={thumbUrl} alt={filename} className="w-full h-full object-cover" />
+                          <img src={thumbUrl as string} alt={filename} className="w-full h-full object-cover" />
                         ) : (
                           <FileText className="w-5 h-5 text-muted-foreground" />
                         )}

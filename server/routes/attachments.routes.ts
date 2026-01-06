@@ -48,6 +48,8 @@ import {
 import type { FileRole, FileSide } from "../lib/supabaseObjectHelpers";
 import { ObjectStorageService, ObjectNotFoundError } from "../objectStorage";
 import { ObjectPermission } from "../objectAcl";
+import { resolveLocalStoragePath } from "../services/localStoragePath";
+import { normalizeTenantObjectKey } from "../utils/orgKeys";
 
 // Type alias for authentication
 type AuthenticatedRequest = Express.Request & { user: any };
@@ -135,82 +137,98 @@ export async function registerAttachmentRoutes(
     const rawObjectPath = req.params.objectPath || req.params[0] || "";
     const objectPath = decodeURIComponent(rawObjectPath);
 
-    if (!objectPath) {
+    // Canonicalize obvious key mistakes early (but keep original for logging).
+    const requestedKey = normalizeObjectKeyForDb(objectPath);
+    const compatKey = normalizeTenantObjectKey(requestedKey);
+    const candidateKeys = requestedKey === compatKey ? [requestedKey] : [requestedKey, compatKey];
+
+    if (isDev) {
+      console.log(
+        `[objects] request="${objectPath}" key="${requestedKey}"` +
+          (requestedKey !== compatKey ? ` compat="${compatKey}"` : "")
+      );
+    }
+
+    if (!requestedKey) {
       return res.status(400).json({ error: "Invalid object path" });
     }
 
     try {
-      // Try Supabase first if configured
-      if (isSupabaseConfigured()) {
-        const supabaseService = new SupabaseStorageService();
-        const ext = path.extname(objectPath).toLowerCase();
-        const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext);
-        const contentTypes: { [key: string]: string } = {
-          ".jpg": "image/jpeg",
-          ".jpeg": "image/jpeg",
-          ".png": "image/png",
-          ".gif": "image/gif",
-          ".webp": "image/webp",
-        };
+      // Try Supabase then local filesystem for each candidate key.
+      for (const keyToTry of candidateKeys) {
+        // 1) Supabase
+        if (isSupabaseConfigured()) {
+          const supabaseService = new SupabaseStorageService();
+          const ext = path.extname(keyToTry).toLowerCase();
+          const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext);
+          const contentTypes: { [key: string]: string } = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+          };
 
-        try {
-          const signedUrl = await supabaseService.getSignedDownloadUrl(objectPath, 3600);
+          try {
+            const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
 
-          // For images, proxy bytes so we can ensure an inline-capable Content-Type.
-          // This avoids issues where upstream object metadata is set to application/octet-stream + nosniff.
-          if (isImage) {
-            const upstream = await fetch(signedUrl);
-            if (!upstream.ok) {
-              throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+            if (isDev) {
+              console.log(`[objects] resolved provider=supabase key="${keyToTry}"`);
             }
 
-            res.setHeader("Content-Type", contentTypes[ext] || "image/*");
-            res.setHeader("Content-Disposition", "inline");
-            res.setHeader("Cache-Control", "public, max-age=86400"); // 1 day cache
+            // For images, proxy bytes so we can ensure an inline-capable Content-Type.
+            // This avoids issues where upstream object metadata is set to application/octet-stream + nosniff.
+            if (isImage) {
+              const upstream = await fetch(signedUrl);
+              if (!upstream.ok) {
+                throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+              }
 
-            const buf = Buffer.from(await upstream.arrayBuffer());
-            return res.send(buf);
-          }
+              res.setHeader("Content-Type", contentTypes[ext] || "image/*");
+              res.setHeader("Content-Disposition", "inline");
+              res.setHeader("Cache-Control", "public, max-age=86400"); // 1 day cache
 
-          // Non-images: keep redirect behavior.
-          return res.redirect(signedUrl);
-        } catch (supabaseError: any) {
-          // If file not found in Supabase, fall through to local/GCS
-          if (isDev) {
-            console.log("[objects] File not in Supabase, trying local storage:", supabaseError.message);
+              const buf = Buffer.from(await upstream.arrayBuffer());
+              return res.send(buf);
+            }
+
+            // Non-images: keep redirect behavior.
+            return res.redirect(signedUrl);
+          } catch (supabaseError: any) {
+            if (isDev) {
+              console.log(`[objects] supabase miss key="${keyToTry}":`, supabaseError.message);
+            }
           }
         }
-      }
 
-      // Try local filesystem (STORAGE_ROOT) - common in local dev
-      const storageRoot = process.env.STORAGE_ROOT || "./storage";
-      const localPath = path.join(storageRoot, objectPath);
+        // 2) Local filesystem (FILE_STORAGE_ROOT)
+        try {
+          const localPath = resolveLocalStoragePath(keyToTry);
+          await fsPromises.access(localPath, fsPromises.constants.R_OK);
 
-      try {
-        // Check if file exists locally
-        await fsPromises.access(localPath, fsPromises.constants.R_OK);
+          const ext = path.extname(keyToTry).toLowerCase();
+          const contentTypes: { [key: string]: string } = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".pdf": "application/pdf",
+          };
+          const contentType = contentTypes[ext] || "application/octet-stream";
 
-        // Determine content type
-        const ext = path.extname(objectPath).toLowerCase();
-        const contentTypes: { [key: string]: string } = {
-          ".jpg": "image/jpeg",
-          ".jpeg": "image/jpeg",
-          ".png": "image/png",
-          ".gif": "image/gif",
-          ".webp": "image/webp",
-          ".pdf": "application/pdf",
-        };
-        const contentType = contentTypes[ext] || "application/octet-stream";
+          res.setHeader("Content-Type", contentType);
+          res.setHeader("Cache-Control", "public, max-age=86400"); // 1 day cache
 
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("Cache-Control", "public, max-age=86400"); // 1 day cache
+          if (isDev) {
+            console.log(`[objects] resolved provider=local key="${keyToTry}" path="${localPath}"`);
+          }
 
-        // Serve file directly
-        return res.sendFile(path.resolve(localPath));
-      } catch (localError: any) {
-        // File not found locally, try GCS
-        if (isDev) {
-          console.log("[objects] File not in local storage, trying GCS:", localError.message);
+          return res.sendFile(path.resolve(localPath));
+        } catch (localError: any) {
+          if (isDev) {
+            console.log(`[objects] local miss key="${keyToTry}":`, localError.message);
+          }
         }
       }
 
@@ -220,33 +238,47 @@ export async function registerAttachmentRoutes(
 
       if (!hasGCSAccess) {
         if (isDev) {
-          console.log(`[objects] 404 - File not found in any storage. Object path: "${objectPath}"`);
+          console.log(`[objects] 404 - File not found in any storage. Object path: "${requestedKey}"`);
         }
         return res.status(404).json({
           error: "File not found",
           message: "File not available in Supabase or local storage, and GCS not configured",
           path: req.path,
-          objectPath,
+          objectPath: requestedKey,
         });
       }
 
+      // 3) GCS (Replit ObjectStorage) - try candidate keys as well
       const objectStorageService = new ObjectStorageService();
-      const objectFile = await objectStorageService.getObjectEntityFile(req.path);
+      for (const keyToTry of candidateKeys) {
+        try {
+          const objectRoutePath = `/objects/${keyToTry}`;
+          const objectFile = await objectStorageService.getObjectEntityFile(objectRoutePath);
 
-      const canAccess = await objectStorageService.canAccessObjectEntity({
-        objectFile,
-        userId: userId ?? undefined,
-        requestedPermission: ObjectPermission.READ,
-      });
+          const canAccess = await objectStorageService.canAccessObjectEntity({
+            objectFile,
+            userId: userId ?? undefined,
+            requestedPermission: ObjectPermission.READ,
+          });
 
-      if (!canAccess) {
-        if (isDev) {
-          console.log(`[objects] 403 - Access denied. Object path: "${objectPath}"`);
+          if (!canAccess) {
+            if (isDev) {
+              console.log(`[objects] 403 - Access denied. Object path: "${keyToTry}"`);
+            }
+            return res.status(403).json({ error: "Access denied", path: req.path, objectPath: keyToTry });
+          }
+
+          if (isDev) {
+            console.log(`[objects] resolved provider=gcs key="${keyToTry}"`);
+          }
+
+          return objectStorageService.downloadObject(objectFile, res);
+        } catch {
+          // keep trying candidates
         }
-        return res.status(403).json({ error: "Access denied", path: req.path, objectPath });
       }
 
-      objectStorageService.downloadObject(objectFile, res);
+      throw new ObjectNotFoundError();
     } catch (error: any) {
       console.error("[objects] Error serving object:", error);
 
