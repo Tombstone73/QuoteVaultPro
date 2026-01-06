@@ -1556,6 +1556,142 @@ export async function registerOrderRoutes(
         }
     });
 
+    // Batched per-line-item preview thumbnails for Order Detail line-item headers
+    // Contract: { success: true, data: { [lineItemId]: { thumbUrls: string[] (<=3), thumbCount: number } } }
+    app.get('/api/orders/:orderId/line-item-previews', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const { orderId } = req.params;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const [orderRow] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!orderRow) return res.status(404).json({ error: 'Order not found' });
+
+            // 1) Fetch line item ids (batched)
+            const lineItemRows = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.orderId, orderId), eq(orders.organizationId, organizationId)));
+
+            const lineItemIds = lineItemRows.map((r) => r.id).filter(Boolean) as string[];
+
+            if (!lineItemIds.length) {
+                return res.json({ success: true, data: {} });
+            }
+
+            // Seed output map so callers can safely access missing line items
+            const out: Record<string, { thumbUrls: string[]; thumbCount: number }> = {};
+            for (const id of lineItemIds) out[String(id)] = { thumbUrls: [], thumbCount: 0 };
+
+            // 2) Fetch all asset links for these line items (batched)
+            const linkRows = await db
+                .select({
+                    lineItemId: assetLinks.parentId,
+                    assetId: assetLinks.assetId,
+                    createdAt: assetLinks.createdAt,
+                })
+                .from(assetLinks)
+                .where(
+                    and(
+                        eq(assetLinks.organizationId, organizationId),
+                        eq(assetLinks.parentType, 'order_line_item'),
+                        inArray(assetLinks.parentId, lineItemIds)
+                    )
+                )
+                .orderBy(desc(assetLinks.createdAt));
+
+            const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
+            if (!assetIds.length) {
+                return res.json({ success: true, data: out });
+            }
+
+            // 3) Fetch assets + variants (batched)
+            const [assetRows, variantRows] = await Promise.all([
+                db
+                    .select()
+                    .from(assets)
+                    .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
+                db
+                    .select()
+                    .from(assetVariants)
+                    .where(and(eq(assetVariants.organizationId, organizationId), inArray(assetVariants.assetId, assetIds))),
+            ]);
+
+            const variantsByAssetId = new Map<string, any[]>();
+            for (const v of variantRows as any[]) {
+                const key = String(v.assetId);
+                const list = variantsByAssetId.get(key) ?? [];
+                list.push(v);
+                variantsByAssetId.set(key, list);
+            }
+
+            const assetsById = new Map<string, any>();
+            for (const a of assetRows as any[]) {
+                assetsById.set(String(a.id), { ...a, variants: variantsByAssetId.get(String(a.id)) ?? [] });
+            }
+
+            // 4) Enrich URLs for thumb resolution (same helper used elsewhere)
+            const { enrichAssetWithUrls } = await import('../services/assets/enrichAssetWithUrls');
+
+            // 5) Aggregate per lineItemId
+            const assetIdsByLineItem = new Map<string, Set<string>>();
+            const seenUrlsByLineItem = new Map<string, Set<string>>();
+
+            for (const link of linkRows as any[]) {
+                const lineItemId = String(link.lineItemId);
+                const assetId = String(link.assetId);
+                if (!lineItemId || !assetId) continue;
+
+                const set = assetIdsByLineItem.get(lineItemId) ?? new Set<string>();
+                set.add(assetId);
+                assetIdsByLineItem.set(lineItemId, set);
+
+                // Only collect up to 3 urls per line item
+                const current = out[lineItemId];
+                if (!current) continue;
+                if (current.thumbUrls.length >= 3) continue;
+
+                const raw = assetsById.get(assetId);
+                if (!raw) continue;
+                const enriched = enrichAssetWithUrls(raw);
+
+                // Use the same priority as client getThumbSrc (previewThumbnailUrl, thumbnailUrl, thumbUrl, previewUrl, pages[0].thumbUrl)
+                const url =
+                    (enriched as any).previewThumbnailUrl ??
+                    (enriched as any).thumbnailUrl ??
+                    (enriched as any).thumbUrl ??
+                    (enriched as any).previewUrl ??
+                    (enriched as any).pages?.[0]?.thumbUrl ??
+                    null;
+
+                if (typeof url !== 'string' || !url.length) continue;
+
+                const seen = seenUrlsByLineItem.get(lineItemId) ?? new Set<string>();
+                if (seen.has(url)) continue;
+                seen.add(url);
+                seenUrlsByLineItem.set(lineItemId, seen);
+
+                current.thumbUrls.push(url);
+            }
+
+            assetIdsByLineItem.forEach((set, lineItemId) => {
+                if (!out[lineItemId]) out[lineItemId] = { thumbUrls: [], thumbCount: 0 };
+                out[lineItemId].thumbCount = set.size;
+            });
+
+            return res.json({ success: true, data: out });
+        } catch (error) {
+            console.error('[OrderLineItemPreviews:GET] Error:', error);
+            return res.status(500).json({ error: 'Failed to fetch line item previews' });
+        }
+    });
+
     app.post("/api/orders/:orderId/attachments", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const { orderId } = req.params;
