@@ -58,6 +58,10 @@ type LineItemAttachment = {
 interface LineItemAttachmentsPanelProps {
   /** The quote ID (may be null for temporary line items) */
   quoteId: string | null;
+  /** Parent type for the attachments panel. Defaults to quote behavior. */
+  parentType?: "quote" | "order";
+  /** Order ID when parentType is "order" */
+  orderId?: string | null;
   /** The line item ID - required, artwork is keyed off this */
   lineItemId: string | undefined;
   /** Product name for display */
@@ -74,6 +78,8 @@ interface LineItemAttachmentsPanelProps {
 
 export function LineItemAttachmentsPanel({
   quoteId,
+  parentType = "quote",
+  orderId,
   lineItemId,
   productName,
   defaultExpanded = false,
@@ -102,13 +108,14 @@ export function LineItemAttachmentsPanel({
     attempts: 0,
   });
 
-  // Build API path for this line item's files. For temporary line items
-  // we still have a concrete lineItemId, so the quoteId may be null.
+  // Build API path for this line item's files.
   // SAFETY: Do not construct path with undefined lineItemId.
   const filesApiPath = lineItemId
-    ? (quoteId
-        ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
-        : `/api/line-items/${lineItemId}/files`)
+    ? (parentType === "order"
+        ? (orderId ? `/api/orders/${orderId}/line-items/${lineItemId}/files` : null)
+        : (quoteId
+            ? `/api/quotes/${quoteId}/line-items/${lineItemId}/files`
+            : `/api/line-items/${lineItemId}/files`))
     : null;
 
   // Fetch system status to check if thumbnails are enabled
@@ -133,6 +140,30 @@ export function LineItemAttachmentsPanel({
       const response = await fetch(filesApiPath, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to load line item files");
       const json = await response.json();
+
+      if (parentType === "order") {
+        const assets = Array.isArray(json?.assets) ? json.assets : [];
+        return assets.map((a: any) => ({
+          id: a.id,
+          fileName: a.fileName || a.originalFilename || "file",
+          originalFilename: a.originalFilename || a.fileName || null,
+          fileUrl: a.fileUrl || a.fileKey || a.key || "",
+          fileSize: a.fileSize ?? a.sizeBytes ?? null,
+          mimeType: a.mimeType ?? null,
+          createdAt: a.createdAt || new Date().toISOString(),
+          originalUrl: a.originalUrl ?? null,
+          thumbUrl: a.thumbUrl ?? a.thumbnailUrl ?? null,
+          previewUrl: a.previewUrl ?? null,
+          // Preserve optional fields if present
+          thumbStatus: a.thumbStatus,
+          thumbKey: a.thumbKey,
+          previewKey: a.previewKey,
+          thumbError: a.thumbError,
+          pageCount: a.pageCount,
+          pages: a.pages,
+        } as LineItemAttachment));
+      }
+
       return json.data || [];
     },
     enabled: !!filesApiPath,
@@ -288,9 +319,11 @@ export function LineItemAttachmentsPanel({
     }
 
     // Build the API path with the (possibly newly created) quoteId and ensured lineItemId
-    const uploadApiPath = targetQuoteId
-      ? `/api/quotes/${targetQuoteId}/line-items/${targetLineItemId}/files`
-      : `/api/line-items/${targetLineItemId}/files`;
+    const uploadApiPath = parentType === "order"
+      ? (orderId ? `/api/orders/${orderId}/line-items/${targetLineItemId}/files` : "")
+      : (targetQuoteId
+          ? `/api/quotes/${targetQuoteId}/line-items/${targetLineItemId}/files`
+          : `/api/line-items/${targetLineItemId}/files`);
 
     console.log("[LineItemAttachmentsPanel] Upload API path:", uploadApiPath);
 
@@ -454,17 +487,45 @@ export function LineItemAttachmentsPanel({
     if (!filesApiPath) return;
 
     try {
-      // Use proxy endpoint which streams the original file (fileUrl) from storage
-      // Server-side: uses attachment.fileUrl to fetch original, sets correct Content-Disposition
+      if (parentType === "order") {
+        const file = attachments.find((f) => f.id === fileId) || null;
+        const directUrl = file?.originalUrl ?? file?.previewUrl;
+        if (typeof directUrl === "string") {
+          const isDirectDownloadable =
+            directUrl.startsWith("/objects/") ||
+            directUrl.startsWith("http://") ||
+            directUrl.startsWith("https://");
+
+          if (isDirectDownloadable) {
+            const anchor = document.createElement("a");
+            anchor.href = directUrl;
+            anchor.download = fileName;
+            anchor.rel = "noreferrer";
+            anchor.style.display = "none";
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            return;
+          }
+        }
+
+        toast({
+          title: "Download unavailable",
+          description: "This file does not have a downloadable URL.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Quote behavior: proxy endpoint streams file with correct filename
       const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
-      
-      // Create temporary anchor element with download attribute to force filename
+
       const anchor = document.createElement("a");
       anchor.href = proxyUrl;
-      anchor.download = fileName; // This forces the browser to use the original filename
+      anchor.download = fileName;
       anchor.rel = "noreferrer";
       anchor.style.display = "none";
-      
+
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
@@ -481,6 +542,14 @@ export function LineItemAttachmentsPanel({
   // Handle thumbnail generation (explicit user action, images only)
   const handleGenerateThumbnails = async (fileId: string, fileName: string) => {
     if (!filesApiPath) return;
+
+    if (parentType === "order") {
+      toast({
+        title: "Unavailable",
+        description: "Thumbnail regeneration is not available here.",
+      });
+      return;
+    }
 
     try {
       const response = await fetch(`${filesApiPath}/${fileId}/generate-thumbnails`, {
@@ -588,6 +657,14 @@ export function LineItemAttachmentsPanel({
   // Handle PDF thumbnail generation (explicit user action, PDFs only)
   const handleGeneratePdfThumbnails = async (fileId: string, fileName: string) => {
     if (!filesApiPath) return;
+
+    if (parentType === "order") {
+      toast({
+        title: "Unavailable",
+        description: "PDF thumbnail generation is not available here.",
+      });
+      return;
+    }
 
     try {
       const response = await fetch(`${filesApiPath}/${fileId}/generate-pdf-thumbnails`, {
@@ -900,6 +977,8 @@ export function LineItemAttachmentsPanel({
                       </div>
                       <div className="flex gap-0.5 shrink-0">
                         {(() => {
+                          if (parentType === "order") return null;
+
                           // Skip PDFs - they have separate disabled button below
                           if (isPdf) return null;
                           
@@ -950,7 +1029,7 @@ export function LineItemAttachmentsPanel({
                             </Button>
                           );
                         })()}
-                        {isPdf && (!file.pages || file.pages.length === 0) && (
+                        {parentType !== "order" && isPdf && (!file.pages || file.pages.length === 0) && (
                           <Button
                             variant="ghost"
                             size="sm"

@@ -3,7 +3,7 @@
  * Single source of truth for filename extraction, PDF detection, and page count handling
  */
 
-import { isValidHttpUrl } from "@/lib/utils";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 
 type AttachmentLike = {
   originalFilename?: string | null;
@@ -101,17 +101,6 @@ export function getPdfPageCount(att: AttachmentLike | null | undefined): number 
  * Returns null if no usable signed URL is available.
  */
 export function getAttachmentThumbnailUrl(att: AttachmentPreviewLike | null | undefined): string | null {
-  if (!att) return null;
-
-  const isPdf = isPdfAttachment(att);
-  if (isPdf) {
-    const pdfUrl = att.pages?.[0]?.thumbUrl ?? att.thumbUrl ?? att.thumbnailUrl ?? null;
-    return isValidHttpUrl(pdfUrl) ? pdfUrl : null;
-  }
-
-  if (isValidHttpUrl(att.previewUrl)) return att.previewUrl;
-  if (isValidHttpUrl(att.thumbUrl)) return att.thumbUrl;
-  if (isValidHttpUrl(att.originalUrl)) return att.originalUrl;
-  return null;
+  return getThumbSrc(att);
 }
 

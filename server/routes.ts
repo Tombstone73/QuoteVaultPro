@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import path from "path";
 import { promises as fsPromises } from "fs";
+import { randomUUID } from "crypto";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
@@ -7690,231 +7691,221 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Upload file to an order line item (mirroring quote line item pattern)
+  // Upload file to an order line item (asset pipeline, multipart upload)
   app.post("/api/orders/:orderId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const { orderId, lineItemId } = req.params;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const userId = getUserId(req.user);
 
-      const { fileName, fileUrl, fileSize, mimeType, description } = req.body;
+      console.log(`[OrderLineItemFiles:POST] orderId=${orderId}, lineItemId=${lineItemId}, orgId=${organizationId}`);
 
-      console.log(`[OrderLineItemFiles:POST] orderId=${orderId}, lineItemId=${lineItemId}, fileName=${fileName}`);
+      // Validate the order belongs to the organization
+      const [order] = await db.select({ id: orders.id }).from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
 
-      if (!fileName) {
-        return res.status(400).json({ error: "fileName is required" });
-      }
-      if (!fileUrl) {
-        return res.status(400).json({ error: "fileUrl is required" });
+      if (!order) {
+        return res.status(404).json({ error: "Order not found" });
       }
 
       // Validate the line item exists and belongs to this order
-      const [lineItem] = await db.select().from(orderLineItems)
-        .where(and(
-          eq(orderLineItems.id, lineItemId),
-          eq(orderLineItems.orderId, orderId)
-        ))
+      const [lineItem] = await db.select({ id: orderLineItems.id }).from(orderLineItems)
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)))
         .limit(1);
 
       if (!lineItem) {
-        console.log(`[OrderLineItemFiles:POST] Line item not found or doesn't belong to order`);
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      // Detect if this is a PDF (by mimeType or filename)
-      const isPdfEarly = (mimeType && mimeType.toLowerCase().includes('pdf')) ||
-        (fileName && fileName.toLowerCase().endsWith('.pdf'));
-
-      // Check if PDF processing columns exist (from startup probe)
-      const { hasPageCountStatusColumn } = await import('./db');
-      const pdfColumnsExist = hasPageCountStatusColumn() === true;
-
-      if (isPdfEarly && !pdfColumnsExist) {
-        console.warn(`[OrderLineItemFiles:POST] PDF detected but page_count_status column missing; PDF processing disabled for ${fileName}`);
+      const contentType = String(req.headers['content-type'] || '');
+      if (!contentType.includes('application/json')) {
+        console.log(`[OrderLineItemFiles:POST] mode=unsupported contentType=${contentType}`);
+        return res.status(415).json({
+          success: false,
+          error: 'Unsupported content type',
+          message: 'This endpoint only supports application/json',
+        });
       }
 
-      // Determine storage provider (same logic as quote uploads)
-      let storageProvider: string | undefined;
-      const storageKey = fileUrl;
+      console.log('[OrderLineItemFiles:POST] mode=json');
 
-      if (isSupabaseConfigured() && fileUrl && !fileUrl.startsWith('http://') && !fileUrl.startsWith('https://')) {
-        storageProvider = 'supabase';
-      } else if (fileUrl && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
-        storageProvider = undefined;
-      } else {
-        storageProvider = 'local';
-      }
-
-      const attachmentData: any = {
-        orderId,
-        orderLineItemId: lineItemId,
-        organizationId,
-        uploadedByUserId: userId,
-        uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-        fileName,
-        originalFilename: fileName,
-        fileUrl: (storageProvider === 'supabase' && storageKey && !storageKey.startsWith('http://') && !storageKey.startsWith('https://'))
-          ? normalizeObjectKeyForDb(storageKey)
-          : storageKey,
-        fileSize: fileSize || null,
-        mimeType: mimeType || null,
-        description: description || null,
-        bucket: 'titan-private',
-        storageProvider: storageProvider,
-        thumbStatus: isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const),
+      const normalizeRole = (raw: any): string => {
+        const val = String(raw || '').toLowerCase();
+        return ['primary', 'attachment', 'proof', 'reference', 'other'].includes(val) ? val : 'primary';
       };
 
-      // Only include PDF-specific fields if columns exist
-      if (pdfColumnsExist) {
-        attachmentData.pageCountStatus = isPdfEarly ? ('detecting' as const) : ('unknown' as const);
-      }
+      const guessFileNameFromKey = (key: string): string => {
+        const last = key.split('/').filter(Boolean).pop();
+        return last || 'upload';
+      };
 
-      console.log(`[OrderLineItemFiles:POST] Inserting attachment with orderLineItemId=${lineItemId}`);
-      const [attachment] = await db.insert(orderAttachments).values(attachmentData).returning();
+      const normalizeStorageKeyFromAny = (raw: any): string | null => {
+        if (typeof raw !== 'string') return null;
+        const trimmed = raw.trim();
+        if (!trimmed) return null;
 
-      // Best-effort self-check for Supabase-backed keys (non-blocking)
-      if (attachment.storageProvider === 'supabase' && attachment.fileUrl) {
-        res.on('finish', () => {
-          scheduleSupabaseObjectSelfCheck({
-            bucket: 'titan-private',
-            path: attachment.fileUrl,
-            context: { attachmentType: 'order_line_item', orderId, lineItemId, attachmentId: attachment.id },
-          });
+        // Accept either raw object key (uploads/...) or /objects/{key}
+        const keyFromObjectsPrefix = trimmed.startsWith('/objects/')
+          ? trimmed.replace(/^\/objects\//, '')
+          : trimmed;
+
+        // Assets expect storage keys (uploads/...), not http(s) URLs.
+        if (keyFromObjectsPrefix.startsWith('http://') || keyFromObjectsPrefix.startsWith('https://')) return null;
+
+        return normalizeObjectKeyForDb(keyFromObjectsPrefix);
+      };
+
+      type AttachCandidate = {
+        fileKey: string;
+        fileName?: string;
+        mimeType?: string;
+        sizeBytes?: number;
+        role?: string;
+      };
+
+      const body = req.body ?? {};
+      const candidates: AttachCandidate[] = [];
+
+      // 1) Preferred (current UI): fileName + fileUrl + optional metadata
+      const singleKey = normalizeStorageKeyFromAny(body.fileUrl ?? body.fileKey ?? body.path ?? body.objectId);
+      if (singleKey) {
+        candidates.push({
+          fileKey: singleKey,
+          fileName: typeof body.fileName === 'string' ? body.fileName : undefined,
+          mimeType: typeof body.mimeType === 'string' ? body.mimeType : undefined,
+          sizeBytes: body.fileSize != null ? Number(body.fileSize) : (body.sizeBytes != null ? Number(body.sizeBytes) : undefined),
+          role: normalizeRole(body.role),
         });
       }
 
-      console.log(`[OrderLineItemFiles:POST] Saved attachment storageProvider=${attachment.storageProvider || 'none'} storageKey=${storageKey}`);
-      console.log(`[OrderLineItemFiles:POST] Created attachment id=${attachment.id}, orderLineItemId=${attachment.orderLineItemId}`);
+      // 2) Array form: files: [{ fileName, fileUrl/path/objectId, ... }]
+      if (Array.isArray(body.files)) {
+        for (const f of body.files) {
+          const k = normalizeStorageKeyFromAny(f?.fileUrl ?? f?.fileKey ?? f?.path ?? f?.objectId);
+          if (!k) continue;
+          candidates.push({
+            fileKey: k,
+            fileName: typeof f?.fileName === 'string' ? f.fileName : (typeof f?.originalFilename === 'string' ? f.originalFilename : undefined),
+            mimeType: typeof f?.mimeType === 'string' ? f.mimeType : undefined,
+            sizeBytes: f?.fileSize != null ? Number(f.fileSize) : (f?.sizeBytes != null ? Number(f.sizeBytes) : undefined),
+            role: normalizeRole(f?.role ?? body.role),
+          });
+        }
+      }
 
-      // PHASE 2: Create asset + link (fail-soft: errors logged but don't block response)
-      try {
-        const { assetRepository } = await import('./services/assets/AssetRepository');
+      // 3) Key list forms: objectIds/objectKeys/paths/keys (string[])
+      const keyLists: any[] = [body.objectIds, body.objectKeys, body.paths, body.keys];
+      for (const list of keyLists) {
+        if (!Array.isArray(list)) continue;
+        for (const rawKey of list) {
+          const k = normalizeStorageKeyFromAny(rawKey);
+          if (!k) continue;
+          candidates.push({
+            fileKey: k,
+            role: normalizeRole(body.role),
+          });
+        }
+      }
+
+      // 4) Chunked upload ids (if provided): uploadId/uploadIds
+      const uploadIds: string[] = [];
+      if (typeof body.uploadId === 'string' && body.uploadId.trim()) uploadIds.push(body.uploadId.trim());
+      if (Array.isArray(body.uploadIds)) {
+        for (const id of body.uploadIds) {
+          if (typeof id === 'string' && id.trim()) uploadIds.push(id.trim());
+        }
+      }
+      if (uploadIds.length > 0) {
+        const { loadUploadSessionMeta } = await import('./services/chunkedUploads');
+        for (const uploadId of uploadIds) {
+          const meta = await loadUploadSessionMeta(uploadId);
+          if (meta.organizationId !== organizationId) continue;
+          if (meta.status !== 'finalized' || !meta.relativePath) continue;
+
+          // NOTE: chunked uploads currently only support quote-attachment/order-attachment.
+          // We allow both here, but always attach as an order_line_item asset.
+          const k = normalizeStorageKeyFromAny(meta.relativePath);
+          if (!k) continue;
+
+          candidates.push({
+            fileKey: k,
+            fileName: meta.originalFilename || meta.storedFilename || undefined,
+            mimeType: meta.mimeType || undefined,
+            sizeBytes: meta.sizeBytes || undefined,
+            role: normalizeRole(body.role),
+          });
+        }
+      }
+
+      // De-dupe by fileKey
+      const uniqueCandidates = Array.from(
+        new Map(candidates.map((c) => [c.fileKey, c])).values()
+      );
+
+      if (uniqueCandidates.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing file identifiers',
+          message: 'Provide fileUrl/path/objectId, files[], objectIds[], or uploadId/uploadIds.',
+        });
+      }
+
+      const { assetRepository } = await import('./services/assets/AssetRepository');
+      const { enrichAssetWithUrls } = await import('./services/assets/enrichAssetWithUrls');
+
+      console.log(`[OrderLineItemFiles:POST] Attaching ${uniqueCandidates.length} object(s) to order_line_item ${lineItemId}`);
+
+      const createdAssets: any[] = [];
+      for (const c of uniqueCandidates) {
         const asset = await assetRepository.createAsset(organizationId, {
-          fileKey: attachment.fileUrl,
-          fileName: attachment.fileName,
-          mimeType: attachment.mimeType || undefined,
-          sizeBytes: attachment.fileSize || undefined,
-        });
-        await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, 'primary');
-        console.log(`[OrderLineItemFiles:POST] Created asset ${asset.id} + linked to order_line_item ${lineItemId}`);
-      } catch (assetError) {
-        console.error(`[OrderLineItemFiles:POST] Asset creation failed (non-blocking):`, assetError);
+          fileKey: c.fileKey,
+          fileName: c.fileName || guessFileNameFromKey(c.fileKey),
+          mimeType: c.mimeType,
+          sizeBytes: c.sizeBytes,
+        } as any);
+
+        await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizeRole(c.role) as any);
+        createdAssets.push({ ...enrichAssetWithUrls(asset), role: normalizeRole(c.role) });
       }
-
-      // Robust PDF detection using both mimeType and filename
-      const attachmentFileName =
-        (attachment.originalFilename ?? attachment.fileName ?? '').toString();
-
-      const isPdfByMime = (attachment.mimeType ?? '').toLowerCase().includes('pdf');
-      const isPdfByName = attachmentFileName.toLowerCase().endsWith('.pdf');
-      const isPdf = isPdfByMime || isPdfByName;
-
-      // Best-effort AI detection for PDF-compatible .ai files
-      const lowerMimeType = (attachment.mimeType ?? '').toLowerCase();
-      const isAiByName = attachmentFileName.toLowerCase().endsWith('.ai');
-      const isAiByMime = /illustrator/i.test(lowerMimeType) || (/postscript/i.test(lowerMimeType) && isAiByName);
-      const isAi = isAiByName || isAiByMime;
-
-      const hasStorageProvider = !!attachment.storageProvider;
-      const isNotHttpUrl =
-        !!attachment.fileUrl &&
-        !attachment.fileUrl.startsWith('http://') &&
-        !attachment.fileUrl.startsWith('https://');
-
-      console.log('[OrderLineItemFiles:POST][Detect]', {
-        attachmentId: attachment.id,
-        fileName: attachmentFileName,
-        mimeType: attachment.mimeType ?? null,
-        storageProvider: attachment.storageProvider ?? null,
-        fileUrl: attachment.fileUrl ?? null,
-        isPdfByMime,
-        isPdfByName,
-        isPdf,
-        isAiByName,
-        isAiByMime,
-        isAi,
-        hasStorageProvider,
-        isNotHttpUrl,
-        pdfColumnsExist,
+      return res.json({
+        success: true,
+        data: [],
+        assets: createdAssets,
+        message: 'File attached',
       });
-
-      // Fire-and-forget thumbnail generation for images (non-blocking)
-      const { isSupportedImageType } = await import('./services/thumbnailGenerator');
-      const attachmentFileNameForThumb = attachment.originalFilename || attachment.fileName || null;
-      const isSupportedImage = isSupportedImageType(attachment.mimeType, attachmentFileNameForThumb);
-
-      if (isSupportedImage && hasStorageProvider && isNotHttpUrl && attachment.fileUrl) {
-        const { generateImageDerivatives, isThumbnailGenerationEnabled } = await import('./services/thumbnailGenerator');
-        if (isThumbnailGenerationEnabled()) {
-          void generateImageDerivatives(
-            attachment.id,
-            'order',
-            attachment.fileUrl,
-            attachment.mimeType || null,
-            attachment.storageProvider!,
-            organizationId,
-            attachmentFileNameForThumb
-          ).catch((error) => {
-            console.error(`[OrderLineItemFiles:POST] Thumbnail generation failed for ${attachment.id}:`, error);
-          });
-        } else {
-          console.log(`[OrderLineItemFiles:POST] Thumbnail generation disabled, skipping for ${attachment.id}`);
-        }
-      } else if (isSupportedImage && (!hasStorageProvider || !isNotHttpUrl)) {
-        console.log(`[OrderLineItemFiles:POST] Skipping thumbnail generation for ${attachment.id}: storageProvider=${attachment.storageProvider}, fileUrl starts with http=${attachment.fileUrl?.startsWith('http')}`);
-      }
-
-      // Fire-and-forget PDF processing for PDFs (non-blocking)
-      const normalizedStorageProvider =
-        attachment.storageProvider ??
-        (isSupabaseConfigured() && attachment.fileUrl?.startsWith("uploads/")
-          ? "supabase"
-          : null);
-
-      if (isPdf || isAi) {
-        if (!pdfColumnsExist) {
-          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but pdf columns missing; skipping processing for attachmentId=${attachment.id}`);
-        } else if (!normalizedStorageProvider) {
-          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but storageProvider missing; skipping processing for attachmentId=${attachment.id}`);
-        } else if (!isNotHttpUrl) {
-          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but fileUrl is http(s); skipping processing for attachmentId=${attachment.id}`);
-        } else if (!attachment.fileUrl) {
-          console.warn(`[OrderLineItemFiles:POST] PDF/AI detected but fileUrl missing; skipping processing for attachmentId=${attachment.id}`);
-        } else {
-          console.log(`[OrderLineItemFiles:POST] PDF/AI detected; queued processing for attachmentId=${attachment.id}, fileName=${attachmentFileName}`);
-
-          res.on("finish", () => {
-            setImmediate(() => {
-              void (async () => {
-                try {
-                  console.log(`[OrderLineItemFiles:POST] Starting PDF processing for attachmentId=${attachment.id}`);
-                  const { processPdfAttachmentDerivedData } = await import('./services/pdfProcessing');
-                  await processPdfAttachmentDerivedData({
-                    orgId: organizationId,
-                    attachmentId: attachment.id,
-                    storageKey: attachment.fileUrl,
-                    storageProvider: normalizedStorageProvider,
-                    mimeType: attachment.mimeType || null,
-                  });
-                } catch (error: any) {
-                  console.error(`[OrderLineItemFiles:POST] PDF kickoff failed for ${attachment.id}:`, error);
-                }
-              })();
-            });
-          });
-        }
-      }
-
-      // Enrich and return
-      const enrichedAttachment = await enrichAttachmentWithUrls(attachment, { logOnce: createRequestLogOnce() });
-      res.json({ success: true, data: enrichedAttachment });
     } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Invalid attachment data', details: error.errors });
-      }
       console.error("[OrderLineItemFiles:POST] Error:", error);
       res.status(500).json({ error: "Failed to upload line item file" });
+    }
+  });
+
+  // Delete (unlink) a line item file (asset) from an order line item
+  app.delete("/api/orders/:orderId/line-items/:lineItemId/files/:fileId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { orderId, lineItemId, fileId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const [order] = await db.select({ id: orders.id }).from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+
+      const [li] = await db.select({ id: orderLineItems.id }).from(orderLineItems)
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)))
+        .limit(1);
+
+      if (!li) return res.status(404).json({ error: 'Line item not found' });
+
+      const { assetRepository } = await import('./services/assets/AssetRepository');
+      await assetRepository.unlinkAsset(organizationId, fileId, 'order_line_item', lineItemId);
+
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('[OrderLineItemFiles:DELETE] Error:', error);
+      return res.status(500).json({ error: 'Failed to remove line item file' });
     }
   });
 

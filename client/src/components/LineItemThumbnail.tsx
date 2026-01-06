@@ -25,11 +25,9 @@ type AttachmentData = {
   previewUrl?: string | null;
   originalUrl?: string | null;
   thumbnailUrl?: string | null;
+  previewThumbnailUrl?: string | null;
   pages?: Array<{ thumbUrl?: string | null }>;
 };
-
-// DEV-only: de-dupe missing-thumbnail logs
-const __missingBestUrlLoggedIds = new Set<string>();
 
 /**
  * Reusable line item thumbnail component for Quote and Order lists.
@@ -68,7 +66,9 @@ export function LineItemThumbnail({
       const response = await fetch(filesApiPath, { credentials: "include" });
       if (!response.ok) return [];
       const json = await response.json();
-      return json.data || [];
+      const data = (json?.data || []) as AttachmentData[];
+      const assets = (json?.assets || []) as AttachmentData[];
+      return [...data, ...assets];
     },
     enabled: shouldFetch,
     // Fail soft: don't log errors to console
@@ -93,23 +93,6 @@ export function LineItemThumbnail({
 
   const isPdf = isPdfAttachment(first);
   const thumbSrc = !imageError ? getThumbSrc(first) : null;
-
-  if (import.meta.env.DEV && first?.id && !thumbSrc && !__missingBestUrlLoggedIds.has(first.id)) {
-    __missingBestUrlLoggedIds.add(first.id);
-    // eslint-disable-next-line no-console
-    console.log('[OrderLineItemThumbnail] missing bestUrl', {
-      filesApiPath,
-      id: first.id,
-      thumbnailUrl: (first as any)?.thumbnailUrl ?? null,
-      thumbUrl: (first as any)?.thumbUrl ?? null,
-      previewUrl: (first as any)?.previewUrl ?? null,
-      originalUrl: (first as any)?.originalUrl ?? null,
-      thumbKey: (first as any)?.thumbKey ?? null,
-      previewKey: (first as any)?.previewKey ?? null,
-      fileUrl: (first as any)?.fileUrl ?? null,
-      pages0ThumbUrl: (first as any)?.pages?.[0]?.thumbUrl ?? null,
-    });
-  }
 
   const devTitle =
     import.meta.env.DEV && !thumbSrc

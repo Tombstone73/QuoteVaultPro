@@ -14,6 +14,13 @@ export type OrderFileWithUser = OrderAttachment & {
   originalUrl?: string | null;
   thumbUrl?: string | null;
   previewUrl?: string | null;
+  // Compatibility aliases used by getThumbSrc
+  thumbnailUrl?: string | null;
+  previewThumbnailUrl?: string | null;
+
+  // When returned from /api/orders/:id/files, entries may include asset-backed items.
+  // UI uses this discriminator to decide detach vs unlink behavior.
+  __source?: 'attachment' | 'asset';
 };
 
 // Artwork summary response shape
@@ -45,7 +52,13 @@ export function useOrderFiles(orderId: string | undefined) {
       });
       if (!res.ok) throw new Error('Failed to fetch order files');
       const json = await res.json();
-      return json.data || [];
+
+      const data = Array.isArray(json?.data) ? json.data : [];
+      const assets = Array.isArray(json?.assets) ? json.assets : [];
+      return [...data, ...assets].map((f: any) => ({
+        ...f,
+        __source: f?.fileUrl && !f?.orderId ? 'asset' : 'attachment',
+      }));
     },
     enabled: !!orderId,
   });
@@ -269,12 +282,15 @@ export function useAttachFileToOrderLineItem(orderId: string, lineItemId: string
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: Partial<InsertOrderAttachment> & { fileName: string; fileUrl: string }) => {
+    mutationFn: async (params: { file: File; role?: string }) => {
+      const formData = new FormData();
+      formData.append('file', params.file);
+      if (params.role) formData.append('role', params.role);
+
       const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(data),
+        body: formData,
       });
 
       if (!res.ok) {
@@ -283,7 +299,7 @@ export function useAttachFileToOrderLineItem(orderId: string, lineItemId: string
       }
 
       const json = await res.json();
-      return json.data;
+      return json;
     },
     onSuccess: () => {
       // Invalidate relevant queries

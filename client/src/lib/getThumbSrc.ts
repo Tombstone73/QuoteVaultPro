@@ -10,10 +10,11 @@ export function getThumbSrc(obj: any): string | null {
   
   // Check all possible thumbnail URL fields (server may use different names)
   const url = 
-    obj.previewThumbnailUrl ?? 
     obj.thumbnailUrl ?? 
+    obj.previewThumbnailUrl ?? 
     obj.thumbUrl ?? 
     obj.previewUrl ?? 
+    obj.pages?.[0]?.thumbUrl ??
     null;
   
   return typeof url === 'string' && url.length > 0 ? url : null;

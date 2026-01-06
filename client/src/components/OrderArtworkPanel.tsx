@@ -30,6 +30,8 @@ import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { isValidHttpUrl } from "@/lib/utils";
+import { getThumbSrc } from "@/lib/getThumbSrc";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 // Max file size: 50MB
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
@@ -57,14 +59,34 @@ interface OrderArtworkPanelProps {
 
 export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanelProps) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: files = [], isLoading } = useOrderFiles(orderId);
   const attachFile = useAttachFileToOrder(orderId);
   const updateFile = useUpdateOrderFile(orderId);
   const detachFile = useDetachOrderFile(orderId);
 
+  const unlinkAsset = useMutation({
+    mutationFn: async (assetId: string) => {
+      const res = await fetch(`/api/orders/${orderId}/assets/${assetId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json?.error || "Failed to unlink asset");
+      }
+      return true;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "files"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "artwork-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "timeline"] });
+    },
+  });
+
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editingFile, setEditingFile] = useState<OrderFileWithUser | null>(null);
-  const [fileToDelete, setFileToDelete] = useState<string | null>(null);
+  const [fileToDelete, setFileToDelete] = useState<{ id: string; source: 'attachment' | 'asset' } | null>(null);
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
 
   // Upload state
@@ -224,9 +246,13 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
     }
   };
 
-  const handleDeleteFile = async (fileId: string) => {
+  const handleDeleteFile = async (fileId: string, source: 'attachment' | 'asset') => {
     try {
-      await detachFile.mutateAsync(fileId);
+      if (source === 'asset') {
+        await unlinkAsset.mutateAsync(fileId);
+      } else {
+        await detachFile.mutateAsync(fileId);
+      }
       toast({
         title: "File removed",
         description: "File has been detached from this order.",
@@ -320,14 +346,18 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
               </TableHeader>
               <TableBody>
                 {files.map((file) => {
-                  // Prefer thumbUrl (signed URL from enrichAttachmentWithUrls) over legacy thumbnailUrl
-                  // thumbUrl is only present if thumbKey exists and was successfully enriched
-                  const thumbSrc = file.thumbUrl && isValidHttpUrl(file.thumbUrl) 
-                    ? file.thumbUrl 
-                    : (file.thumbnailUrl && isValidHttpUrl(file.thumbnailUrl) 
-                      ? file.thumbnailUrl 
-                      : null);
+                  const source = ((file as any).__source ?? 'attachment') as 'attachment' | 'asset';
+                  const isAsset = source === 'asset';
+                  const thumbSrc = getThumbSrc(file as any);
                   const hasError = imageErrors.has(file.id);
+
+                  const originalHref =
+                    typeof file.originalUrl === "string" &&
+                    (file.originalUrl.startsWith("http://") ||
+                      file.originalUrl.startsWith("https://") ||
+                      file.originalUrl.startsWith("/objects/"))
+                      ? file.originalUrl
+                      : undefined;
                   
                   return (
                   <TableRow key={file.id}>
@@ -349,9 +379,9 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                         )}
                         <div>
                           {/* Use signed originalUrl from server, not storage key fileUrl */}
-                          {file.originalUrl && isValidHttpUrl(file.originalUrl) ? (
+                          {originalHref ? (
                             <a
-                              href={file.originalUrl}
+                              href={originalHref}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="font-medium hover:underline text-sm"
@@ -398,17 +428,15 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                     {isAdminOrOwner && (
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
+                          {!isAsset && (
+                            <Button variant="ghost" size="sm" onClick={() => handleEditFile(file)}>
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleEditFile(file)}
-                          >
-                            <Edit2 className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setFileToDelete(file.id)}
+                            onClick={() => setFileToDelete({ id: file.id, source })}
                             className="text-destructive hover:text-destructive"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -514,7 +542,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => fileToDelete && handleDeleteFile(fileToDelete)}
+              onClick={() => fileToDelete && handleDeleteFile(fileToDelete.id, fileToDelete.source)}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Remove

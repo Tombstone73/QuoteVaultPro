@@ -21,6 +21,7 @@ import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { setPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
@@ -225,14 +226,9 @@ type AttachmentForPreview = {
   lineItemId?: string; // Added for download handler
 };
 
-function getPdfThumbUrl(file: {
-  pages?: Array<{ thumbUrl?: string | null }>;
-  thumbUrl?: string | null;
-  thumbnailUrl?: string | null;
-}): string | null {
-  const url = file.pages?.[0]?.thumbUrl ?? file.thumbUrl ?? file.thumbnailUrl ?? null;
-  return typeof url === "string" && isValidHttpUrl(url) ? url : null;
-}
+const isViewableUrl = (value: unknown): boolean =>
+  typeof value === "string" &&
+  (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("/objects/"));
 
 // Artwork strip component - shows all thumbnails in a wrapping layout
 function LineItemArtworkStrip({ 
@@ -262,16 +258,6 @@ function LineItemArtworkStrip({
 
   if (attachments.length === 0) return null;
 
-  const getThumbnailUrl = (attachment: AttachmentForPreview): string | null => {
-    const isPdf = isPdfAttachment(attachment);
-    if (isPdf) return getPdfThumbUrl(attachment);
-
-    // Non-PDF: Prefer previewUrl, fallback to thumbUrl, then originalUrl
-    if (attachment.previewUrl && isValidHttpUrl(attachment.previewUrl)) return attachment.previewUrl;
-    if (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) return attachment.thumbUrl;
-    if (attachment.originalUrl && isValidHttpUrl(attachment.originalUrl)) return attachment.originalUrl;
-    return null;
-  };
 
   const getFileIcon = (mimeType: string | null | undefined) => {
     if (!mimeType) return FileText;
@@ -283,10 +269,10 @@ function LineItemArtworkStrip({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {attachments.map((attachment) => {
-        const thumbUrl = getThumbnailUrl(attachment);
+        const thumbUrl = getThumbSrc(attachment);
         const FileIcon = getFileIcon(attachment.mimeType);
-        const hasPreviewUrl = attachment.previewUrl && isValidHttpUrl(attachment.previewUrl);
-        const hasOriginalUrl = attachment.originalUrl && isValidHttpUrl(attachment.originalUrl);
+        const hasPreviewUrl = isViewableUrl(attachment.previewUrl);
+        const hasOriginalUrl = isViewableUrl(attachment.originalUrl);
         const canPreview = hasPreviewUrl || hasOriginalUrl;
         const fileName = getAttachmentDisplayName(attachment);
         const isPdf = isPdfAttachment(attachment);
@@ -1034,17 +1020,19 @@ export function LineItemsSection({
           </DialogHeader>
           {previewFile && (() => {
             const isPdf = isPdfAttachment(previewFile);
+            const thumbSrc = getThumbSrc(previewFile as any);
             const previewUrl = previewFile.previewUrl ?? previewFile.originalUrl;
-            const hasValidPreview = !isPdf && previewUrl && isValidHttpUrl(previewUrl);
-            const pdfThumbUrl =
-              getPdfThumbUrl(previewFile);
-            const hasPdfThumb = isPdf && typeof pdfThumbUrl === "string" && isValidHttpUrl(pdfThumbUrl);
+
+            const isViewableUrl = (url: unknown) =>
+              typeof url === "string" &&
+              (url.startsWith("/objects/") || url.startsWith("http://") || url.startsWith("https://"));
+
             const originalUrl =
               previewFile.originalUrl ??
               (previewFile as any).originalURL ??
               (previewFile as any).url ??
               null;
-            const canDownloadOriginal = typeof originalUrl === "string" && isValidHttpUrl(originalUrl);
+            const canDownloadOriginal = isViewableUrl(originalUrl);
             const fileName = previewFile.originalFilename || previewFile.fileName;
             const lineItemId = previewFile.lineItemId;
             const filesApiPath = lineItemId
@@ -1073,56 +1061,13 @@ export function LineItemsSection({
             
             return (
               <div className="space-y-4">
-                {isPdf ? (
-                  hasPdfThumb ? (
-                    <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                      <img
-                        src={pdfThumbUrl!}
-                        alt={fileName}
-                        className="max-w-full max-h-[60vh] object-contain"
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                      <FileText className="w-16 h-16 mb-4 opacity-50" />
-                      <p className="text-sm mb-4">PDF preview not available</p>
-                      {(canDownloadViaApi || canDownloadOriginal) && (
-                        <div className="flex flex-col items-center gap-1">
-                          <Button
-                            onClick={() => {
-                              if (canDownloadViaApi) {
-                                handleDownload();
-                                return;
-                              }
-                              if (canDownloadOriginal) {
-                                const anchor = document.createElement("a");
-                                anchor.href = originalUrl!;
-                                anchor.download = fileName;
-                                anchor.target = "_blank";
-                                anchor.rel = "noreferrer";
-                                anchor.style.display = "none";
-                                document.body.appendChild(anchor);
-                                anchor.click();
-                                document.body.removeChild(anchor);
-                              }
-                            }}
-                            variant="outline"
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            Download original
-                          </Button>
-                          <span className="text-xs text-muted-foreground">Downloads original file</span>
-                        </div>
-                      )}
-                    </div>
-                  )
-                ) : hasValidPreview ? (
+                {typeof thumbSrc === "string" && isViewableUrl(thumbSrc) ? (
                   <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                    <img 
-                      src={previewUrl} 
-                      alt={fileName}
-                      className="max-w-full max-h-[60vh] object-contain"
-                    />
+                    <img src={thumbSrc} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
+                  </div>
+                ) : !isPdf && isViewableUrl(previewUrl) ? (
+                  <div className="flex justify-center bg-muted/30 rounded-lg p-4">
+                    <img src={previewUrl!} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
                   </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">

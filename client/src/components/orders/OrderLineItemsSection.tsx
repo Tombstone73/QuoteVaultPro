@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -27,57 +27,59 @@ import {
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { Product, ProductOptionItem } from "@shared/schema";
+import type { OrderLineItem, Product, ProductOptionItem } from "@shared/schema";
+import type { OptionSelection } from "@/features/quotes/editor/types";
 import { ProductOptionsPanel } from "@/features/quotes/editor/components/ProductOptionsPanel";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { getAttachmentDisplayName, getPdfPageCount, isPdfAttachment } from "@/lib/attachments";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
+import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
-import {
-  useAttachFileToOrder,
-  useDetachOrderFile,
-  useOrderFiles,
-  useAttachFileToOrderLineItem,
-  useDetachOrderLineItemFile,
-  type OrderFileWithUser,
-} from "@/hooks/useOrderFiles";
-import {
-  useCreateOrderLineItem,
-  useDeleteOrderLineItem,
-  useUpdateOrderLineItem,
-  useUpdateOrderLineItemStatus,
-  type OrderWithRelations,
-} from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
+import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem, useUpdateOrderLineItemStatus } from "@/hooks/useOrders";
+import { useOrderFiles } from "@/hooks/useOrderFiles";
+import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 
-type OrderLineItem = OrderWithRelations["lineItems"][number];
-
-type OptionSelection = {
-  value: boolean | number | string;
-  grommetsLocation?: string;
-  grommetsSpacingCount?: number;
-  grommetsPerSign?: number;
-  grommetsSpacingInches?: number;
-  customPlacementNote?: string;
-  hemsType?: string;
-  polePocket?: string;
+type SortableChildRenderProps = {
+  dragAttributes: Record<string, any> | undefined;
+  dragListeners: Record<string, any> | undefined;
+  isDragging: boolean;
+  isOver: boolean;
 };
 
-type AttachmentForPreview = {
+function SortableOrderLineItemWrapper({
+  id,
+  disabled,
+  children,
+}: {
   id: string;
-  fileName: string;
-  originalFilename?: string | null;
-  mimeType?: string | null;
-  originalUrl?: string | null;
-  previewUrl?: string | null;
-  thumbUrl?: string | null;
-  thumbnailUrl?: string | null;
-  pageCount?: number | null;
-  pages?: Array<{ thumbUrl?: string | null }>;
-};
+  disabled?: boolean;
+  children: (props: SortableChildRenderProps) => React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging, isOver } = useSortable({
+    id,
+    disabled,
+  });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children({
+        dragAttributes: attributes,
+        dragListeners: listeners,
+        isDragging,
+        isOver,
+      })}
+    </div>
+  );
+}
 
 function requiresDimensions(product: Product | null): boolean {
   if (!product) return true;
@@ -91,93 +93,6 @@ function requiresDimensions(product: Product | null): boolean {
 function formatMoney(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;
-}
-
-function extractOptionChips(
-  selectedOptions: any[] | undefined | null,
-  maxChips: number = 3
-): { chips: string[]; overflowCount: number } {
-  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) {
-    return { chips: [], overflowCount: 0 };
-  }
-
-  const chips: string[] = [];
-
-  for (const opt of selectedOptions) {
-    if (!opt || typeof opt !== "object") continue;
-
-    const name = opt.optionName || opt.label || opt.name || "";
-
-    let value = opt.displayValue ?? opt.value;
-    if (typeof value === "boolean") {
-      value = value ? "Yes" : "No";
-    }
-
-    const nameStr = String(name).trim();
-    const valueStr = value != null ? String(value).trim() : "";
-
-    if (!nameStr) continue;
-    if (
-      !valueStr ||
-      valueStr.toLowerCase() === "none" ||
-      valueStr.toLowerCase() === "n/a" ||
-      valueStr === "false" ||
-      valueStr === "No"
-    )
-      continue;
-
-    let chipText: string;
-
-    if (valueStr && valueStr !== "true" && valueStr !== "Yes") {
-      if (valueStr.length <= 12) {
-        chipText = valueStr;
-      } else if (nameStr.length <= 12) {
-        chipText = nameStr;
-      } else {
-        chipText = nameStr.substring(0, 9) + "...";
-      }
-    } else {
-      chipText = nameStr.length <= 12 ? nameStr : nameStr.substring(0, 9) + "...";
-    }
-
-    chips.push(chipText);
-  }
-
-  const totalCount = chips.length;
-  const displayChips = chips.slice(0, maxChips);
-  const overflowCount = Math.max(0, totalCount - maxChips);
-
-  return { chips: displayChips, overflowCount };
-}
-
-function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): string {
-  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) return "—";
-
-  const parts: string[] = [];
-
-  for (const opt of selectedOptions) {
-    if (!opt || typeof opt !== "object") continue;
-
-    const name = String(opt.optionName || opt.label || opt.name || "").trim();
-    let value = opt.displayValue ?? opt.value;
-
-    if (typeof value === "boolean") value = value ? "Yes" : "No";
-
-    const valueStr = value != null ? String(value).trim() : "";
-    if (!name) continue;
-    if (!valueStr || valueStr.toLowerCase() === "none" || valueStr.toLowerCase() === "n/a" || valueStr === "false" || valueStr === "No") {
-      continue;
-    }
-
-    // Keep it compact; drop the name when the value is short.
-    if (valueStr.length <= 14) {
-      parts.push(valueStr);
-    } else {
-      parts.push(name.length <= 18 ? name : name.slice(0, 15) + "…");
-    }
-  }
-
-  return parts.length ? parts.join(" · ") : "—";
 }
 
 function buildSelectedOptionsArray(
@@ -236,329 +151,43 @@ function useDebouncedEffect(effect: () => void, deps: any[], delayMs: number) {
   }, deps);
 }
 
-function getPdfThumbUrl(file: {
-  pages?: Array<{ thumbUrl?: string | null }>;
+type AttachmentForPreview = {
+  id: string;
+  fileName: string;
+  originalFilename?: string | null;
+  mimeType?: string | null;
+  originalUrl?: string | null;
+  previewUrl?: string | null;
   thumbUrl?: string | null;
   thumbnailUrl?: string | null;
-}): string | null {
-  const url = file.pages?.[0]?.thumbUrl ?? file.thumbUrl ?? file.thumbnailUrl ?? null;
-  return typeof url === "string" && isValidHttpUrl(url) ? url : null;
-}
-
-type SortableChildRenderProps = {
-  dragAttributes: Record<string, any> | undefined;
-  dragListeners: Record<string, any> | undefined;
-  isDragging: boolean;
-  isOver: boolean;
+  previewThumbnailUrl?: string | null;
+  pages?: any[];
+  pageCount?: number | null;
 };
 
-function SortableOrderLineItemWrapper({
-  id,
-  disabled,
-  children,
-}: {
-  id: string;
-  disabled: boolean;
-  children: (props: SortableChildRenderProps) => React.ReactNode;
-}) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-    isOver,
-  } = useSortable({ id, disabled });
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      {children({
-        dragAttributes: disabled ? undefined : attributes,
-        dragListeners: disabled ? undefined : listeners,
-        isDragging,
-        isOver,
-      })}
-    </div>
-  );
+function getPdfThumbUrl(attachment: AttachmentForPreview | null): string | null {
+  if (!attachment) return null;
+  const src = getThumbSrc(attachment as any);
+  return typeof src === 'string' && src.length ? src : null;
 }
 
-const MAX_SIZE_BYTES = 50 * 1024 * 1024;
+function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): string {
+  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) return "";
 
-function OrderLineItemArtworkStrip({
-  files,
-  onPreview,
-}: {
-  files: AttachmentForPreview[];
-  onPreview: (attachment: AttachmentForPreview) => void;
-}) {
-  if (files.length === 0) return null;
+  const parts: string[] = [];
+  for (const opt of selectedOptions) {
+    if (!opt || typeof opt !== 'object') continue;
+    const name = String(opt.optionName || opt.label || opt.name || '').trim();
+    let value: any = opt.displayValue ?? opt.value;
+    if (typeof value === 'boolean') value = value ? 'Yes' : 'No';
+    const valueStr = value != null ? String(value).trim() : '';
+    if (!name && !valueStr) continue;
+    if (valueStr === '' || valueStr.toLowerCase() === 'none' || valueStr.toLowerCase() === 'n/a' || valueStr === 'false' || valueStr === 'No') continue;
+    parts.push(name ? `${name}: ${valueStr}` : valueStr);
+  }
 
-  const getFileIcon = (mimeType: string | null | undefined) => {
-    if (!mimeType) return FileText;
-    if (mimeType.startsWith("image/")) return Image;
-    if (mimeType === "application/pdf") return FileText;
-    return FileText;
-  };
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {files.map((attachment) => {
-        const thumbSrc = getThumbSrc(attachment);
-        const FileIcon = getFileIcon(attachment.mimeType);
-        const hasPreviewUrl = attachment.previewUrl && isValidHttpUrl(attachment.previewUrl);
-        const hasOriginalUrl = attachment.originalUrl && isValidHttpUrl(attachment.originalUrl);
-        const canPreview = hasPreviewUrl || hasOriginalUrl;
-        const fileName = getAttachmentDisplayName(attachment as any);
-        const isPdf = isPdfAttachment(attachment as any);
-        const pageCount = getPdfPageCount(attachment as any);
-        const showPageCount = isPdf && pageCount !== null && pageCount > 1;
-
-        return (
-          <div key={attachment.id} className="relative shrink-0">
-            <button
-              type="button"
-              className="h-8 w-8 rounded border border-border/60 overflow-hidden shrink-0 cursor-pointer hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 bg-muted/30"
-              style={{ cursor: canPreview ? "pointer" : "default" }}
-              onClick={(e) => {
-                if (!canPreview) return;
-                e.stopPropagation();
-                onPreview(attachment);
-              }}
-              onPointerDownCapture={(e) => {
-                if (!canPreview) return;
-                e.stopPropagation();
-              }}
-              disabled={!canPreview}
-              title={fileName}
-              aria-label={canPreview ? `Preview ${fileName}` : `${fileName} (no preview available)`}
-            >
-              {thumbSrc ? (
-                <img
-                  src={thumbSrc}
-                  alt={fileName}
-                  title={fileName}
-                  className="w-full h-full object-cover pointer-events-none"
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <FileIcon className="w-4 h-4 text-muted-foreground" />
-                </div>
-              )}
-            </button>
-            {showPageCount && (
-              <span className="absolute -top-1 -right-1 px-1.5 py-0.5 text-[10px] font-medium bg-muted border border-border/60 rounded text-muted-foreground leading-none whitespace-nowrap">
-                Pages: {pageCount}
-              </span>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function OrderLineItemArtworkPanel({
-  orderId,
-  lineItemId,
-  productName,
-  readOnly,
-  onPreview,
-}: {
-  orderId: string;
-  lineItemId: string;
-  productName?: string;
-  readOnly: boolean;
-  onPreview: (attachment: AttachmentForPreview) => void;
-}) {
-  const { toast } = useToast();
-  const { data: allFiles = [] } = useOrderFiles(orderId);
-  const attachFile = useAttachFileToOrderLineItem(orderId, lineItemId);
-  const detachFile = useDetachOrderLineItemFile(orderId, lineItemId);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isUploading, setIsUploading] = useState(false);
-
-  const filesForLineItem = useMemo(() => {
-    return (allFiles as any[])
-      .filter((f) => f?.orderLineItemId === lineItemId)
-      .map((f) => f as AttachmentForPreview);
-  }, [allFiles, lineItemId]);
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-
-    const filesToUpload = Array.from(e.target.files);
-
-    const oversizedFiles = filesToUpload.filter((f) => f.size > MAX_SIZE_BYTES);
-    if (oversizedFiles.length > 0) {
-      toast({
-        title: "File Too Large",
-        description: "Files larger than 50MB cannot be uploaded.",
-        variant: "destructive",
-      });
-      const validFiles = filesToUpload.filter((f) => f.size <= MAX_SIZE_BYTES);
-      if (validFiles.length === 0) {
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        return;
-      }
-    }
-
-    setIsUploading(true);
-
-    try {
-      for (const file of filesToUpload) {
-        if (file.size > MAX_SIZE_BYTES) continue;
-
-        const urlResponse = await fetch("/api/objects/upload", {
-          method: "POST",
-          credentials: "include",
-        });
-
-        if (!urlResponse.ok) {
-          const errorData = await urlResponse.json().catch(() => ({}));
-          throw new Error(errorData.message || "Failed to get upload URL");
-        }
-
-        const { url, method, path } = await urlResponse.json();
-
-        const uploadResponse = await fetch(url, {
-          method: method || "PUT",
-          body: file,
-          headers: {
-            "Content-Type": file.type || "application/octet-stream",
-          },
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error(`Failed to upload ${file.name}`);
-        }
-
-        // Persist storage key (bucket-relative path) — never persist signed URLs.
-        // Supabase returns { url, path, token }. Replit fallback returns only { url }.
-        const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
-
-        await attachFile.mutateAsync({
-          fileName: file.name,
-          fileUrl,
-          fileSize: file.size,
-          mimeType: file.type,
-          role: "other",
-          side: "na",
-          orderLineItemId: lineItemId,
-        } as any);
-      }
-
-      toast({
-        title: "Uploaded",
-        description: "File uploaded successfully.",
-      });
-    } catch (error: any) {
-      toast({
-        title: "Upload Failed",
-        description: error?.message || "Failed to upload file.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
-  return (
-    <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-medium">Artwork</div>
-        {!readOnly && (
-          <div className="flex items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={handleFileUpload}
-              disabled={isUploading || attachFile.isPending}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading || attachFile.isPending}
-            >
-              {isUploading || attachFile.isPending ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                  Uploading…
-                </>
-              ) : (
-                <>
-                  <Upload className="w-3.5 h-3.5 mr-1.5" />
-                  Upload
-                </>
-              )}
-            </Button>
-          </div>
-        )}
-      </div>
-
-      {filesForLineItem.length === 0 ? (
-        <div className="text-xs text-muted-foreground">—</div>
-      ) : (
-        <div className="space-y-2">
-          <OrderLineItemArtworkStrip files={filesForLineItem} onPreview={onPreview} />
-          <div className="space-y-1">
-            {filesForLineItem.map((f) => {
-              const name = getAttachmentDisplayName(f as any);
-              return (
-                <div key={f.id} className="flex items-center justify-between gap-2 text-xs">
-                  <button
-                    type="button"
-                    className="text-left truncate text-foreground hover:underline"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onPreview(f);
-                    }}
-                    title={name}
-                  >
-                    {name}
-                  </button>
-                  {!readOnly && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void detachFile.mutateAsync(f.id);
-                      }}
-                      disabled={detachFile.isPending}
-                      aria-label={`Remove ${name}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {!!productName && (
-        <div className="mt-2 text-[11px] text-muted-foreground">{productName}</div>
-      )}
-    </div>
-  );
+  if (parts.length <= 2) return parts.join(', ');
+  return `${parts.slice(0, 2).join(', ')} +${parts.length - 2} more`;
 }
 
 export function OrderLineItemsSection({
@@ -953,7 +582,7 @@ export function OrderLineItemsSection({
                   const isExpanded = itemKey === expandedId;
                   const contentId = `line-item-${itemKey}-details`;
 
-                  const productName = item.product?.name || item.description || "Item";
+                  const productName = (item as any).product?.name || item.description || "Item";
 
                   const itemSelectedOptions = (item.specsJson as any)?.selectedOptions;
                   const optionsSummaryText = buildOneLineOptionsSummary(itemSelectedOptions);
@@ -1246,13 +875,19 @@ export function OrderLineItemsSection({
                             </div>
 
                             <div className="min-w-0 lg:w-[360px] lg:shrink-0">
-                              <OrderLineItemArtworkPanel
-                                orderId={orderId}
-                                lineItemId={item.id}
-                                productName={productName}
-                                readOnly={readOnly}
-                                onPreview={setPreviewFile}
-                              />
+                              <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="text-sm font-medium">Artwork</div>
+                                </div>
+                                <LineItemAttachmentsPanel
+                                  quoteId={null}
+                                  parentType="order"
+                                  orderId={orderId}
+                                  lineItemId={item.id}
+                                  productName={productName}
+                                  defaultExpanded={readOnly ? true : false}
+                                />
+                              </div>
                             </div>
                           </div>
                         </div>
