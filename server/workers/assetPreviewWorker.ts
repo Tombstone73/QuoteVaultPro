@@ -6,7 +6,7 @@ import { assetPreviewGenerator } from '../services/assets/AssetPreviewGenerator'
  * Background job that polls for assets with previewStatus='pending'
  * and generates thumbnail + preview images for them.
  * 
- * Runs every 10 seconds (same interval as legacy thumbnailWorker).
+ * Runs every 60s in development, 10m in production.
  * 
  * Phase 1: Runs alongside existing thumbnailWorker.
  * Phase 2: Will replace thumbnailWorker entirely.
@@ -14,7 +14,7 @@ import { assetPreviewGenerator } from '../services/assets/AssetPreviewGenerator'
 export class AssetPreviewWorker {
   private interval: NodeJS.Timeout | null = null;
   private isRunning = false;
-  private readonly POLL_INTERVAL = 10000; // 10 seconds
+  private readonly POLL_INTERVAL = process.env.NODE_ENV === 'development' ? 60000 : 600000;
 
   start(): void {
     if (this.interval) {
@@ -22,7 +22,8 @@ export class AssetPreviewWorker {
       return;
     }
 
-    console.log('[AssetPreviewWorker] Starting worker (10s interval)');
+    const intervalSeconds = Math.round(this.POLL_INTERVAL / 1000);
+    console.log(`[AssetPreviewWorker] Starting worker (${intervalSeconds}s interval)`);
 
     this.interval = setInterval(() => {
       this.processQueue();

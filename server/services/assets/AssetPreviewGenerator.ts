@@ -431,7 +431,9 @@ export class AssetPreviewGenerator {
   async processAllPendingAssets(): Promise<void> {
     const pendingAssets = await assetRepository.listAllPendingPreviewAssets();
 
-    console.log(`[AssetPreviewGenerator] Found ${pendingAssets.length} pending assets globally`);
+    if (pendingAssets.length > 0) {
+      console.log(`[AssetPreviewGenerator] Found ${pendingAssets.length} pending assets globally`);
+    }
 
     for (const asset of pendingAssets) {
       await this.generatePreviews(asset);
