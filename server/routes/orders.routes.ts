@@ -1785,6 +1785,7 @@ export async function registerOrderRoutes(
             // PHASE 2: Create asset + link to order (fail-soft)
             try {
                 const { assetRepository } = await import('../services/assets/AssetRepository');
+                const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
                 const asset = await assetRepository.createAsset(organizationId, {
                     fileKey: fileUrl,
                     fileName: fileName,
@@ -1793,6 +1794,12 @@ export async function registerOrderRoutes(
                 });
                 await assetRepository.linkAsset(organizationId, asset.id, 'order', orderId, 'attachment');
                 console.log(`[OrderAttachments:POST] Created asset ${asset.id} + linked to order ${orderId}`);
+
+                setImmediate(() => {
+                    assetPreviewGenerator.generatePreviews(asset).catch((err) => {
+                        console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
+                    });
+                });
             } catch (assetError) {
                 console.error(`[OrderAttachments:POST] Asset creation failed (non-blocking):`, assetError);
             }

@@ -4526,6 +4526,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // PHASE 2: Create asset + link (fail-soft: errors logged but don't block response)
       try {
         const { assetRepository } = await import('./services/assets/AssetRepository');
+        const { assetPreviewGenerator } = await import('./services/assets/AssetPreviewGenerator');
         const asset = await assetRepository.createAsset(organizationId, {
           fileKey: attachment.fileUrl, // Storage key
           fileName: attachment.fileName,
@@ -4534,6 +4535,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
         await assetRepository.linkAsset(organizationId, asset.id, 'quote_line_item', lineItemId, 'primary');
         console.log(`[LineItemFiles:POST] Created asset ${asset.id} + linked to quote_line_item ${lineItemId}`);
+
+        setImmediate(() => {
+          assetPreviewGenerator.generatePreviews(asset).catch((err) => {
+            console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
+          });
+        });
       } catch (assetError) {
         console.error(`[LineItemFiles:POST] Asset creation failed (non-blocking):`, assetError);
       }
@@ -7852,6 +7859,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { assetRepository } = await import('./services/assets/AssetRepository');
+      const { assetPreviewGenerator } = await import('./services/assets/AssetPreviewGenerator');
       const { enrichAssetWithUrls } = await import('./services/assets/enrichAssetWithUrls');
 
       console.log(`[OrderLineItemFiles:POST] Attaching ${uniqueCandidates.length} object(s) to order_line_item ${lineItemId}`);
@@ -7866,6 +7874,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         } as any);
 
         await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizeRole(c.role) as any);
+
+        setImmediate(() => {
+          assetPreviewGenerator.generatePreviews(asset).catch((err) => {
+            console.error('[AssetPreviewGenerator] async generatePreviews failed', err);
+          });
+        });
         createdAssets.push({ ...enrichAssetWithUrls(asset), role: normalizeRole(c.role) });
       }
       return res.json({
