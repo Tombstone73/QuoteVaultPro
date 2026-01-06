@@ -42,6 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem, useUpdateOrderLineItemStatus } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
+import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -222,6 +223,7 @@ export function OrderLineItemsSection({
   const products = (productsResponse?.data || productsResponse || []) as Product[];
 
   const { data: allOrderFiles = [] } = useOrderFiles(orderId);
+  const { data: lineItemPreviews = {} } = useOrderLineItemPreviews(orderId);
 
   // UI-only reordering: keep a stable ordered id list for the current session.
   const activeLineItems = useMemo(
@@ -311,6 +313,18 @@ export function OrderLineItemsSection({
 
   // Preview modal state (shared with artwork panel)
   const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
+
+  const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
+
+  const artworkModalLineItem = useMemo(
+    () => lineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
+    [lineItems, artworkModalLineItemId]
+  );
+
+  const artworkModalProductName = useMemo(() => {
+    if (!artworkModalLineItem) return "";
+    return (artworkModalLineItem as any).product?.name || artworkModalLineItem.description || "Item";
+  }, [artworkModalLineItem]);
 
   const filteredProducts = useMemo(() => {
     const active = products.filter((p) => (p as any).isActive !== false);
@@ -593,6 +607,22 @@ export function OrderLineItemsSection({
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
 
+                  const previewForLineItem = (lineItemPreviews as any)?.[String(item.id)] as
+                    | { thumbUrls?: string[]; thumbCount?: number }
+                    | undefined;
+
+                  const previewThumbUrls = Array.isArray(previewForLineItem?.thumbUrls) ? previewForLineItem!.thumbUrls! : [];
+                  const heroThumbUrls = Array.from(
+                    new Set(
+                      previewThumbUrls
+                        .map((u) => getThumbSrc({ previewThumbnailUrl: u }))
+                        .filter((u): u is string => typeof u === "string" && u.length > 0)
+                    )
+                  ).slice(0, 3);
+
+                  const heroTotalCount = Number(previewForLineItem?.thumbCount) || previewThumbUrls.length;
+                  const heroOverflowCount = Math.max(0, heroTotalCount - heroThumbUrls.length);
+
                   const reorderDisabled = readOnly;
 
                   return (
@@ -645,12 +675,47 @@ export function OrderLineItemsSection({
                                   <div className="grid items-center gap-2 min-w-0 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                                     {/* Left zone */}
                                     <div className="flex items-center gap-2 min-w-0">
-                                      <LineItemThumbnail
-                                        parentId={orderId}
-                                        lineItemId={item.id}
-                                        parentType="order"
-                                        attachments={attachmentsForThumb.length ? (attachmentsForThumb as any) : undefined}
-                                      />
+                                      {heroThumbUrls.length ? (
+                                        <button
+                                          type="button"
+                                          className="flex items-center gap-1.5 shrink-0"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setArtworkModalLineItemId(String(item.id));
+                                          }}
+                                          onPointerDown={(e) => {
+                                            e.stopPropagation();
+                                          }}
+                                          aria-label="Open artwork"
+                                        >
+                                          {heroThumbUrls.map((src, idx) => (
+                                            <div
+                                              key={`${item.id}-hero-thumb-${idx}`}
+                                              className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
+                                              aria-hidden
+                                            >
+                                              <img src={src} alt="" className="w-full h-full object-cover pointer-events-none" />
+                                            </div>
+                                          ))}
+
+                                          {heroOverflowCount > 0 && (
+                                            <div
+                                              className="h-8 px-2 rounded border border-border text-xs text-muted-foreground flex items-center justify-center"
+                                              aria-hidden
+                                            >
+                                              +{heroOverflowCount}
+                                            </div>
+                                          )}
+                                        </button>
+                                      ) : (
+                                        <LineItemThumbnail
+                                          parentId={orderId}
+                                          lineItemId={item.id}
+                                          parentType="order"
+                                          attachments={attachmentsForThumb.length ? (attachmentsForThumb as any) : undefined}
+                                        />
+                                      )}
                                       <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-1.5">
                                           <span className="text-[15px] font-semibold truncate">{productName}</span>
@@ -1094,6 +1159,33 @@ export function OrderLineItemsSection({
               </div>
             );
           })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!artworkModalLineItemId}
+        onOpenChange={(open) => {
+          if (!open) setArtworkModalLineItemId(null);
+        }}
+      >
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{artworkModalProductName ? `Artwork — ${artworkModalProductName}` : "Artwork"}</DialogTitle>
+            <DialogDescription>View and manage artwork for this line item.</DialogDescription>
+          </DialogHeader>
+
+          {artworkModalLineItemId && (
+            <div className="mt-2">
+              <LineItemAttachmentsPanel
+                quoteId={null}
+                parentType="order"
+                orderId={orderId}
+                lineItemId={artworkModalLineItemId}
+                productName={artworkModalProductName}
+                defaultExpanded={true}
+              />
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </Card>
