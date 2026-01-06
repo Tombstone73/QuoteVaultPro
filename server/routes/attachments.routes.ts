@@ -25,8 +25,9 @@ import {
   orderAttachments,
   orders,
   orderLineItems,
+  assets,
 } from "@shared/schema";
-import { eq, desc, and, isNull } from "drizzle-orm";
+import { eq, desc, and, isNull, inArray } from "drizzle-orm";
 import { storage } from "../storage";
 import {
   getRequestOrganizationId,
@@ -51,6 +52,72 @@ import { ObjectStorageService, ObjectNotFoundError } from "../objectStorage";
 import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { normalizeTenantObjectKey } from "../utils/orgKeys";
+
+let hasLoggedPdfObjectsResponse = false;
+
+function isNotFoundError(err: any): boolean {
+  if (!err) return false;
+  const code = (err as any)?.code;
+  if (code === "ENOENT") return true;
+
+  const status = (err as any)?.status;
+  if (status === 404) return true;
+
+  const msg = String((err as any)?.message ?? "").toLowerCase();
+  // Supabase + our own upstream wrapper errors.
+  if (msg.includes("object not found")) return true;
+  if (msg.includes("upstream fetch failed") && msg.includes("404")) return true;
+  return false;
+}
+
+function parseOrigins(val?: string) {
+  return (val ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function toOrigin(u: string | null | undefined): string | null {
+  const raw = (u ?? "").toString().trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
+function uniq(list: (string | null | undefined)[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    const s = (item ?? "").toString().trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+function getFrameAncestors(req: any): string[] {
+  // Prod: use env allowlist (APP_ORIGINS, APP_ORIGIN, PUBLIC_APP_URL)
+  const envOrigins = uniq([
+    ...parseOrigins(process.env.APP_ORIGINS).map(toOrigin),
+    toOrigin(process.env.APP_ORIGIN),
+    toOrigin(process.env.PUBLIC_APP_URL),
+  ]);
+  if (envOrigins.length > 0) {
+    return uniq(["'self'", ...envOrigins]);
+  }
+
+  // Dev: derive the UI origin from request headers (no hardcoded ports).
+  // Prefer Referer (includes path) and fall back to Origin.
+  const referer = typeof req.get === "function" ? req.get("referer") : undefined;
+  const origin = typeof req.get === "function" ? req.get("origin") : undefined;
+  const inferred = toOrigin(referer) ?? toOrigin(origin);
+  return inferred ? uniq(["'self'", inferred]) : ["'self'"];
+}
 
 // Type alias for authentication
 type AuthenticatedRequest = Express.Request & { user: any };
@@ -243,9 +310,20 @@ export async function registerAttachmentRoutes(
    * Proxy endpoint for serving files from Supabase/local/GCS storage
    * Handles automatic fallback: Supabase → local → GCS
    */
-  app.get("/objects/:objectPath(*)", isAuthenticated, async (req: any, res) => {
+  app.get("/objects/:objectPath(*)", isAuthenticated, tenantContext, async (req: any, res) => {
     const userId = getUserId(req.user);
     const isDev = process.env.NODE_ENV === "development";
+
+    let hasLoggedExpectedNotFound = false;
+    const logExpectedNotFoundOnce = (provider: string, key: string, detail?: string) => {
+      if (!isDev) return;
+      if (hasLoggedExpectedNotFound) return;
+      hasLoggedExpectedNotFound = true;
+      const suffix = detail ? ` (${detail})` : "";
+      console.log(`[objects] not-found provider=${provider} key="${key}"${suffix}`);
+    };
+
+    const organizationId = getRequestOrganizationId(req);
 
     // Extract and decode object path properly
     const rawObjectPath = req.params.objectPath || req.params[0] || "";
@@ -267,20 +345,74 @@ export async function registerAttachmentRoutes(
       return res.status(400).json({ error: "Invalid object path" });
     }
 
+    // Tenant safety (compatible with legacy keys):
+    // - If a key is explicitly org-scoped (starts with "org_"), enforce it matches.
+    // - Otherwise allow (mirrors existing behavior while still avoiding obvious cross-tenant reads).
+    const firstSegmentRequested = requestedKey.split("/")[0] || "";
+    if (firstSegmentRequested.startsWith("org_") && firstSegmentRequested !== organizationId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const wantsDownload =
+      req.query.download === "1" ||
+      req.query.download === "true" ||
+      req.query.disposition === "attachment";
+
+    const rawFilename = (req.query.filename ?? "").toString();
+
+    const bucketParamRaw = (req.query.bucket ?? "").toString().trim();
+    const bucketParam = /^[a-z0-9._-]+$/i.test(bucketParamRaw) ? bucketParamRaw : "";
+
+    // Optional DB lookup: map object key -> original uploaded filename/mimeType (scoped to org).
+    // This allows /objects/uploads/<uuid> to still download as the original filename.
+    let assetMeta: { fileName: string | null; mimeType: string | null } | null = null;
+    if (!rawFilename) {
+      try {
+        const [row] = await db
+          .select({ fileName: assets.fileName, mimeType: assets.mimeType })
+          .from(assets)
+          .where(and(eq(assets.organizationId, organizationId), inArray(assets.fileKey, candidateKeys)))
+          .limit(1);
+        if (row) assetMeta = { fileName: row.fileName ?? null, mimeType: row.mimeType ?? null };
+      } catch (error) {
+        if (isDev) {
+          console.warn("[objects] asset meta lookup failed (fail-soft):", (error as any)?.message || error);
+        }
+      }
+    }
+
+    // Per requirements: safeName = filename ?? assets.file_name ?? path.basename(objectPath)
+    // objectPath should reflect what the client requested, not any normalized variant.
+    let safeName = (rawFilename || assetMeta?.fileName || path.basename(objectPath) || "download")
+      .replace(/[\r\n\t\0]/g, " ")
+      .replace(/"/g, "'")
+      .slice(0, 240);
+
     try {
       // Try Supabase then local filesystem for each candidate key.
       for (const keyToTry of candidateKeys) {
         // 1) Supabase
         if (isSupabaseConfigured()) {
-          const supabaseService = new SupabaseStorageService();
+          const supabaseService = new SupabaseStorageService(bucketParam || undefined);
           const ext = path.extname(keyToTry).toLowerCase();
-          const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext);
+          const dbMimeLower = (assetMeta?.mimeType ?? "").toLowerCase();
+          const safeLower = safeName.toLowerCase();
+          const isPdf = ext === ".pdf" || safeLower.endsWith(".pdf") || dbMimeLower.includes("pdf");
+          const isImage =
+            [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext) ||
+            safeLower.endsWith(".jpg") ||
+            safeLower.endsWith(".jpeg") ||
+            safeLower.endsWith(".png") ||
+            safeLower.endsWith(".gif") ||
+            safeLower.endsWith(".webp") ||
+            dbMimeLower.startsWith("image/");
           const contentTypes: { [key: string]: string } = {
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
             ".png": "image/png",
             ".gif": "image/gif",
             ".webp": "image/webp",
+            ".pdf": "application/pdf",
           };
 
           try {
@@ -290,27 +422,76 @@ export async function registerAttachmentRoutes(
               console.log(`[objects] resolved provider=supabase key="${keyToTry}"`);
             }
 
-            // For images, proxy bytes so we can ensure an inline-capable Content-Type.
-            // This avoids issues where upstream object metadata is set to application/octet-stream + nosniff.
-            if (isImage) {
-              const upstream = await fetch(signedUrl);
-              if (!upstream.ok) {
-                throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
-              }
-
-              res.setHeader("Content-Type", contentTypes[ext] || "image/*");
-              res.setHeader("Content-Disposition", "inline");
-              res.setHeader("Cache-Control", "public, max-age=86400"); // 1 day cache
-
-              const buf = Buffer.from(await upstream.arrayBuffer());
-              return res.send(buf);
+            // Always proxy bytes for Supabase so:
+            // - Same-origin (iframe-friendly)
+            // - We can control Content-Disposition (inline vs attachment)
+            // - We can override missing/incorrect Content-Type metadata
+            const upstream = await fetch(signedUrl);
+            if (!upstream.ok) {
+              const e: any = new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+              e.status = upstream.status;
+              throw e;
             }
 
-            // Non-images: keep redirect behavior.
-            return res.redirect(signedUrl);
+            const upstreamType = upstream.headers.get("content-type") || "";
+            const inferredType = contentTypes[ext] || "";
+            const upstreamLower = upstreamType.toLowerCase();
+            const contentType = isPdf
+              ? (!wantsDownload
+                  ? "application/pdf"
+                  : (upstreamType || assetMeta?.mimeType || "application/pdf"))
+              : isImage
+                ? (upstreamType || assetMeta?.mimeType || inferredType || "image/*")
+                : (upstreamType || assetMeta?.mimeType || inferredType || "application/octet-stream");
+
+            // ALWAYS include extension when known.
+            if (isPdf && safeName && !safeLower.endsWith(".pdf")) safeName = `${safeName}.pdf`;
+            if (!path.extname(safeName)) {
+              const ctLower = contentType.toLowerCase();
+              if (ctLower.includes("application/pdf")) safeName = `${safeName}.pdf`;
+              else if (ctLower.includes("image/png")) safeName = `${safeName}.png`;
+              else if (ctLower.includes("image/jpeg")) safeName = `${safeName}.jpg`;
+              else if (ctLower.includes("image/webp")) safeName = `${safeName}.webp`;
+              else if (ctLower.includes("image/gif")) safeName = `${safeName}.gif`;
+            }
+
+            res.setHeader("Content-Type", contentType);
+            res.setHeader(
+              "Content-Disposition",
+              `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
+            );
+            res.setHeader("Cache-Control", wantsDownload ? "private, max-age=0, must-revalidate" : "public, max-age=86400");
+            res.removeHeader("X-Frame-Options");
+            const ancestors = getFrameAncestors(req);
+            res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);
+
+            if (isDev && isPdf && !hasLoggedPdfObjectsResponse) {
+              hasLoggedPdfObjectsResponse = true;
+              console.log(
+                `[objects] ok url="${req.originalUrl}" key="${keyToTry}" content-type="${contentType}" disposition="${wantsDownload ? "attachment" : "inline"}" filename="${safeName}"`
+              );
+            }
+
+            const body: any = (upstream as any).body;
+            if (body && typeof Readable.fromWeb === "function") {
+              const nodeStream = Readable.fromWeb(body);
+              nodeStream.on("error", (err) => {
+                console.error("[objects] upstream stream error:", err);
+                if (!res.headersSent) res.status(500).end();
+              });
+              return nodeStream.pipe(res);
+            }
+
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            return res.send(buf);
           } catch (supabaseError: any) {
-            if (isDev) {
-              console.log(`[objects] supabase miss key="${keyToTry}":`, supabaseError.message);
+            if (isNotFoundError(supabaseError)) {
+              logExpectedNotFoundOnce("supabase", keyToTry);
+              // fall through to local/GCS
+            } else if (isDev) {
+              console.warn(`[objects] supabase error key="${keyToTry}":`, supabaseError?.message || supabaseError);
+            } else {
+              console.error("[objects] supabase error:", supabaseError);
             }
           }
         }
@@ -329,10 +510,49 @@ export async function registerAttachmentRoutes(
             ".webp": "image/webp",
             ".pdf": "application/pdf",
           };
-          const contentType = contentTypes[ext] || "application/octet-stream";
+          const dbMimeLower = (assetMeta?.mimeType ?? "").toLowerCase();
+          const safeLower = safeName.toLowerCase();
+          const isPdf = ext === ".pdf" || safeLower.endsWith(".pdf") || dbMimeLower.includes("pdf");
+          const isImage =
+            [".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext) ||
+            safeLower.endsWith(".jpg") ||
+            safeLower.endsWith(".jpeg") ||
+            safeLower.endsWith(".png") ||
+            safeLower.endsWith(".gif") ||
+            safeLower.endsWith(".webp") ||
+            dbMimeLower.startsWith("image/");
+
+          const contentType = isPdf
+            ? (!wantsDownload ? contentTypes[".pdf"] : (assetMeta?.mimeType || contentTypes[".pdf"]))
+            : (contentTypes[ext] || assetMeta?.mimeType || "application/octet-stream");
+
+          // ALWAYS include extension when known.
+          if (isPdf && safeName && !safeName.toLowerCase().endsWith(".pdf")) safeName = `${safeName}.pdf`;
+          if (!path.extname(safeName)) {
+            const ctLower = contentType.toLowerCase();
+            if (ctLower.includes("application/pdf")) safeName = `${safeName}.pdf`;
+            else if (ctLower.includes("image/png")) safeName = `${safeName}.png`;
+            else if (ctLower.includes("image/jpeg")) safeName = `${safeName}.jpg`;
+            else if (ctLower.includes("image/webp")) safeName = `${safeName}.webp`;
+            else if (ctLower.includes("image/gif")) safeName = `${safeName}.gif`;
+          }
 
           res.setHeader("Content-Type", contentType);
-          res.setHeader("Cache-Control", "public, max-age=86400"); // 1 day cache
+          res.setHeader(
+            "Content-Disposition",
+            `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
+          );
+          res.setHeader("Cache-Control", wantsDownload ? "private, max-age=0, must-revalidate" : "public, max-age=86400"); // 1 day cache
+          res.removeHeader("X-Frame-Options");
+          const ancestors = getFrameAncestors(req);
+          res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);
+
+          if (isDev && isPdf && !hasLoggedPdfObjectsResponse) {
+            hasLoggedPdfObjectsResponse = true;
+            console.log(
+              `[objects] ok url="${req.originalUrl}" key="${keyToTry}" content-type="${contentType}" disposition="${wantsDownload ? "attachment" : "inline"}" filename="${safeName}"`
+            );
+          }
 
           if (isDev) {
             console.log(`[objects] resolved provider=local key="${keyToTry}" path="${localPath}"`);
@@ -340,8 +560,12 @@ export async function registerAttachmentRoutes(
 
           return res.sendFile(path.resolve(localPath));
         } catch (localError: any) {
-          if (isDev) {
-            console.log(`[objects] local miss key="${keyToTry}":`, localError.message);
+          if (isNotFoundError(localError)) {
+            logExpectedNotFoundOnce("local", keyToTry, "ENOENT");
+          } else if (isDev) {
+            console.warn(`[objects] local error key="${keyToTry}":`, localError?.message || localError);
+          } else {
+            console.error("[objects] local error:", localError);
           }
         }
       }
@@ -386,6 +610,15 @@ export async function registerAttachmentRoutes(
             console.log(`[objects] resolved provider=gcs key="${keyToTry}"`);
           }
 
+          // Ensure /objects embed policy is consistent across providers.
+          res.removeHeader("X-Frame-Options");
+          const ancestors = getFrameAncestors(req);
+          res.setHeader("Content-Security-Policy", `frame-ancestors ${ancestors.join(" ")};`);
+          res.setHeader(
+            "Content-Disposition",
+            `${wantsDownload ? "attachment" : "inline"}; filename="${safeName}"`
+          );
+
           return objectStorageService.downloadObject(objectFile, res);
         } catch {
           // keep trying candidates
@@ -394,14 +627,16 @@ export async function registerAttachmentRoutes(
 
       throw new ObjectNotFoundError();
     } catch (error: any) {
-      console.error("[objects] Error serving object:", error);
-
       if (error instanceof ObjectNotFoundError) {
+        // Missing objects (e.g. thumbnails) are expected sometimes; keep 404 response but avoid scary logs.
+        logExpectedNotFoundOnce("any", requestedKey);
         if (isDev) {
           console.log(`[objects] 404 - Object not found. Object path: "${objectPath}", Error:`, error.message);
         }
         return res.status(404).json({ error: "Object not found", path: req.path, objectPath });
       }
+
+      console.error("[objects] Error serving object:", error);
 
       // Check if this is a credential/connection error (don't return 500 for config issues)
       if (error.message?.includes("ECONNREFUSED") || error.message?.includes("credential")) {
