@@ -5,6 +5,7 @@ import {
     orderAttachments,
     orderAuditLog,
     orderLineItems,
+    assetLinks,
     quoteAttachments,
     organizations,
     customers,
@@ -2168,11 +2169,49 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.get('/api/orders/:orderId/line-items/:lineItemId/files', isAuthenticated, tenantContext, async (req: any, res) => {
+    // Unlink an asset from an order (removes the asset_link row; does NOT delete the asset)
+    app.delete('/api/orders/:orderId/assets/:assetId', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
-            const { orderId, lineItemId } = req.params;
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const { orderId, assetId } = req.params;
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ error: 'Order not found' });
+
+            const deleted = await db
+                .delete(assetLinks)
+                .where(
+                    and(
+                        eq(assetLinks.organizationId, organizationId),
+                        eq(assetLinks.parentType, 'order'),
+                        eq(assetLinks.parentId, orderId),
+                        eq(assetLinks.assetId, assetId)
+                    )
+                )
+                .returning();
+
+            if (!deleted.length) return res.status(404).json({ error: 'Asset link not found' });
+            return res.json({ success: true });
+        } catch (error) {
+            console.error('[OrderAssets:DELETE] Error:', error);
+            return res.status(500).json({ error: 'Failed to unlink asset' });
+        }
+    });
+
+    // Unlink an asset from an order line item (removes the asset_link row; does NOT delete the asset)
+    app.delete('/api/orders/:orderId/line-items/:lineItemId/assets/:assetId', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            const { orderId, lineItemId, assetId } = req.params;
 
             const [order] = await db
                 .select({ id: orders.id })
@@ -2190,18 +2229,23 @@ export async function registerOrderRoutes(
 
             if (!li) return res.status(404).json({ error: 'Line item not found' });
 
-            const files = await db
-                .select()
-                .from(orderAttachments)
-                .where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId)))
-                .orderBy(desc(orderAttachments.createdAt));
+            const deleted = await db
+                .delete(assetLinks)
+                .where(
+                    and(
+                        eq(assetLinks.organizationId, organizationId),
+                        eq(assetLinks.parentType, 'order_line_item'),
+                        eq(assetLinks.parentId, lineItemId),
+                        eq(assetLinks.assetId, assetId)
+                    )
+                )
+                .returning();
 
-            const logOnce = createRequestLogOnce();
-            const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
-            return res.json({ success: true, data: enrichedFiles });
+            if (!deleted.length) return res.status(404).json({ error: 'Asset link not found' });
+            return res.json({ success: true });
         } catch (error) {
-            console.error('[OrdersLineItemFiles:GET] Error:', error);
-            return res.status(500).json({ error: 'Failed to fetch order line item files' });
+            console.error('[OrderLineItemAssets:DELETE] Error:', error);
+            return res.status(500).json({ error: 'Failed to unlink asset' });
         }
     });
 

@@ -1,13 +1,17 @@
 import type { Asset } from '../../../shared/schema';
+import type { AssetVariant } from '../../../shared/schema';
+import { applyThumbnailContract } from '../../lib/thumbnailContract';
 
 /**
  * Asset with enriched URL fields for frontend consumption
  */
 export interface EnrichedAsset extends Asset {
   fileUrl: string;
+  originalUrl?: string;
   previewUrl?: string;
   thumbUrl?: string;
   thumbnailUrl?: string; // Alias for thumbUrl for compatibility
+  previewThumbnailUrl?: string; // Alias for thumbUrl for compatibility
 }
 
 /**
@@ -25,16 +29,28 @@ export interface EnrichedAsset extends Asset {
  */
 export function enrichAssetWithUrls(asset: Asset): EnrichedAsset {
   const fileUrl = `/objects/${asset.fileKey}`;
-  const previewUrl = asset.previewKey ? `/objects/${asset.previewKey}` : undefined;
-  const thumbUrl = asset.thumbKey ? `/objects/${asset.thumbKey}` : undefined;
+  const variants = (asset as Asset & { variants?: AssetVariant[] })?.variants ?? [];
 
-  return {
+  const variantThumbKey =
+    variants.find((v) => v.kind === 'thumb' && v.status === 'ready')?.key ??
+    variants.find((v) => v.kind === 'thumb')?.key;
+  const variantPreviewKey =
+    variants.find((v) => v.kind === 'preview' && v.status === 'ready')?.key ??
+    variants.find((v) => v.kind === 'preview')?.key;
+
+  const previewKey = asset.previewKey ?? variantPreviewKey;
+  const thumbKey = asset.thumbKey ?? variantThumbKey;
+
+  const previewUrl = previewKey ? `/objects/${previewKey}` : undefined;
+  const thumbUrl = thumbKey ? `/objects/${thumbKey}` : undefined;
+
+  return applyThumbnailContract({
     ...asset,
     fileUrl,
+    originalUrl: fileUrl,
     previewUrl,
     thumbUrl,
-    thumbnailUrl: thumbUrl, // Alias for compatibility with existing UI code
-  };
+  });
 }
 
 /**

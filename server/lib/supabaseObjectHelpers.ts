@@ -2,6 +2,7 @@ import { db, hasQuoteAttachmentPagesTable } from "../db";
 import { quoteAttachmentPages } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
+import { applyThumbnailContract } from "./thumbnailContract";
 
 export type FileRole = "artwork" | "proof" | "reference" | "customer_po" | "setup" | "output" | "other";
 export type FileSide = "front" | "back" | "na";
@@ -229,14 +230,14 @@ export async function enrichAttachmentWithUrls(
         }
     }
 
-    return {
+    return applyThumbnailContract({
         ...attachment,
         originalUrl,
         thumbUrl,
         previewUrl,
-        thumbnailUrl: thumbUrl, // Alias for client compatibility
+        // `applyThumbnailContract` will set thumbnailUrl based on (pages[0]?.thumbUrl || previewThumbnailUrl || thumbUrl)
         pages,
-    };
+    });
 }
 
 /**
