@@ -32,9 +32,12 @@ export function resolveLocalStoragePath(storageKey: string): string {
   // Normalize separators (handle both / and \)
   const normalizedKey = storageKey.replace(/\\/g, '/');
   
+  // Handle org-prefixed keys (e.g., "org_titan_001/orders/file.pdf")
+  // These are already relative to storage root, no special handling needed
+  let relativePath = normalizedKey;
+  
   // Handle "uploads/" prefix - if storage root already ends with "uploads", 
   // strip the prefix to avoid double "uploads/uploads"
-  let relativePath = normalizedKey;
   if (normalizedKey.startsWith('uploads/') || normalizedKey.startsWith('uploads\\')) {
     // Check if storage root already includes "uploads"
     const rootBasename = path.basename(storageRootAbs);

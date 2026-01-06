@@ -33,6 +33,18 @@ type OrderAttachment = {
   uploadedByName?: string | null;
   originalFilename?: string | null;
   originalUrl?: string | null;
+  // Thumbnail fields (PACK 1: preserve these from API response)
+  previewThumbnailUrl?: string | null;
+  thumbnailUrl?: string | null;
+  thumbUrl?: string | null;
+  previewUrl?: string | null;
+  thumbKey?: string | null;
+  previewKey?: string | null;
+  thumbStatus?: string | null;
+  thumbError?: string | null;
+  objectPath?: string | null;
+  downloadUrl?: string | null;
+  pages?: Array<{ thumbUrl?: string | null }>;
 };
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -352,13 +364,13 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
         )}
       </div>
 
-      {uploadItems.length > 0 && (
-        <>
-          {/* PACK B: Thumbnail grid */}
-          {attachments.length > 0 && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-3 gap-2">
-                {displayedAttachments.map((a) => {
+      {/* Thumbnail grid - show when attachments exist */}
+      {isLoading ? (
+        <div className="text-xs text-titan-text-muted">Loading attachments...</div>
+      ) : attachments.length > 0 ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            {displayedAttachments.map((a) => {
                   const displayName = a.originalFilename || a.fileName;
                   const thumbSrc = getThumbSrc(a as any);
                   const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
@@ -374,23 +386,30 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                       className="group relative aspect-square rounded-md border border-border overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary transition-all"
                       onClick={openInViewer}
                     >
-                      {/* Thumbnail */}
-                      <div className="absolute inset-0 bg-muted flex items-center justify-center">
-                        {thumbSrc ? (
-                          <img src={thumbSrc} alt={displayName} className="w-full h-full object-cover" />
-                        ) : (
-                          <>
-                            {isPdf ? (
-                              <FileText className="w-8 h-8 text-muted-foreground" />
-                            ) : (
-                              <ImageIcon className="w-8 h-8 text-muted-foreground" />
-                            )}
-                          </>
-                        )}
-                      </div>
+                      {/* Base thumbnail or icon placeholder */}
+                      {thumbSrc ? (
+                        <img
+                          src={thumbSrc}
+                          alt={displayName}
+                          className="absolute inset-0 h-full w-full object-cover"
+                          loading="lazy"
+                          draggable={false}
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = "none";
+                          }}
+                        />
+                      ) : (
+                        <div className="absolute inset-0 bg-muted flex items-center justify-center">
+                          {isPdf ? (
+                            <FileText className="w-8 h-8 text-muted-foreground" />
+                          ) : (
+                            <ImageIcon className="w-8 h-8 text-muted-foreground" />
+                          )}
+                        </div>
+                      )}
 
                       {/* Overlay on hover */}
-                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
                         <Eye className="w-6 h-6 text-white" />
                       </div>
 
@@ -401,7 +420,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                             e.stopPropagation();
                             setAttachmentToDelete(a);
                           }}
-                          className="absolute top-2 right-2 p-1.5 bg-destructive/90 hover:bg-destructive rounded-md opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          className="absolute top-2 right-2 p-1.5 bg-destructive/90 hover:bg-destructive rounded-md opacity-0 group-hover:opacity-100 transition-opacity z-20"
                           title="Delete attachment"
                         >
                           <Trash2 className="w-4 h-4 text-white" />
@@ -409,7 +428,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                       )}
 
                       {/* Filename overlay at bottom */}
-                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2 z-10">
                         <div className="text-xs text-white truncate">{displayName}</div>
                       </div>
                     </div>
@@ -429,9 +448,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                 </Button>
               )}
             </div>
-          )}
-        </>
-      )}
+          ) : null}
 
       <AttachmentViewerDialog
         attachment={viewerAttachment as any}
