@@ -112,6 +112,8 @@ export type OrderRow = Order & {
   previewThumbnails?: string[]; // GCS thumbnail keys
   thumbsCount?: number; // Total attachment count
   previewThumbnailUrl?: string | null; // Signed URL for list preview image thumbnail
+  previewThumbnailUrls?: string[]; // Up to 3 preview thumbnails for list row
+  previewThumbnailCount?: number; // Total available items count for +N indicator
   previewImageUrl?: string | null; // Back-compat: older field name
   attachmentsSummary?: {
     totalCount: number;

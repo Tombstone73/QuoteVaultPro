@@ -2,6 +2,7 @@ import { Stats } from "fs";
 import * as fsPromises from "fs/promises";
 import path from 'path';
 import crypto from 'crypto';
+import { normalizeOrgPrefix } from './orgKeys';
 
 /**
  * File Storage Utility Module
@@ -96,7 +97,9 @@ export function generateRelativePath(options: {
     resourceId,
   } = options;
 
-  const parts: string[] = [`org-${organizationId}`];
+  // Canonical tenant prefix: first segment is the orgId itself.
+  // Avoid legacy bug where code prefixed "org-" onto an orgId that already starts with "org_".
+  const parts: string[] = [normalizeOrgPrefix(organizationId)];
 
   // Order-specific path
   if (orderNumber) {
