@@ -14,6 +14,7 @@
 
 import type { Express } from "express";
 import path from "path";
+import { Readable } from "stream";
 import { promises as fsPromises } from "fs";
 import { db } from "../db";
 import {
@@ -123,6 +124,119 @@ export async function registerAttachmentRoutes(
   // ══════════════════════════════════════════════════════════════════════════
   // OBJECT STORAGE PROXY ROUTES
   // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * GET /api/objects/download?key=<objectKey>&filename=<name>
+   * Same-origin download endpoint that ALWAYS sets Content-Disposition: attachment.
+   *
+   * Security: only accepts object keys (not arbitrary external URLs) and enforces
+   * that the key is tenant-scoped (first path segment must match organizationId).
+   */
+  app.get("/api/objects/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const rawKeyParam = (req.query.key ?? req.query.objectPath ?? "").toString();
+      if (!rawKeyParam) return res.status(400).json({ error: "Missing key" });
+
+      let decodedKey = rawKeyParam;
+      try {
+        decodedKey = decodeURIComponent(rawKeyParam);
+      } catch {
+        // keep rawKeyParam
+      }
+
+      const requestedKey = normalizeTenantObjectKey(normalizeObjectKeyForDb(decodedKey));
+      if (!requestedKey) return res.status(400).json({ error: "Invalid key" });
+
+      // Tenant safety (compatible with legacy keys):
+      // - If a key is explicitly org-scoped (starts with "org_"), enforce it matches.
+      // - Otherwise allow (mirrors existing /objects behavior while still avoiding arbitrary URLs).
+      const firstSegment = requestedKey.split("/")[0] || "";
+      if (firstSegment.startsWith("org_") && firstSegment !== organizationId) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      const rawFilename = (req.query.filename ?? "").toString();
+      const resolvedName = (rawFilename || path.basename(requestedKey) || "download")
+        .replace(/[\r\n\t\0]/g, " ")
+        .replace(/"/g, "'")
+        .slice(0, 240);
+
+      const bucketParamRaw = (req.query.bucket ?? "").toString().trim();
+      const bucketParam = /^[a-z0-9._-]+$/i.test(bucketParamRaw) ? bucketParamRaw : "";
+
+      // 1) Supabase: fetch bytes server-side and stream with attachment headers.
+      if (isSupabaseConfigured()) {
+        try {
+          const supabaseService = new SupabaseStorageService(bucketParam || undefined);
+          const signedUrl = await supabaseService.getSignedDownloadUrl(requestedKey, 3600);
+          const upstream = await fetch(signedUrl);
+          if (!upstream.ok) {
+            throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+          }
+
+          res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
+          res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
+          res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+
+          // Stream if possible; otherwise buffer.
+          const body: any = (upstream as any).body;
+          if (body && typeof Readable.fromWeb === "function") {
+            const nodeStream = Readable.fromWeb(body);
+            nodeStream.on("error", (err) => {
+              console.error("[objects:download] Stream error:", err);
+              if (!res.headersSent) res.status(500).end();
+            });
+            return nodeStream.pipe(res);
+          }
+
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          return res.send(buf);
+        } catch (supabaseError: any) {
+          // fall through to local/GCS attempts
+          if (process.env.NODE_ENV === "development") {
+            console.log(`[objects:download] supabase miss key="${requestedKey}":`, supabaseError?.message || supabaseError);
+          }
+        }
+      }
+
+      // 2) Local filesystem
+      try {
+        const localPath = resolveLocalStoragePath(requestedKey);
+        await fsPromises.access(localPath, fsPromises.constants.R_OK);
+        return res.download(path.resolve(localPath), resolvedName);
+      } catch {
+        // fall through
+      }
+
+      // 3) GCS via Replit ObjectStorage
+      const userId = getUserId((req as any).user);
+      const objectStorageService = new ObjectStorageService();
+      const objectRoutePath = `/objects/${requestedKey}`;
+      const objectFile = await objectStorageService.getObjectEntityFile(objectRoutePath);
+
+      const canAccess = await objectStorageService.canAccessObjectEntity({
+        objectFile,
+        userId: userId ?? undefined,
+        requestedPermission: ObjectPermission.READ,
+      });
+
+      if (!canAccess) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
+      return objectStorageService.downloadObject(objectFile, res);
+    } catch (error: any) {
+      if (error instanceof ObjectNotFoundError) {
+        return res.status(404).json({ error: "Object not found" });
+      }
+      console.error("[objects:download] Error:", error);
+      return res.status(500).json({ error: error?.message || "Failed to download" });
+    }
+  });
 
   /**
    * GET /objects/:objectPath

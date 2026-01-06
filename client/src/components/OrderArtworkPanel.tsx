@@ -32,6 +32,7 @@ import { format } from "date-fns";
 import { isValidHttpUrl } from "@/lib/utils";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 
 // Max file size: 50MB
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
@@ -88,6 +89,8 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   const [editingFile, setEditingFile] = useState<OrderFileWithUser | null>(null);
   const [fileToDelete, setFileToDelete] = useState<{ id: string; source: 'attachment' | 'asset' } | null>(null);
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
+  const [viewerFile, setViewerFile] = useState<OrderFileWithUser | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   // Upload state
   const [isUploading, setIsUploading] = useState(false);
@@ -358,41 +361,46 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                       file.originalUrl.startsWith("/objects/"))
                       ? file.originalUrl
                       : undefined;
+
+                  const openInViewer = () => {
+                    setViewerFile(file);
+                    setViewerOpen(true);
+                  };
                   
                   return (
                   <TableRow key={file.id}>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        {thumbSrc && !hasError ? (
-                          <img 
-                            src={thumbSrc} 
-                            alt="" 
-                            className="h-10 w-10 object-cover rounded"
-                            onError={() => {
-                              setImageErrors(prev => new Set(prev).add(file.id));
-                            }}
-                          />
-                        ) : (
-                          <div className="h-10 w-10 rounded border border-border/60 bg-muted/30 flex items-center justify-center shrink-0">
-                            {getRoleIcon(file.role || 'other')}
-                          </div>
-                        )}
-                        <div>
-                          {/* Use signed originalUrl from server, not storage key fileUrl */}
-                          {originalHref ? (
-                            <a
-                              href={originalHref}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="font-medium hover:underline text-sm"
-                            >
-                              {file.originalFilename || file.fileName}
-                            </a>
+                        <button
+                          type="button"
+                          className="h-10 w-10 shrink-0"
+                          onClick={openInViewer}
+                          title="Preview"
+                        >
+                          {thumbSrc && !hasError ? (
+                            <img 
+                              src={thumbSrc} 
+                              alt="" 
+                              className="h-10 w-10 object-cover rounded"
+                              onError={() => {
+                                setImageErrors(prev => new Set(prev).add(file.id));
+                              }}
+                            />
                           ) : (
-                            <span className="font-medium text-sm text-muted-foreground">
-                              {file.originalFilename || file.fileName}
-                            </span>
+                            <div className="h-10 w-10 rounded border border-border/60 bg-muted/30 flex items-center justify-center">
+                              {getRoleIcon(file.role || 'other')}
+                            </div>
                           )}
+                        </button>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={openInViewer}
+                            className="font-medium hover:underline text-sm text-left"
+                            title={originalHref ? "Preview (was open in new tab)" : "Preview"}
+                          >
+                            {file.originalFilename || file.fileName}
+                          </button>
                           {file.description && (
                             <div className="text-xs text-muted-foreground truncate max-w-[200px]">
                               {file.description}
@@ -452,6 +460,15 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
           )}
         </CardContent>
       </Card>
+
+      <AttachmentViewerDialog
+        attachment={viewerFile as any}
+        open={viewerOpen}
+        onOpenChange={(open) => {
+          setViewerOpen(open);
+          if (!open) setViewerFile(null);
+        }}
+      />
 
       {/* Edit Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>

@@ -1450,6 +1450,8 @@ export async function registerOrderRoutes(
                     id: String(att?.id),
                     filename,
                     originalUrl: (att?.originalUrl as string | null) ?? null,
+                    objectPath: (att?.objectPath as string | null) ?? null,
+                    downloadUrl: (att?.downloadUrl as string | null) ?? null,
                     previewThumbnailUrl,
                     createdAt: att?.createdAt ?? null,
                     source: 'order' as const,
@@ -1531,6 +1533,11 @@ export async function registerOrderRoutes(
                                 id: String(link.assetId),
                                 filename,
                                 originalUrl: (enriched as any).originalUrl ?? (enriched as any).fileUrl ?? null,
+                                objectPath: typeof (asset as any)?.fileKey === 'string' ? String((asset as any).fileKey) : null,
+                                downloadUrl:
+                                    typeof (asset as any)?.fileKey === 'string'
+                                        ? `/api/objects/download?key=${encodeURIComponent(String((asset as any).fileKey))}&filename=${encodeURIComponent(filename)}`
+                                        : null,
                                 previewThumbnailUrl,
                                 createdAt: link.createdAt ?? (enriched as any).createdAt ?? null,
                                 source: 'line_item' as const,

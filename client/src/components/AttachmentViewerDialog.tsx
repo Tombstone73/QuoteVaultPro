@@ -3,8 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Download, FileText, Loader2 } from "lucide-react";
 import { getAttachmentDisplayName, isPdfAttachment } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
-import { isValidHttpUrl } from "@/lib/utils";
-import { getThumbSrc } from "@/lib/getThumbSrc";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
 
 type AttachmentPage = {
   id: string;
@@ -30,6 +29,7 @@ type AttachmentData = {
   previewKey?: string | null;
   thumbError?: string | null;
   originalUrl?: string | null;
+  downloadUrl?: string | null;
   thumbUrl?: string | null;
   previewUrl?: string | null;
   pageCount?: number | null;
@@ -55,17 +55,41 @@ export function AttachmentViewerDialog({
 }: AttachmentViewerDialogProps) {
   if (!attachment) return null;
 
-  // Unified thumbnail logic - check for any thumbnail URL
-  const thumbSrc = getThumbSrc(attachment);
-  const hasThumb = Boolean(thumbSrc);
-
-  // File type checks for fallback icons
-  const isPdf = isPdfAttachment(attachment);
-  
-  const originalUrl =
-    attachment.originalUrl ?? (attachment as any).originalURL ?? (attachment as any).url ?? attachment.fileUrl ?? null;
-  const hasValidOriginal = typeof originalUrl === "string" && isValidHttpUrl(originalUrl);
   const fileName = getAttachmentDisplayName(attachment);
+  const originalUrl =
+    attachment.originalUrl ?? (attachment as any).originalURL ?? (attachment as any).url ?? null;
+
+  const rawDownloadUrl = (attachment.downloadUrl ?? null) as string | null;
+
+  const isRenderableUrl = (value: unknown): value is string => {
+    if (typeof value !== "string" || !value.length) return false;
+    if (value.startsWith("http://") || value.startsWith("https://")) return true;
+    // Same-origin proxies (local object storage, etc.)
+    if (value.startsWith("/")) return true;
+    return false;
+  };
+
+  const previewUrl = isRenderableUrl(originalUrl) ? originalUrl : null;
+  const downloadHref = isRenderableUrl(rawDownloadUrl)
+    ? rawDownloadUrl
+    : (previewUrl && previewUrl.startsWith("/objects/")
+        ? `/api/objects/download?key=${encodeURIComponent(previewUrl.slice("/objects/".length))}&filename=${encodeURIComponent(fileName)}`
+        : previewUrl);
+
+  const inferMimeType = (name: string): string | null => {
+    const n = (name || "").toLowerCase();
+    if (n.endsWith(".pdf")) return "application/pdf";
+    if (n.endsWith(".png")) return "image/png";
+    if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+    if (n.endsWith(".webp")) return "image/webp";
+    if (n.endsWith(".gif")) return "image/gif";
+    if (n.endsWith(".svg")) return "image/svg+xml";
+    return null;
+  };
+
+  const effectiveMimeType = attachment.mimeType ?? inferMimeType(fileName);
+  const isPdf = effectiveMimeType === "application/pdf" || isPdfAttachment(attachment);
+  const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
 
   const handleDownloadClick = () => {
     if (onDownload) {
@@ -73,18 +97,8 @@ export function AttachmentViewerDialog({
       return;
     }
 
-    // Fallback: direct download via anchor
-    if (originalUrl) {
-      const anchor = document.createElement("a");
-      anchor.href = originalUrl;
-      anchor.download = fileName;
-      anchor.target = "_blank";
-      anchor.rel = "noreferrer";
-      anchor.style.display = "none";
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-    }
+    if (!downloadHref) return;
+    void downloadFileFromUrl(downloadHref, fileName);
   };
 
   return (
@@ -108,23 +122,35 @@ export function AttachmentViewerDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          {hasThumb ? (
+          {previewUrl && isImage ? (
             <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-              <img
-                src={thumbSrc!}
-                alt={fileName}
-                className="max-w-full max-h-[60vh] object-contain"
-              />
+              <img src={previewUrl} alt={fileName} className="max-w-full max-h-[60vh] object-contain" />
+            </div>
+          ) : previewUrl && isPdf ? (
+            <div className="bg-muted/30 rounded-lg p-2 space-y-2">
+              <iframe title={fileName} src={previewUrl} className="w-full h-[70vh] rounded" />
+              <div className="text-xs text-muted-foreground">
+                If the PDF does not render,{' '}
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-2"
+                >
+                  open it in a new tab
+                </a>
+                .
+              </div>
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
               <FileText className="w-16 h-16 mb-4 opacity-50" />
-              <p className="text-sm mb-4">{isPdf ? 'PDF' : 'File'} preview not available</p>
-              {hasValidOriginal && (
+              <p className="text-sm mb-4">Preview not available</p>
+              {downloadHref && (
                 <div className="flex flex-col items-center gap-1">
                   <Button onClick={handleDownloadClick} variant="outline">
                     <Download className="w-4 h-4 mr-2" />
-                    Download {isPdf ? 'PDF' : 'file'}
+                    Download
                   </Button>
                   <span className="text-xs text-muted-foreground">Downloads original file</span>
                 </div>
@@ -154,7 +180,7 @@ export function AttachmentViewerDialog({
               )}
             </div>
             
-            {hasValidOriginal && (
+            {downloadHref && (
               <div className="flex flex-col items-end gap-1">
                 <Button onClick={handleDownloadClick} variant="outline">
                   <Download className="w-4 h-4 mr-2" />

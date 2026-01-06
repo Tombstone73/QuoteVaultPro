@@ -92,6 +92,9 @@ export async function enrichAttachmentWithUrls(
     let thumbUrl: string | null = null;
     let previewUrl: string | null = null;
 
+    let objectPath: string | null = null;
+    let downloadUrl: string | null = null;
+
     const logOnce = options?.logOnce;
 
     const rawFileUrl = (attachment.fileUrl ?? "").toString();
@@ -106,6 +109,10 @@ export async function enrichAttachmentWithUrls(
         const maybeSupabaseKey = isSupabaseConfigured()
             ? tryExtractSupabaseObjectKeyFromUrl(rawFileUrl, bucket || "titan-private")
             : null;
+
+        if (maybeSupabaseKey) {
+            objectPath = maybeSupabaseKey;
+        }
 
         if (maybeSupabaseKey && isSupabaseConfigured()) {
             const supabaseService = new SupabaseStorageService(bucket);
@@ -131,6 +138,7 @@ export async function enrichAttachmentWithUrls(
         }
     } else if (rawFileUrl && storageProvider === "local") {
         originalUrl = objectsProxyUrl(rawFileUrl);
+        objectPath = normalizeObjectKeyForDb(rawFileUrl);
     } else if (rawFileUrl && storageProvider === "supabase" && isSupabaseConfigured()) {
         const supabaseService = new SupabaseStorageService(bucket);
         try {
@@ -155,8 +163,18 @@ export async function enrichAttachmentWithUrls(
             }
             originalUrl = null;
         }
+
+        objectPath = normalizeObjectKeyForDb(rawFileUrl);
     } else if (rawFileUrl) {
         originalUrl = objectsProxyUrl(rawFileUrl);
+        objectPath = normalizeObjectKeyForDb(rawFileUrl);
+    }
+
+    // Same-origin forced download URL (server enforces tenant scoping via key prefix)
+    if (objectPath && objectPath.length) {
+        const fileNameForDownload = String(attachment?.originalFilename ?? attachment?.fileName ?? "download");
+        const bucketParam = bucket ? `&bucket=${encodeURIComponent(String(bucket))}` : "";
+        downloadUrl = `/api/objects/download?key=${encodeURIComponent(objectPath)}&filename=${encodeURIComponent(fileNameForDownload)}${bucketParam}`;
     }
 
     // Derivative URLs (Thumbnails/Previews)
@@ -235,6 +253,8 @@ export async function enrichAttachmentWithUrls(
         originalUrl,
         thumbUrl,
         previewUrl,
+        objectPath,
+        downloadUrl,
         // `applyThumbnailContract` will set thumbnailUrl based on (pages[0]?.thumbUrl || previewThumbnailUrl || thumbUrl)
         pages,
     });

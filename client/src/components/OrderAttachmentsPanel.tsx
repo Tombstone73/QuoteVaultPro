@@ -4,6 +4,8 @@ import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { isValidHttpUrl } from "@/lib/utils";
+import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,6 +46,8 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [attachmentToDelete, setAttachmentToDelete] = useState<OrderAttachment | null>(null);
+  const [viewerAttachment, setViewerAttachment] = useState<OrderAttachment | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const [uploadItems, setUploadItems] = useState<
     Array<{ key: string; name: string; percent: number; error?: string | null }>
   >([]);
@@ -351,11 +355,27 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           {attachments.map((a) => {
             const displayName = a.originalFilename || a.fileName;
             const openUrl = a.originalUrl && isValidHttpUrl(a.originalUrl) ? a.originalUrl : a.fileUrl;
+            const downloadUrl =
+              (a as any)?.downloadUrl ||
+              (typeof openUrl === "string" && openUrl.startsWith("/objects/")
+                ? `/api/objects/download?key=${encodeURIComponent(openUrl.slice("/objects/".length))}&filename=${encodeURIComponent(displayName)}`
+                : openUrl);
+
+            const openInViewer = () => {
+              setViewerAttachment(a);
+              setViewerOpen(true);
+            };
 
             return (
               <div
                 key={a.id}
-                className="flex items-center justify-between gap-3 rounded-titan-md border border-titan-border-subtle px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-titan-md border border-titan-border-subtle px-3 py-2 cursor-pointer hover:bg-muted/30"
+                role="button"
+                tabIndex={0}
+                onClick={openInViewer}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") openInViewer();
+                }}
               >
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-titan-text-primary truncate">{displayName}</div>
@@ -371,8 +391,25 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                     variant="ghost"
                     size="sm"
                     className="h-8 w-8 p-0"
-                    onClick={() => window.open(openUrl, "_blank")}
-                    title="Open"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const url = typeof downloadUrl === "string" ? downloadUrl : null;
+                      const isDownloadable =
+                        typeof url === "string" &&
+                        (url.startsWith("/") || url.startsWith("http://") || url.startsWith("https://"));
+
+                      if (!isDownloadable) {
+                        toast({
+                          title: "Download unavailable",
+                          description: "This attachment does not have a downloadable URL.",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      void downloadFileFromUrl(url, displayName);
+                    }}
+                    title="Download"
                   >
                     <Download className="w-4 h-4" />
                   </Button>
@@ -381,7 +418,10 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
                     variant="ghost"
                     size="sm"
                     className="h-8 w-8 p-0"
-                    onClick={() => setAttachmentToDelete(a)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setAttachmentToDelete(a);
+                    }}
                     title={isLocked ? lockedHint : "Delete"}
                     disabled={isLocked || deleteAttachment.isPending}
                   >
@@ -397,6 +437,15 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           })}
         </div>
       )}
+
+      <AttachmentViewerDialog
+        attachment={viewerAttachment as any}
+        open={viewerOpen}
+        onOpenChange={(open) => {
+          setViewerOpen(open);
+          if (!open) setViewerAttachment(null);
+        }}
+      />
 
       <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => (!open ? setAttachmentToDelete(null) : undefined)}>
         <AlertDialogContent>
