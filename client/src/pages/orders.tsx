@@ -24,6 +24,8 @@ import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 import { getThumbSrc } from "@/lib/getThumbSrc";
+import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 
@@ -138,6 +140,9 @@ export default function Orders() {
   const [attachmentsDialogItems, setAttachmentsDialogItems] = useState<any[]>([]);
   const [attachmentsDialogLoading, setAttachmentsDialogLoading] = useState(false);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
+
+  const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
+  const [selectedAttachment, setSelectedAttachment] = useState<any | null>(null);
 
   // Inline editing state
   const [editingPriorityOrderId, setEditingPriorityOrderId] = useState<string | null>(null);
@@ -1042,6 +1047,8 @@ export default function Orders() {
             setAttachmentsDialogOrderId(null);
             setAttachmentsDialogItems([]);
             setAttachmentsDialogLoading(false);
+            setAttachmentViewerOpen(false);
+            setSelectedAttachment(null);
           }
         }}
       >
@@ -1062,13 +1069,35 @@ export default function Orders() {
               {attachmentsDialogItems.map((att: any) => {
                 const filename = att?.filename || att?.originalFilename || att?.fileName || "Attachment";
                 const thumbUrl = getThumbSrc(att);
-                const downloadUrl = att?.originalUrl || null;
+                const downloadUrl = att?.downloadUrl || att?.originalUrl || null;
+                const originalUrl = att?.originalUrl || null;
                 const hasThumb = typeof thumbUrl === "string" && (thumbUrl.startsWith("http") || thumbUrl.startsWith("/"));
 
+                const viewerItem = {
+                  id: String(att?.id || filename),
+                  fileName: filename,
+                  originalFilename: att?.originalFilename || null,
+                  mimeType: att?.mimeType || null,
+                  fileSize: att?.fileSize ?? att?.sizeBytes ?? null,
+                  originalUrl: typeof originalUrl === "string" ? originalUrl : null,
+                  downloadUrl: typeof downloadUrl === "string" ? downloadUrl : null,
+                  previewThumbnailUrl: att?.previewThumbnailUrl ?? null,
+                  thumbnailUrl: att?.thumbnailUrl ?? null,
+                  thumbUrl: att?.thumbUrl ?? null,
+                  previewUrl: att?.previewUrl ?? null,
+                  pages: att?.pages ?? null,
+                };
+
                 return (
-                  <div
+                  <button
                     key={att?.id || filename}
-                    className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
+                    type="button"
+                    className="w-full text-left flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 hover:bg-muted/20"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedAttachment(viewerItem);
+                      setAttachmentViewerOpen(true);
+                    }}
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-10 h-10 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center shrink-0">
@@ -1092,20 +1121,29 @@ export default function Orders() {
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={() => window.open(downloadUrl, "_blank")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void downloadFileFromUrl(downloadUrl, filename);
+                          }}
                         >
                           <Download className="w-4 h-4 mr-2" />
                           Download
                         </Button>
                       ) : null}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           )}
         </DialogContent>
       </Dialog>
+
+      <AttachmentViewerDialog
+        attachment={selectedAttachment}
+        open={attachmentViewerOpen}
+        onOpenChange={setAttachmentViewerOpen}
+      />
     </Page>
   );
 }

@@ -7,6 +7,8 @@ import { cn, isValidHttpUrl } from "@/lib/utils";
 import { getAttachmentDisplayName, isPdfAttachment, getPdfPageCount } from "@/lib/attachments";
 import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
+import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
@@ -228,6 +230,8 @@ export function LineItemAttachmentsPanel({
       return POLL_INTERVAL_MS;
     },
   });
+
+  const fileCount = attachments.length;
 
   // Format file size for display
   const formatFileSize = (bytes: number | null | undefined): string => {
@@ -512,14 +516,7 @@ export function LineItemAttachmentsPanel({
             directUrl.startsWith("https://");
 
           if (isDirectDownloadable) {
-            const anchor = document.createElement("a");
-            anchor.href = directUrl;
-            anchor.download = fileName;
-            anchor.rel = "noreferrer";
-            anchor.style.display = "none";
-            document.body.appendChild(anchor);
-            anchor.click();
-            document.body.removeChild(anchor);
+            await downloadFileFromUrl(directUrl, fileName);
             return;
           }
         }
@@ -535,15 +532,7 @@ export function LineItemAttachmentsPanel({
       // Quote behavior: proxy endpoint streams file with correct filename
       const proxyUrl = `${filesApiPath}/${fileId}/download/proxy`;
 
-      const anchor = document.createElement("a");
-      anchor.href = proxyUrl;
-      anchor.download = fileName;
-      anchor.rel = "noreferrer";
-      anchor.style.display = "none";
-
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
+      await downloadFileFromUrl(proxyUrl, fileName, { credentials: "include" });
     } catch (error: any) {
       console.error("[handleDownloadFile] Error:", error);
       toast({
@@ -574,162 +563,34 @@ export function LineItemAttachmentsPanel({
 
       // Handle 202 Accepted (queued)
       if (response.status === 202) {
-        const data = await response.json().catch(() => ({}));
         toast({
-          title: "Queued",
-          description: data.message || "Thumbnail generation queued",
+          title: "Thumbnails queued",
+          description: `Thumbnail generation queued for ${fileName}.`,
         });
-        
-        // Poll for thumbnail completion: refetch every 1s up to 10s OR until thumbUrl appears
-        let pollCount = 0;
-        const maxPolls = 10;
-        const pollInterval = 1000; // 1 second
-        
-        const pollForThumbnail = async () => {
-          pollCount++;
-          
-          // Refetch attachments and wait for result
-          await queryClient.refetchQueries({ queryKey: [filesApiPath] });
-          
-          // Get current attachment data after refetch
-          const queryData = queryClient.getQueryData<LineItemAttachment[]>([filesApiPath]);
-          const attachment = queryData?.find(a => a.id === fileId);
-          
-          // Check if thumbnail is ready (thumbUrl exists and is valid, or thumbKey exists)
-          const hasThumbnail = attachment && (
-            (attachment.thumbUrl && isValidHttpUrl(attachment.thumbUrl)) ||
-            (attachment.thumbKey && attachment.thumbKey.length > 0)
-          );
-          
-          if (hasThumbnail) {
-            // Thumbnail is ready - stop polling
-            toast({
-              title: "Thumbnails ready",
-              description: `Thumbnails created for ${fileName}`,
-            });
-            return;
-          }
-          
-          // Continue polling if not ready and not exceeded max polls
-          if (pollCount < maxPolls) {
-            setTimeout(pollForThumbnail, pollInterval);
-          } else {
-            // Timeout - show message
-            toast({
-              title: "Queued",
-              description: "Queued; refresh in a few seconds",
-            });
-          }
-        };
-        
-        // Start polling after initial delay
-        setTimeout(pollForThumbnail, pollInterval);
+        queryClient.invalidateQueries({ queryKey: [filesApiPath] });
         return;
       }
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        const error = new Error(errorData.error || errorData.message || 'Failed to generate thumbnails') as any;
-        error.response = response; // Attach response for status checking
-        error.data = errorData; // Attach full error data for code checking
-        throw error;
+        const json = await response.json().catch(() => ({} as any));
+        throw new Error(json?.error || "Failed to generate thumbnails");
       }
 
-      // Invalidate queries to refresh the attachment list with updated status
-      queryClient.invalidateQueries({ queryKey: [filesApiPath] });
-
       toast({
-        title: "Thumbnails Generated",
-        description: `Thumbnails created for ${fileName}`,
+        title: "Thumbnails requested",
+        description: `Thumbnail generation requested for ${fileName}.`,
       });
+      queryClient.invalidateQueries({ queryKey: [filesApiPath] });
     } catch (error: any) {
       console.error("[handleGenerateThumbnails] Error:", error);
-      
-      // Check if this is an "unavailable" error (503, 501 for PDF, THUMBNAILS_UNAVAILABLE code, or message-based detection)
-      const isUnavailableError = error.response?.status === 503 || 
-                                  error.response?.status === 501 ||
-                                  error.data?.code === 'THUMBNAILS_UNAVAILABLE' ||
-                                  isThumbsUnavailableError(error.message) ||
-                                  isThumbsUnavailableError(error.data?.message);
-      
-      if (isUnavailableError) {
-        // Show neutral message for unavailable (not a failure)
-        toast({
-          title: "Thumbnail Generation Unavailable",
-          description: error.data?.message || error.message || "Thumbnail generation is currently unavailable.",
-        });
-      } else {
-        // Show error message for actual failures
-        toast({
-          title: "Generation Failed",
-          description: error.message || error.data?.message || "Could not generate thumbnails.",
-          variant: "destructive",
-        });
-      }
-    }
-  };
-
-  // Handle PDF thumbnail generation (explicit user action, PDFs only)
-  const handleGeneratePdfThumbnails = async (fileId: string, fileName: string) => {
-    if (!filesApiPath) return;
-
-    if (parentType === "order") {
       toast({
-        title: "Unavailable",
-        description: "PDF thumbnail generation is not available here.",
-      });
-      return;
-    }
-
-    try {
-      const response = await fetch(`${filesApiPath}/${fileId}/generate-pdf-thumbnails`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to generate PDF thumbnails');
-      }
-
-      const result = await response.json();
-
-      // Invalidate queries to refresh the attachment list with updated pages
-      queryClient.invalidateQueries({ queryKey: [filesApiPath] });
-
-      toast({
-        title: "PDF Thumbnails Generated",
-        description: `Generated ${result.data.pagesGenerated} page thumbnail${result.data.pagesGenerated === 1 ? '' : 's'} for ${fileName}`,
-      });
-    } catch (error: any) {
-      console.error("[handleGeneratePdfThumbnails] Error:", error);
-      toast({
-        title: "PDF Generation Failed",
-        description: error.message || "Could not generate PDF thumbnails.",
+        title: "Thumbnail generation failed",
+        description: error?.message || "Could not generate thumbnails.",
         variant: "destructive",
       });
     }
   };
 
-  const fileCount = attachments.length;
-
-  // Auto-expand panel when attachments are present (unless user explicitly closed it)
-  // This ensures the panel stays open after first upload for easy multi-file uploads
-  useEffect(() => {
-    if (fileCount > 0 && !userClosed) {
-      setIsExpanded(true);
-    }
-  }, [fileCount, userClosed]);
-
-  // TitanOS UX RULE: Always render shell, even if actions are disabled.
-  // This ensures visibility of state and clear messaging to the user.
-  const canUpload = !!lineItemId && (!!quoteId || !!ensureQuoteId);
-
-  /**
-   * Handle upload button click - open file picker immediately.
-   * CRITICAL: Must open picker directly in click handler to preserve user gesture.
-   * Persistence (ensureLineItemId) happens in onChange AFTER user selects file.
-   */
   const handleUploadClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -1084,182 +945,13 @@ export function LineItemAttachmentsPanel({
         </div>
       )}
 
-      {/* Preview Modal */}
-      {(() => {
-        console.log("[PreviewDialogOpen]", !!previewFile, previewFile?.originalFilename || previewFile?.fileName);
-        return (
-          <Dialog open={!!previewFile} onOpenChange={(open) => { if (!open) setPreviewFile(null); }}>
-            <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>
-                  {previewFile ? getAttachmentDisplayName(previewFile) : ""}
-                </DialogTitle>
-                <DialogDescription>
-                  <div className="space-y-1">
-                    {previewFile?.mimeType ? (
-                      <div>
-                        <span>File type: </span>
-                        <span>{previewFile.mimeType}</span>
-                      </div>
-                    ) : (
-                      <div>Preview attachment</div>
-                    )}
-                    <AttachmentPreviewMeta attachment={previewFile} />
-                  </div>
-                </DialogDescription>
-              </DialogHeader>
-              {previewFile && (() => {
-                const isPdf = isPdfAttachment(previewFile);
-                const isImage = previewFile.mimeType?.startsWith("image/") ?? false;
-                const isTiff =
-                  /image\/tiff/i.test(previewFile.mimeType ?? "") ||
-                  /\.(tif|tiff)$/i.test(previewFile.fileName ?? "");
-                const isAi =
-                  /\.(ai)$/i.test(previewFile.fileName ?? "") ||
-                  /(illustrator|postscript)/i.test(previewFile.mimeType ?? "");
-                const isPsd =
-                  /\.(psd)$/i.test(previewFile.fileName ?? "") ||
-                  /(photoshop|x-photoshop)/i.test(previewFile.mimeType ?? "");
-
-                const isRenderableImageUrl = (url: string | null): url is string => {
-                  if (typeof url !== "string" || !isValidHttpUrl(url)) return false;
-                  const urlWithoutQuery = url.split("?")[0]?.split("#")[0] ?? "";
-                  return /\.(png|jpe?g|webp|gif)$/i.test(urlWithoutQuery);
-                };
-
-                const originalUrl =
-                  previewFile.originalUrl ?? (previewFile as any).originalURL ?? (previewFile as any).url ?? null;
-                const previewUrl = previewFile.previewUrl ?? null;
-
-                const imagePreviewUrl =
-                  (typeof previewUrl === "string" && isValidHttpUrl(previewUrl) ? previewUrl : null) ??
-                  (typeof originalUrl === "string" && isValidHttpUrl(originalUrl) ? originalUrl : null);
-
-                const tiffPreviewUrl =
-                  (isRenderableImageUrl(previewUrl) ? previewUrl : null) ??
-                  (isRenderableImageUrl(previewFile.thumbUrl ?? null) ? (previewFile.thumbUrl as string) : null);
-
-                const aiPsdPreviewUrl =
-                  (isRenderableImageUrl(previewUrl) ? previewUrl : null) ??
-                  (isRenderableImageUrl(previewFile.thumbUrl ?? null) ? (previewFile.thumbUrl as string) : null);
-
-                const modalPreviewUrl = isPdf
-                  ? null
-                  : isTiff
-                  ? tiffPreviewUrl
-                  : isAi || isPsd
-                  ? aiPsdPreviewUrl
-                  : isImage
-                  ? imagePreviewUrl
-                  : null;
-                const hasValidPreview = typeof modalPreviewUrl === "string" && isValidHttpUrl(modalPreviewUrl);
-                const pdfThumbUrl =
-                  previewFile.pages?.[0]?.thumbUrl ??
-                  previewFile.thumbUrl ??
-                  null;
-                const hasPdfThumb = isPdf && typeof pdfThumbUrl === "string" && isValidHttpUrl(pdfThumbUrl);
-                const hasValidOriginal = typeof originalUrl === "string" && isValidHttpUrl(originalUrl);
-                const fileName = getAttachmentDisplayName(previewFile);
-                
-                return (
-                  <div className="space-y-4">
-                    {isPdf ? (
-                      hasPdfThumb ? (
-                        <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                          <img
-                            src={pdfThumbUrl!}
-                            alt={fileName}
-                            className="max-w-full max-h-[60vh] object-contain"
-                          />
-                        </div>
-                      ) : (
-                        // PDF handling - no preview rendering, show button to open in new tab
-                        <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                          <FileText className="w-16 h-16 mb-4 opacity-50" />
-                          <p className="text-sm mb-4">PDF preview not available</p>
-                          {hasValidOriginal && (
-                            <div className="flex flex-col items-center gap-1">
-                              <Button
-                                onClick={() => {
-                                  if (filesApiPath) {
-                                    handleDownloadFile(previewFile.id, fileName);
-                                  }
-                                }}
-                                variant="outline"
-                              >
-                                <Download className="w-4 h-4 mr-2" />
-                                Download PDF
-                              </Button>
-                              <span className="text-xs text-muted-foreground">Downloads original file</span>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    ) : hasValidPreview ? (
-                      <div className="flex justify-center bg-muted/30 rounded-lg p-4">
-                        <img 
-                          src={modalPreviewUrl!} 
-                          alt={fileName}
-                          className="max-w-full max-h-[60vh] object-contain"
-                        />
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                        <FileText className="w-16 h-16 mb-4 opacity-50" />
-                        <p className="text-sm">Preview not available for this file</p>
-                      </div>
-                    )}
-                    
-                    <div className="flex items-center justify-between text-sm">
-                      <div className="space-y-1">
-                        <div>
-                          <span className="font-medium">Filename: </span>
-                          <span className="text-muted-foreground">{fileName}</span>
-                        </div>
-                        {previewFile.mimeType && (
-                          <div>
-                            <span className="font-medium">Type: </span>
-                            <span className="text-muted-foreground">{previewFile.mimeType}</span>
-                          </div>
-                        )}
-                      </div>
-                      
-                      {hasValidOriginal && (
-                        <div className="flex flex-col items-end gap-1">
-                          <Button
-                            onClick={() => {
-                              if (filesApiPath) {
-                                handleDownloadFile(previewFile.id, fileName);
-                                return;
-                              }
-                              if (originalUrl) {
-                                const anchor = document.createElement("a");
-                                anchor.href = originalUrl;
-                                anchor.download = fileName;
-                                anchor.target = "_blank";
-                                anchor.rel = "noreferrer";
-                                anchor.style.display = "none";
-                                document.body.appendChild(anchor);
-                                anchor.click();
-                                document.body.removeChild(anchor);
-                              }
-                            }}
-                            variant="outline"
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            Download original
-                          </Button>
-                          <span className="text-xs text-muted-foreground">Downloads original file</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </DialogContent>
-          </Dialog>
-        );
-      })()}
+      <AttachmentViewerDialog
+        attachment={previewFile as any}
+        open={!!previewFile}
+        onOpenChange={(open) => {
+          if (!open) setPreviewFile(null);
+        }}
+      />
     </div>
   );
 }
