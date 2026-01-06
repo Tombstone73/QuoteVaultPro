@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { getThumbSrc } from "@/lib/getThumbSrc";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,7 +18,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Download, Loader2, Trash2, Upload } from "lucide-react";
+import { Download, Loader2, Trash2, Upload, FileText, Image as ImageIcon, Eye } from "lucide-react";
 import { orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useDeleteOrderAttachment } from "@/hooks/useOrderAttachments";
 
@@ -48,6 +50,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
   const [attachmentToDelete, setAttachmentToDelete] = useState<OrderAttachment | null>(null);
   const [viewerAttachment, setViewerAttachment] = useState<OrderAttachment | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewAllOpen, setViewAllOpen] = useState(false);
   const [uploadItems, setUploadItems] = useState<
     Array<{ key: string; name: string; percent: number; error?: string | null }>
   >([]);
@@ -240,7 +243,24 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
 
   const isEmpty = !isLoading && attachments.length === 0;
   const showEmptyText = isEmpty && !isUploading && uploadItems.length === 0;
+// PACK B: Show thumbnail grid + "View All" button when attachments > 6
+  const THUMBNAIL_GRID_LIMIT = 6;
+  const showViewAll = attachments.length > THUMBNAIL_GRID_LIMIT;
+  const displayedAttachments = showViewAll ? attachments.slice(0, THUMBNAIL_GRID_LIMIT) : attachments;
 
+  // PACK C: Download all as zip handler
+  const handleDownloadAllZip = () => {
+    const zipUrl = `/api/orders/${orderId}/attachments.zip`;
+    // Use anchor tag for proper filename handling
+    const anchor = document.createElement("a");
+    anchor.href = zipUrl;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  
   const handleConfirmDelete = async () => {
     const target = attachmentToDelete;
     if (!target) return;
@@ -333,91 +353,70 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
       </div>
 
       {uploadItems.length > 0 && (
-        <div className="space-y-1">
-          {uploadItems.slice(-4).map((u) => (
-            <div key={u.key} className="text-xs text-titan-text-muted flex items-center justify-between gap-3">
-              <div className="truncate">{u.name}</div>
-              <div className="shrink-0">
-                {u.error ? <span className="text-destructive">{u.error}</span> : `${u.percent}%`}
+        <>
+          {/* PACK B: Thumbnail grid */}
+          {attachments.length > 0 && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                {displayedAttachments.map((a) => {
+                  const displayName = a.originalFilename || a.fileName;
+                  const thumbSrc = getThumbSrc(a as any);
+                  const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
+
+                  const openInViewer = () => {
+                    setViewerAttachment(a);
+                    setViewerOpen(true);
+                  };
+
+                  return (
+                    <div
+                      key={a.id}
+                      className="group relative aspect-square rounded-md border border-border overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary transition-all"
+                      onClick={openInViewer}
+                    >
+                      {/* Thumbnail */}
+                      <div className="absolute inset-0 bg-muted flex items-center justify-center">
+                        {thumbSrc ? (
+                          <img src={thumbSrc} alt={displayName} className="w-full h-full object-cover" />
+                        ) : (
+                          <>
+                            {isPdf ? (
+                              <FileText className="w-8 h-8 text-muted-foreground" />
+                            ) : (
+                              <ImageIcon className="w-8 h-8 text-muted-foreground" />
+                            )}
+                          </>
+                        )}
+                      </div>
+
+                      {/* Overlay on hover */}
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        <Eye className="w-6 h-6 text-white" />
+                      </div>
+
+                      {/* Filename overlay at bottom */}
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
+                        <div className="text-xs text-white truncate">{displayName}</div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
+
+              {/* View All button */}
+              {showViewAll && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => setViewAllOpen(true)}
+                >
+                  View all attachments ({attachments.length})
+                </Button>
+              )}
             </div>
-          ))}
-          {hasUploadActivity && (
-            <div className="text-[11px] text-titan-text-muted">Uploading… you can keep working.</div>
           )}
-        </div>
-      )}
-
-      {isLoading ? (
-        <div className="text-xs text-titan-text-muted">Loading attachments...</div>
-      ) : (
-        <div className="space-y-1">
-          {attachments.map((a) => {
-            const displayName = a.originalFilename || a.fileName;
-            const openUrl = a.originalUrl && isValidHttpUrl(a.originalUrl) ? a.originalUrl : a.fileUrl;
-            const downloadUrl =
-              (a as any)?.downloadUrl ||
-              (typeof openUrl === "string" && openUrl.startsWith("/objects/")
-                ? `/api/objects/download?key=${encodeURIComponent(openUrl.slice("/objects/".length))}&filename=${encodeURIComponent(displayName)}`
-                : openUrl);
-
-            const openInViewer = () => {
-              setViewerAttachment(a);
-              setViewerOpen(true);
-            };
-
-            return (
-              <div
-                key={a.id}
-                className="flex items-center justify-between gap-3 rounded-titan-md border border-titan-border-subtle px-3 py-2 cursor-pointer hover:bg-muted/30"
-                role="button"
-                tabIndex={0}
-                onClick={openInViewer}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") openInViewer();
-                }}
-              >
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-titan-text-primary truncate">{displayName}</div>
-                  <div className="text-xs text-titan-text-muted">
-                    {a.createdAt ? format(new Date(a.createdAt), "MMM d, yyyy p") : "—"}
-                    {a.uploadedByName ? ` • ${a.uploadedByName}` : ""}
-                    {a.fileSize ? ` • ${formatFileSize(a.fileSize)}` : ""}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 w-8 p-0"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const url = typeof downloadUrl === "string" ? downloadUrl : null;
-                      const isDownloadable =
-                        typeof url === "string" &&
-                        (url.startsWith("/") || url.startsWith("http://") || url.startsWith("https://"));
-
-                      if (!isDownloadable) {
-                        toast({
-                          title: "Download unavailable",
-                          description: "This attachment does not have a downloadable URL.",
-                          variant: "destructive",
-                        });
-                        return;
-                      }
-
-                      void downloadFileFromUrl(url, displayName);
-                    }}
-                    title="Download"
-                  >
-                    <Download className="w-4 h-4" />
-                  </Button>
-
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 w-8 p-0"
+        </       className="h-8 w-8 p-0"
                     onClick={(e) => {
                       e.stopPropagation();
                       setAttachmentToDelete(a);
@@ -450,7 +449,19 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
       <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => (!open ? setAttachmentToDelete(null) : undefined)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete attachment</AlertDialogTitle>
+       ViewAllAttachmentsDialog
+        open={viewAllOpen}
+        onOpenChange={setViewAllOpen}
+        orderAttachments={attachments.map((a) => ({ ...a, source: "order" as const }))}
+        lineItemAttachments={[]}
+        onViewAttachment={(a) => {
+          setViewerAttachment(a as any);
+          setViewerOpen(true);
+        }}
+        onDownloadAll={attachments.length > 0 ? handleDownloadAllZip : undefined}
+      />
+
+      <     <AlertDialogTitle>Delete attachment</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently remove the attachment from this order.
             </AlertDialogDescription>

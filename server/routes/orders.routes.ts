@@ -3146,4 +3146,169 @@ export async function registerOrderRoutes(
             res.status(500).json({ error: 'Failed to detach file from job' });
         }
     });
+
+    // PACK C: Bulk download order + line item attachments as zip
+    app.get('/api/orders/:orderId/attachments.zip', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const { orderId } = req.params;
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+            // Verify order access
+            const [orderRow] = await db
+                .select({ id: orders.id, orderNumber: orders.orderNumber })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!orderRow) return res.status(404).json({ error: 'Order not found' });
+
+            // Collect all attachments (order-level + line-item assets)
+            const attachmentRows = await db
+                .select({
+                    id: orderAttachments.id,
+                    fileName: orderAttachments.fileName,
+                    originalFilename: orderAttachments.originalFilename,
+                    fileKey: orderAttachments.fileKey,
+                    objectPath: orderAttachments.objectPath,
+                })
+                .from(orderAttachments)
+                .where(eq(orderAttachments.orderId, orderId))
+                .orderBy(orderAttachments.createdAt);
+
+            const lineItemRows = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId));
+
+            const lineItemIds = lineItemRows.map((r) => r.id).filter(Boolean) as string[];
+
+            let lineItemAssetRows: any[] = [];
+            if (lineItemIds.length) {
+                const linkRows = await db
+                    .select({
+                        assetId: assetLinks.assetId,
+                    })
+                    .from(assetLinks)
+                    .where(
+                        and(
+                            eq(assetLinks.organizationId, organizationId),
+                            eq(assetLinks.parentType, 'order_line_item'),
+                            inArray(assetLinks.parentId, lineItemIds)
+                        )
+                    );
+
+                const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
+                if (assetIds.length) {
+                    lineItemAssetRows = await db
+                        .select({
+                            id: assets.id,
+                            fileName: assets.fileName,
+                            fileKey: assets.fileKey,
+                        })
+                        .from(assets)
+                        .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds)));
+                }
+            }
+
+            // Build file list with objectPaths
+            const files: Array<{ filename: string; objectPath: string }> = [];
+
+            for (const att of attachmentRows) {
+                const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
+                const objectPath = (att.objectPath ?? att.fileKey) as string | null;
+                if (objectPath) files.push({ filename, objectPath });
+            }
+
+            for (const asset of lineItemAssetRows) {
+                const filename = String(asset.fileName || `asset-${asset.id}`);
+                const objectPath = asset.fileKey as string | null;
+                if (objectPath) files.push({ filename, objectPath });
+            }
+
+            if (files.length === 0) {
+                return res.status(404).json({ error: 'No attachments found for this order' });
+            }
+
+            // Stream zip using archiver
+            const archiver = (await import('archiver')).default;
+            const { Readable } = await import('stream');
+            const { promises: fsPromises } = await import('fs');
+            const path = await import('path');
+            const { SupabaseStorageService, isSupabaseConfigured } = await import('../supabaseStorage');
+
+            const archive = archiver('zip', { zlib: { level: 9 } });
+
+            const zipFilename = `Order-${orderRow.orderNumber || orderId}-attachments.zip`;
+            res.setHeader('Content-Type', 'application/zip');
+            res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+
+            archive.on('error', (err) => {
+                console.error('[OrderAttachmentsZip] Archiver error:', err);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Failed to create zip archive' });
+                }
+            });
+
+            archive.pipe(res);
+
+            // Helper to get file stream (mirrors /objects endpoint logic)
+            const resolveLocalStoragePath = (key: string): string => {
+                const root = process.env.FILE_STORAGE_ROOT || './data/uploads';
+                return path.join(root, key);
+            };
+
+            for (const file of files) {
+                try {
+                    const keyToTry = file.objectPath;
+                    let streamAdded = false;
+
+                    // 1) Try Supabase
+                    if (isSupabaseConfigured()) {
+                        try {
+                            const supabaseService = new SupabaseStorageService();
+                            const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+                            const upstream = await fetch(signedUrl);
+                            if (upstream.ok) {
+                                const body: any = (upstream as any).body;
+                                if (body && typeof Readable.fromWeb === 'function') {
+                                    const nodeStream = Readable.fromWeb(body);
+                                    const safeFilename = file.filename.replace(/[<>:"/\\|?*]/g, '_');
+                                    archive.append(nodeStream, { name: safeFilename });
+                                    streamAdded = true;
+                                }
+                            }
+                        } catch (supabaseError) {
+                            // fall through to local
+                        }
+                    }
+
+                    // 2) Try local filesystem
+                    if (!streamAdded) {
+                        const localPath = resolveLocalStoragePath(keyToTry);
+                        await fsPromises.access(localPath, fsPromises.constants.R_OK);
+                        const fs = await import('fs');
+                        const nodeStream = fs.createReadStream(localPath);
+                        const safeFilename = file.filename.replace(/[<>:"/\\|?*]/g, '_');
+                        archive.append(nodeStream, { name: safeFilename });
+                        streamAdded = true;
+                    }
+
+                    if (!streamAdded) {
+                        console.warn(`[OrderAttachmentsZip] Could not resolve file: ${file.filename} (${keyToTry})`);
+                    }
+                } catch (err) {
+                    console.error(`[OrderAttachmentsZip] Failed to add ${file.filename}:`, err);
+                    // Continue with other files
+                }
+            }
+
+            await archive.finalize();
+        } catch (error) {
+            console.error('[OrderAttachmentsZip:GET] Error:', error);
+            if (!res.headersSent) {
+                return res.status(500).json({ error: 'Failed to generate zip archive' });
+            }
+        }
+    });
 }
