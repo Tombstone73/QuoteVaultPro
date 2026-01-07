@@ -433,6 +433,7 @@ export class OrdersRepository {
         customerId: string;
         contactId?: string | null;
         quoteId?: string | null;
+        label?: string | null;
         status?: string;
         priority?: string;
         dueDate?: Date | string | null;
@@ -468,6 +469,7 @@ export class OrdersRepository {
                 quoteId: data.quoteId || null,
                 customerId: data.customerId,
                 contactId: data.contactId || null,
+                label: data.label || null,
                 status: data.status || 'new',
                 priority: data.priority || 'normal',
                 dueDate: sanitizeDateField(data.dueDate),
@@ -623,6 +625,7 @@ export class OrdersRepository {
                 const productTypeName = (productWithType?.productType as any)?.name || 'Unknown';
 
                 const jobInsert: typeof jobs.$inferInsert = {
+                    organizationId,
                     orderId: created.order.id,
                     orderLineItemId: li.id,
                     productType: productTypeName,
@@ -730,6 +733,7 @@ export class OrdersRepository {
             customerId: quote.customerId!,
             contactId: quote.contactId,
             quoteId: quote.id,
+            label: quote.label || null, // Copy jobLabel from quote
             status: 'new',
             priority: options?.priority || 'normal',
             dueDate: options?.dueDate || null,
@@ -743,7 +747,21 @@ export class OrdersRepository {
             taxableSubtotal: quote.taxableSubtotal ? parseFloat(quote.taxableSubtotal) : undefined,
         };
 
+        console.log('[CONVERT QUOTE TO ORDER] Creating order:', {
+            organizationId,
+            quoteId,
+            quoteNumber: quote.quoteNumber,
+            quoteLabel: quote.label,
+            lineItemsCount: orderLineItemsData.length,
+        });
+
         const createdOrder = await this.createOrder(organizationId, orderData);
+        
+        console.log('[CONVERT QUOTE TO ORDER] Order created:', {
+            orderId: createdOrder.id,
+            orderNumber: createdOrder.orderNumber,
+            orderLabel: createdOrder.label,
+        });
 
         // Update quote to link to the created order (marks it as converted)
         await this.dbInstance
@@ -797,6 +815,75 @@ export class OrdersRepository {
             }
         } catch (assetLinkError) {
             console.error('[CONVERT QUOTE] Failed to copy asset_links (non-blocking):', assetLinkError);
+        }
+
+        // Copy quote line item attachments to order line items (fail-soft)
+        try {
+            // Build mapping of quoteLineItemId → orderLineItemId
+            const lineItemMap = new Map<string, string>();
+            for (const orderLineItem of createdOrder.lineItems || []) {
+                if (orderLineItem.quoteLineItemId) {
+                    lineItemMap.set(orderLineItem.quoteLineItemId, orderLineItem.id);
+                }
+            }
+
+            const sourceQuoteLineItemIds = Array.from(lineItemMap.keys());
+            if (sourceQuoteLineItemIds.length > 0) {
+                // Fetch quote line item attachments
+                const quoteLineItemAttachments = await this.dbInstance
+                    .select()
+                    .from(quoteAttachments)
+                    .where(
+                        and(
+                            eq(quoteAttachments.quoteId, quoteId),
+                            eq(quoteAttachments.organizationId, organizationId),
+                            inArray(quoteAttachments.quoteLineItemId, sourceQuoteLineItemIds as [string, ...string[]])
+                        )
+                    );
+
+                if (quoteLineItemAttachments.length > 0) {
+                    const orderAttachmentInserts: typeof orderAttachments.$inferInsert[] = [];
+                    
+                    for (const qa of quoteLineItemAttachments) {
+                        if (!qa.quoteLineItemId) continue;
+                        const orderLineItemId = lineItemMap.get(qa.quoteLineItemId);
+                        if (!orderLineItemId) continue;
+
+                        orderAttachmentInserts.push({
+                            orderId: createdOrder.id,
+                            orderLineItemId: orderLineItemId,
+                            quoteId: quoteId,
+                            uploadedByUserId: qa.uploadedByUserId ?? null,
+                            uploadedByName: qa.uploadedByName ?? null,
+                            fileName: qa.fileName,
+                            fileUrl: qa.fileUrl,
+                            fileSize: qa.fileSize ?? null,
+                            mimeType: qa.mimeType ?? null,
+                            description: qa.description ?? null,
+                            originalFilename: qa.originalFilename ?? null,
+                            storedFilename: qa.storedFilename ?? null,
+                            relativePath: qa.relativePath ?? null,
+                            storageProvider: (qa.storageProvider as any) ?? undefined,
+                            extension: qa.extension ?? null,
+                            sizeBytes: qa.sizeBytes ?? null,
+                            checksum: qa.checksum ?? null,
+                            thumbnailRelativePath: qa.thumbnailRelativePath ?? null,
+                            thumbnailGeneratedAt: qa.thumbnailGeneratedAt ?? null,
+                            thumbStatus: qa.thumbStatus ?? 'uploaded',
+                            thumbKey: qa.thumbKey ?? null,
+                            previewKey: qa.previewKey ?? null,
+                            thumbError: qa.thumbError ?? null,
+                        });
+                    }
+
+                    if (orderAttachmentInserts.length > 0) {
+                        await this.dbInstance.insert(orderAttachments).values(orderAttachmentInserts);
+                        console.log(`[CONVERT QUOTE] Copied ${orderAttachmentInserts.length} line item attachments from quote to order`);
+                    }
+                }
+            }
+        } catch (lineItemAttachmentError) {
+            console.error('[CONVERT QUOTE] Failed to copy line item attachments (non-blocking):', lineItemAttachmentError);
         }
 
         // Create timeline entry for the conversion (fail-soft)

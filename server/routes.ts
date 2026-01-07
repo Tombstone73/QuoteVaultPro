@@ -3271,7 +3271,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         carrierAccountNumber,
         shippingInstructions,
         label,
+        tags,
+        listLabel,
       } = req.body;
+
+      // Normalize tags (array) or listLabel (string) for quote_list_notes storage
+      let normalizedListLabel: string | null | undefined = undefined;
+      if (Array.isArray(tags)) {
+        // Frontend sends tags as array - convert to comma-separated string
+        // Empty array means clear flags (set to null)
+        normalizedListLabel = tags.length > 0 
+          ? tags.map((t: string) => String(t).trim()).filter(Boolean).join(", ") || null
+          : null;
+      } else if (listLabel !== undefined) {
+        // Or use listLabel directly if provided
+        normalizedListLabel = listLabel;
+      }
 
       console.log(`[PATCH /api/quotes/${id}] Received update data:`, {
         customerName,
@@ -3347,29 +3362,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      const updateData = {
-        customerId: customerId ?? null,
-        contactId: contactId ?? null,
-        customerName,
-        status,
-        subtotal,
-        taxRate,
-        taxAmount,
-        totalPrice,
-        marginPercentage,
-        discountAmount,
-        requestedDueDate,
-        validUntil,
-        carrier,
-        carrierAccountNumber,
-        shippingInstructions,
-        label,
-        shippingMethod,
-        shippingMode,
-        ...snapshotData,
-      };
+      const updateData: Record<string, any> = {};
+      
+      // Only include fields that are explicitly provided (not undefined)
+      // This prevents partial updates from clearing existing data
+      if (customerId !== undefined) updateData.customerId = customerId ?? null;
+      if (contactId !== undefined) updateData.contactId = contactId ?? null;
+      if (customerName !== undefined) updateData.customerName = customerName;
+      if (status !== undefined) updateData.status = status;
+      if (subtotal !== undefined) updateData.subtotal = subtotal;
+      if (taxRate !== undefined) updateData.taxRate = taxRate;
+      if (taxAmount !== undefined) updateData.taxAmount = taxAmount;
+      if (totalPrice !== undefined) updateData.totalPrice = totalPrice;
+      if (marginPercentage !== undefined) updateData.marginPercentage = marginPercentage;
+      if (discountAmount !== undefined) updateData.discountAmount = discountAmount;
+      if (requestedDueDate !== undefined) updateData.requestedDueDate = requestedDueDate;
+      if (validUntil !== undefined) updateData.validUntil = validUntil;
+      if (carrier !== undefined) updateData.carrier = carrier;
+      if (carrierAccountNumber !== undefined) updateData.carrierAccountNumber = carrierAccountNumber;
+      if (shippingInstructions !== undefined) updateData.shippingInstructions = shippingInstructions;
+      if (label !== undefined) updateData.label = label; // jobLabel
+      if (shippingMethod !== undefined) updateData.shippingMethod = shippingMethod;
+      if (shippingMode !== undefined) updateData.shippingMode = shippingMode;
+      
+      // Add snapshot data if customer/shipping changed
+      Object.assign(updateData, snapshotData);
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[PATCH /api/quotes/${id}] updateData keys:`, Object.keys(updateData));
+        console.log(`[PATCH /api/quotes/${id}] label value:`, updateData.label);
+      }
 
       const updatedQuote = await storage.updateQuote(organizationId, id, updateData);
+
+      // Upsert flags/tags into quote_list_notes if provided
+      if (normalizedListLabel !== undefined) {
+        try {
+          await db
+            .insert(quoteListNotes)
+            .values({
+              organizationId,
+              quoteId: id,
+              listLabel: normalizedListLabel,
+              updatedByUserId: userId || null,
+              updatedAt: new Date(),
+            })
+            .onConflictDoUpdate({
+              target: [quoteListNotes.organizationId, quoteListNotes.quoteId],
+              set: {
+                listLabel: normalizedListLabel,
+                updatedByUserId: userId || null,
+                updatedAt: new Date(),
+              },
+            });
+
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`[PATCH /api/quotes/${id}] Upserted listLabel to quote_list_notes:`, {
+              organizationId,
+              quoteId: id,
+              listLabel: normalizedListLabel,
+            });
+          }
+        } catch (listNoteError) {
+          console.error(`[PATCH /api/quotes/${id}] Failed to upsert quote_list_notes:`, listNoteError);
+          // Don't fail the whole request if list note update fails
+        }
+      } else if (process.env.NODE_ENV === 'development') {
+        console.log(`[PATCH /api/quotes/${id}] No listLabel/tags to upsert (undefined)`);
+      }
 
       console.log(`[PATCH /api/quotes/${id}] Updated customerName:`, updatedQuote.customerName);
 

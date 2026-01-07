@@ -142,6 +142,9 @@ export function useQuoteEditorState() {
         lineItems: QuoteLineItemDraft[];
     } | null>(null);
 
+    // Track which quote we've hydrated tags from (prevent stomping on edits)
+    const hydratedTagsForQuoteIdRef = useRef<string | null>(null);
+
     // Track if there are unsaved changes
     const hasUnsavedChanges = useMemo(() => {
         const snap = savedSnapshotRef.current;
@@ -560,8 +563,39 @@ export function useQuoteEditorState() {
                 setRequestedDueDate("");
             }
             setDiscountAmount(Number.parseFloat(q.discountAmount || "0") || 0);
-            // Load tags if supported (currently not in schema, so default to empty)
-            setTags((q.tags as string[]) || []);
+            
+            // Hydrate tags from listLabel (comma-separated string) - only once per quote load
+            if (quoteId && quoteId !== hydratedTagsForQuoteIdRef.current) {
+                const listLabel = q.listLabel as string | null | undefined;
+                if (listLabel && typeof listLabel === 'string' && listLabel.trim()) {
+                    // Parse comma-separated string into array
+                    const parsedTags = listLabel
+                        .split(/[,\n]/g)
+                        .map(t => t.trim())
+                        .filter(Boolean);
+                    
+                    // De-duplicate
+                    const uniqueTags: string[] = [];
+                    const seen = new Set<string>();
+                    for (const tag of parsedTags) {
+                        const lower = tag.toLowerCase();
+                        if (!seen.has(lower)) {
+                            seen.add(lower);
+                            uniqueTags.push(tag);
+                        }
+                    }
+                    
+                    setTags(uniqueTags);
+                    if (process.env.NODE_ENV === 'development') {
+                        console.log('[Quote Editor] Hydrated tags from listLabel:', uniqueTags);
+                    }
+                } else {
+                    // No listLabel - start with empty tags
+                    setTags([]);
+                }
+                hydratedTagsForQuoteIdRef.current = quoteId;
+            }
+            
             // Load quote-level tax overrides if present
             setQuoteTaxExempt((q as any).quoteTaxExempt ?? null);
             setQuoteTaxRateOverride((q as any).quoteTaxRateOverride != null ? Number((q as any).quoteTaxRateOverride) : null);

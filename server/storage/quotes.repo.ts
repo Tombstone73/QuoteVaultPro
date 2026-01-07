@@ -659,10 +659,24 @@ export class QuotesRepository {
 
         const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quoteRow.userId));
 
+        // Fetch list note (flags) for this quote
+        const { quoteListNotes } = await import("@shared/schema");
+        const [listNote] = await this.dbInstance
+            .select()
+            .from(quoteListNotes)
+            .where(
+                and(
+                    eq(quoteListNotes.organizationId, organizationId),
+                    eq(quoteListNotes.quoteId, id)
+                )
+            )
+            .limit(1);
+
         return {
             ...quoteRow,
             user,
             lineItems: lineItemsWithRelations,
+            listLabel: listNote?.listLabel ?? null, // Include flags
         };
     }
 
