@@ -14,3 +14,7 @@ repair-drizzle-tracking.sql
 storage/thumbs/
 storage/uploads/
 storage/tmp/
+
+# Runtime uploads (never commit)
+uploads/**
+!uploads/.gitkeep
