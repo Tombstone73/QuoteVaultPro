@@ -15,7 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
-import { CustomerCard } from "./components/CustomerCard";
+import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
 import { FulfillmentCard } from "./components/FulfillmentCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
@@ -232,7 +232,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const [timelineOpen, setTimelineOpen] = useState(false);
 
     // Ref for customer select to enable initial focus
-    const customerSelectRef = useRef<CustomerSelectRef>(null);
+    const customerSelectRef = useRef<(CustomerSelectRef & CustomerCardRef) | null>(null);
     // Track if we've already attempted focus for current route to prevent re-runs
     const hasAttemptedFocusRef = useRef<string | null>(null);
 
@@ -513,6 +513,9 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
      */
     const handleSave = async () => {
         try {
+            // Commit any pending flags before saving
+            customerSelectRef.current?.commitPendingFlags?.();
+            
             const result = await state.handlers.saveQuote();
             handlePostSaveNavigation(result);
         } catch (err) {
@@ -551,6 +554,9 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
      */
     const handleSaveAndBack = async () => {
         try {
+            // Commit any pending flags before saving
+            customerSelectRef.current?.commitPendingFlags?.();
+            
             await state.handlers.saveQuote();
             navigate(ROUTES.quotes.list, { replace: true });
         } catch (err) {

@@ -1,4 +1,4 @@
-import { forwardRef, useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -6,6 +6,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Calendar, X } from "lucide-react";
 import { CustomerSelect, type CustomerWithContacts, type CustomerSelectRef } from "@/components/CustomerSelect";
+
+export type CustomerCardRef = {
+    commitPendingFlags: () => void;
+};
 
 type CustomerCardProps = {
     selectedCustomerId: string | null;
@@ -67,28 +71,33 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
         return "—";
     })();
 
-    const commitTagInput = (raw: string) => {
-        const parts = raw
-            .split(",")
-            .map(s => s.trim())
-            .filter(Boolean);
-
-        if (parts.length === 0) {
-            setTagInput("");
-            return;
-        }
-
-        for (const t of parts) {
-            onAddTag?.(t);
+    const commitPendingFlag = () => {
+        const v = tagInput.trim();
+        if (v.length > 0) {
+            // Check for duplicates case-insensitively
+            const lowerV = v.toLowerCase();
+            const isDuplicate = tags.some(t => t.toLowerCase() === lowerV);
+            if (!isDuplicate) {
+                onAddTag?.(v);
+            }
         }
         setTagInput("");
     };
+
+    // Expose commitPendingFlags method to parent via ref
+    useImperativeHandle(ref, () => ({
+        commitPendingFlags: commitPendingFlag,
+        focus: () => {
+            // Focus is handled by CustomerSelect internally - this is a no-op for CustomerCard
+            // but required by CustomerSelectRef interface
+        },
+    }));
 
     const handleTagKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         const isCommitKey = e.key === "Enter" || e.key === "," || e.key === "Comma";
         if (isCommitKey) {
             e.preventDefault();
-            commitTagInput(tagInput);
+            commitPendingFlag();
         } else if (e.key === "Backspace" && tagInput === "" && tags.length > 0) {
             // Remove last tag when backspace is pressed on empty input
             e.preventDefault();
@@ -217,6 +226,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                     value={tagInput}
                                     onChange={(e) => setTagInput(e.target.value)}
                                     onKeyDown={handleTagKeyDown}
+                                    onBlur={commitPendingFlag}
                                     placeholder="Add Tag"
                                     className="w-[7rem] min-w-[7rem] bg-transparent outline-none text-xs font-semibold placeholder:text-muted-foreground/70"
                                 />
