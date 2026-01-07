@@ -145,6 +145,9 @@ export function useQuoteEditorState() {
     // Track which quote we've hydrated tags from (prevent stomping on edits)
     const hydratedTagsForQuoteIdRef = useRef<string | null>(null);
 
+    // Track which quote we've fully hydrated (prevent re-hydration on refetch)
+    const hydratedQuoteIdRef = useRef<string | null>(null);
+
     // Track if there are unsaved changes
     const hasUnsavedChanges = useMemo(() => {
         const snap = savedSnapshotRef.current;
@@ -529,78 +532,145 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     useEffect(() => {
-        if (quote) {
-            // Sync customer ID and contact ID
-            if ((quote as any).customerId && !selectedCustomerId) {
-                setSelectedCustomerId((quote as any).customerId);
-            }
-            if ((quote as any).contactId && !selectedContactId) {
-                setSelectedContactId((quote as any).contactId);
-            }
+        // CRITICAL FIX: Only hydrate when quoteId changes, NOT on every refetch.
+        // This prevents attachment upload (which refetches quote) from clobbering unsaved fields.
+        if (!quote) return;
+        if (!quoteId) return;
+        if (hydratedQuoteIdRef.current === quoteId) return; // Already hydrated this quote
 
-            // If quote includes customer data, populate selectedCustomer
-            if ((quote as any).customer && !selectedCustomer) {
-                setSelectedCustomer((quote as any).customer as CustomerWithContacts);
-            }
+        // Mark as hydrated FIRST to prevent re-entrancy
+        hydratedQuoteIdRef.current = quoteId;
 
-            // Quote meta (label / due date / discount)
-            const q: any = quote as any;
-            setJobLabel(q.label || "");
-            // Convert timestamp-ish value to YYYY-MM-DD if present
-            if (q.requestedDueDate) {
-                try {
-                    const d = new Date(q.requestedDueDate);
-                    if (!Number.isNaN(d.getTime())) {
-                        const yyyy = d.getFullYear();
-                        const mm = String(d.getMonth() + 1).padStart(2, "0");
-                        const dd = String(d.getDate()).padStart(2, "0");
-                        setRequestedDueDate(`${yyyy}-${mm}-${dd}`);
+        // Sync customer ID and contact ID
+        if ((quote as any).customerId && !selectedCustomerId) {
+            setSelectedCustomerId((quote as any).customerId);
+        }
+        if ((quote as any).contactId && !selectedContactId) {
+            setSelectedContactId((quote as any).contactId);
+        }
+
+        // If quote includes customer data, populate selectedCustomer
+        if ((quote as any).customer && !selectedCustomer) {
+            setSelectedCustomer((quote as any).customer as CustomerWithContacts);
+        }
+
+        // Quote meta (label / due date / discount)
+        const q: any = quote as any;
+        setJobLabel(q.label || "");
+        // Convert timestamp-ish value to YYYY-MM-DD if present
+        if (q.requestedDueDate) {
+            try {
+                const d = new Date(q.requestedDueDate);
+                if (!Number.isNaN(d.getTime())) {
+                    const yyyy = d.getFullYear();
+                    const mm = String(d.getMonth() + 1).padStart(2, "0");
+                    const dd = String(d.getDate()).padStart(2, "0");
+                    setRequestedDueDate(`${yyyy}-${mm}-${dd}`);
+                }
+            } catch {
+                // ignore parse failures
+            }
+        } else {
+            setRequestedDueDate("");
+        }
+        setDiscountAmount(Number.parseFloat(q.discountAmount || "0") || 0);
+        
+        // Hydrate tags from listLabel (comma-separated string) - only once per quote load
+        if (quoteId && quoteId !== hydratedTagsForQuoteIdRef.current) {
+            const listLabel = q.listLabel as string | null | undefined;
+            if (listLabel && typeof listLabel === 'string' && listLabel.trim()) {
+                // Parse comma-separated string into array
+                const parsedTags = listLabel
+                    .split(/[,\n]/g)
+                    .map(t => t.trim())
+                    .filter(Boolean);
+                
+                // De-duplicate
+                const uniqueTags: string[] = [];
+                const seen = new Set<string>();
+                for (const tag of parsedTags) {
+                    const lower = tag.toLowerCase();
+                    if (!seen.has(lower)) {
+                        seen.add(lower);
+                        uniqueTags.push(tag);
                     }
-                } catch {
-                    // ignore parse failures
+                }
+                
+                setTags(uniqueTags);
+                if (process.env.NODE_ENV === 'development') {
+                    console.log('[Quote Editor] Hydrated tags from listLabel:', uniqueTags);
                 }
             } else {
-                setRequestedDueDate("");
+                // No listLabel - start with empty tags
+                setTags([]);
             }
-            setDiscountAmount(Number.parseFloat(q.discountAmount || "0") || 0);
-            
-            // Hydrate tags from listLabel (comma-separated string) - only once per quote load
-            if (quoteId && quoteId !== hydratedTagsForQuoteIdRef.current) {
-                const listLabel = q.listLabel as string | null | undefined;
-                if (listLabel && typeof listLabel === 'string' && listLabel.trim()) {
-                    // Parse comma-separated string into array
-                    const parsedTags = listLabel
-                        .split(/[,\n]/g)
-                        .map(t => t.trim())
-                        .filter(Boolean);
-                    
-                    // De-duplicate
-                    const uniqueTags: string[] = [];
-                    const seen = new Set<string>();
-                    for (const tag of parsedTags) {
-                        const lower = tag.toLowerCase();
-                        if (!seen.has(lower)) {
-                            seen.add(lower);
-                            uniqueTags.push(tag);
-                        }
-                    }
-                    
-                    setTags(uniqueTags);
-                    if (process.env.NODE_ENV === 'development') {
-                        console.log('[Quote Editor] Hydrated tags from listLabel:', uniqueTags);
-                    }
-                } else {
-                    // No listLabel - start with empty tags
-                    setTags([]);
-                }
-                hydratedTagsForQuoteIdRef.current = quoteId;
-            }
-            
-            // Load quote-level tax overrides if present
-            setQuoteTaxExempt((q as any).quoteTaxExempt ?? null);
-            setQuoteTaxRateOverride((q as any).quoteTaxRateOverride != null ? Number((q as any).quoteTaxRateOverride) : null);
+            hydratedTagsForQuoteIdRef.current = quoteId;
+        }
+        
+        // Load quote-level tax overrides if present
+        setQuoteTaxExempt((q as any).quoteTaxExempt ?? null);
+        setQuoteTaxRateOverride((q as any).quoteTaxRateOverride != null ? Number((q as any).quoteTaxRateOverride) : null);
 
-            setLineItems((quote as any).lineItems?.map((item: any, idx: number) => ({
+        setLineItems((quote as any).lineItems?.map((item: any, idx: number) => ({
+            id: item.id,
+            productId: item.productId,
+            productName: item.productName,
+            variantId: item.variantId,
+            variantName: item.variantName,
+            productType: item.productType || 'wide_roll',
+            status: (item as any).status || 'active',
+            width: parseFloat(item.width),
+            height: parseFloat(item.height),
+            quantity: item.quantity,
+            specsJson: item.specsJson || {},
+            selectedOptions: item.selectedOptions || [],
+            linePrice: parseFloat(item.linePrice),
+            // Price override fields are client-side for now; default to formula pricing on load.
+            priceOverridden: false,
+            overriddenPrice: null,
+            formulaLinePrice: parseFloat(item.linePrice),
+            priceBreakdown: item.priceBreakdown,
+            displayOrder: idx,
+            notes: (item.specsJson as any)?.notes || undefined,
+            productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
+        })) || []);
+
+        // Update discard snapshot when we load a quote (and only once per loaded quote data).
+        savedSnapshotRef.current = {
+            selectedCustomerId: (quote as any).customerId ?? null,
+            selectedContactId: (quote as any).contactId ?? null,
+            selectedCustomer: (quote as any).customer as CustomerWithContacts | undefined,
+            deliveryMethod: (quote as any).shippingMethod === "ship" ? "ship" : (quote as any).shippingMethod === "deliver" ? "deliver" : "pickup",
+            useCustomerAddress: false,
+            shippingAddress: {
+                street1: (quote as any).shipToAddress1 || "",
+                street2: (quote as any).shipToAddress2 || "",
+                city: (quote as any).shipToCity || "",
+                state: (quote as any).shipToState || "",
+                postalCode: (quote as any).shipToPostalCode || "",
+                country: (quote as any).shipToCountry || "USA",
+            },
+            quoteNotes: (quote as any).shippingInstructions || "",
+            jobLabel: (quote as any).label || "",
+            tags: (quote as any).tags || [],
+            quoteTaxExempt: (quote as any).quoteTaxExempt ?? null,
+            quoteTaxRateOverride: (quote as any).quoteTaxRateOverride != null ? Number((quote as any).quoteTaxRateOverride) : null,
+            requestedDueDate: (() => {
+                const raw = (quote as any).requestedDueDate;
+                if (!raw) return "";
+                try {
+                    const d = new Date(raw);
+                    if (Number.isNaN(d.getTime())) return "";
+                    const yyyy = d.getFullYear();
+                    const mm = String(d.getMonth() + 1).padStart(2, "0");
+                    const dd = String(d.getDate()).padStart(2, "0");
+                    return `${yyyy}-${mm}-${dd}`;
+                } catch {
+                    return "";
+                }
+            })(),
+            discountAmount: Number.parseFloat((quote as any).discountAmount || "0") || 0,
+            lineItems: (quote as any).lineItems?.map((item: any, idx: number) => ({
                 id: item.id,
                 productId: item.productId,
                 productName: item.productName,
@@ -614,7 +684,6 @@ export function useQuoteEditorState() {
                 specsJson: item.specsJson || {},
                 selectedOptions: item.selectedOptions || [],
                 linePrice: parseFloat(item.linePrice),
-                // Price override fields are client-side for now; default to formula pricing on load.
                 priceOverridden: false,
                 overriddenPrice: null,
                 formulaLinePrice: parseFloat(item.linePrice),
@@ -622,68 +691,9 @@ export function useQuoteEditorState() {
                 displayOrder: idx,
                 notes: (item.specsJson as any)?.notes || undefined,
                 productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
-            })) || []);
-
-            // Update discard snapshot when we load a quote (and only once per loaded quote data).
-            savedSnapshotRef.current = {
-                selectedCustomerId: (quote as any).customerId ?? null,
-                selectedContactId: (quote as any).contactId ?? null,
-                selectedCustomer: (quote as any).customer as CustomerWithContacts | undefined,
-                deliveryMethod: (quote as any).shippingMethod === "ship" ? "ship" : (quote as any).shippingMethod === "deliver" ? "deliver" : "pickup",
-                useCustomerAddress: false,
-                shippingAddress: {
-                    street1: (quote as any).shipToAddress1 || "",
-                    street2: (quote as any).shipToAddress2 || "",
-                    city: (quote as any).shipToCity || "",
-                    state: (quote as any).shipToState || "",
-                    postalCode: (quote as any).shipToPostalCode || "",
-                    country: (quote as any).shipToCountry || "USA",
-                },
-                quoteNotes: (quote as any).shippingInstructions || "",
-                jobLabel: (quote as any).label || "",
-                tags: (quote as any).tags || [],
-                quoteTaxExempt: (quote as any).quoteTaxExempt ?? null,
-                quoteTaxRateOverride: (quote as any).quoteTaxRateOverride != null ? Number((quote as any).quoteTaxRateOverride) : null,
-                requestedDueDate: (() => {
-                    const raw = (quote as any).requestedDueDate;
-                    if (!raw) return "";
-                    try {
-                        const d = new Date(raw);
-                        if (Number.isNaN(d.getTime())) return "";
-                        const yyyy = d.getFullYear();
-                        const mm = String(d.getMonth() + 1).padStart(2, "0");
-                        const dd = String(d.getDate()).padStart(2, "0");
-                        return `${yyyy}-${mm}-${dd}`;
-                    } catch {
-                        return "";
-                    }
-                })(),
-                discountAmount: Number.parseFloat((quote as any).discountAmount || "0") || 0,
-                lineItems: (quote as any).lineItems?.map((item: any, idx: number) => ({
-                    id: item.id,
-                    productId: item.productId,
-                    productName: item.productName,
-                    variantId: item.variantId,
-                    variantName: item.variantName,
-                    productType: item.productType || 'wide_roll',
-                    status: (item as any).status || 'active',
-                    width: parseFloat(item.width),
-                    height: parseFloat(item.height),
-                    quantity: item.quantity,
-                    specsJson: item.specsJson || {},
-                    selectedOptions: item.selectedOptions || [],
-                    linePrice: parseFloat(item.linePrice),
-                    priceOverridden: false,
-                    overriddenPrice: null,
-                    formulaLinePrice: parseFloat(item.linePrice),
-                    priceBreakdown: item.priceBreakdown,
-                    displayOrder: idx,
-                    notes: (item.specsJson as any)?.notes || undefined,
-                    productOptions: (item as any).productOptions || (item as any).product?.optionsJson || [],
-                })) || [],
-            };
-        }
-    }, [quote, selectedCustomerId, selectedContactId, selectedCustomer]);
+            })) || [],
+        };
+    }, [quote, quoteId]); // ONLY depend on quote and quoteId - removed individual field dependencies
 
     // ============================================================================
     // HANDLER: Inline price override (client-side only for now)

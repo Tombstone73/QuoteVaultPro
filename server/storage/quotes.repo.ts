@@ -381,6 +381,7 @@ export class QuotesRepository {
         customerName?: string;
         source?: string;
         status?: "draft" | "active" | "canceled";
+        label?: string | null;
         taxRate?: number | null;
         taxAmount?: number | null;
         taxableSubtotal?: number | null;
@@ -468,6 +469,7 @@ export class QuotesRepository {
                 customerName: data.customerName,
                 source: data.source || 'internal',
                 status: data.status || 'draft',
+                label: data.label ?? null,
                 subtotal: subtotal.toString(),
                 taxRate: data.taxRate ?? null,
                 taxAmount: data.taxAmount != null ? data.taxAmount.toString() : "0",
@@ -676,7 +678,6 @@ export class QuotesRepository {
             ...quoteRow,
             user,
             lineItems: lineItemsWithRelations,
-            listLabel: listNote?.listLabel ?? null, // Include flags
         };
     }
 

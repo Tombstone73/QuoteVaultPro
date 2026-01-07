@@ -2874,6 +2874,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         customerName: customerName || undefined,
         source: source || 'internal',
         status: finalStatus,
+        label: quotePayload.label || undefined,
         lineItems: validatedLineItems,
         // Tax totals
         taxRate: totalsResult.taxRate,
@@ -2887,6 +2888,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         carrierAccountNumber: quotePayload.carrierAccountNumber || undefined,
         shippingInstructions: quotePayload.shippingInstructions || undefined,
       });
+
+      // Upsert flags/tags into quote_list_notes if provided (same as UPDATE path)
+      const { tags: rawTags, listLabel } = quotePayload;
+      // Sanitize tags: trim and remove empty strings
+      const tags = Array.isArray(rawTags) ? rawTags.map((s: any) => String(s).trim()).filter(Boolean) : rawTags;
+      let normalizedListLabel: string | null | undefined = undefined;
+      if (Array.isArray(tags)) {
+        normalizedListLabel = tags.length > 0 
+          ? tags.join(", ") || null
+          : null;
+      } else if (listLabel !== undefined) {
+        normalizedListLabel = listLabel;
+      }
+
+      if (normalizedListLabel !== undefined) {
+        try {
+          await db
+            .insert(quoteListNotes)
+            .values({
+              organizationId,
+              quoteId: quote.id,
+              listLabel: normalizedListLabel,
+              updatedByUserId: userId || null,
+              updatedAt: new Date(),
+            })
+            .onConflictDoUpdate({
+              target: [quoteListNotes.organizationId, quoteListNotes.quoteId],
+              set: {
+                listLabel: normalizedListLabel,
+                updatedByUserId: userId || null,
+                updatedAt: new Date(),
+              },
+            });
+        } catch (listNoteError) {
+          console.error('[QuoteCreation] Failed to upsert quote_list_notes:', listNoteError);
+          // Don't fail the whole request if list note update fails
+        }
+      }
 
       let finalizedLineItems: any[] = [];
       try {
@@ -3271,9 +3310,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         carrierAccountNumber,
         shippingInstructions,
         label,
-        tags,
+        tags: rawTags,
         listLabel,
       } = req.body;
+
+      // Sanitize tags: trim and remove empty strings
+      const tags = Array.isArray(rawTags) ? rawTags.map((s: any) => String(s).trim()).filter(Boolean) : rawTags;
 
       // Normalize tags (array) or listLabel (string) for quote_list_notes storage
       let normalizedListLabel: string | null | undefined = undefined;
@@ -3281,7 +3323,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Frontend sends tags as array - convert to comma-separated string
         // Empty array means clear flags (set to null)
         normalizedListLabel = tags.length > 0 
-          ? tags.map((t: string) => String(t).trim()).filter(Boolean).join(", ") || null
+          ? tags.join(", ") || null
           : null;
       } else if (listLabel !== undefined) {
         // Or use listLabel directly if provided
