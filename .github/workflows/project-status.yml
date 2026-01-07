@@ -1,0 +1,206 @@
+name: Sync TitanOS Project Status
+
+on:
+  issues:
+    types: [opened, reopened, assigned, closed]
+  pull_request:
+    types: [opened, reopened, closed]
+
+jobs:
+  sync_project_status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Project Status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const PROJECT_NUMBER = 2; // your /projects/2
+            const STATUS_FIELD_NAME = "Status";
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const issueActionToStatus = (action) => {
+              if (action === "opened" || action === "reopened") return "Backlog";
+              if (action === "assigned") return "In Progress";
+              if (action === "closed") return "Done";
+              return null;
+            };
+
+            const prActionToStatus = (action, merged) => {
+              if (action === "opened" || action === "reopened") return "In Review";
+              if (action === "closed" && merged) return "Done";
+              return null;
+            };
+
+            const closingKeywordRegex = /\b(?:fixes|fixed|fix|closes|closed|close|resolves|resolved|resolve)\s+#(\d+)\b/gi;
+
+            async function getProjectId() {
+              // Your project is user-scoped (users/<name>/projects/2)
+              const res = await github.graphql(`
+                query($login: String!, $number: Int!) {
+                  user(login: $login) {
+                    projectV2(number: $number) { id }
+                  }
+                }
+              `, { login: owner, number: PROJECT_NUMBER });
+
+              if (!res?.user?.projectV2?.id) {
+                throw new Error("Could not find ProjectV2. Check PROJECT_NUMBER and that the project is user-scoped.");
+              }
+              return res.user.projectV2.id;
+            }
+
+            async function getStatusFieldAndOptionId(projectId, desiredStatusName) {
+              const res = await github.graphql(`
+                query($projectId: ID!) {
+                  node(id: $projectId) {
+                    ... on ProjectV2 {
+                      fields(first: 50) {
+                        nodes {
+                          ... on ProjectV2SingleSelectField {
+                            id
+                            name
+                            options { id name }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, { projectId });
+
+              const field = res.node.fields.nodes.find(f => f?.name === STATUS_FIELD_NAME);
+              if (!field) throw new Error(`Missing Project field: ${STATUS_FIELD_NAME}`);
+
+              const opt = field.options.find(o => o.name === desiredStatusName);
+              if (!opt) throw new Error(`Missing Status option: ${desiredStatusName}`);
+
+              return { fieldId: field.id, optionId: opt.id };
+            }
+
+            async function findOrAddItem(projectId, contentNodeId) {
+              // Try to find it in the first page of items (good enough early on).
+              const res = await github.graphql(`
+                query($projectId: ID!) {
+                  node(id: $projectId) {
+                    ... on ProjectV2 {
+                      items(first: 100) {
+                        nodes {
+                          id
+                          content {
+                            ... on Issue { id }
+                            ... on PullRequest { id }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, { projectId });
+
+              const existing = res.node.items.nodes.find(n => n.content?.id === contentNodeId);
+              if (existing?.id) return existing.id;
+
+              const addRes = await github.graphql(`
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                    item { id }
+                  }
+                }
+              `, { projectId, contentId: contentNodeId });
+
+              return addRes.addProjectV2ItemById.item.id;
+            }
+
+            async function setStatus(projectId, itemId, desiredStatusName) {
+              const { fieldId, optionId } = await getStatusFieldAndOptionId(projectId, desiredStatusName);
+
+              await github.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }) { projectV2Item { id } }
+                }
+              `, { projectId, itemId, fieldId, optionId });
+
+              core.info(`Set Status = ${desiredStatusName} for item ${itemId}`);
+            }
+
+            async function getIssueNodeIdByNumber(issueNumber) {
+              // REST is simplest here
+              const res = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: issueNumber,
+              });
+              return res.data.node_id;
+            }
+
+            async function getPrNodeId() {
+              return context.payload.pull_request.node_id;
+            }
+
+            function extractReferencedIssueNumbers(text) {
+              const nums = new Set();
+              if (!text) return [];
+              let m;
+              while ((m = closingKeywordRegex.exec(text)) !== null) {
+                nums.add(Number(m[1]));
+              }
+              return [...nums].filter(n => Number.isFinite(n));
+            }
+
+            // --- Main flow ---
+            const projectId = await getProjectId();
+
+            if (context.eventName === "issues") {
+              const action = context.payload.action;
+              const desired = issueActionToStatus(action);
+              if (!desired) {
+                core.info(`No status mapping for issues.${action}`);
+                return;
+              }
+
+              const issueNodeId = context.payload.issue.node_id;
+              const itemId = await findOrAddItem(projectId, issueNodeId);
+              await setStatus(projectId, itemId, desired);
+              return;
+            }
+
+            if (context.eventName === "pull_request") {
+              const action = context.payload.action;
+              const merged = Boolean(context.payload.pull_request.merged);
+              const desired = prActionToStatus(action, merged);
+
+              // Always update the PR card itself if it exists in the project
+              if (desired) {
+                const prNodeId = await getPrNodeId();
+                const prItemId = await findOrAddItem(projectId, prNodeId);
+                await setStatus(projectId, prItemId, desired);
+              }
+
+              // If PR body references issues (Fixes #123), set those issue cards to In Review on PR opened/reopened
+              if (action === "opened" || action === "reopened") {
+                const body = context.payload.pull_request.body || "";
+                const refs = extractReferencedIssueNumbers(body);
+                if (refs.length === 0) {
+                  core.info("PR opened, but no Fixes/Closes issue references found in PR body. Skipping issue status updates.");
+                  return;
+                }
+
+                for (const n of refs) {
+                  const issueNodeId = await getIssueNodeIdByNumber(n);
+                  const issueItemId = await findOrAddItem(projectId, issueNodeId);
+                  await setStatus(projectId, issueItemId, "In Review");
+                }
+              }
+
+              return;
+            }
+
+            core.info("Unhandled event.");
