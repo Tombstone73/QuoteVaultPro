@@ -562,6 +562,21 @@ export async function registerAttachmentRoutes(
         } catch (localError: any) {
           if (isNotFoundError(localError)) {
             logExpectedNotFoundOnce("local", keyToTry, "ENOENT");
+            if (process.env.DEBUG_THUMBNAILS && keyToTry.includes('thumbs/')) {
+              try {
+                const attemptedPath = resolveLocalStoragePath(keyToTry);
+                console.log(`[objects] Thumbnail not found:`, {
+                  requestedKey: keyToTry,
+                  attemptedPath,
+                  error: localError?.code,
+                });
+              } catch {
+                console.log(`[objects] Thumbnail not found:`, {
+                  requestedKey: keyToTry,
+                  error: localError?.code,
+                });
+              }
+            }
           } else if (isDev) {
             console.warn(`[objects] local error key="${keyToTry}":`, localError?.message || localError);
           } else {

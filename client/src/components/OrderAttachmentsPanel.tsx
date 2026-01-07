@@ -80,7 +80,19 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
       const response = await fetch(attachmentsApiPath, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to load attachments");
       const json = await response.json();
-      return json.data || [];
+      const data = json.data || [];
+      
+      // Debug logging (enable via: window.__ATTACHMENT_DEBUG__ = true in browser console)
+      if ((window as any).__ATTACHMENT_DEBUG__ && data.length > 0) {
+        console.log('[OrderAttachmentsPanel] First attachment keys:', Object.keys(data[0]));
+        console.log('[OrderAttachmentsPanel] First attachment thumbUrl:', data[0].thumbUrl);
+        console.log('[OrderAttachmentsPanel] First attachment previewUrl:', data[0].previewUrl);
+        console.log('[OrderAttachmentsPanel] First attachment objectPath:', data[0].objectPath);
+        console.log('[OrderAttachmentsPanel] First attachment downloadUrl:', data[0].downloadUrl);
+        console.log('[OrderAttachmentsPanel] First attachment full:', data[0]);
+      }
+      
+      return data;
     },
     enabled: !!orderId,
   });

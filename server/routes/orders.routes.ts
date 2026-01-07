@@ -1387,8 +1387,30 @@ export async function registerOrderRoutes(
             const whereConditions: any[] = [eq(orderAttachments.orderId, orderId)];
             if (includeLineItems !== 'true') whereConditions.push(isNull(orderAttachments.orderLineItemId));
             const files = await db.select().from(orderAttachments).where(and(...whereConditions)).orderBy(desc(orderAttachments.createdAt));
+            
+            // Debug logging - check what DB returned BEFORE enrichment
+            if (files.length > 0 && process.env.DEBUG_THUMBNAILS) {
+                console.log('[OrderAttachments:GET] 📊 Raw DB record (before enrichment):');
+                console.log('  - attachmentId:', files[0].id);
+                console.log('  - fileName:', files[0].fileName);
+                console.log('  - thumbKey:', files[0].thumbKey);
+                console.log('  - previewKey:', files[0].previewKey);
+                console.log('  - thumbStatus:', files[0].thumbStatus);
+            }
+            
             const logOnce = createRequestLogOnce();
             const enrichedFiles = await Promise.all(files.map((f) => enrichAttachmentWithUrls(f, { logOnce })));
+            
+            // Debug logging for thumbnail troubleshooting
+            if (enrichedFiles.length > 0 && process.env.DEBUG_THUMBNAILS) {
+                console.log('[OrderAttachments:GET] 🔍 Enriched attachment (after enrichment):');
+                console.log('  - attachmentId:', enrichedFiles[0].id);
+                console.log('  - thumbUrl:', enrichedFiles[0].thumbUrl);
+                console.log('  - previewUrl:', enrichedFiles[0].previewUrl);
+                console.log('  - thumbKey:', enrichedFiles[0].thumbKey);
+                console.log('  - previewKey:', enrichedFiles[0].previewKey);
+            }
+            
             return res.json({ success: true, data: enrichedFiles });
         } catch (error) {
             console.error("[OrderAttachments:GET] Error:", error);
