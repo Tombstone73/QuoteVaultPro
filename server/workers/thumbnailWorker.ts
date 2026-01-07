@@ -88,7 +88,8 @@ async function pollOnce(): Promise<void> {
         // Only process internal storage keys (Supabase/local), not external URLs.
         isNotNull(table.fileUrl),
         not(sql`${table.fileUrl} LIKE 'http%'`),
-        inArray(table.storageProvider, ["supabase", "local"]),
+        // Include null storageProvider (legacy attachments) - treat as local
+        sql`(${table.storageProvider} IN ('supabase', 'local') OR ${table.storageProvider} IS NULL)`,
         // Pending = missing thumbnail key. (PDFs never set previewKey.)
         isNull(table.thumbKey),
         // Don’t re-process failures endlessly; manual retry can reset status.
@@ -154,12 +155,9 @@ async function pollOnce(): Promise<void> {
           continue;
         }
         const fileName = (row.originalFilename ?? row.fileName ?? null) as string | null;
-        const storageProvider = row.storageProvider;
-        if (!storageProvider) {
-          console.log(`[Thumbnail Worker] Skipping ${row.id}: no storageProvider`);
-          continue;
-        }
-
+        // Normalize null/empty storageProvider to 'local' (legacy attachments)
+        const storageProvider = row.storageProvider || 'local';
+        
         console.log(`[Thumbnail Worker] Processing ${row.attachmentType} attachment ${row.id}:`, {
           fileName,
           mimeType: row.mimeType,

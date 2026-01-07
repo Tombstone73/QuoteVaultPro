@@ -136,14 +136,14 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
     } else if (storageProvider === 'local') {
       // Local file storage - resolve path and read directly
       const resolvedPath = resolveLocalStoragePath(fileKey);
-      console.log(`[PdfProcessing] Local read resolved: ${fileKey} -> ${resolvedPath}`);
+      console.log(`[PdfProcessing] 📂 Source file path: fileKey=${fileKey}, resolvedPath=${resolvedPath}`);
       
       // PACK 2: Retry logic for local files (handle timing issues after upload finalize)
       let lastError: Error | null = null;
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const buffer = await fsPromises.readFile(resolvedPath);
-          console.log(`[PdfProcessing] Read from local storage: ${fileKey}, size=${buffer.length} bytes (attempt ${attempt})`);
+          console.log(`[PdfProcessing] ✅ Read from local storage: size=${buffer.length} bytes (attempt ${attempt})`);
           return buffer;
         } catch (readError: any) {
           lastError = readError;
@@ -154,7 +154,7 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
               await new Promise(resolve => setTimeout(resolve, 200));
               continue;
             }
-            throw new Error(`File not found after ${attempt} attempts: storageKey=${fileKey}, resolvedPath=${resolvedPath}`);
+            throw new Error(`File not found after ${attempt} attempts: fileKey=${fileKey}, resolvedPath=${resolvedPath}`);
           }
           throw readError;
         }
@@ -187,15 +187,30 @@ async function uploadThumbnailFile(
       await supabaseService.uploadFile(thumbKey, buffer, 'image/jpeg');
       return true;
     } else if (storageProvider === 'local') {
-      // Local file storage
-      const storageRoot = process.env.STORAGE_ROOT || './storage';
-      const fullPath = path.join(storageRoot, thumbKey);
+      // Local file storage - MUST use FILE_STORAGE_ROOT to match /objects route
+      const storageRoot = process.env.FILE_STORAGE_ROOT || path.join(process.cwd(), 'uploads');
+      const fullPath = path.resolve(storageRoot, thumbKey);
+      
+      // DEBUG_THUMBNAILS logging
+      if (process.env.DEBUG_THUMBNAILS) {
+        console.log(`[PdfProcessing] Writing PDF thumbnail to filesystem:`, {
+          thumbKey,
+          storageRoot,
+          fullPath,
+          bufferSize: buffer.length,
+        });
+      }
       
       // Ensure directory exists
       await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
       
       // Write file
       await fsPromises.writeFile(fullPath, buffer);
+      
+      if (process.env.DEBUG_THUMBNAILS) {
+        console.log(`[PdfProcessing] Successfully wrote PDF thumbnail ${thumbKey} to ${fullPath}`);
+      }
+      
       return true;
     } else {
       console.error(`[PdfProcessing] Unsupported storage provider for thumbnail upload: ${storageProvider}`);
@@ -484,29 +499,50 @@ export async function processPdfAttachmentDerivedData(args: {
         
         // Update database with thumbnail key (PERMANENT - final state)
         try {
-          if (attachmentType === 'quote') {
-            await db
-              .update(quoteAttachments)
-              .set({
-                thumbKey: thumbKey,
-                thumbStatus: 'thumb_ready',
-                thumbError: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(quoteAttachments.id, attachmentId));
-          } else {
-            await db
-              .update(orderAttachments)
-              .set({
-                thumbKey: thumbKey,
-                thumbStatus: 'thumb_ready',
-                thumbError: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(orderAttachments.id, attachmentId));
+          const baseTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
+          
+          await db
+            .update(baseTable)
+            .set({
+              thumbKey: thumbKey,
+              thumbStatus: 'thumb_ready',
+              thumbError: null,
+              thumbnailGeneratedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(baseTable.id, attachmentId));
+
+          // Defensive invariant: Verify all success conditions are met
+          const verification = await db
+            .select({
+              thumbKey: baseTable.thumbKey,
+              thumbStatus: baseTable.thumbStatus,
+              thumbnailGeneratedAt: baseTable.thumbnailGeneratedAt,
+              thumbError: baseTable.thumbError,
+            })
+            .from(baseTable)
+            .where(eq(baseTable.id, attachmentId))
+            .limit(1);
+
+          const record = verification[0];
+          const debugEnabled = process.env.DEBUG_THUMBNAILS === '1' || process.env.DEBUG_THUMBNAILS === 'true';
+          
+          if (!record || !record.thumbKey || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
+            const issues: string[] = [];
+            if (!record) issues.push('record not found');
+            else {
+              if (!record.thumbKey) issues.push('thumbKey is null');
+              if (record.thumbStatus !== 'thumb_ready') issues.push(`thumbStatus is '${record.thumbStatus}' not 'thumb_ready'`);
+              if (!record.thumbnailGeneratedAt) issues.push('thumbnailGeneratedAt is null');
+              if (record.thumbError !== null) issues.push('thumbError is not null');
+            }
+            console.error(`[PdfProcessing] ❌ INVARIANT VIOLATION for ${attachmentId}: ${issues.join(', ')}`);
+            throw new Error(`Thumbnail success invariant violated: ${issues.join(', ')}`);
           }
 
-          console.log(`[PdfProcessing] Thumbnail generated`);
+          if (debugEnabled) {
+            console.log(`[PdfProcessing] ✅ Thumbnail persisted to DB: attachmentId=${attachmentId}, thumbKey=${thumbKey}, thumbStatus=thumb_ready`);
+          }
         } catch (dbError: any) {
           console.error(`[PdfProcessing] DB update failed while setting thumbKey for ${attachmentId}:`, dbError?.message || dbError);
           throw new Error(`Failed to update thumbKey in database: ${dbError?.message || dbError}`);

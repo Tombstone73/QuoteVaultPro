@@ -15,6 +15,7 @@ import { orderAttachments, quoteAttachments } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { readFile } from "../utils/fileStorage";
+import { resolveLocalStoragePath } from "./localStoragePath";
 import path from "path";
 import * as fsPromises from "fs/promises";
 import { createRequire } from "module";
@@ -106,6 +107,7 @@ async function downloadOriginalFile(fileKey: string, storageProvider: string): P
   try {
     if (isSupabaseConfigured() && storageProvider === 'supabase') {
       // Supabase storage (preferred for supabase provider)
+      console.log(`[ThumbnailGenerator] Downloading from Supabase: ${fileKey}`);
       const supabaseService = new SupabaseStorageService();
       const signedUrl = await supabaseService.getSignedDownloadUrl(fileKey, 3600);
       const response = await fetch(signedUrl);
@@ -113,15 +115,41 @@ async function downloadOriginalFile(fileKey: string, storageProvider: string): P
         throw new Error(`Failed to download from Supabase: status=${response.status} ${response.statusText}`);
       }
       const arrayBuffer = await response.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+      const buffer = Buffer.from(arrayBuffer);
+      console.log(`[ThumbnailGenerator] Downloaded from Supabase: ${fileKey}, size=${buffer.length} bytes`);
+      return buffer;
     }
 
-    // Local file storage
-    const localBuffer = await readFile(fileKey);
-    if (localBuffer) return localBuffer;
+    // Local file storage - resolve path and read directly
+    if (storageProvider === 'local' || !storageProvider) {
+      const resolvedPath = resolveLocalStoragePath(fileKey);
+      console.log(`[ThumbnailGenerator] Local file resolve: ${fileKey} -> ${resolvedPath}`);
+      
+      // Retry logic for timing issues (file may still be flushing after upload)
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const buffer = await fsPromises.readFile(resolvedPath);
+          console.log(`[ThumbnailGenerator] Read from local storage: ${fileKey}, size=${buffer.length} bytes (attempt ${attempt})`);
+          return buffer;
+        } catch (readError: any) {
+          lastError = readError;
+          if (readError.code === 'ENOENT') {
+            if (attempt < 2) {
+              console.log(`[ThumbnailGenerator] File not found on attempt ${attempt}, retrying after 200ms...`);
+              await new Promise(resolve => setTimeout(resolve, 200));
+              continue;
+            }
+            throw new Error(`File not found after ${attempt} attempts: fileKey=${fileKey}, resolvedPath=${resolvedPath}`);
+          }
+          throw readError;
+        }
+      }
+      throw lastError || new Error('Unexpected retry loop exit');
+    }
 
-    // Fail-soft: some legacy rows may have storageProvider='local' but a Supabase-style key.
-    // If so, attempt Supabase download before giving up.
+    // Fail-soft: some legacy rows may have incorrect storageProvider
+    // Try local first, then Supabase if configured
     const looksLikeSupabaseKey =
       fileKey.startsWith('uploads/') ||
       fileKey.startsWith('titan-private/uploads/') ||
@@ -129,6 +157,7 @@ async function downloadOriginalFile(fileKey: string, storageProvider: string): P
 
     if (isSupabaseConfigured() && looksLikeSupabaseKey) {
       try {
+        console.log(`[ThumbnailGenerator] Attempting Supabase fallback for ${fileKey}`);
         const supabaseService = new SupabaseStorageService();
         const signedUrl = await supabaseService.getSignedDownloadUrl(fileKey, 3600);
         const response = await fetch(signedUrl);
@@ -136,31 +165,17 @@ async function downloadOriginalFile(fileKey: string, storageProvider: string): P
           throw new Error(`Failed to download from Supabase: status=${response.status} ${response.statusText}`);
         }
         const arrayBuffer = await response.arrayBuffer();
-        console.warn(`[ThumbnailGenerator] Local read returned null; Supabase fallback succeeded for ${fileKey}`);
+        console.warn(`[ThumbnailGenerator] Supabase fallback succeeded for ${fileKey}`);
         return Buffer.from(arrayBuffer);
       } catch (error) {
-        console.warn(`[ThumbnailGenerator] Local read returned null; Supabase fallback failed for ${fileKey}:`, error);
+        console.warn(`[ThumbnailGenerator] Supabase fallback failed for ${fileKey}:`, error);
       }
     }
 
-    console.error(`[ThumbnailGenerator] Local read returned null for ${fileKey} (storageProvider=${storageProvider})`);
-    return null;
-  } catch (error) {
-    // Fail-soft fallback: Some legacy order attachments may have local file keys but incorrect storageProvider.
-    // If Supabase download failed, try local read before giving up.
-    if (storageProvider === 'supabase') {
-      try {
-        const buffer = await readFile(fileKey);
-        if (buffer) {
-          console.warn(`[ThumbnailGenerator] Supabase download failed; local fallback succeeded for ${fileKey}`);
-          return buffer;
-        }
-      } catch {
-        // ignore and report original error below
-      }
-    }
-
-    console.error(`[ThumbnailGenerator] Failed to download original file ${fileKey} (storageProvider=${storageProvider}):`, error);
+    throw new Error(`Unable to download file: fileKey=${fileKey}, storageProvider=${storageProvider}`);
+  } catch (error: any) {
+    const errorMsg = error.message || String(error);
+    console.error(`[ThumbnailGenerator] Failed to download original file ${fileKey} (storageProvider=${storageProvider}):`, errorMsg);
     return null;
   }
 }
@@ -181,15 +196,30 @@ async function uploadDerivativeFile(
       await supabaseService.uploadFile(derivativeKey, buffer, 'image/jpeg');
       return true;
     } else {
-      // Local file storage - save to same directory structure
-      const storageRoot = process.env.STORAGE_ROOT || './storage';
-      const fullPath = path.join(storageRoot, derivativeKey);
+      // Local file storage - MUST use FILE_STORAGE_ROOT to match /objects route
+      const storageRoot = process.env.FILE_STORAGE_ROOT || path.join(process.cwd(), 'uploads');
+      const fullPath = path.resolve(storageRoot, derivativeKey);
+      
+      // DEBUG_THUMBNAILS logging
+      if (process.env.DEBUG_THUMBNAILS) {
+        console.log(`[ThumbnailGenerator] Writing derivative to filesystem:`, {
+          derivativeKey,
+          storageRoot,
+          fullPath,
+          bufferSize: buffer.length,
+        });
+      }
       
       // Ensure directory exists
       await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
       
       // Write file
       await fsPromises.writeFile(fullPath, buffer);
+      
+      if (process.env.DEBUG_THUMBNAILS) {
+        console.log(`[ThumbnailGenerator] Successfully wrote ${derivativeKey} to ${fullPath}`);
+      }
+      
       return true;
     }
   } catch (error) {
@@ -321,11 +351,42 @@ export async function generateImageDerivatives(
         previewKey,
         thumbStatus: 'thumb_ready',
         thumbError: null,
+        thumbnailGeneratedAt: new Date(),
         updatedAt: new Date(),
       })
       .where(eq(baseTable.id, attachmentId));
 
-    console.log(`[ThumbnailGenerator] Successfully generated derivatives for ${attachmentId}`);
+    // Defensive invariant: Verify all success conditions are met
+    const verification = await db
+      .select({
+        thumbKey: baseTable.thumbKey,
+        thumbStatus: baseTable.thumbStatus,
+        thumbnailGeneratedAt: baseTable.thumbnailGeneratedAt,
+        thumbError: baseTable.thumbError,
+      })
+      .from(baseTable)
+      .where(eq(baseTable.id, attachmentId))
+      .limit(1);
+
+    const record = verification[0];
+    const debugEnabled = process.env.DEBUG_THUMBNAILS === '1' || process.env.DEBUG_THUMBNAILS === 'true';
+    
+    if (!record || !record.thumbKey || record.thumbStatus !== 'thumb_ready' || !record.thumbnailGeneratedAt || record.thumbError !== null) {
+      const issues: string[] = [];
+      if (!record) issues.push('record not found');
+      else {
+        if (!record.thumbKey) issues.push('thumbKey is null');
+        if (record.thumbStatus !== 'thumb_ready') issues.push(`thumbStatus is '${record.thumbStatus}' not 'thumb_ready'`);
+        if (!record.thumbnailGeneratedAt) issues.push('thumbnailGeneratedAt is null');
+        if (record.thumbError !== null) issues.push('thumbError is not null');
+      }
+      console.error(`[ThumbnailGenerator] ❌ INVARIANT VIOLATION for ${attachmentId}: ${issues.join(', ')}`);
+      throw new Error(`Thumbnail success invariant violated: ${issues.join(', ')}`);
+    }
+
+    if (debugEnabled) {
+      console.log(`[ThumbnailGenerator] ✅ Thumbnails persisted to DB: attachmentId=${attachmentId}, thumbKey=${thumbKey}, previewKey=${previewKey}, thumbStatus=thumb_ready`);
+    }
   } catch (error: any) {
     console.error(`[ThumbnailGenerator] Error generating derivatives for ${attachmentId}:`, error);
     
