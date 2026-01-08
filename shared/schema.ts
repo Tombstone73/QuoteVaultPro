@@ -19,6 +19,25 @@ import { z } from "zod";
 import { PRICING_PROFILE_KEYS, type FlatGoodsConfig } from "./pricingProfiles";
 
 // ============================================================
+// DOWNLOAD INTENT (Future-proofing for preflight/print variants)
+// ============================================================
+
+/**
+ * DownloadIntent determines which file variant to download.
+ * 
+ * - "original": Original uploaded file (current default behavior)
+ * - "print": Print-ready file (preflighted, color-corrected)
+ * - "proof": Client-facing proof/preview file
+ * - "preferred": Auto-select best available (print > proof > original)
+ * 
+ * TODO: When file variants are implemented, wire up resolution logic.
+ * For now, all intents resolve to the original file.
+ */
+export type DownloadIntent = "original" | "print" | "proof" | "preferred";
+
+export const downloadIntentSchema = z.enum(["original", "print", "proof", "preferred"]).default("original");
+
+// ============================================================
 // MULTI-TENANT ORGANIZATION SYSTEM
 // ============================================================
 
