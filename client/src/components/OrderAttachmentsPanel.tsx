@@ -61,6 +61,8 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
   const [isUploading, setIsUploading] = useState(false);
   const [attachmentToDelete, setAttachmentToDelete] = useState<OrderAttachment | null>(null);
   const [viewerAttachment, setViewerAttachment] = useState<OrderAttachment | null>(null);
+  const [viewerAttachments, setViewerAttachments] = useState<OrderAttachment[] | undefined>(undefined);
+  const [viewerInitialIndex, setViewerInitialIndex] = useState(0);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewAllOpen, setViewAllOpen] = useState(false);
   const [uploadItems, setUploadItems] = useState<
@@ -284,6 +286,22 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
     document.body.removeChild(anchor);
   };
 
+  // PACK C2: Download individual attachment
+  const handleDownloadAttachment = (attachment: any) => {
+    const downloadUrl = (attachment as any).originalUrl || (attachment as any).downloadUrl || (attachment as any).fileUrl;
+    if (!downloadUrl) {
+      toast({
+        title: "Download Failed",
+        description: "No download URL available for this attachment.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const filename = (attachment as any).originalFilename || (attachment as any).fileName || "download";
+    void downloadFileFromUrl(downloadUrl, filename);
+  };
+
   
   const handleConfirmDelete = async () => {
     const target = attachmentToDelete;
@@ -463,12 +481,18 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           ) : null}
 
       <AttachmentViewerDialog
-        attachment={viewerAttachment as any}
+        attachments={viewerAttachments as any}
+        initialIndex={viewerInitialIndex}
         open={viewerOpen}
         onOpenChange={(open) => {
           setViewerOpen(open);
-          if (!open) setViewerAttachment(null);
+          if (!open) {
+            setViewerAttachment(null);
+            setViewerAttachments(undefined);
+            setViewerInitialIndex(0);
+          }
         }}
+        hideFilmstrip={true}
       />
 
       <ViewAllAttachmentsDialog
@@ -477,10 +501,16 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
         orderAttachments={attachments.map((a) => ({ ...a, source: "order" as const }))}
         lineItemAttachments={[]}
         onViewAttachment={(a) => {
+          const allAttachments = attachments.map((att) => ({ ...att, source: "order" as const }));
+          const index = allAttachments.findIndex((att) => att.id === a.id);
+          setViewerAttachments(allAttachments as any);
+          setViewerInitialIndex(Math.max(0, index));
           setViewerAttachment(a as any);
           setViewerOpen(true);
+          setViewAllOpen(false);
         }}
         onDownloadAll={attachments.length > 0 ? handleDownloadAllZip : undefined}
+        onDownload={handleDownloadAttachment}
         onDeleteAttachment={(a) => setAttachmentToDelete(a as any)}
         canDelete={!isLocked}
       />

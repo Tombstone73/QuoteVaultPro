@@ -33,6 +33,7 @@ interface ViewAllAttachmentsDialogProps {
   lineItemAttachments: AttachmentWithContext[];
   onViewAttachment: (attachment: AttachmentWithContext) => void;
   onDownloadAll?: () => void;
+  onDownload?: (attachment: AttachmentWithContext) => void;
   onDeleteAttachment?: (attachment: AttachmentWithContext) => void;
   canDelete?: boolean;
 }
@@ -51,8 +52,9 @@ export function ViewAllAttachmentsDialog({
   lineItemAttachments,
   onViewAttachment,
   onDeleteAttachment,
-  canDelete = true,
   onDownloadAll,
+  onDownload,
+  canDelete = true,
 }: ViewAllAttachmentsDialogProps) {
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -139,6 +141,22 @@ export function ViewAllAttachmentsDialog({
             title="Delete attachment"
           >
             <Trash2 className="w-4 h-4 text-destructive" />
+          </Button>
+        )}
+
+        {/* Download button */}
+        {onDownload && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDownload(a);
+            }}
+            title="Download attachment"
+          >
+            <Download className="w-4 h-4" />
           </Button>
         )}
       </div>

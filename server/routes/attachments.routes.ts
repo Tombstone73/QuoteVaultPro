@@ -27,7 +27,7 @@ import {
   orderLineItems,
   assets,
 } from "@shared/schema";
-import { eq, desc, and, isNull, inArray } from "drizzle-orm";
+import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import { storage } from "../storage";
 import {
   getRequestOrganizationId,
@@ -1603,6 +1603,178 @@ export async function registerAttachmentRoutes(
     } catch (error) {
       console.error("[QuoteAttachments:DELETE] Error:", error);
       return res.status(500).json({ error: "Failed to delete quote attachment" });
+    }
+  });
+
+  /**
+   * GET /api/quotes/:quoteId/attachments.zip
+   * Download all quote-level and line-item attachments as a zip file
+   */
+  app.get('/api/quotes/:quoteId/attachments.zip', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const { quoteId } = req.params;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: 'Missing organization context' });
+
+      // Verify quote access
+      const [quoteRow] = await db
+        .select({ id: quotes.id, quoteNumber: quotes.quoteNumber })
+        .from(quotes)
+        .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+        .limit(1);
+
+      if (!quoteRow) return res.status(404).json({ error: 'Quote not found' });
+
+      // Collect all quote-level attachments
+      const attachmentRows = await db
+        .select({
+          id: quoteAttachments.id,
+          fileName: quoteAttachments.fileName,
+          originalFilename: quoteAttachments.originalFilename,
+          fileUrl: quoteAttachments.fileUrl,
+          relativePath: quoteAttachments.relativePath,
+        })
+        .from(quoteAttachments)
+        .where(
+          and(
+            eq(quoteAttachments.quoteId, quoteId),
+            isNull(quoteAttachments.quoteLineItemId),
+            eq(quoteAttachments.organizationId, organizationId)
+          )
+        )
+        .orderBy(quoteAttachments.createdAt);
+
+      // Collect line-item attachment rows
+      const lineItemAttachmentRows = await db
+        .select({
+          id: quoteAttachments.id,
+          fileName: quoteAttachments.fileName,
+          originalFilename: quoteAttachments.originalFilename,
+          fileUrl: quoteAttachments.fileUrl,
+          relativePath: quoteAttachments.relativePath,
+          quoteLineItemId: quoteAttachments.quoteLineItemId,
+        })
+        .from(quoteAttachments)
+        .where(
+          and(
+            eq(quoteAttachments.quoteId, quoteId),
+            isNotNull(quoteAttachments.quoteLineItemId),
+            eq(quoteAttachments.organizationId, organizationId)
+          )
+        )
+        .orderBy(quoteAttachments.createdAt);
+
+      // Build file list with paths
+      const files: Array<{ filename: string; objectPath: string }> = [];
+
+      for (const att of attachmentRows) {
+        const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
+        // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
+        let objectPath: string | null = null;
+        if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
+          objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
+        } else if (att.relativePath) {
+          objectPath = att.relativePath;
+        }
+        if (objectPath) files.push({ filename, objectPath });
+      }
+
+      for (const att of lineItemAttachmentRows) {
+        const filename = String(att.originalFilename || att.fileName || `attachment-${att.id}`);
+        // Use a folder structure for line item attachments
+        const filenameWithLabel = `line-item-${att.quoteLineItemId}/${filename}`;
+        // Extract objectPath from fileUrl (if it starts with /objects/) or use relativePath
+        let objectPath: string | null = null;
+        if (att.fileUrl && att.fileUrl.startsWith('/objects/')) {
+          objectPath = att.fileUrl.replace('/objects/', '').split('?')[0];
+        } else if (att.relativePath) {
+          objectPath = att.relativePath;
+        }
+        if (objectPath) files.push({ filename: filenameWithLabel, objectPath });
+      }
+
+      if (files.length === 0) {
+        return res.status(404).json({ error: 'No attachments found for this quote' });
+      }
+
+      // Stream zip using archiver
+      const archiver = (await import('archiver')).default;
+      const { Readable } = await import('stream');
+      const { promises: fsPromises } = await import('fs');
+      const path = await import('path');
+
+      const archive = archiver('zip', { zlib: { level: 9 } });
+
+      const zipFilename = `Quote-${quoteRow.quoteNumber || quoteId}-attachments.zip`;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+
+      archive.on('error', (err: Error) => {
+        console.error('[QuoteAttachmentsZip] Archiver error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to create zip archive' });
+        }
+      });
+
+      archive.pipe(res);
+
+      // Helper to get file stream (mirrors /objects endpoint logic)
+      const resolveLocalStoragePath = (key: string): string => {
+        const root = process.env.FILE_STORAGE_ROOT || './data/uploads';
+        return path.join(root, key);
+      };
+
+      for (const file of files) {
+        try {
+          const keyToTry = file.objectPath;
+          let streamAdded = false;
+
+          // 1) Try Supabase
+          if (isSupabaseConfigured()) {
+            try {
+              const supabaseService = new SupabaseStorageService();
+              const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+              const upstream = await fetch(signedUrl);
+              if (upstream.ok) {
+                const body: any = (upstream as any).body;
+                if (body && typeof Readable.fromWeb === 'function') {
+                  const nodeStream = Readable.fromWeb(body);
+                  const safeFilename = file.filename.replace(/[<>:"/\\|?*]/g, '_');
+                  archive.append(nodeStream, { name: safeFilename });
+                  streamAdded = true;
+                }
+              }
+            } catch (supabaseError) {
+              // fall through to local
+            }
+          }
+
+          // 2) Try local filesystem
+          if (!streamAdded) {
+            const localPath = resolveLocalStoragePath(keyToTry);
+            await fsPromises.access(localPath, fsPromises.constants.R_OK);
+            const fs = await import('fs');
+            const nodeStream = fs.createReadStream(localPath);
+            const safeFilename = file.filename.replace(/[<>:"/\\|?*]/g, '_');
+            archive.append(nodeStream, { name: safeFilename });
+            streamAdded = true;
+          }
+
+          if (!streamAdded) {
+            console.warn(`[QuoteAttachmentsZip] Could not resolve file: ${file.filename} (${keyToTry})`);
+          }
+        } catch (err) {
+          console.error(`[QuoteAttachmentsZip] Failed to add ${file.filename}:`, err);
+          // Continue with other files
+        }
+      }
+
+      await archive.finalize();
+    } catch (error) {
+      console.error('[QuoteAttachmentsZip:GET] Error:', error);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Failed to generate zip archive' });
+      }
     }
   });
 
