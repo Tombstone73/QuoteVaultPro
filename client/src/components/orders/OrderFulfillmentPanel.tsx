@@ -189,7 +189,17 @@ export function OrderFulfillmentPanel({
           <div className="flex items-center gap-2">
             <Select
               value={fulfillmentMethod}
-              onValueChange={(value) => onFulfillmentMethodChange?.(value as any)}
+              onValueChange={(value) => {
+                const next = value as any;
+
+                // If switching to pickup, clear persisted fulfillment pricing
+                if (parentType === "quote" && next === "pickup") {
+                  setShippingDraft("");
+                  onShippingCentsChange?.(null);
+                }
+
+                onFulfillmentMethodChange?.(next);
+              }}
               disabled={!canEditOrder}
             >
               <SelectTrigger className="h-8 w-[140px]">
@@ -462,7 +472,7 @@ export function OrderFulfillmentPanel({
             </div>
 
             {/* Shipping Price (Quote Mode Only) */}
-            {parentType === "quote" && fulfillmentMethod === "ship" && (
+            {parentType === "quote" && (fulfillmentMethod === "ship" || fulfillmentMethod === "deliver") && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">Shipping Price</label>
                 <div className="relative">

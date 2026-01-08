@@ -173,9 +173,11 @@ export function SummaryCard({
                 <Separator />
 
                 {/* Shipping (before Tax) */}
-                {deliveryMethod === 'ship' && (
+                {deliveryMethod !== 'pickup' && (
                     <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Shipping</span>
+                        <span className="text-muted-foreground">
+                            {deliveryMethod === 'deliver' ? 'Delivery' : 'Shipping'}
+                        </span>
                         <span className="font-mono">
                             {shippingCents != null ? `$${(shippingCents / 100).toFixed(2)}` : <span className="text-muted-foreground">—</span>}
                         </span>
