@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   Dialog,
   DialogContent,
@@ -50,7 +51,6 @@ import { Page, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
-import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -161,6 +161,10 @@ export default function OrderDetail() {
   const [isShipToAutofillOpen, setIsShipToAutofillOpen] = useState(false);
   const [shipToAutofillQuery, setShipToAutofillQuery] = useState("");
   const [shipToAutofillDebounced, setShipToAutofillDebounced] = useState("");
+
+  // Local draft state for shipping/delivery price (cents persisted on order)
+  const [shippingDraft, setShippingDraft] = useState<string>("");
+  const [isEditingShippingDraft, setIsEditingShippingDraft] = useState(false);
 
   const suppressShipToBlurRef = useRef(false);
   const shipToCompanyInputRef = useRef<HTMLInputElement>(null);
@@ -287,6 +291,12 @@ export default function OrderDetail() {
   const handleFulfillmentMethodChange = (value: string) => {
     if (!canEditOrder) return;
     if (!isFulfillmentMethod(value)) return;
+    if (value === "pickup") {
+      setShippingDraft("");
+      void updateOrder.mutateAsync({ shippingMethod: value, shippingCents: 0 });
+      return;
+    }
+
     void updateOrder.mutateAsync({ shippingMethod: value });
   };
 
@@ -317,6 +327,17 @@ export default function OrderDetail() {
     order?.shippingMethod && typeof order.shippingMethod === "string" && isFulfillmentMethod(order.shippingMethod)
       ? order.shippingMethod
       : "ship";
+
+  // Keep shipping input in sync when order hydrates/changes
+  useEffect(() => {
+    if (isEditingShippingDraft) return;
+    const cents = (order as any)?.shippingCents;
+    if (typeof cents === "number" && cents > 0) {
+      setShippingDraft((cents / 100).toFixed(2));
+    } else {
+      setShippingDraft("");
+    }
+  }, [order, isEditingShippingDraft]);
 
   const exitAllEditModes = () => {
     setIsEditingCustomer(false);
@@ -761,7 +782,8 @@ export default function OrderDetail() {
     
     const discount = parseFloat(freshOrder.discount) || 0;
     const tax = parseFloat(freshOrder.tax) || 0;
-    const total = subtotal - discount + tax;
+    const shipping = (Number(freshOrder.shippingCents) || 0) / 100;
+    const total = subtotal - discount + tax + shipping;
     
     // Update order totals
     await updateOrder.mutateAsync({
@@ -1071,18 +1093,21 @@ export default function OrderDetail() {
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
           {/* Main Content */}
           <div className="min-w-0 space-y-4">
-            {isSameBillShipAddress ? (
-              <Card>
-                <CardContent className="p-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Left Column: Customer Information */}
+            <Card className="bg-titan-bg-card border-titan-border-subtle">
+              <CardContent className="p-4">
+                <div className="grid grid-cols-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+                  {/* Customer + Contact */}
+                  <div className="space-y-4">
                     <div className="space-y-2">
                       {isEditingCustomer ? (
                         <div className="space-y-2">
-                          <Popover open={isCustomerPickerOpen} onOpenChange={(open) => {
-                            setIsCustomerPickerOpen(open);
-                            if (!open) exitAllEditModes();
-                          }}>
+                          <Popover
+                            open={isCustomerPickerOpen}
+                            onOpenChange={(open) => {
+                              setIsCustomerPickerOpen(open);
+                              if (!open) exitAllEditModes();
+                            }}
+                          >
                             <PopoverTrigger asChild>
                               <Button
                                 variant="outline"
@@ -1090,9 +1115,7 @@ export default function OrderDetail() {
                                 aria-expanded={isCustomerPickerOpen}
                                 className="w-full justify-between font-normal h-9"
                               >
-                                <span className="truncate">
-                                  {customerCompanyName || "Select customer..."}
-                                </span>
+                                <span className="truncate">{customerCompanyName || "Select customer..."}</span>
                                 <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                               </Button>
                             </PopoverTrigger>
@@ -1102,7 +1125,9 @@ export default function OrderDetail() {
                                 <CommandList>
                                   <CommandEmpty>No customers found.</CommandEmpty>
                                   {customers.map((customer: any) => {
-                                    const searchValue = [customer.companyName, customer.email].filter(Boolean).join(' ');
+                                    const searchValue = [customer.companyName, customer.email]
+                                      .filter(Boolean)
+                                      .join(" ");
                                     return (
                                       <CommandItem
                                         key={customer.id}
@@ -1111,19 +1136,19 @@ export default function OrderDetail() {
                                           changeCustomerMutation.mutate(customer.id);
                                         }}
                                       >
-                                      <Check
-                                        className={cn(
-                                          "mr-2 h-4 w-4",
-                                          order?.customerId === customer.id ? "opacity-100" : "opacity-0"
-                                        )}
-                                      />
-                                      <div className="flex-1">
-                                        <div className="font-medium">{customer.companyName}</div>
-                                        {customer.email && (
-                                          <div className="text-xs text-muted-foreground">{customer.email}</div>
-                                        )}
-                                      </div>
-                                    </CommandItem>
+                                        <Check
+                                          className={cn(
+                                            "mr-2 h-4 w-4",
+                                            order?.customerId === customer.id ? "opacity-100" : "opacity-0"
+                                          )}
+                                        />
+                                        <div className="flex-1">
+                                          <div className="font-medium">{customer.companyName}</div>
+                                          {customer.email && (
+                                            <div className="text-xs text-muted-foreground">{customer.email}</div>
+                                          )}
+                                        </div>
+                                      </CommandItem>
                                     );
                                   })}
                                 </CommandList>
@@ -1134,19 +1159,45 @@ export default function OrderDetail() {
                       ) : (
                         <div className="flex items-start justify-between gap-2 min-w-0">
                           <div className="min-w-0 flex-1">
-                            {order.customer?.id && customerCompanyName ? (
-                              <Link
-                                to={`/customers/${order.customer.id}`}
-                                className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
-                                title={customerCompanyName}
-                              >
-                                {customerCompanyName}
-                              </Link>
-                            ) : (
-                              <div className="block truncate text-sm font-semibold leading-5 text-foreground">
-                                {customerCompanyName || '—'}
-                              </div>
-                            )}
+                            <HoverCard openDelay={150} closeDelay={50}>
+                              <HoverCardTrigger asChild>
+                                {order.customer?.id && customerCompanyName ? (
+                                  <Link
+                                    to={`/customers/${order.customer.id}`}
+                                    className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
+                                    title={customerCompanyName}
+                                  >
+                                    {customerCompanyName}
+                                  </Link>
+                                ) : (
+                                  <span
+                                    tabIndex={0}
+                                    className="block truncate text-sm font-semibold leading-5 text-foreground"
+                                    title={customerCompanyName || "—"}
+                                  >
+                                    {customerCompanyName || "—"}
+                                  </span>
+                                )}
+                              </HoverCardTrigger>
+                              <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
+                                <div className="space-y-2">
+                                  {hasBillAddress && (
+                                    <div className="text-sm">
+                                      <div className="font-medium text-foreground">Billing</div>
+                                      <div className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">
+                                        {[billAddressLine1, billAddressLine2].filter(Boolean).join("\n") || "—"}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {(email || metaPhone) && (
+                                    <div className="text-xs text-muted-foreground">
+                                      {email && <div className="font-mono break-words">{email}</div>}
+                                      {metaPhone && <div className="font-mono break-words">{formatPhoneForDisplay(metaPhone)}</div>}
+                                    </div>
+                                  )}
+                                </div>
+                              </HoverCardContent>
+                            </HoverCard>
                           </div>
                           {canEditOrder && (
                             <Button
@@ -1211,14 +1262,18 @@ export default function OrderDetail() {
                       )}
                     </div>
 
-                    {/* Right Column: Contact Information */}
+                    <Separator />
+
                     <div className="space-y-2">
                       {isEditingContact ? (
                         <div className="space-y-2">
-                          <Popover open={isContactPickerOpen} onOpenChange={(open) => {
-                            setIsContactPickerOpen(open);
-                            if (!open) exitAllEditModes();
-                          }}>
+                          <Popover
+                            open={isContactPickerOpen}
+                            onOpenChange={(open) => {
+                              setIsContactPickerOpen(open);
+                              if (!open) exitAllEditModes();
+                            }}
+                          >
                             <PopoverTrigger asChild>
                               <Button
                                 variant="outline"
@@ -1228,8 +1283,8 @@ export default function OrderDetail() {
                                 disabled={!order?.customerId}
                               >
                                 <span className="truncate">
-                                  {!order?.customerId 
-                                    ? "Select a customer first" 
+                                  {!order?.customerId
+                                    ? "Select a customer first"
                                     : contactNameFromContact || "Select contact..."}
                                 </span>
                                 <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -1237,20 +1292,20 @@ export default function OrderDetail() {
                             </PopoverTrigger>
                             <PopoverContent className="w-[350px] p-0" align="start">
                               <Command shouldFilter={false}>
-                                <CommandInput 
-                                  placeholder="Search contacts..." 
+                                <CommandInput
+                                  placeholder="Search contacts..."
                                   value={contactSearchQuery}
                                   onValueChange={setContactSearchQuery}
-                                  autoFocus 
+                                  autoFocus
                                 />
                                 <CommandList>
                                   <CommandEmpty>
-                                    {!order?.customerId 
-                                      ? "Select a customer first" 
-                                      : "No contacts found."}
+                                    {!order?.customerId ? "Select a customer first" : "No contacts found."}
                                   </CommandEmpty>
                                   {filteredContacts.map((contact: any) => {
-                                    const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(' ');
+                                    const contactName = [contact.firstName, contact.lastName]
+                                      .filter(Boolean)
+                                      .join(" ");
                                     return (
                                       <CommandItem
                                         key={contact.id}
@@ -1282,13 +1337,43 @@ export default function OrderDetail() {
                       ) : order.contact?.id && contactNameFromContact ? (
                         <>
                           <div className="flex items-start justify-between gap-2">
-                            <Link
-                              to={`/contacts/${order.contact.id}`}
-                              className="text-sm font-semibold text-foreground hover:underline flex-1 min-w-0 truncate"
-                              title={contactNameFromContact}
-                            >
-                              {contactNameFromContact}
-                            </Link>
+                            <HoverCard openDelay={150} closeDelay={50}>
+                              <HoverCardTrigger asChild>
+                                <Link
+                                  to={`/contacts/${order.contact.id}`}
+                                  className="text-sm font-semibold text-foreground hover:underline flex-1 min-w-0 truncate"
+                                  title={contactNameFromContact}
+                                >
+                                  {contactNameFromContact}
+                                </Link>
+                              </HoverCardTrigger>
+                              <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
+                                <div className="space-y-2">
+                                  {(order.contact?.email || contactLinePhone) && (
+                                    <div className="text-xs text-muted-foreground">
+                                      {order.contact?.email && (
+                                        <div className="font-mono break-words">{order.contact.email}</div>
+                                      )}
+                                      {contactLinePhone && (
+                                        <div className="font-mono break-words">{formatPhoneForDisplay(contactLinePhone)}</div>
+                                      )}
+                                    </div>
+                                  )}
+                                  {(order.contact as any)?.street1 && (
+                                    <div className="text-xs text-muted-foreground whitespace-pre-wrap">
+                                      {[
+                                        (order.contact as any)?.street1,
+                                        (order.contact as any)?.street2,
+                                        [(order.contact as any)?.city, (order.contact as any)?.state].filter(Boolean).join(", "),
+                                        (order.contact as any)?.postalCode,
+                                      ]
+                                        .filter(Boolean)
+                                        .join("\n")}
+                                    </div>
+                                  )}
+                                </div>
+                              </HoverCardContent>
+                            </HoverCard>
                             {canEditOrder && (
                               <Button
                                 variant="ghost"
@@ -1342,244 +1427,9 @@ export default function OrderDetail() {
                       )}
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <CardContent className="p-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Left Column: Customer Information */}
-                    <div className="space-y-2">
-                      <div className="flex items-start justify-between gap-2 min-w-0">
-                        <div className="min-w-0 flex-1">
-                          {order.customer?.id && customerCompanyName ? (
-                            <Link
-                              to={`/customers/${order.customer.id}`}
-                              className="block truncate text-sm font-semibold leading-5 text-foreground hover:underline"
-                              title={customerCompanyName}
-                            >
-                              {customerCompanyName}
-                            </Link>
-                          ) : (
-                            <div className="block truncate text-sm font-semibold leading-5 text-foreground">
-                              {customerCompanyName || order.billToCompany || '—'}
-                            </div>
-                          )}
-                        </div>
-                        {canEditOrder && !isEditingCustomer && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 shrink-0"
-                            onClick={enterCustomerEdit}
-                            title="Edit Customer"
-                          >
-                            <Edit className="h-3 w-3" />
-                          </Button>
-                        )}
-                        {isEditingCustomer && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 shrink-0 text-xs"
-                            onClick={exitAllEditModes}
-                          >
-                            Done
-                          </Button>
-                        )}
-                      </div>
 
-                      {hasBillAddress && (
-                        <div className="text-[11px] leading-4 text-muted-foreground">
-                          <div className="hidden print:block">
-                            {billAddressLine1 && <div>{billAddressLine1}</div>}
-                            {billAddressLine2 && <div>{billAddressLine2}</div>}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {showCustomerAddress && (
-                              <div className="space-y-0.5 print:hidden">
-                                {billAddressLine1 && <div>{billAddressLine1}</div>}
-                                {billAddressLine2 && <div>{billAddressLine2}</div>}
-                              </div>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => setShowCustomerAddress((v) => !v)}
-                              className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
-                            >
-                              {showCustomerAddress ? "Hide" : "Show"}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {email && (
-                        <div className="text-[11px] leading-4">
-                          <a
-                            href={`mailto:${email}`}
-                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
-                            title={email}
-                          >
-                            {email}
-                          </a>
-                        </div>
-                      )}
-
-                      {metaPhone && (
-                        <div className="text-[11px] leading-4">
-                          <a
-                            href={phoneToTelHref(metaPhone)}
-                            className="font-mono text-muted-foreground hover:text-foreground hover:underline"
-                            title={metaPhone}
-                          >
-                            {formatPhoneForDisplay(metaPhone)}
-                          </a>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Right Column: Contact Information */}
-                    <div className="space-y-2">
-                      {isEditingContact ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <Label>Contact</Label>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 shrink-0 text-xs"
-                              onClick={exitAllEditModes}
-                            >
-                              Done
-                            </Button>
-                          </div>
-                          <Popover open={isContactPickerOpen} onOpenChange={setIsContactPickerOpen}>
-                            <PopoverTrigger asChild>
-                              <Button
-                                variant="outline"
-                                role="combobox"
-                                aria-expanded={isContactPickerOpen}
-                                className="w-full justify-between"
-                                disabled={!order?.customerId}
-                              >
-                                {!order?.customerId
-                                  ? "Select a customer first"
-                                  : order.contact?.id && contactNameFromContact
-                                  ? contactNameFromContact
-                                  : "Select contact..."}
-                                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent className="w-full p-0" align="start">
-                              <Command shouldFilter={false}>
-                                <CommandInput 
-                                  placeholder="Search contacts..." 
-                                  value={contactSearchQuery}
-                                  onValueChange={setContactSearchQuery}
-                                  autoFocus
-                                />
-                                <CommandList>
-                                  <CommandEmpty>
-                                    {!order?.customerId
-                                      ? "Select a customer first"
-                                      : "No contacts found."}
-                                  </CommandEmpty>
-                                  {filteredContacts.map((contact: any) => (
-                                    <CommandItem
-                                      key={contact.id}
-                                      onSelect={() => {
-                                        changeContactMutation.mutate(contact.id);
-                                      }}
-                                    >
-                                      <Check
-                                        className={cn(
-                                          "mr-2 h-4 w-4",
-                                          order.contact?.id === contact.id
-                                            ? "opacity-100"
-                                            : "opacity-0"
-                                        )}
-                                      />
-                                      {contact.firstName && contact.lastName
-                                        ? `${contact.firstName} ${contact.lastName}`
-                                        : contact.email || contact.id}
-                                    </CommandItem>
-                                  ))}
-                                </CommandList>
-                              </Command>
-                            </PopoverContent>
-                          </Popover>
-                        </div>
-                      ) : order.contact?.id && contactNameFromContact ? (
-                        <>
-                          <div className="flex items-start justify-between gap-2">
-                            <Link
-                              to={`/contacts/${order.contact.id}`}
-                              className="text-sm font-semibold text-foreground hover:underline flex-1 min-w-0 truncate"
-                              title={contactNameFromContact}
-                            >
-                              {contactNameFromContact}
-                            </Link>
-                            {canEditOrder && !isEditingContact && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 shrink-0"
-                                onClick={enterContactEdit}
-                                title="Edit Contact"
-                              >
-                                <Edit className="h-3 w-3" />
-                              </Button>
-                            )}
-                          </div>
-                          {order.contact?.email && (
-                            <div className="text-[11px] leading-4">
-                              <a
-                                href={`mailto:${order.contact.email}`}
-                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
-                                title={order.contact.email}
-                              >
-                                {order.contact.email}
-                              </a>
-                            </div>
-                          )}
-                          {contactLinePhone && (
-                            <div className="text-[11px] leading-4">
-                              <a
-                                href={phoneToTelHref(contactLinePhone)}
-                                className="font-mono text-muted-foreground hover:text-foreground hover:underline"
-                                title={contactLinePhone}
-                              >
-                                {formatPhoneForDisplay(contactLinePhone)}
-                              </a>
-                            </div>
-                          )}
-                        </>
-                      ) : canEditOrder ? (
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-muted-foreground">—</span>
-                          {!isEditingContact && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 shrink-0"
-                              onClick={enterContactEdit}
-                              title="Edit Contact"
-                            >
-                              <Edit className="h-3 w-3" />
-                            </Button>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">—</span>
-                      )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Order Details */}
-            <DocumentMetaCard className="bg-titan-bg-card border-titan-border-subtle" contentClassName="space-y-4">
+                  {/* Order meta */}
+                  <div className="min-w-0 space-y-4">
                 {/* TitanOS State Architecture */}
                 {(showPaymentStatus || showRoutedTo) && (
                   <div className={cn(
@@ -1818,7 +1668,10 @@ export default function OrderDetail() {
                     </div>
                   </div>
                 )}
-            </DocumentMetaCard>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
             {/* Line Items (Quote-style UI) */}
             <div className="space-y-4">
@@ -1847,6 +1700,14 @@ export default function OrderDetail() {
                         <span>-{formatCurrency(order.discount)}</span>
                       </div>
                     )}
+                      {currentFulfillmentMethod !== "pickup" && (order as any).shippingCents > 0 && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">
+                            {currentFulfillmentMethod === "deliver" ? "Delivery" : "Shipping"}
+                          </span>
+                          <span>{formatCurrency(((order as any).shippingCents || 0) / 100)}</span>
+                        </div>
+                      )}
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Tax</span>
                       <span>{formatCurrency(order.tax)}</span>
@@ -2182,6 +2043,48 @@ export default function OrderDetail() {
                           </div>
                         )}
                       </div>
+
+                      {/* Shipping / Delivery Price */}
+                      {(currentFulfillmentMethod === "ship" || currentFulfillmentMethod === "deliver") && (
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">
+                            {currentFulfillmentMethod === "deliver" ? "Delivery Fee" : "Shipping Price"}
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                            <Input
+                              type="text"
+                              inputMode="decimal"
+                              value={shippingDraft}
+                              onFocus={() => setIsEditingShippingDraft(true)}
+                              onChange={(e) => setShippingDraft(e.target.value)}
+                              onBlur={(e) => {
+                                const val = e.target.value.trim();
+                                if (val === "" || val === "$") {
+                                  setShippingDraft("");
+                                  void updateOrder.mutateAsync({ shippingCents: 0 });
+                                } else {
+                                  const cleaned = val.replace(/[$,]/g, "");
+                                  const dollars = Number.parseFloat(cleaned);
+                                  if (Number.isFinite(dollars) && dollars >= 0) {
+                                    const cents = Math.round(dollars * 100);
+                                    setShippingDraft(dollars > 0 ? dollars.toFixed(2) : "");
+                                    void updateOrder.mutateAsync({ shippingCents: cents });
+                                  } else {
+                                    const cents = (order as any)?.shippingCents;
+                                    setShippingDraft(typeof cents === "number" && cents > 0 ? (cents / 100).toFixed(2) : "");
+                                  }
+                                }
+
+                                setIsEditingShippingDraft(false);
+                              }}
+                              placeholder="0.00"
+                              className="pl-7"
+                              disabled={!canEditOrder || !isEditingFulfillment}
+                            />
+                          </div>
+                        </div>
+                      )}
 
                       {/* Packing Slip */}
                       <div className="flex items-center justify-between">

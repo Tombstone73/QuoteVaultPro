@@ -145,14 +145,20 @@ export function OrderFulfillmentPanel({
 
   // Local draft state for shipping price input (allows typing without blocking)
   const [shippingDraft, setShippingDraft] = useState<string>(
-    shippingCents != null ? (shippingCents / 100).toFixed(2) : ""
+    shippingCents != null
+      ? (parentType === "order" && shippingCents === 0 ? "" : (shippingCents / 100).toFixed(2))
+      : ""
   );
 
   // Keep the input in sync when shippingCents hydrates/changes (e.g., reopening a quote)
   const [isEditingShippingDraft, setIsEditingShippingDraft] = useState(false);
   useEffect(() => {
     if (isEditingShippingDraft) return;
-    setShippingDraft(shippingCents != null ? (shippingCents / 100).toFixed(2) : "");
+    setShippingDraft(
+      shippingCents != null
+        ? (parentType === "order" && shippingCents === 0 ? "" : (shippingCents / 100).toFixed(2))
+        : ""
+    );
   }, [shippingCents, isEditingShippingDraft]);
 
   // Refs for ship-to inputs
@@ -193,9 +199,9 @@ export function OrderFulfillmentPanel({
                 const next = value as any;
 
                 // If switching to pickup, clear persisted fulfillment pricing
-                if (parentType === "quote" && next === "pickup") {
+                if (next === "pickup") {
                   setShippingDraft("");
-                  onShippingCentsChange?.(null);
+                  onShippingCentsChange?.(parentType === "order" ? 0 : null);
                 }
 
                 onFulfillmentMethodChange?.(next);
@@ -471,10 +477,12 @@ export function OrderFulfillmentPanel({
               )}
             </div>
 
-            {/* Shipping Price (Quote Mode Only) */}
-            {parentType === "quote" && (fulfillmentMethod === "ship" || fulfillmentMethod === "deliver") && (
+            {/* Shipping / Delivery Price */}
+            {(fulfillmentMethod === "ship" || fulfillmentMethod === "deliver") && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Shipping Price</label>
+                <label className="text-sm font-medium">
+                  {parentType === "order" && fulfillmentMethod === "deliver" ? "Delivery Fee" : "Shipping Price"}
+                </label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
                   <Input
@@ -490,18 +498,22 @@ export function OrderFulfillmentPanel({
                       const val = e.target.value.trim();
                       if (val === "" || val === "$") {
                         setShippingDraft("");
-                        onShippingCentsChange?.(null);
+                        onShippingCentsChange?.(parentType === "order" ? 0 : null);
                       } else {
                         // Remove any $ symbols and parse
                         const cleaned = val.replace(/[$,]/g, "");
                         const dollars = Number.parseFloat(cleaned);
                         if (Number.isFinite(dollars) && dollars >= 0) {
                           const cents = Math.round(dollars * 100);
-                          setShippingDraft(dollars.toFixed(2));
+                          setShippingDraft(parentType === "order" && dollars === 0 ? "" : dollars.toFixed(2));
                           onShippingCentsChange?.(cents);
                         } else {
                           // Invalid input, reset to last valid value
-                          setShippingDraft(shippingCents != null ? (shippingCents / 100).toFixed(2) : "");
+                          setShippingDraft(
+                            shippingCents != null
+                              ? (parentType === "order" && shippingCents === 0 ? "" : (shippingCents / 100).toFixed(2))
+                              : ""
+                          );
                         }
                       }
 

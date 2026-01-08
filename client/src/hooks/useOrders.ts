@@ -61,6 +61,7 @@ export type Order = {
   tax: string;
   total: string;
   discount: string;
+  shippingCents: number;
   notesInternal: string | null;
   fulfillmentStatus: "pending" | "packed" | "shipped" | "delivered" | null;
   shippingAddress: any;

@@ -1850,6 +1850,7 @@ export const orders = pgTable("orders", {
   carrier: text("carrier"),
   carrierAccountNumber: text("carrier_account_number"),
   shippingInstructions: text("shipping_instructions"),
+  shippingCents: integer("shipping_cents").notNull().default(0), // Shipping/delivery cost in cents
   trackingNumber: text("tracking_number"),
   shippedAt: timestamp("shipped_at", { withTimezone: true, mode: "string" }),
   
