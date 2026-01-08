@@ -398,102 +398,112 @@ export default function QuoteDetail() {
           </div>
         </div>
 
-        {/* Line Items */}
-        <DataCard
-          title="Line Items"
-          className="bg-titan-bg-card border-titan-border-subtle"
-        >
-          <div className="rounded-titan-lg border border-titan-border-subtle overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
-                  <TableHead className="text-titan-text-secondary">Product</TableHead>
-                  <TableHead className="text-titan-text-secondary">Variant</TableHead>
-                  <TableHead className="text-titan-text-secondary">Dimensions</TableHead>
-                  <TableHead className="text-center text-titan-text-secondary">Quantity</TableHead>
-                  <TableHead className="text-right text-titan-text-secondary">Price</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {quote.lineItems?.map((item: any, idx: number) => (
-                  <TableRow key={item.id} className="border-b border-titan-border-subtle hover:bg-titan-bg-card-elevated/50">
-                    <TableCell>
-                      <div className="font-medium text-titan-text-primary">{item.productName}</div>
-                      {item.selectedOptions && item.selectedOptions.length > 0 && (
-                        <div className="text-xs text-titan-text-muted mt-1">
-                          {item.selectedOptions.map((opt: any) => (
-                            <span key={opt.optionId} className="mr-2">
-                              {opt.optionName}
-                              {typeof opt.value !== 'boolean' && `: ${opt.value}`}
-                              {typeof opt.note === 'string' && opt.note.trim() !== '' && ` (${opt.note.trim()})`}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-titan-text-secondary">
-                      {item.variantName || <span className="text-titan-text-muted">—</span>}
-                    </TableCell>
-                    <TableCell>
-                      <span className="font-mono text-titan-sm text-titan-text-secondary">
-                        {parseFloat(item.width).toFixed(2)}" × {parseFloat(item.height).toFixed(2)}"
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="outline" className="border-titan-border text-titan-text-secondary">
-                        {item.quantity}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right font-mono font-medium text-titan-text-primary">
-                      ${parseFloat(item.linePrice).toFixed(2)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+        {/* Two Column Layout: Main Content + Sidebar */}
+        <div className="grid lg:grid-cols-3 gap-6">
+          {/* Main Content - Left Column (Line Items + Totals) */}
+          <div className="lg:col-span-2 space-y-4">
+            {/* Line Items */}
+            <DataCard
+              title="Line Items"
+              className="bg-titan-bg-card border-titan-border-subtle"
+            >
+              <div className="rounded-titan-lg border border-titan-border-subtle overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-titan-bg-card-elevated border-b border-titan-border-subtle">
+                      <TableHead className="text-titan-text-secondary">Product</TableHead>
+                      <TableHead className="text-titan-text-secondary">Variant</TableHead>
+                      <TableHead className="text-titan-text-secondary">Dimensions</TableHead>
+                      <TableHead className="text-center text-titan-text-secondary">Quantity</TableHead>
+                      <TableHead className="text-right text-titan-text-secondary">Price</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {quote.lineItems?.map((item: any, idx: number) => (
+                      <TableRow key={item.id} className="border-b border-titan-border-subtle hover:bg-titan-bg-card-elevated/50">
+                        <TableCell>
+                          <div className="font-medium text-titan-text-primary">{item.productName}</div>
+                          {item.selectedOptions && item.selectedOptions.length > 0 && (
+                            <div className="text-xs text-titan-text-muted mt-1">
+                              {item.selectedOptions.map((opt: any) => (
+                                <span key={opt.optionId} className="mr-2">
+                                  {opt.optionName}
+                                  {typeof opt.value !== 'boolean' && `: ${opt.value}`}
+                                  {typeof opt.note === 'string' && opt.note.trim() !== '' && ` (${opt.note.trim()})`}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-titan-text-secondary">
+                          {item.variantName || <span className="text-titan-text-muted">—</span>}
+                        </TableCell>
+                        <TableCell>
+                          <span className="font-mono text-titan-sm text-titan-text-secondary">
+                            {parseFloat(item.width).toFixed(2)}" × {parseFloat(item.height).toFixed(2)}"
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="outline" className="border-titan-border text-titan-text-secondary">
+                            {item.quantity}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right font-mono font-medium text-titan-text-primary">
+                          ${parseFloat(item.linePrice).toFixed(2)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </DataCard>
+
+            {/* Totals - Now in main content area, bottom left */}
+            <DataCard 
+              title="Totals"
+              className="bg-titan-bg-card border-titan-border-subtle"
+            >
+              <div className="space-y-2">
+                <div className="flex justify-between text-titan-sm">
+                  <span className="text-titan-text-muted">Subtotal</span>
+                  <span className="font-mono text-titan-text-secondary">${parseFloat(quote.subtotal).toFixed(2)}</span>
+                </div>
+                {parseFloat(quote.discountAmount) > 0 && (
+                  <div className="flex justify-between text-titan-sm">
+                    <span className="text-titan-text-muted">Discount</span>
+                    <span className="font-mono text-titan-success">
+                      -${parseFloat(quote.discountAmount).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+                {parseFloat(quote.taxRate ?? "0") > 0 && (
+                  <div className="flex justify-between text-titan-sm">
+                    <span className="text-titan-text-muted">
+                      Tax ({(parseFloat(quote.taxRate ?? "0") * 100).toFixed(2)}%)
+                    </span>
+                    <span className="font-mono text-titan-text-secondary">
+                      ${(parseFloat(quote.subtotal) * parseFloat(quote.taxRate ?? "0")).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+                <div className="border-t border-titan-border-subtle pt-2"></div>
+                <div className="flex justify-between text-titan-lg font-semibold">
+                  <span className="text-titan-text-primary">Total</span>
+                  <span className="font-mono text-titan-text-primary">${parseFloat(quote.totalPrice).toFixed(2)}</span>
+                </div>
+              </div>
+            </DataCard>
           </div>
-        </DataCard>
 
-        {/* Attachments (compact; between Notes and Totals) */}
-        <DataCard
-          title="Attachments"
-          className="bg-titan-bg-card border-titan-border-subtle"
-        >
-          <QuoteAttachmentsPanel quoteId={quote.id} locked={isApprovedLocked} />
-        </DataCard>
-
-        {/* Totals */}
-        <div className="flex justify-end">
-          <DataCard className="w-full md:w-1/2 lg:w-1/3 bg-titan-bg-card border-titan-border-subtle">
-            <div className="space-y-2">
-              <div className="flex justify-between text-titan-sm">
-                <span className="text-titan-text-muted">Subtotal:</span>
-                <span className="font-mono text-titan-text-secondary">${parseFloat(quote.subtotal).toFixed(2)}</span>
-              </div>
-              {parseFloat(quote.discountAmount) > 0 && (
-                <div className="flex justify-between text-titan-sm">
-                  <span className="text-titan-text-muted">Discount:</span>
-                  <span className="font-mono text-titan-success">
-                    -${parseFloat(quote.discountAmount).toFixed(2)}
-                  </span>
-                </div>
-              )}
-              {parseFloat(quote.taxRate ?? "0") > 0 && (
-                <div className="flex justify-between text-titan-sm">
-                  <span className="text-titan-text-muted">
-                    Tax ({(parseFloat(quote.taxRate ?? "0") * 100).toFixed(2)}%):
-                  </span>
-                  <span className="font-mono text-titan-text-secondary">
-                    ${(parseFloat(quote.subtotal) * parseFloat(quote.taxRate ?? "0")).toFixed(2)}
-                  </span>
-                </div>
-              )}
-              <div className="flex justify-between text-titan-lg font-semibold border-t border-titan-border-subtle pt-2">
-                <span className="text-titan-text-primary">Total:</span>
-                <span className="font-mono text-titan-text-primary">${parseFloat(quote.totalPrice).toFixed(2)}</span>
-              </div>
-            </div>
-          </DataCard>
+          {/* Sidebar - Right Column (Attachments) */}
+          <div className="space-y-4">
+            <DataCard
+              title="Attachments"
+              className="bg-titan-bg-card border-titan-border-subtle"
+            >
+              <QuoteAttachmentsPanel quoteId={quote.id} locked={isApprovedLocked} />
+            </DataCard>
+          </div>
         </div>
       </ContentLayout>
       <ConvertQuoteToOrderDialog

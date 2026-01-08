@@ -80,6 +80,14 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
       return json.data || [];
     },
     enabled: !!quoteId,
+    // Auto-refresh while thumbnails are pending (worker polls every 10s)
+    refetchInterval: (query) => {
+      const data = query?.state?.data;
+      const hasPending = data?.some((a: QuoteAttachment) => 
+        a.thumbStatus === 'uploaded' || a.thumbStatus === 'thumb_pending'
+      );
+      return hasPending ? 5000 : false; // Poll every 5s when pending, otherwise don't poll
+    },
   });
 
   const uploadsApiInit = "/api/uploads/init";
@@ -381,6 +389,7 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
               const displayName = a.originalFilename || a.fileName;
               const thumbSrc = getThumbSrc(a as any);
               const isPdf = a.mimeType?.toLowerCase().includes("pdf") || displayName.toLowerCase().endsWith(".pdf");
+              const isPending = a.thumbStatus === 'uploaded' || a.thumbStatus === 'thumb_pending';
 
               const openInViewer = () => {
                 setViewerAttachment(a);
@@ -412,6 +421,13 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
                       ) : (
                         <ImageIcon className="w-8 h-8 text-muted-foreground" />
                       )}
+                    </div>
+                  )}
+
+                  {/* Pending thumbnail indicator */}
+                  {isPending && !thumbSrc && (
+                    <div className="absolute top-1 left-1 rounded-full bg-amber-500/90 p-1" title="Generating thumbnail...">
+                      <Loader2 className="w-3 h-3 text-white animate-spin" />
                     </div>
                   )}
 
