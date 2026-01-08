@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
@@ -178,6 +179,7 @@ export default function InternalQuotes() {
   const [viewerAttachments, setViewerAttachments] = useState<any[]>([]);
   const [viewerInitialIndex, setViewerInitialIndex] = useState(0);
   const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
+  const [attachmentsListOpen, setAttachmentsListOpen] = useState(false);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
 
   const orgIdForPrefs = organization?.id;
@@ -523,10 +525,10 @@ export default function InternalQuotes() {
         clickedIndex = 0;
       }
       
-      // Open gallery viewer with all attachments and clicked index
+      // Open attachments list modal with all attachments
       setViewerAttachments(attachments);
-      setViewerInitialIndex(clickedIndex);
-      setAttachmentViewerOpen(true);
+      setViewerInitialIndex(0); // Reset to list view
+      setAttachmentsListOpen(true);
     } catch (error: any) {
       console.error('[handleThumbnailClick] Error:', error);
       toast({
@@ -580,6 +582,30 @@ export default function InternalQuotes() {
         variant: "destructive"
       });
     }
+  };
+
+  // Handle download all attachments as zip for current quote
+  const handleDownloadAllZip = () => {
+    if (!viewerAttachments || viewerAttachments.length === 0) return;
+    
+    // Get quoteId from first attachment or from selected quote
+    const quoteId = viewerAttachments[0]?.quoteId;
+    if (!quoteId) {
+      toast({
+        title: "Download Failed",
+        description: "Could not determine quote ID.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const zipUrl = `/api/quotes/${quoteId}/attachments.zip`;
+    const anchor = document.createElement("a");
+    anchor.href = zipUrl;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
   };
 
   const handleSort = (key: SortKey) => {
@@ -1554,6 +1580,26 @@ export default function InternalQuotes() {
         </DialogContent>
       </Dialog>
 
+      {/* Attachments List Modal */}
+      <ViewAllAttachmentsDialog
+        open={attachmentsListOpen}
+        onOpenChange={setAttachmentsListOpen}
+        orderAttachments={viewerAttachments.map((a) => ({ ...a, source: "order" as const }))}
+        lineItemAttachments={[]}
+        onViewAttachment={(a) => {
+          const index = viewerAttachments.findIndex((att) => att.id === a.id);
+          setViewerInitialIndex(Math.max(0, index));
+          setAttachmentViewerOpen(true);
+          setAttachmentsListOpen(false);
+        }}
+        onDownload={(a) => {
+          void handleDownloadAttachment(a);
+        }}
+        onDownloadAll={viewerAttachments.length > 0 ? handleDownloadAllZip : undefined}
+        onDeleteAttachment={undefined}
+        canDelete={false}
+      />
+
       {/* Gallery Attachment Viewer */}
       <AttachmentViewerDialog
         attachments={viewerAttachments}
@@ -1566,6 +1612,7 @@ export default function InternalQuotes() {
             setViewerInitialIndex(0);
           }
         }}
+        hideFilmstrip={true}
       />
     </Page>
   );

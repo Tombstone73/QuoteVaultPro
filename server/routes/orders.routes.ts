@@ -3271,7 +3271,7 @@ export async function registerOrderRoutes(
             res.setHeader('Content-Type', 'application/zip');
             res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
 
-            archive.on('error', (err) => {
+            archive.on('error', (err: Error) => {
                 console.error('[OrderAttachmentsZip] Archiver error:', err);
                 if (!res.headersSent) {
                     res.status(500).json({ error: 'Failed to create zip archive' });
