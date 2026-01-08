@@ -97,6 +97,7 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     const [deliveryMethod, setDeliveryMethod] = useState<'pickup' | 'ship' | 'deliver'>('pickup');
+    const [shippingCents, setShippingCents] = useState<number | null>(null);
     const [useCustomerAddress, setUseCustomerAddress] = useState(false);
     const [shippingAddress, setShippingAddress] = useState<Address>({
         street1: '',
@@ -130,6 +131,7 @@ export function useQuoteEditorState() {
         selectedContactId: string | null;
         selectedCustomer: CustomerWithContacts | undefined;
         deliveryMethod: 'pickup' | 'ship' | 'deliver';
+        shippingCents: number | null;
         useCustomerAddress: boolean;
         shippingAddress: Address;
         quoteNotes: string;
@@ -160,6 +162,7 @@ export function useQuoteEditorState() {
         if (requestedDueDate !== snap.requestedDueDate) return true;
         if (Math.abs(discountAmount - snap.discountAmount) > 0.01) return true;
         if (deliveryMethod !== snap.deliveryMethod) return true;
+        if ((shippingCents ?? null) !== snap.shippingCents) return true;
         if (quoteNotes !== snap.quoteNotes) return true;
         if (JSON.stringify(tags) !== JSON.stringify(snap.tags)) return true;
         if (quoteTaxExempt !== snap.quoteTaxExempt) return true;
@@ -431,9 +434,8 @@ export function useQuoteEditorState() {
         const taxableBase = Math.max(0, subtotal - discount);
         const tax = taxableBase * effectiveTaxRate;
 
-        // Grand Total = subtotal - discount + tax + fees (fees default to 0 if not present)
-        // Shipping is currently TBD in UI; keep as 0 for totals.
-        const shippingAmount = 0;
+        // Grand Total = subtotal - discount + tax + shipping + fees
+        const shippingAmount = (shippingCents ?? 0) / 100;
         const fees = 0; // Fees not currently in state; keep as 0
         const grandTotal = taxableBase + tax + shippingAmount + fees;
 
@@ -443,7 +445,7 @@ export function useQuoteEditorState() {
             tax,
             grandTotal,
         };
-    }, [activeLineItems, effectiveDiscount, effectiveTaxRate]);
+    }, [activeLineItems, effectiveDiscount, effectiveTaxRate, shippingCents]);
 
     // Extract individual values for backward compatibility
     const subtotal = computedTotals.subtotal;
@@ -554,7 +556,7 @@ export function useQuoteEditorState() {
             setSelectedCustomer((quote as any).customer as CustomerWithContacts);
         }
 
-        // Quote meta (label / due date / discount)
+        // Quote meta (label / due date / discount / fulfillment)
         const q: any = quote as any;
         setJobLabel(q.label || "");
         // Convert timestamp-ish value to YYYY-MM-DD if present
@@ -574,6 +576,19 @@ export function useQuoteEditorState() {
             setRequestedDueDate("");
         }
         setDiscountAmount(Number.parseFloat(q.discountAmount || "0") || 0);
+        
+        // Hydrate fulfillment method from persisted shippingMethod
+        const persistedShippingMethod = q.shippingMethod as string | null | undefined;
+        if (persistedShippingMethod === "ship") {
+            setDeliveryMethod("ship");
+        } else if (persistedShippingMethod === "deliver") {
+            setDeliveryMethod("deliver");
+        } else {
+            setDeliveryMethod("pickup");
+        }
+        
+        // Hydrate shipping cost from persisted shippingCents
+        setShippingCents(q.shippingCents ?? null);
         
         // Hydrate tags from listLabel (comma-separated string) - only once per quote load
         if (quoteId && quoteId !== hydratedTagsForQuoteIdRef.current) {
@@ -641,6 +656,7 @@ export function useQuoteEditorState() {
             selectedContactId: (quote as any).contactId ?? null,
             selectedCustomer: (quote as any).customer as CustomerWithContacts | undefined,
             deliveryMethod: (quote as any).shippingMethod === "ship" ? "ship" : (quote as any).shippingMethod === "deliver" ? "deliver" : "pickup",
+            shippingCents: (quote as any).shippingCents ?? null,
             useCustomerAddress: false,
             shippingAddress: {
                 street1: (quote as any).shipToAddress1 || "",
@@ -1537,6 +1553,7 @@ export function useQuoteEditorState() {
             label: jobLabel || null,
             requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
             shippingMethod: deliveryMethod,
+            shippingCents: shippingCents,
             shippingInstructions: quoteNotes || null,
             source: "internal",
             hasCustomerId: payloadHasCustomerId,
@@ -1709,6 +1726,7 @@ export function useQuoteEditorState() {
                     selectedContactId: selectedContactId ?? null,
                     selectedCustomer,
                     deliveryMethod,
+                    shippingCents,
                     useCustomerAddress,
                     shippingAddress,
                     quoteNotes,
@@ -2486,6 +2504,7 @@ export function useQuoteEditorState() {
         setSelectedCustomer(snap.selectedCustomer);
         setSelectedContactId(snap.selectedContactId);
         setDeliveryMethod(snap.deliveryMethod);
+        setShippingCents(snap.shippingCents);
         setUseCustomerAddress(snap.useCustomerAddress);
         setShippingAddress(snap.shippingAddress);
         setQuoteNotes(snap.quoteNotes);
@@ -2548,6 +2567,7 @@ export function useQuoteEditorState() {
 
         // Fulfillment
         deliveryMethod,
+        shippingCents,
         shippingAddress,
         quoteNotes,
         useCustomerAddress,
@@ -2627,6 +2647,7 @@ export function useQuoteEditorState() {
 
             // Fulfillment
             setDeliveryMethod,
+            setShippingCents,
             updateShippingAddress: (updates: Partial<Address>) => {
                 setUseCustomerAddress(false);
                 setShippingAddress(prev => ({ ...prev, ...updates }));

@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -24,6 +24,7 @@ type ShipToData = {
   city?: string | null;
   state?: string | null;
   postalCode?: string | null;
+  country?: string | null;
 };
 
 type Shipment = {
@@ -48,10 +49,12 @@ type Customer = {
 
 type OrderFulfillmentPanelProps = {
   mode?: Mode;
+  parentType?: "order" | "quote"; // Controls which sections to show
   fulfillmentMethod: "pickup" | "ship" | "deliver";
   fulfillmentStatus?: string | null;
   shippingInstructions?: string | null;
   shipToData?: ShipToData;
+  shippingCents?: number | null; // Shipping cost in cents (quote mode)
   shipments?: Shipment[];
   isManagerOrHigher?: boolean;
   canEditOrder?: boolean;
@@ -62,6 +65,7 @@ type OrderFulfillmentPanelProps = {
   onFulfillmentStatusChange?: (status: string) => void;
   onShippingInstructionsChange?: (instructions: string | null) => void;
   onShipToChange?: (data: Partial<ShipToData>) => void;
+  onShippingCentsChange?: (cents: number | null) => void; // Save shipping cost (quote mode)
   onGeneratePackingSlip?: () => void;
   onAddShipment?: () => void;
   onEditShipment?: (shipment: Shipment) => void;
@@ -103,10 +107,12 @@ function normalizeNullableString(value: string): string | null {
 
 export function OrderFulfillmentPanel({
   mode = "order",
+  parentType = "order", // Default to order for backward compat
   fulfillmentMethod,
   fulfillmentStatus,
   shippingInstructions,
   shipToData,
+  shippingCents,
   shipments = [],
   isManagerOrHigher = false,
   canEditOrder = false,
@@ -115,6 +121,7 @@ export function OrderFulfillmentPanel({
   onFulfillmentStatusChange,
   onShippingInstructionsChange,
   onShipToChange,
+  onShippingCentsChange,
   onGeneratePackingSlip,
   onAddShipment,
   onEditShipment,
@@ -135,6 +142,18 @@ export function OrderFulfillmentPanel({
 }: OrderFulfillmentPanelProps) {
   const isQuoteMode = mode === "quote";
   const suppressBlurRef = useRef(false);
+
+  // Local draft state for shipping price input (allows typing without blocking)
+  const [shippingDraft, setShippingDraft] = useState<string>(
+    shippingCents != null ? (shippingCents / 100).toFixed(2) : ""
+  );
+
+  // Keep the input in sync when shippingCents hydrates/changes (e.g., reopening a quote)
+  const [isEditingShippingDraft, setIsEditingShippingDraft] = useState(false);
+  useEffect(() => {
+    if (isEditingShippingDraft) return;
+    setShippingDraft(shippingCents != null ? (shippingCents / 100).toFixed(2) : "");
+  }, [shippingCents, isEditingShippingDraft]);
 
   // Refs for ship-to inputs
   const shipToCompanyInputRef = useRef<HTMLInputElement>(null);
@@ -442,7 +461,52 @@ export function OrderFulfillmentPanel({
               )}
             </div>
 
-            {/* Packing Slip */}
+            {/* Shipping Price (Quote Mode Only) */}
+            {parentType === "quote" && fulfillmentMethod === "ship" && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Shipping Price</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                  <Input
+                    type="text"
+                    inputMode="decimal"
+                    value={shippingDraft}
+                    onFocus={() => setIsEditingShippingDraft(true)}
+                    onChange={(e) => {
+                      // Allow partial typing (e.g., "1", "12.", "12.5")
+                      setShippingDraft(e.target.value);
+                    }}
+                    onBlur={(e) => {
+                      const val = e.target.value.trim();
+                      if (val === "" || val === "$") {
+                        setShippingDraft("");
+                        onShippingCentsChange?.(null);
+                      } else {
+                        // Remove any $ symbols and parse
+                        const cleaned = val.replace(/[$,]/g, "");
+                        const dollars = Number.parseFloat(cleaned);
+                        if (Number.isFinite(dollars) && dollars >= 0) {
+                          const cents = Math.round(dollars * 100);
+                          setShippingDraft(dollars.toFixed(2));
+                          onShippingCentsChange?.(cents);
+                        } else {
+                          // Invalid input, reset to last valid value
+                          setShippingDraft(shippingCents != null ? (shippingCents / 100).toFixed(2) : "");
+                        }
+                      }
+
+                      setIsEditingShippingDraft(false);
+                    }}
+                    placeholder="0.00"
+                    className="pl-7"
+                    disabled={!isEditingFulfillment}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Packing Slip (Order Mode Only) */}
+            {parentType === "order" && (
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">Packing Slip</span>
               <Button
@@ -455,9 +519,10 @@ export function OrderFulfillmentPanel({
                 {isGeneratingPackingSlip ? "Generating..." : "Generate & View"}
               </Button>
             </div>
+            )}
 
-            {/* Manual Status Override (Manager+) */}
-            {!isQuoteMode && isManagerOrHigher && onFulfillmentStatusChange && (
+            {/* Manual Status Override (Manager+, Order Mode Only) */}
+            {parentType === "order" && isManagerOrHigher && onFulfillmentStatusChange && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">Manual Status Override</label>
                 <Select
@@ -479,7 +544,8 @@ export function OrderFulfillmentPanel({
 
             <Separator />
 
-            {/* Shipments */}
+            {/* Shipments (Order Mode Only) */}
+            {parentType === "order" && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Shipments ({shipments.length})</span>
@@ -586,6 +652,7 @@ export function OrderFulfillmentPanel({
                 </div>
               )}
             </div>
+            )}
           </>
         )}
       </CardContent>
