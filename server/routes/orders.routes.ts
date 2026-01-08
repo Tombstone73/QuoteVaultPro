@@ -774,6 +774,18 @@ export async function registerOrderRoutes(
                 return res.status(404).json({ message: "Order not found" });
             }
 
+            // Normalize shippingCents server-side (integer cents; never allow pickup + cents > 0)
+            const finalShippingMethod = (req.body.shippingMethod ?? existingOrder.shippingMethod) as string | null | undefined;
+            if (finalShippingMethod === 'pickup') {
+                req.body.shippingCents = 0;
+            } else if (req.body.shippingCents !== undefined) {
+                const raw = Number(req.body.shippingCents);
+                if (!Number.isFinite(raw)) {
+                    return res.status(400).json({ message: "Invalid shippingCents" });
+                }
+                req.body.shippingCents = Math.max(0, Math.floor(raw));
+            }
+
             // Check if order is terminal (completed/canceled)
             const isTerminal = existingOrder.status === 'completed' || existingOrder.status === 'canceled';
 
@@ -843,6 +855,18 @@ export async function registerOrderRoutes(
                 ...(req.body.customerId !== undefined ? { customerId: req.body.customerId } : {}),
                 ...(req.body.contactId !== undefined ? { contactId: req.body.contactId } : {}),
             };
+
+            // If shipping cents or method changed, keep totals consistent by including shipping in total
+            const shippingMethodChangedForTotals = req.body.shippingMethod !== undefined && req.body.shippingMethod !== existingOrder.shippingMethod;
+            const shippingCentsChangedForTotals = req.body.shippingCents !== undefined && req.body.shippingCents !== (existingOrder as any).shippingCents;
+            if (shippingMethodChangedForTotals || shippingCentsChangedForTotals) {
+                const subtotal = Number(updateDataWithCustomer.subtotal ?? existingOrder.subtotal ?? 0);
+                const discount = Number(updateDataWithCustomer.discount ?? existingOrder.discount ?? 0);
+                const tax = Number((updateDataWithCustomer as any).taxAmount ?? (updateDataWithCustomer as any).tax ?? (existingOrder as any).taxAmount ?? existingOrder.tax ?? 0);
+                const cents = Number((updateDataWithCustomer as any).shippingCents ?? (existingOrder as any).shippingCents ?? 0);
+                const shipping = Number.isFinite(cents) ? Math.max(0, Math.floor(cents)) / 100 : 0;
+                (updateDataWithCustomer as any).total = (subtotal - discount + tax + shipping).toFixed(2);
+            }
 
             // Get old values for audit
             const oldOrder = await storage.getOrderById(organizationId, req.params.id);

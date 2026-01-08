@@ -1,10 +1,11 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { DocumentMetaCard } from "@/components/DocumentMetaCard";
-import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { Separator } from "@/components/ui/separator";
+import { formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { Calendar, X } from "lucide-react";
 import { CustomerSelect, type CustomerWithContacts, type CustomerSelectRef } from "@/components/CustomerSelect";
 
@@ -58,6 +59,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
 }, ref) => {
     const [tagInput, setTagInput] = useState("");
     const tagInputRef = useRef<HTMLInputElement | null>(null);
+    const [showCustomerAddress, setShowCustomerAddress] = useState(false);
 
     const selectedContact = selectedContactId
         ? contacts?.find((x: any) => x.id === selectedContactId)
@@ -104,11 +106,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     const customerAddress = resolveAddressLines(null, selectedCustomer);
     const contactAddress = resolveAddressLines(selectedContact, selectedCustomer);
 
-    const handleHoverTriggerKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-        if (e.key === "Escape") {
-            e.currentTarget.blur();
-        }
-    };
+    const hasCustomerAddress = Boolean(customerAddress.line1 || customerAddress.line2);
 
     const commitPendingFlag = () => {
         const v = tagInput.trim();
@@ -145,70 +143,46 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     };
 
     return (
-        <DocumentMetaCard contentClassName="space-y-2 px-4 py-3">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:gap-6">
-                    {/* Left cluster: Customer + Contact */}
-                    <div className="min-w-0 flex-1 space-y-2">
-                        <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Customer</Label>
+        <DocumentMetaCard contentClassName="p-4">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+                {/* Customer + Contact */}
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <div className="space-y-2">
                             {readOnly ? (
-                                (() => {
-                                    const hasDetails = Boolean(customerEmail || customerPhone || customerAddress.line1 || customerAddress.line2);
-                                    const display = (
-                                        <button
-                                            type="button"
-                                            onKeyDown={handleHoverTriggerKeyDown}
-                                            className="w-full text-left min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 text-sm whitespace-normal break-words"
-                                        >
-                                            {customerDisplayLabel}
-                                        </button>
-                                    );
-
-                                    if (!hasDetails) {
-                                        return (
-                                            <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 text-sm whitespace-normal break-words">
-                                                {customerDisplayLabel}
-                                            </div>
-                                        );
-                                    }
-
-                                    return (
+                                <div className="flex items-start justify-between gap-2 min-w-0">
+                                    <div className="min-w-0 flex-1">
                                         <HoverCard openDelay={150} closeDelay={50}>
                                             <HoverCardTrigger asChild>
-                                                {display}
+                                                <span
+                                                    tabIndex={0}
+                                                    className="block truncate text-sm font-semibold leading-5 text-foreground"
+                                                    title={customerDisplayLabel || "—"}
+                                                >
+                                                    {customerDisplayLabel || "—"}
+                                                </span>
                                             </HoverCardTrigger>
-                                            <HoverCardContent className="w-[340px] max-w-[90vw] p-3">
+                                            <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
                                                 <div className="space-y-2">
-                                                    <div className="text-sm font-semibold leading-tight break-words">
-                                                        {customerDisplayLabel}
-                                                    </div>
-                                                    <div className="space-y-1 text-xs text-muted-foreground">
-                                                        {customerEmail && (
-                                                            <div className="break-all">
-                                                                <a className="hover:underline" href={`mailto:${customerEmail}`}>
-                                                                    {customerEmail}
-                                                                </a>
+                                                    {hasCustomerAddress && (
+                                                        <div className="text-sm">
+                                                            <div className="font-medium text-foreground">Billing</div>
+                                                            <div className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">
+                                                                {[customerAddress.line1, customerAddress.line2].filter(Boolean).join("\n") || "—"}
                                                             </div>
-                                                        )}
-                                                        {customerPhone && (
-                                                            <div className="break-all">
-                                                                <a className="hover:underline" href={`tel:${customerPhone}`}>
-                                                                    {customerPhone}
-                                                                </a>
-                                                            </div>
-                                                        )}
-                                                        {(customerAddress.line1 || customerAddress.line2) && (
-                                                            <div className="pt-1 space-y-0.5 whitespace-normal break-words">
-                                                                {customerAddress.line1 && <div>{customerAddress.line1}</div>}
-                                                                {customerAddress.line2 && <div>{customerAddress.line2}</div>}
-                                                            </div>
-                                                        )}
-                                                    </div>
+                                                        </div>
+                                                    )}
+                                                    {(customerEmail || customerPhone) && (
+                                                        <div className="text-xs text-muted-foreground">
+                                                            {customerEmail && <div className="font-mono break-words">{customerEmail}</div>}
+                                                            {customerPhone && <div className="font-mono break-words">{formatPhoneForDisplay(customerPhone)}</div>}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </HoverCardContent>
                                         </HoverCard>
-                                    );
-                                })()
+                                    </div>
+                                </div>
                             ) : (
                                 <CustomerSelect
                                     ref={ref}
@@ -220,69 +194,130 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                     disabled={readOnly}
                                 />
                             )}
-                        </div>
 
-                        <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Contact</Label>
-                            {readOnly ? (
-                                (() => {
-                                    const title = contactLabel;
-                                    const hasDetails = Boolean(contactEmail || contactPhone || contactAddress.line1 || contactAddress.line2);
-                                    const display = (
+                            {hasCustomerAddress && (
+                                <div className="text-[11px] leading-4 text-muted-foreground">
+                                    <div className="hidden print:block">
+                                        {customerAddress.line1 && <div>{customerAddress.line1}</div>}
+                                        {customerAddress.line2 && <div>{customerAddress.line2}</div>}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {showCustomerAddress && (
+                                            <div className="space-y-0.5 print:hidden">
+                                                {customerAddress.line1 && <div>{customerAddress.line1}</div>}
+                                                {customerAddress.line2 && <div>{customerAddress.line2}</div>}
+                                            </div>
+                                        )}
                                         <button
                                             type="button"
-                                            onKeyDown={handleHoverTriggerKeyDown}
-                                            className="w-full text-left min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 text-sm whitespace-normal break-words"
+                                            onClick={() => setShowCustomerAddress((v) => !v)}
+                                            className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
                                         >
-                                            {contactLabel}
+                                            {showCustomerAddress ? "Hide" : "Show"}
                                         </button>
-                                    );
+                                    </div>
+                                </div>
+                            )}
 
-                                    if (!hasDetails) {
-                                        return (
-                                            <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 text-sm whitespace-normal break-words">
-                                                {contactLabel}
+                            {customerEmail && (
+                                <div className="text-[11px] leading-4">
+                                    <a
+                                        href={`mailto:${customerEmail}`}
+                                        className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                        title={customerEmail}
+                                    >
+                                        {customerEmail}
+                                    </a>
+                                </div>
+                            )}
+
+                            {customerPhone && (
+                                <div className="text-[11px] leading-4">
+                                    <a
+                                        href={phoneToTelHref(customerPhone)}
+                                        className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                        title={customerPhone}
+                                    >
+                                        {formatPhoneForDisplay(customerPhone)}
+                                    </a>
+                                </div>
+                            )}
+                        </div>
+
+                        <Separator />
+
+                        <div className="space-y-2">
+                            {readOnly ? (
+                                contactLabel && contactLabel !== "—" ? (
+                                    <>
+                                        <div className="flex items-start justify-between gap-2">
+                                            <HoverCard openDelay={150} closeDelay={50}>
+                                                <HoverCardTrigger asChild>
+                                                    <span
+                                                        tabIndex={0}
+                                                        className="text-sm font-semibold text-foreground flex-1 min-w-0 truncate"
+                                                        title={contactLabel}
+                                                    >
+                                                        {contactLabel}
+                                                    </span>
+                                                </HoverCardTrigger>
+                                                <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
+                                                    <div className="space-y-2">
+                                                        {(contactEmail || contactPhone) && (
+                                                            <div className="text-xs text-muted-foreground">
+                                                                {contactEmail && <div className="font-mono break-words">{contactEmail}</div>}
+                                                                {contactPhone && <div className="font-mono break-words">{formatPhoneForDisplay(contactPhone)}</div>}
+                                                            </div>
+                                                        )}
+                                                        {(selectedContact as any)?.street1 && (
+                                                            <div className="text-xs text-muted-foreground whitespace-pre-wrap">
+                                                                {[
+                                                                    (selectedContact as any)?.street1,
+                                                                    (selectedContact as any)?.street2,
+                                                                    [
+                                                                        (selectedContact as any)?.city,
+                                                                        (selectedContact as any)?.state,
+                                                                    ]
+                                                                        .filter(Boolean)
+                                                                        .join(", "),
+                                                                    (selectedContact as any)?.postalCode,
+                                                                ]
+                                                                    .filter(Boolean)
+                                                                    .join("\n")}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </HoverCardContent>
+                                            </HoverCard>
+                                        </div>
+                                        {contactEmail && (
+                                            <div className="text-[11px] leading-4">
+                                                <a
+                                                    href={`mailto:${contactEmail}`}
+                                                    className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                                    title={contactEmail}
+                                                >
+                                                    {contactEmail}
+                                                </a>
                                             </div>
-                                        );
-                                    }
-
-                                    return (
-                                        <HoverCard openDelay={150} closeDelay={50}>
-                                            <HoverCardTrigger asChild>
-                                                {display}
-                                            </HoverCardTrigger>
-                                            <HoverCardContent className="w-[340px] max-w-[90vw] p-3">
-                                                <div className="space-y-2">
-                                                    <div className="text-sm font-semibold leading-tight break-words">
-                                                        {title}
-                                                    </div>
-                                                    <div className="space-y-1 text-xs text-muted-foreground">
-                                                        {contactEmail && (
-                                                            <div className="break-all">
-                                                                <a className="hover:underline" href={`mailto:${contactEmail}`}>
-                                                                    {contactEmail}
-                                                                </a>
-                                                            </div>
-                                                        )}
-                                                        {contactPhone && (
-                                                            <div className="break-all">
-                                                                <a className="hover:underline" href={`tel:${contactPhone}`}>
-                                                                    {contactPhone}
-                                                                </a>
-                                                            </div>
-                                                        )}
-                                                        {(contactAddress.line1 || contactAddress.line2) && (
-                                                            <div className="pt-1 space-y-0.5 whitespace-normal break-words">
-                                                                {contactAddress.line1 && <div>{contactAddress.line1}</div>}
-                                                                {contactAddress.line2 && <div>{contactAddress.line2}</div>}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </HoverCardContent>
-                                        </HoverCard>
-                                    );
-                                })()
+                                        )}
+                                        {contactPhone && (
+                                            <div className="text-[11px] leading-4">
+                                                <a
+                                                    href={phoneToTelHref(contactPhone)}
+                                                    className="font-mono text-muted-foreground hover:text-foreground hover:underline"
+                                                    title={contactPhone}
+                                                >
+                                                    {formatPhoneForDisplay(contactPhone)}
+                                                </a>
+                                            </div>
+                                        )}
+                                    </>
+                                ) : (
+                                    <div className="flex items-start justify-between gap-2">
+                                        <span className="text-sm text-muted-foreground">—</span>
+                                    </div>
+                                )
                             ) : (
                                 <Select value={selectedContactId || ""} onValueChange={onContactChange} disabled={readOnly}>
                                     <SelectTrigger className="h-9 text-sm">
@@ -300,11 +335,13 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                             )}
                         </div>
                     </div>
+                </div>
 
-                    {/* Center cluster: Job Label + Due date */}
-                    <div className="min-w-0 flex-1 space-y-2">
+                {/* Quote meta (Orders parity: no PO# here) */}
+                <div className="min-w-0 space-y-4">
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                         <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Job Label</Label>
+                            <div className="text-xs text-muted-foreground">Job Label</div>
                             {readOnly ? (
                                 <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 text-sm whitespace-normal break-words">
                                     {jobLabel || "—"}
@@ -320,7 +357,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                         </div>
 
                         <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Due date</Label>
+                            <div className="text-xs text-muted-foreground">Due date</div>
                             {readOnly ? (
                                 <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 flex items-center justify-between text-sm">
                                     <span className="whitespace-normal break-words">{requestedDueDate || "—"}</span>
@@ -339,51 +376,55 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                             )}
                         </div>
                     </div>
-                </div>
 
-                {/* Tags section - only show if handlers are provided (tags are functional) */}
-                {onAddTag && onRemoveTag && (
-                    <div
-                        className="min-h-9 rounded-md bg-muted/30 border border-border/50 px-2 py-1 flex flex-wrap items-center gap-1.5 cursor-text focus-within:ring-1 focus-within:ring-ring/20"
-                        onClick={() => tagInputRef.current?.focus()}
-                        role="group"
-                        aria-label="Tags"
-                    >
-                        {tags.map((t) => (
-                            <Badge key={t} variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center gap-1">
-                                {t}
-                                {!readOnly && (
-                                    <button
-                                        type="button"
-                                        onClick={() => onRemoveTag(t)}
-                                        className="ml-1 hover:bg-secondary/80 rounded-full p-1"
-                                        aria-label={`Remove tag ${t}`}
-                                    >
-                                        <X className="h-3 w-3" />
-                                    </button>
+                    {/* Tags section - only show if handlers are provided (tags are functional) */}
+                    {onAddTag && onRemoveTag && (
+                        <div className="flex items-start gap-3">
+                            <div className="shrink-0 pt-2 text-xs text-muted-foreground">Flags</div>
+                            <div
+                                className="min-h-9 flex-1 rounded-md bg-muted/30 border border-border/50 px-2 py-1 flex flex-wrap items-center gap-1.5 cursor-text focus-within:ring-1 focus-within:ring-ring/20"
+                                onClick={() => tagInputRef.current?.focus()}
+                                role="group"
+                                aria-label="Flags"
+                            >
+                                {tags.map((t) => (
+                                    <Badge key={t} variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center gap-1">
+                                        {t}
+                                        {!readOnly && (
+                                            <button
+                                                type="button"
+                                                onClick={() => onRemoveTag(t)}
+                                                className="ml-1 hover:bg-secondary/80 rounded-full p-1"
+                                                aria-label={`Remove flag ${t}`}
+                                            >
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        )}
+                                    </Badge>
+                                ))}
+
+                                {readOnly ? (
+                                    tags.length === 0 ? (
+                                        <span className="text-xs text-muted-foreground">—</span>
+                                    ) : null
+                                ) : (
+                                    <Badge variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center">
+                                        <input
+                                            ref={tagInputRef}
+                                            value={tagInput}
+                                            onChange={(e) => setTagInput(e.target.value)}
+                                            onKeyDown={handleTagKeyDown}
+                                            onBlur={commitPendingFlag}
+                                            placeholder="Add Flag"
+                                            className="w-[7rem] min-w-[7rem] bg-transparent outline-none text-xs font-semibold placeholder:text-muted-foreground/70"
+                                        />
+                                    </Badge>
                                 )}
-                            </Badge>
-                        ))}
-
-                        {readOnly ? (
-                            tags.length === 0 ? (
-                                <span className="text-xs text-muted-foreground">—</span>
-                            ) : null
-                        ) : (
-                            <Badge variant="secondary" className="h-7 px-2.5 py-0.5 text-xs flex items-center">
-                                <input
-                                    ref={tagInputRef}
-                                    value={tagInput}
-                                    onChange={(e) => setTagInput(e.target.value)}
-                                    onKeyDown={handleTagKeyDown}
-                                    onBlur={commitPendingFlag}
-                                    placeholder="Add Tag"
-                                    className="w-[7rem] min-w-[7rem] bg-transparent outline-none text-xs font-semibold placeholder:text-muted-foreground/70"
-                                />
-                            </Badge>
-                        )}
-                    </div>
-                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
         </DocumentMetaCard>
     );
 });
