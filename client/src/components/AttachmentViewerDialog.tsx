@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Download, FileText, ExternalLink } from "lucide-react";
+import { Download, FileText, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
 import { getAttachmentDisplayName, isPdfAttachment } from "@/lib/attachments";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfViewUrl, buildPdfDownloadUrl, isPdfFile, checkPdfUrlReachable } from "@/lib/pdfUrls";
+import { getThumbSrc } from "@/lib/getThumbSrc";
+import { cn } from "@/lib/utils";
 
 type AttachmentPage = {
   id: string;
@@ -40,7 +42,12 @@ type AttachmentData = {
 };
 
 interface AttachmentViewerDialogProps {
-  attachment: AttachmentData | null;
+  /** Single attachment (legacy mode) - if provided without attachments array, shows single item */
+  attachment?: AttachmentData | null;
+  /** Gallery mode: array of attachments to browse */
+  attachments?: AttachmentData[];
+  /** Gallery mode: initial index to select (default: 0) */
+  initialIndex?: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDownload?: (attachment: AttachmentData) => void;
@@ -49,18 +56,74 @@ interface AttachmentViewerDialogProps {
 /**
  * Reusable attachment viewer dialog for displaying file previews with download capability
  * Used across quotes list, order details, and other attachment contexts
+ * 
+ * Supports two modes:
+ * 1. Single mode: Pass `attachment` prop for single attachment viewing
+ * 2. Gallery mode: Pass `attachments` array for browsing with left/right arrows
  */
 export function AttachmentViewerDialog({ 
-  attachment, 
+  attachment: singleAttachment,
+  attachments,
+  initialIndex = 0,
   open, 
   onOpenChange,
   onDownload 
 }: AttachmentViewerDialogProps) {
-  if (!attachment) return null;
-
   const isDev = import.meta.env.DEV;
   const [showFallback, setShowFallback] = useState(false);
   const [urlReachable, setUrlReachable] = useState<boolean | null>(null);
+  
+  // Gallery mode state
+  const isGalleryMode = !!attachments && attachments.length > 0;
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex);
+  
+  // Reset selected index when dialog opens or initialIndex changes
+  useEffect(() => {
+    if (open) {
+      setSelectedIndex(initialIndex);
+    }
+  }, [open, initialIndex]);
+  
+  // Derive current attachment from gallery or single mode
+  const attachment = isGalleryMode 
+    ? attachments[selectedIndex] ?? null
+    : singleAttachment ?? null;
+  
+  if (!attachment) return null;
+  
+  // Navigation handlers
+  const canGoPrev = isGalleryMode && selectedIndex > 0;
+  const canGoNext = isGalleryMode && selectedIndex < attachments.length - 1;
+  
+  const handlePrev = () => {
+    if (canGoPrev) {
+      setSelectedIndex(i => Math.max(0, i - 1));
+    }
+  };
+  
+  const handleNext = () => {
+    if (canGoNext && attachments) {
+      setSelectedIndex(i => Math.min(attachments.length - 1, i + 1));
+    }
+  };
+  
+  // Keyboard navigation
+  useEffect(() => {
+    if (!open || !isGalleryMode) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft' && canGoPrev) {
+        e.preventDefault();
+        handlePrev();
+      } else if (e.key === 'ArrowRight' && canGoNext) {
+        e.preventDefault();
+        handleNext();
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, isGalleryMode, canGoPrev, canGoNext, selectedIndex]);
 
   const fileName = getAttachmentDisplayName(attachment);
   const objectPath = attachment.objectPath as string | null | undefined;
@@ -140,7 +203,14 @@ export function AttachmentViewerDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{fileName}</DialogTitle>
+          <DialogTitle>
+            {fileName}
+            {isGalleryMode && (
+              <span className="text-sm font-normal text-muted-foreground ml-2">
+                ({selectedIndex + 1} of {attachments.length})
+              </span>
+            )}
+          </DialogTitle>
           <DialogDescription>
             <div className="space-y-1">
               {attachment.mimeType ? (
@@ -157,6 +227,33 @@ export function AttachmentViewerDialog({
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* Gallery Navigation Arrows */}
+          {isGalleryMode && (canGoPrev || canGoNext) && (
+            <div className="relative">
+              {canGoPrev && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 z-10 bg-background/80 backdrop-blur-sm hover:bg-background/95"
+                  onClick={handlePrev}
+                  title="Previous attachment (←)"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </Button>
+              )}
+              {canGoNext && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 z-10 bg-background/80 backdrop-blur-sm hover:bg-background/95"
+                  onClick={handleNext}
+                  title="Next attachment (→)"
+                >
+                  <ChevronRight className="w-5 h-5" />
+                </Button>
+              )}
+            </div>
+          )}
           {/* Images: standard img tag */}
           {imageViewUrl && isImage ? (
             <div className="flex justify-center bg-muted/30 rounded-lg p-4">
@@ -294,6 +391,48 @@ export function AttachmentViewerDialog({
               </div>
             )}
           </div>
+          
+          {/* Thumbnail Strip for Gallery Mode */}
+          {isGalleryMode && attachments.length > 1 && (
+            <div className="border-t border-border pt-4">
+              <div className="flex gap-2 overflow-x-auto pb-2">
+                {attachments.map((att, idx) => {
+                  const thumbSrc = getThumbSrc(att as any);
+                  const displayName = getAttachmentDisplayName(att);
+                  const isSelected = idx === selectedIndex;
+                  const isPdf = isPdfFile(att.mimeType, displayName);
+                  
+                  return (
+                    <button
+                      key={att.id}
+                      type="button"
+                      onClick={() => setSelectedIndex(idx)}
+                      className={cn(
+                        "flex-shrink-0 w-16 h-16 rounded border-2 overflow-hidden transition-all",
+                        isSelected 
+                          ? "border-primary ring-2 ring-primary ring-offset-2" 
+                          : "border-border hover:border-primary/50"
+                      )}
+                      title={displayName}
+                    >
+                      {thumbSrc ? (
+                        <img
+                          src={thumbSrc}
+                          alt={displayName}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-muted">
+                          <FileText className="w-6 h-6 text-muted-foreground" />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

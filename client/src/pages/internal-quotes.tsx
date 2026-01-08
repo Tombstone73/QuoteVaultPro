@@ -174,8 +174,9 @@ export default function InternalQuotes() {
   const [editingField, setEditingField] = useState<'listLabel' | 'jobLabel' | null>(null);
   const [tempLabel, setTempLabel] = useState("");
 
-  // Attachment viewer state
-  const [selectedAttachment, setSelectedAttachment] = useState<any>(null);
+  // Attachment viewer state (gallery mode)
+  const [viewerAttachments, setViewerAttachments] = useState<any[]>([]);
+  const [viewerInitialIndex, setViewerInitialIndex] = useState(0);
   const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
 
@@ -479,7 +480,7 @@ export default function InternalQuotes() {
     }
   };
 
-  // Handle thumbnail click - fetch attachment details and open viewer
+  // Handle thumbnail click - fetch attachment details and open viewer (gallery mode)
   const handleThumbnailClick = async (quoteId: string, thumbKey: string) => {
     setLoadingAttachments(quoteId);
     
@@ -496,40 +497,40 @@ export default function InternalQuotes() {
       const result = await response.json();
       const attachments = result.data || [];
       
-      // Find the attachment matching this thumbnail
-      // thumbKey format: "uploads/org_xxx/quotes/quote_xxx/attachment_xxx.thumb.jpg"
-      // We need to match by finding the attachment whose thumbKey matches
-      let matchedAttachment = attachments.find((att: any) => att.thumbKey === thumbKey);
+      if (attachments.length === 0) {
+        toast({
+          title: "No attachments found",
+          description: "This quote has no attachments.",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      // Find the index of the clicked thumbnail
+      let clickedIndex = attachments.findIndex((att: any) => att.thumbKey === thumbKey);
       
       // Fallback: if no exact match, try finding by attachment ID in thumbKey
-      if (!matchedAttachment && thumbKey.includes('attachment_')) {
+      if (clickedIndex === -1 && thumbKey.includes('attachment_')) {
         const attachmentIdMatch = thumbKey.match(/attachment_([^.\/]+)/);
         if (attachmentIdMatch) {
           const attachmentId = attachmentIdMatch[1];
-          matchedAttachment = attachments.find((att: any) => att.id.includes(attachmentId));
+          clickedIndex = attachments.findIndex((att: any) => att.id.includes(attachmentId));
         }
       }
       
-      // If still no match, use first attachment as fallback
-      if (!matchedAttachment && attachments.length > 0) {
-        matchedAttachment = attachments[0];
+      // Default to first attachment if no match found
+      if (clickedIndex === -1) {
+        clickedIndex = 0;
       }
       
-      if (matchedAttachment) {
-        // Ensure quoteId is available for download
-        setSelectedAttachment({ ...matchedAttachment, quoteId });
-        setAttachmentViewerOpen(true);
-      } else {
-        toast({
-          title: "No attachment found",
-          description: "Could not locate the attachment details.",
-          variant: "destructive"
-        });
-      }
+      // Open gallery viewer with all attachments and clicked index
+      setViewerAttachments(attachments);
+      setViewerInitialIndex(clickedIndex);
+      setAttachmentViewerOpen(true);
     } catch (error: any) {
       console.error('[handleThumbnailClick] Error:', error);
       toast({
-        title: "Failed to load attachment",
+        title: "Failed to load attachments",
         description: error.message || "Could not fetch attachment details.",
         variant: "destructive"
       });
@@ -1553,12 +1554,18 @@ export default function InternalQuotes() {
         </DialogContent>
       </Dialog>
 
-      {/* Attachment Viewer Modal */}
+      {/* Gallery Attachment Viewer */}
       <AttachmentViewerDialog
-        attachment={selectedAttachment}
+        attachments={viewerAttachments}
+        initialIndex={viewerInitialIndex}
         open={attachmentViewerOpen}
-        onOpenChange={setAttachmentViewerOpen}
-        onDownload={(att) => handleDownloadAttachment(att, selectedAttachment?.quoteId)}
+        onOpenChange={(open) => {
+          setAttachmentViewerOpen(open);
+          if (!open) {
+            setViewerAttachments([]);
+            setViewerInitialIndex(0);
+          }
+        }}
       />
     </Page>
   );
