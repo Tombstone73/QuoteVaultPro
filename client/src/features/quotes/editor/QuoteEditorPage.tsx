@@ -16,7 +16,6 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
-import { FulfillmentCard } from "./components/FulfillmentCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
 import { CustomerInfoFooter } from "./components/CustomerInfoFooter";
@@ -25,6 +24,7 @@ import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/
 import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { QuoteAttachmentsPanel } from "@/components/QuoteAttachmentsPanel";
 import { TimelinePanel } from "@/components/TimelinePanel";
+import { OrderFulfillmentPanel } from "@/components/orders/OrderFulfillmentPanel";
 import type { CustomerSelectRef } from "@/components/CustomerSelect";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 
@@ -809,9 +809,9 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                     </Alert>
                 )}
 
-                {/* Two-column layout: Left (Customer + Line Items) | Right (Summary) */}
+                {/* Two-column layout: Left (Customer + Line Items + Totals) | Right (Fulfillment + Attachments) */}
                 <div className="grid gap-6 mt-6 lg:grid-cols-[1fr_400px]">
-                    {/* LEFT COLUMN: Customer + Line Items */}
+                    {/* LEFT COLUMN: Customer + Line Items + Totals */}
                     <div className="space-y-6">
                         {/* Customer & Details Panel */}
                         <CustomerCard
@@ -856,30 +856,82 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             ensureQuoteId={ensureQuoteId}
                             ensureLineItemId={state.handlers.ensureLineItemId}
                         />
+
+                        {/* Quote Summary / Totals - Moved to left column */}
+                        <SummaryCard
+                            lineItems={state.lineItems}
+                            products={state.products}
+                            subtotal={state.subtotal}
+                            taxAmount={state.taxAmount}
+                            grandTotal={state.grandTotal}
+                            effectiveTaxRate={state.effectiveTaxRate}
+                            discountAmount={state.discountAmount}
+                            deliveryMethod={state.deliveryMethod}
+                            selectedCustomer={state.selectedCustomer}
+                            selectedContactId={state.selectedContactId}
+                            pricingStale={state.pricingStale}
+                            canSaveQuote={state.canSaveQuote}
+                            isSaving={state.isSaving}
+                            hasUnsavedChanges={state.hasUnsavedChanges}
+                            readOnly={readOnly}
+                            onSave={handleSave}
+                            onSaveAndBack={preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack}
+                            afterSaveNavigation={preferences.afterSaveNavigation}
+                            onConvertToOrder={() => setShowConvertDialog(true)}
+                            canConvertToOrder={state.canConvertToOrder}
+                            convertToOrderPending={state.convertToOrderHook?.isPending}
+                            showConvertToOrder={!editMode && !!state.quoteId}
+                            onDiscard={handleDiscard}
+                            onDiscountAmountChange={state.handlers.setDiscountAmount}
+                            quoteTaxExempt={state.quoteTaxExempt}
+                            quoteTaxRateOverride={state.quoteTaxRateOverride}
+                            onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
+                            onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
+                            workflowState={workflowState || undefined}
+                            requireApproval={orgPreferences?.quotes?.requireApproval || false}
+                            isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
+                            onApprove={handleApprove}
+                            onApproveAndSend={handleApproveAndSend}
+                            onRequestApproval={handleRequestApproval}
+                            isApproving={approveMutation.isPending}
+                            isApprovingAndSending={approveAndSendMutation.isPending}
+                            isRequestingApproval={requestApprovalMutation.isPending}
+                        />
                     </div>
 
-                    {/* RIGHT COLUMN: Fulfillment + Quote Summary + Actions */}
+                    {/* RIGHT COLUMN: Fulfillment + Attachments + Info */}
                     <div className="space-y-6 lg:sticky lg:top-4 h-fit">
-                        {/* Fulfillment Panel */}
-                        <FulfillmentCard
-                            deliveryMethod={state.deliveryMethod}
-                            shippingAddress={state.shippingAddress}
-                            quoteNotes={state.quoteNotes}
-                            selectedCustomer={state.selectedCustomer}
-                            useCustomerAddress={state.useCustomerAddress}
-                            customerHasAddress={!!state.customerHasAddress}
-                            readOnly={readOnly}
-                            onDeliveryMethodChange={state.handlers.setDeliveryMethod}
-                            onShippingAddressChange={state.handlers.updateShippingAddress}
-                            onQuoteNotesChange={state.handlers.setQuoteNotes}
-                            onCopyCustomerAddress={state.handlers.handleCopyCustomerAddress}
+                        {/* Fulfillment & Shipping Panel - Reuses Orders component */}
+                        <OrderFulfillmentPanel
+                            mode="quote"
+                            fulfillmentMethod={state.deliveryMethod as 'pickup' | 'ship' | 'deliver'}
+                            shipToData={{
+                                company: state.selectedCustomer?.companyName,
+                                name: (() => {
+                                    const contact = state.selectedCustomer?.contacts?.find(c => c.id === state.selectedContactId);
+                                    if (!contact) return undefined;
+                                    return [contact.firstName, contact.lastName].filter(Boolean).join(' ');
+                                })(),
+                                email: state.selectedCustomer?.contacts?.find(c => c.id === state.selectedContactId)?.email,
+                                phone: state.selectedCustomer?.contacts?.find(c => c.id === state.selectedContactId)?.phone,
+                                address1: state.shippingAddress.street1,
+                                address2: state.shippingAddress.street2,
+                                city: state.shippingAddress.city,
+                                state: state.shippingAddress.state,
+                                postalCode: state.shippingAddress.postalCode,
+                            }}
+                            shippingInstructions={state.quoteNotes}
+                            canEditOrder={!readOnly}
+                            onFulfillmentMethodChange={!readOnly ? state.handlers.setDeliveryMethod : undefined}
+                            onShippingInstructionsChange={!readOnly ? ((instructions: string | null) => state.handlers.setQuoteNotes(instructions ?? '')) : undefined}
                         />
 
-                        {/* Attachments (between Notes and Totals) */}
+                        {/* Attachments - Now more prominent in right column */}
                         {!!state.quoteId && (
                             <Card>
                                 <CardHeader className="pb-3">
-                                    <CardTitle className="text-xs font-medium text-muted-foreground">Attachments</CardTitle>
+                                    <CardTitle className="text-base font-medium">Attachments</CardTitle>
+                                    <CardDescription>Add POs, instructions, artwork files, etc.</CardDescription>
                                 </CardHeader>
                                 <CardContent>
                                     <QuoteAttachmentsPanel quoteId={state.quoteId} locked={isLocked} />
@@ -887,78 +939,37 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             </Card>
                         )}
 
-                        <div className="space-y-6">
-                            {/* Quote Summary */}
-                            <SummaryCard
-                                lineItems={state.lineItems}
-                                products={state.products}
-                                subtotal={state.subtotal}
-                                taxAmount={state.taxAmount}
-                                grandTotal={state.grandTotal}
-                                effectiveTaxRate={state.effectiveTaxRate}
-                                discountAmount={state.discountAmount}
-                                deliveryMethod={state.deliveryMethod}
-                                selectedCustomer={state.selectedCustomer}
-                                selectedContactId={state.selectedContactId}
-                                pricingStale={state.pricingStale}
-                                canSaveQuote={state.canSaveQuote}
-                                isSaving={state.isSaving}
-                                hasUnsavedChanges={state.hasUnsavedChanges}
-                                readOnly={readOnly}
-                                onSave={handleSave}
-                                onSaveAndBack={preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack}
-                                afterSaveNavigation={preferences.afterSaveNavigation}
-                                onConvertToOrder={() => setShowConvertDialog(true)}
-                                canConvertToOrder={state.canConvertToOrder}
-                                convertToOrderPending={state.convertToOrderHook?.isPending}
-                                showConvertToOrder={!editMode && !!state.quoteId}
-                                onDiscard={handleDiscard}
-                                onDiscountAmountChange={state.handlers.setDiscountAmount}
-                                quoteTaxExempt={state.quoteTaxExempt}
-                                quoteTaxRateOverride={state.quoteTaxRateOverride}
-                                onQuoteTaxExemptChange={state.handlers.setQuoteTaxExempt}
-                                onQuoteTaxRateOverrideChange={state.handlers.setQuoteTaxRateOverride}
-                                workflowState={workflowState || undefined}
-                                requireApproval={orgPreferences?.quotes?.requireApproval || false}
-                                isInternalUser={user ? ['owner', 'admin', 'manager', 'employee'].includes((user.role || '').toLowerCase()) : false}
-                                onApprove={handleApprove}
-                                onApproveAndSend={handleApproveAndSend}
-                                onRequestApproval={handleRequestApproval}
-                                isApproving={approveMutation.isPending}
-                                isApprovingAndSending={approveAndSendMutation.isPending}
-                                isRequestingApproval={requestApprovalMutation.isPending}
-                            />
+                        {/* Customer Info Footer */}
+                        <CustomerInfoFooter
+                            selectedCustomer={state.selectedCustomer}
+                            selectedContactId={state.selectedContactId}
+                        />
 
-                            <CustomerInfoFooter
-                                selectedCustomer={state.selectedCustomer}
-                                selectedContactId={state.selectedContactId}
-                            />
+                        {/* Timeline */}
+                        <Card className="rounded-lg border border-border/40 bg-card/30">
+                            <CardContent className="p-4">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="text-[11px] font-medium text-muted-foreground">Timeline</div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setTimelineOpen(v => !v)}
+                                        className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4"
+                                    >
+                                        {timelineOpen ? "Hide" : "Show"}
+                                    </button>
+                                </div>
 
-                            <Card className="rounded-lg border border-border/40 bg-card/30">
-                                <CardContent className="p-4">
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="text-[11px] font-medium text-muted-foreground">Timeline</div>
-                                        <button
-                                            type="button"
-                                            onClick={() => setTimelineOpen(v => !v)}
-                                            className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4"
-                                        >
-                                            {timelineOpen ? "Hide" : "Show"}
-                                        </button>
+                                {timelineOpen ? (
+                                    <div className="mt-3">
+                                        <TimelinePanel
+                                            quoteId={state.quoteId ?? undefined}
+                                            orderId={convertedToOrderId ?? undefined}
+                                            limit={100}
+                                        />
                                     </div>
-
-                                    {timelineOpen ? (
-                                        <div className="mt-3">
-                                            <TimelinePanel
-                                                quoteId={state.quoteId ?? undefined}
-                                                orderId={convertedToOrderId ?? undefined}
-                                                limit={100}
-                                            />
-                                        </div>
-                                    ) : null}
-                                </CardContent>
-                            </Card>
-                        </div>
+                                ) : null}
+                            </CardContent>
+                        </Card>
                     </div>
                 </div>
             </div>
