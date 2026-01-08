@@ -498,7 +498,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
       <ViewAllAttachmentsDialog
         open={viewAllOpen}
         onOpenChange={setViewAllOpen}
-        orderAttachments={attachments.map((a) => ({ ...a, source: "order" as const }))}
+        orderAttachments={attachments.map((a) => ({ ...a, source: "order" as const, orderId }))}
         lineItemAttachments={[]}
         onViewAttachment={(a) => {
           const allAttachments = attachments.map((att) => ({ ...att, source: "order" as const }));
@@ -513,6 +513,8 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
         onDownload={handleDownloadAttachment}
         onDeleteAttachment={(a) => setAttachmentToDelete(a as any)}
         canDelete={!isLocked}
+        orderId={orderId}
+        parentType="order"
       />
 
       <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => (!open ? setAttachmentToDelete(null) : undefined)}>

@@ -27,7 +27,7 @@ import {
   orderLineItems,
   assets,
 } from "@shared/schema";
-import { eq, desc, and, isNull, isNotNull, inArray } from "drizzle-orm";
+import { eq, desc, and, isNull, isNotNull, inArray, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import {
   getRequestOrganizationId,
@@ -52,6 +52,7 @@ import { ObjectStorageService, ObjectNotFoundError } from "../objectStorage";
 import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { normalizeTenantObjectKey } from "../utils/orgKeys";
+import type { DownloadIntent } from "@shared/schema";
 
 let hasLoggedPdfObjectsResponse = false;
 
@@ -117,6 +118,55 @@ function getFrameAncestors(req: any): string[] {
   const origin = typeof req.get === "function" ? req.get("origin") : undefined;
   const inferred = toOrigin(referer) ?? toOrigin(origin);
   return inferred ? uniq(["'self'", inferred]) : ["'self'"];
+}
+
+/**
+ * Resolves which file to download for an attachment based on download intent.
+ * 
+ * @param attachment - Attachment record with fileUrl, relativePath, etc.
+ * @param intent - Download intent (original/print/proof/preferred)
+ * @returns Object with displayFilename and objectPath (storage key)
+ * 
+ * TODO: When file variants are implemented in the database:
+ * - For "print": Check attachment.printReadyKey, fall back to original
+ * - For "proof": Check attachment.proofKey, fall back to original  
+ * - For "preferred": Try print > proof > original in that order
+ * - For "original": Always use original file
+ * 
+ * CURRENT BEHAVIOR: All intents resolve to original file (no variants yet).
+ */
+function resolveAttachmentDownloadTarget(
+  attachment: {
+    id: string;
+    fileName: string;
+    originalFilename?: string | null;
+    fileUrl?: string | null;
+    relativePath?: string | null;
+  },
+  intent: DownloadIntent
+): { displayFilename: string; objectPath: string | null } {
+  // TODO: Add variant resolution logic when database schema supports it
+  // For now, ignore intent and always return original file
+  
+  const displayFilename = String(attachment.originalFilename || attachment.fileName || `attachment-${attachment.id}`);
+  
+  // Extract objectPath from fileUrl or use relativePath
+  let objectPath: string | null = null;
+  
+  // Priority 1: /objects/ URLs (Supabase)
+  if (attachment.fileUrl && attachment.fileUrl.startsWith('/objects/')) {
+    objectPath = attachment.fileUrl.replace('/objects/', '').split('?')[0];
+  } 
+  // Priority 2: relativePath field (local storage)
+  else if (attachment.relativePath) {
+    objectPath = attachment.relativePath;
+  }
+  // Priority 3: fileUrl as direct path (for uploads/* paths stored directly)
+  else if (attachment.fileUrl && !attachment.fileUrl.startsWith('http')) {
+    objectPath = attachment.fileUrl;
+  }
+  
+  return { displayFilename, objectPath };
 }
 
 // Type alias for authentication
@@ -1500,6 +1550,7 @@ export async function registerAttachmentRoutes(
   /**
    * GET /api/quotes/:quoteId/attachments/:attachmentId/download/proxy
    * Download proxy for quote-level attachment - streams file with correct filename and content-type.
+   * Supports optional ?intent=original|print|proof|preferred query param (defaults to "original").
    */
   app.get(
     "/api/quotes/:quoteId/attachments/:attachmentId/download/proxy",
@@ -1508,6 +1559,11 @@ export async function registerAttachmentRoutes(
     async (req: any, res) => {
       try {
         const { quoteId, attachmentId } = req.params;
+        const intentParam = (req.query.intent || "original").toString();
+        const downloadIntent: DownloadIntent = ["original", "print", "proof", "preferred"].includes(intentParam)
+          ? (intentParam as DownloadIntent)
+          : "original";
+        
         const organizationId = getRequestOrganizationId(req);
         if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
@@ -1534,17 +1590,22 @@ export async function registerAttachmentRoutes(
 
         if (!attachment) return res.status(404).json({ error: "Attachment not found" });
 
-        const resolvedName = attachment.originalFilename || attachment.fileName;
-        res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
+        // Use resolver to get target file (currently returns original regardless of intent)
+        const resolved = resolveAttachmentDownloadTarget(attachment, downloadIntent);
+        if (!resolved.objectPath) {
+          return res.status(404).json({ error: "File path not found" });
+        }
+
+        res.setHeader("Content-Disposition", `attachment; filename="${resolved.displayFilename}"`);
         res.setHeader("Content-Type", attachment.mimeType || "application/octet-stream");
 
         if (
           isSupabaseConfigured() &&
-          (attachment.storageProvider === "supabase" || (attachment.fileUrl || "").startsWith("uploads/"))
+          (attachment.storageProvider === "supabase" || (resolved.objectPath || "").startsWith("uploads/"))
         ) {
           const { SupabaseStorageService } = await import("../supabaseStorage");
           const supabaseService = new SupabaseStorageService();
-          const signedUrl = await supabaseService.getSignedDownloadUrl(attachment.fileUrl, 3600);
+          const signedUrl = await supabaseService.getSignedDownloadUrl(resolved.objectPath, 3600);
           const fileResponse = await fetch(signedUrl);
           if (!fileResponse.ok) throw new Error("Failed to fetch file from storage");
           const buffer = await fileResponse.arrayBuffer();
@@ -1554,7 +1615,7 @@ export async function registerAttachmentRoutes(
         // Local storage fallback
         const { resolveLocalStoragePath } = await import("../services/localStoragePath");
         const fs = await import("fs");
-        const absPath = resolveLocalStoragePath(attachment.fileUrl);
+        const absPath = resolveLocalStoragePath(resolved.objectPath);
         const stream = fs.createReadStream(absPath);
         stream.on("error", (err) => {
           console.error("[QuoteAttachments:DOWNLOAD:PROXY] Local stream error:", err);
@@ -1772,6 +1833,343 @@ export async function registerAttachmentRoutes(
       await archive.finalize();
     } catch (error) {
       console.error('[QuoteAttachmentsZip:GET] Error:', error);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Failed to generate zip archive' });
+      }
+    }
+  });
+
+  // Universal bulk zip download endpoint (supports both attachmentIds and modal scope)
+  app.post('/api/attachments/zip', isAuthenticated, tenantContext, async (req: any, res) => {
+    console.info('[zip] Route handler hit', { url: req.originalUrl, method: req.method, bodyKeys: Object.keys(req.body ?? {}) });
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+      const { attachmentIds, scope, parentType, parentId, intent = "original" } = req.body;
+      
+      // Validate intent if provided
+      const downloadIntent: DownloadIntent = ["original", "print", "proof", "preferred"].includes(intent)
+        ? intent
+        : "original";
+
+      let attachmentsToInclude: Array<{
+        id: string;
+        fileName: string;
+        originalFilename?: string | null;
+        fileUrl?: string | null;
+        relativePath?: string | null;
+        orderLineItemId?: string | null;
+      }> = [];
+
+      // Mode 1: Specific attachment IDs
+      if (attachmentIds && Array.isArray(attachmentIds) && attachmentIds.length > 0) {
+        // Ensure all IDs are strings (not undefined/null)
+        const validIds = attachmentIds.filter((id) => id && typeof id === 'string');
+        
+        if (validIds.length === 0) {
+          return res.status(400).json({ error: 'No valid attachment IDs provided' });
+        }
+
+        // DEBUG
+        if (process.env.DEBUG_ZIP === '1') {
+          console.info('[zip] Mode 1: Selected IDs', { count: validIds.length, sampleIds: validIds.slice(0, 3) });
+        }
+
+        // Try ORDER attachments first
+        const orderAttachmentRows = await db
+          .select({
+            id: orderAttachments.id,
+            fileName: orderAttachments.fileName,
+            originalFilename: orderAttachments.originalFilename,
+            fileUrl: orderAttachments.fileUrl,
+            relativePath: orderAttachments.relativePath,
+            orderLineItemId: orderAttachments.orderLineItemId,
+          })
+          .from(orderAttachments)
+          .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+          .where(
+            and(
+              inArray(orderAttachments.id, validIds),
+              eq(orders.organizationId, organizationId)
+            )
+          );
+
+        // DEBUG
+        if (process.env.DEBUG_ZIP === '1') {
+          console.info('[zip] Mode 1: orderAttachmentRows', { count: orderAttachmentRows.length });
+        }
+
+        // If no order attachments found, try QUOTE attachments
+        if (orderAttachmentRows.length === 0) {
+          const quoteAttachmentRows = await db
+            .select({
+              id: quoteAttachments.id,
+              fileName: quoteAttachments.fileName,
+              originalFilename: quoteAttachments.originalFilename,
+              fileUrl: quoteAttachments.fileUrl,
+              relativePath: quoteAttachments.relativePath,
+              orderLineItemId: sql<string | null>`NULL`.as('orderLineItemId'),
+            })
+            .from(quoteAttachments)
+            .innerJoin(quotes, eq(quotes.id, quoteAttachments.quoteId))
+            .where(
+              and(
+                inArray(quoteAttachments.id, validIds),
+                eq(quotes.organizationId, organizationId)
+              )
+            );
+          
+          // DEBUG
+          if (process.env.DEBUG_ZIP === '1') {
+            console.info('[zip] Mode 1: quoteAttachmentRows', { count: quoteAttachmentRows.length });
+          }
+          
+          attachmentsToInclude = quoteAttachmentRows as any;
+        } else {
+          attachmentsToInclude = orderAttachmentRows;
+        }
+      }
+      // Mode 2: Modal scope (all attachments for order/quote)
+      else if (scope === 'modal' && parentType && parentId) {
+        if (parentType === 'order') {
+          // Verify order belongs to org
+          const [orderRow] = await db
+            .select({ id: orders.id, orderNumber: orders.orderNumber })
+            .from(orders)
+            .where(and(eq(orders.id, parentId), eq(orders.organizationId, organizationId)))
+            .limit(1);
+
+          if (!orderRow) {
+            return res.status(404).json({ error: 'Order not found' });
+          }
+
+          // Collect all order-level + line-item attachments
+          const allOrderAttachments = await db
+            .select({
+              id: orderAttachments.id,
+              fileName: orderAttachments.fileName,
+              originalFilename: orderAttachments.originalFilename,
+              fileUrl: orderAttachments.fileUrl,
+              relativePath: orderAttachments.relativePath,
+              orderLineItemId: orderAttachments.orderLineItemId,
+            })
+            .from(orderAttachments)
+            .where(eq(orderAttachments.orderId, parentId))
+            .orderBy(orderAttachments.createdAt);
+
+          attachmentsToInclude = allOrderAttachments;
+        } else if (parentType === 'quote') {
+          // Verify quote belongs to org
+          const [quoteRow] = await db
+            .select({ id: quotes.id, quoteNumber: quotes.quoteNumber })
+            .from(quotes)
+            .where(and(eq(quotes.id, parentId), eq(quotes.organizationId, organizationId)))
+            .limit(1);
+
+          if (!quoteRow) {
+            return res.status(404).json({ error: 'Quote not found' });
+          }
+
+          // For quotes, we use quoteAttachments table
+          // (This endpoint is designed for orders primarily, but we support quotes too)
+          const allQuoteAttachments = await db
+            .select({
+              id: quoteAttachments.id,
+              fileName: quoteAttachments.fileName,
+              originalFilename: quoteAttachments.originalFilename,
+              fileUrl: quoteAttachments.fileUrl,
+              relativePath: quoteAttachments.relativePath,
+              orderLineItemId: sql<string | null>`NULL`.as('orderLineItemId'),
+            })
+            .from(quoteAttachments)
+            .where(and(eq(quoteAttachments.quoteId, parentId), eq(quoteAttachments.organizationId, organizationId)))
+            .orderBy(quoteAttachments.createdAt);
+
+          attachmentsToInclude = allQuoteAttachments as any;
+        } else {
+          return res.status(400).json({ error: 'Invalid parentType. Must be "order" or "quote".' });
+        }
+      } else {
+        return res.status(400).json({ error: 'Must provide either attachmentIds or scope parameters' });
+      }
+
+      if (attachmentsToInclude.length === 0) {
+        return res.status(404).json({ error: 'No attachments found' });
+      }
+
+      // DEBUG
+      if (process.env.DEBUG_ZIP === '1') {
+        console.info('[zip] attachmentsToInclude', {
+          count: attachmentsToInclude.length,
+          first: attachmentsToInclude[0] ? {
+            id: attachmentsToInclude[0].id,
+            fileName: attachmentsToInclude[0].fileName,
+            originalFilename: attachmentsToInclude[0].originalFilename,
+            fileUrl: attachmentsToInclude[0].fileUrl,
+            relativePath: attachmentsToInclude[0].relativePath,
+          } : null
+        });
+      }
+
+      // Build file list with paths using the resolver
+      const files: Array<{ filename: string; objectPath: string }> = [];
+      const missingFiles: string[] = [];
+
+      for (const att of attachmentsToInclude) {
+        const resolved = resolveAttachmentDownloadTarget(att, downloadIntent);
+        
+        // Prefix with line-item folder if this is a line item attachment
+        const filename = att.orderLineItemId
+          ? `line-item-${att.orderLineItemId}/${resolved.displayFilename}`
+          : resolved.displayFilename;
+
+        if (resolved.objectPath) {
+          files.push({ filename, objectPath: resolved.objectPath });
+        } else {
+          missingFiles.push(resolved.displayFilename);
+        }
+      }
+
+      // DEBUG
+      if (process.env.DEBUG_ZIP === '1') {
+        console.info('[zip] Files resolved for packing', {
+          validCount: files.length,
+          missingCount: missingFiles.length,
+          files: files.slice(0, 5).map(f => ({ filename: f.filename, objectPath: f.objectPath })),
+        });
+      }
+
+      // DEBUG
+      if (process.env.DEBUG_ZIP === '1') {
+        console.info('[zip] Files to add', {
+          validCount: files.length,
+          missingCount: missingFiles.length,
+          files: files.map(f => ({ filename: f.filename, objectPath: f.objectPath })),
+        });
+      }
+
+      if (files.length === 0) {
+        const diagnostics = process.env.DEBUG_ZIP === '1' ? {
+          totalAttachments: attachmentsToInclude.length,
+          resolvedFiles: files.length,
+          missingFiles: missingFiles.slice(0, 5),
+          mode: attachmentIds ? 'selected' : 'modal-scope',
+        } : undefined;
+        return res.status(404).json({ 
+          error: 'No valid file paths found for attachments',
+          ...(diagnostics && { diagnostics })
+        });
+      }
+
+      // Stream zip using archiver
+      const archiver = (await import('archiver')).default;
+      const archive = archiver('zip', { zlib: { level: 9 } });
+
+      const zipFilename = scope === 'modal'
+        ? `${parentType}-${parentId}-attachments.zip`
+        : `selected-attachments-${Date.now()}.zip`;
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+
+      archive.on('error', (err: Error) => {
+        console.error('[AttachmentsZip:POST] Archiver error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to create zip archive' });
+        }
+      });
+
+      archive.pipe(res);
+
+      const errorLog: string[] = [];
+
+      // Helper to resolve local storage path
+      const resolveLocalStoragePath = (key: string): string => {
+        const root = process.env.FILE_STORAGE_ROOT || './data/uploads';
+        return path.join(root, key);
+      };
+
+      // Process files sequentially - archiver queues streams internally
+      for (const file of files) {
+        if (process.env.DEBUG_ZIP === '1') {
+          console.info('[zip] Processing file', { filename: file.filename, objectPath: file.objectPath });
+        }
+        
+        try {
+          const keyToTry = file.objectPath;
+          let streamAdded = false;
+
+          // 1) Try Supabase
+          if (isSupabaseConfigured()) {
+            try {
+              const supabaseService = new SupabaseStorageService();
+              const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+              const upstream = await fetch(signedUrl);
+              if (upstream.ok) {
+                const body: any = (upstream as any).body;
+                if (body && typeof Readable.fromWeb === 'function') {
+                  const nodeStream = Readable.fromWeb(body);
+                  const safeFilename = file.filename.replace(/[<>:"/\\|?*]/g, '_');
+                  // Archiver queues streams internally, no need to await
+                  archive.append(nodeStream, { name: safeFilename });
+                  streamAdded = true;
+                  if (process.env.DEBUG_ZIP === '1') {
+                    console.info('[zip] Added from Supabase:', safeFilename);
+                  }
+                }
+              }
+            } catch (supabaseError) {
+              // fall through to local
+            }
+          }
+
+          // 2) Try local filesystem
+          if (!streamAdded) {
+            const localPath = resolveLocalStoragePath(keyToTry);
+            await fsPromises.access(localPath, fsPromises.constants.R_OK);
+            const fs = await import('fs');
+            const nodeStream = fs.createReadStream(localPath);
+            const safeFilename = file.filename.replace(/[<>:"/\\|?*]/g, '_');
+            // Archiver queues streams internally, no need to await
+            archive.append(nodeStream, { name: safeFilename });
+            streamAdded = true;
+            if (process.env.DEBUG_ZIP === '1') {
+              console.info('[zip] Added from local:', safeFilename);
+            }
+          }
+
+          if (!streamAdded) {
+            errorLog.push(`Missing: ${file.filename} (${keyToTry})`);
+            console.warn(`[AttachmentsZip:POST] Could not resolve file: ${file.filename} (${keyToTry})`);
+            if (process.env.DEBUG_ZIP === '1') {
+              console.info('[zip] Failed to resolve file:', { filename: file.filename, objectPath: keyToTry });
+            }
+          }
+        } catch (err) {
+          errorLog.push(`Error: ${file.filename} - ${String(err)}`);
+          console.error(`[AttachmentsZip:POST] Failed to add ${file.filename}:`, err);
+          if (process.env.DEBUG_ZIP === '1') {
+            console.info('[zip] Exception when processing:', { filename: file.filename, error: String(err) });
+          }
+          // Continue with other files
+        }
+      }
+
+      // DEBUG
+      if (process.env.DEBUG_ZIP === '1') {
+        console.info('[zip] Loop complete, finalizing archive');
+      }
+
+      // Add ERRORS.txt if any files were missing
+      if (errorLog.length > 0) {
+        const errorsContent = `The following files could not be included in this zip:\n\n${errorLog.join('\n')}\n`;
+        archive.append(errorsContent, { name: 'ERRORS.txt' });
+      }
+
+      await archive.finalize();
+    } catch (error) {
+      console.error('[AttachmentsZip:POST] Error:', error);
       if (!res.headersSent) {
         return res.status(500).json({ error: 'Failed to generate zip archive' });
       }

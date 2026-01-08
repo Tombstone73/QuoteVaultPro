@@ -563,8 +563,8 @@ export default function InternalQuotes() {
         return;
       }
       
-      // Use proxy endpoint for proper download
-      const proxyUrl = `/api/quotes/${quoteId}/attachments/${attachment.id}/download/proxy`;
+      // Use proxy endpoint for proper download (with intent parameter for future variants)
+      const proxyUrl = `/api/quotes/${quoteId}/attachments/${attachment.id}/download/proxy?intent=original`;
       
       const anchor = document.createElement("a");
       anchor.href = proxyUrl;
@@ -1584,7 +1584,7 @@ export default function InternalQuotes() {
       <ViewAllAttachmentsDialog
         open={attachmentsListOpen}
         onOpenChange={setAttachmentsListOpen}
-        orderAttachments={viewerAttachments.map((a) => ({ ...a, source: "order" as const }))}
+        orderAttachments={viewerAttachments.map((a) => ({ ...a, source: "order" as const, orderId: a.quoteId }))}
         lineItemAttachments={[]}
         onViewAttachment={(a) => {
           const index = viewerAttachments.findIndex((att) => att.id === a.id);
@@ -1598,6 +1598,8 @@ export default function InternalQuotes() {
         onDownloadAll={viewerAttachments.length > 0 ? handleDownloadAllZip : undefined}
         onDeleteAttachment={undefined}
         canDelete={false}
+        orderId={viewerAttachments[0]?.quoteId || null}
+        parentType="quote"
       />
 
       {/* Gallery Attachment Viewer */}
