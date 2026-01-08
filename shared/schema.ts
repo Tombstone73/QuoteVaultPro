@@ -1007,6 +1007,7 @@ export const quotes = pgTable("quotes", {
   carrier: text("carrier"),
   carrierAccountNumber: text("carrier_account_number"),
   shippingInstructions: text("shipping_instructions"),
+  shippingCents: integer("shipping_cents"), // Shipping cost in cents (nullable)
   
   // Dates
   requestedDueDate: timestamp("requested_due_date", { withTimezone: true, mode: "string" }),

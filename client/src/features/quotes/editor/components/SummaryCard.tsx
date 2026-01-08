@@ -27,6 +27,7 @@ type SummaryCardProps = {
     grandTotal: number;
     effectiveTaxRate: number;
     discountAmount: number;
+    shippingCents?: number | null;
     deliveryMethod: string;
     selectedCustomer: CustomerWithContacts | undefined;
     selectedContactId?: string | null;
@@ -69,6 +70,7 @@ export function SummaryCard({
     grandTotal,
     effectiveTaxRate,
     discountAmount,
+    shippingCents,
     deliveryMethod,
     selectedCustomer,
     selectedContactId,
@@ -170,6 +172,16 @@ export function SummaryCard({
 
                 <Separator />
 
+                {/* Shipping (before Tax) */}
+                {deliveryMethod === 'ship' && (
+                    <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Shipping</span>
+                        <span className="font-mono">
+                            {shippingCents != null ? `$${(shippingCents / 100).toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+                        </span>
+                    </div>
+                )}
+
                 <div className="flex justify-between items-center text-sm">
                     <div className="flex items-center gap-2">
                         <span className="text-muted-foreground">
@@ -244,13 +256,6 @@ export function SummaryCard({
                                 Clear
                             </button>
                         )}
-                    </div>
-                )}
-
-                {deliveryMethod === 'ship' && (
-                    <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Shipping</span>
-                        <span className="font-mono text-muted-foreground">TBD</span>
                     </div>
                 )}
 

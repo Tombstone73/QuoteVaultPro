@@ -705,6 +705,7 @@ export class QuotesRepository {
         validUntil?: string | Date | null;
         carrier?: string | null;
         carrierAccountNumber?: string | null;
+        shippingCents?: number | null;
         shippingInstructions?: string | null;
         label?: string | null;
         shippingMethod?: string | null;
@@ -728,6 +729,7 @@ export class QuotesRepository {
         if (data.validUntil !== undefined) updateData.validUntil = data.validUntil;
         if (data.carrier !== undefined) updateData.carrier = data.carrier;
         if (data.carrierAccountNumber !== undefined) updateData.carrierAccountNumber = data.carrierAccountNumber;
+        if (data.shippingCents !== undefined) updateData.shippingCents = data.shippingCents;
         if (data.shippingInstructions !== undefined) updateData.shippingInstructions = data.shippingInstructions;
         if (data.label !== undefined) updateData.label = data.label;
         if (data.shippingMethod !== undefined) updateData.shippingMethod = data.shippingMethod;

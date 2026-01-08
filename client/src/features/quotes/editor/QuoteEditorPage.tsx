@@ -198,6 +198,79 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
         requestApprovalMutation.mutate(state.quoteId);
     };
 
+    // Quote update mutation for shipTo fields (like orders)
+    const updateQuote = useMutation({
+        mutationFn: async (updates: Record<string, any>) => {
+            if (!state.quoteId) throw new Error("No quote ID");
+            const res = await fetch(`/api/quotes/${state.quoteId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(updates),
+                credentials: "include",
+            });
+            if (!res.ok) {
+                const error = await res.json().catch(() => ({ message: "Failed to update quote" }));
+                throw new Error(error.message || "Failed to update quote");
+            }
+            return res.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
+        },
+        onError: (error: Error) => {
+            toast({
+                title: "Update Failed",
+                description: error.message,
+                variant: "destructive",
+            });
+        },
+    });
+
+    // Save shipTo fields (similar to orders)
+    const saveShipTo = async (payload: Record<string, any>) => {
+        try {
+            // Map ShipToData field names to quote field names
+            const mappedPayload: Record<string, any> = {};
+            if (payload.company !== undefined) mappedPayload.shipToCompany = payload.company;
+            if (payload.name !== undefined) mappedPayload.shipToName = payload.name;
+            if (payload.email !== undefined) mappedPayload.shipToEmail = payload.email;
+            if (payload.phone !== undefined) mappedPayload.shipToPhone = payload.phone;
+            if (payload.address1 !== undefined) mappedPayload.shipToAddress1 = payload.address1;
+            if (payload.address2 !== undefined) mappedPayload.shipToAddress2 = payload.address2;
+            if (payload.city !== undefined) mappedPayload.shipToCity = payload.city;
+            if (payload.state !== undefined) mappedPayload.shipToState = payload.state;
+            if (payload.postalCode !== undefined) mappedPayload.shipToPostalCode = payload.postalCode;
+            if (payload.country !== undefined) mappedPayload.shipToCountry = payload.country;
+            
+            await updateQuote.mutateAsync(mappedPayload);
+        } catch (error) {
+            // Error toast handled by mutation
+        }
+    };
+
+    // Save shipping cost
+    const saveShippingCents = async (cents: number | null) => {
+        try {
+            // Update local state immediately so Save Changes has the latest value
+            state.handlers.setShippingCents(cents);
+            await updateQuote.mutateAsync({ shippingCents: cents });
+        } catch (error) {
+            // Error toast handled by mutation
+        }
+    };
+
+    // Save fulfillment method
+    const saveFulfillmentMethod = async (method: "pickup" | "ship" | "deliver") => {
+        try {
+            // Update local state immediately for UI responsiveness
+            state.handlers.setDeliveryMethod(method);
+            // Persist to server
+            await updateQuote.mutateAsync({ shippingMethod: method });
+        } catch (error) {
+            // Error toast handled by mutation
+        }
+    };
+
     // Edit Mode is a UI state (not per-section) and controls whether inputs render at all.
     const [editMode, setEditMode] = useState(mode !== "view");
     const readOnly = !editMode || isLocked;
@@ -866,6 +939,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             grandTotal={state.grandTotal}
                             effectiveTaxRate={state.effectiveTaxRate}
                             discountAmount={state.discountAmount}
+                            shippingCents={state.shippingCents}
                             deliveryMethod={state.deliveryMethod}
                             selectedCustomer={state.selectedCustomer}
                             selectedContactId={state.selectedContactId}
@@ -904,26 +978,29 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                         {/* Fulfillment & Shipping Panel - Reuses Orders component */}
                         <OrderFulfillmentPanel
                             mode="quote"
+                            parentType="quote"
                             fulfillmentMethod={state.deliveryMethod as 'pickup' | 'ship' | 'deliver'}
                             shipToData={{
-                                company: state.selectedCustomer?.companyName,
-                                name: (() => {
-                                    const contact = state.selectedCustomer?.contacts?.find(c => c.id === state.selectedContactId);
-                                    if (!contact) return undefined;
-                                    return [contact.firstName, contact.lastName].filter(Boolean).join(' ');
-                                })(),
-                                email: state.selectedCustomer?.contacts?.find(c => c.id === state.selectedContactId)?.email,
-                                phone: state.selectedCustomer?.contacts?.find(c => c.id === state.selectedContactId)?.phone,
-                                address1: state.shippingAddress.street1,
-                                address2: state.shippingAddress.street2,
-                                city: state.shippingAddress.city,
-                                state: state.shippingAddress.state,
-                                postalCode: state.shippingAddress.postalCode,
+                                // Use persisted quote shipTo fields from DB
+                                company: (state.quote as any)?.shipToCompany,
+                                name: (state.quote as any)?.shipToName,
+                                email: (state.quote as any)?.shipToEmail,
+                                phone: (state.quote as any)?.shipToPhone,
+                                address1: (state.quote as any)?.shipToAddress1,
+                                address2: (state.quote as any)?.shipToAddress2,
+                                city: (state.quote as any)?.shipToCity,
+                                state: (state.quote as any)?.shipToState,
+                                postalCode: (state.quote as any)?.shipToPostalCode,
+                                country: (state.quote as any)?.shipToCountry,
                             }}
                             shippingInstructions={state.quoteNotes}
+                            shippingCents={state.shippingCents}
                             canEditOrder={!readOnly}
-                            onFulfillmentMethodChange={!readOnly ? state.handlers.setDeliveryMethod : undefined}
+                            isEditingFulfillment={!readOnly}
+                            onFulfillmentMethodChange={!readOnly ? saveFulfillmentMethod : undefined}
                             onShippingInstructionsChange={!readOnly ? ((instructions: string | null) => state.handlers.setQuoteNotes(instructions ?? '')) : undefined}
+                            onShipToChange={!readOnly ? saveShipTo : undefined}
+                            onShippingCentsChange={!readOnly ? saveShippingCents : undefined}
                         />
 
                         {/* Attachments - Now more prominent in right column */}

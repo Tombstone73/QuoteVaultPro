@@ -3303,12 +3303,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         contactId,
         shippingMethod,
         shippingMode,
+        shippingCents,
         status,
         requestedDueDate,
         validUntil,
         carrier,
         carrierAccountNumber,
         shippingInstructions,
+        shipToCompany,
+        shipToName,
+        shipToEmail,
+        shipToPhone,
+        shipToAddress1,
+        shipToAddress2,
+        shipToCity,
+        shipToState,
+        shipToPostalCode,
+        shipToCountry,
         label,
         tags: rawTags,
         listLabel,
@@ -3358,9 +3369,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!assertValidTransition(res, existing, status)) return;
       }
 
-      // Prevent clearing customerId or saving without line items
-      if (customerId === null || customerId === undefined && !existing.customerId) {
-        return res.status(400).json({ message: "Customer is required to save a quote." });
+      // Determine if this is a partial metadata update (shipping, notes, labels, dates)
+      // vs a full quote save (customer, line items, pricing)
+      const isPartialUpdate = (
+        // Only these fields are being updated (all optional/metadata fields)
+        customerId === undefined &&
+        customerName === undefined &&
+        subtotal === undefined &&
+        taxRate === undefined &&
+        taxAmount === undefined &&
+        totalPrice === undefined &&
+        marginPercentage === undefined &&
+        status === undefined
+      );
+
+      // Customer validation: only enforce for full quote saves, not partial metadata updates
+      if (!isPartialUpdate) {
+        if (customerId === null || customerId === undefined && !existing.customerId) {
+          return res.status(400).json({ message: "Customer is required to save a quote." });
+        }
       }
 
       // Check existing line items to ensure the quote has at least one
@@ -3423,6 +3450,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (carrier !== undefined) updateData.carrier = carrier;
       if (carrierAccountNumber !== undefined) updateData.carrierAccountNumber = carrierAccountNumber;
       if (shippingInstructions !== undefined) updateData.shippingInstructions = shippingInstructions;
+      if (shippingCents !== undefined) updateData.shippingCents = shippingCents ?? null;
+      if (shipToCompany !== undefined) updateData.shipToCompany = shipToCompany ?? null;
+      if (shipToName !== undefined) updateData.shipToName = shipToName ?? null;
+      if (shipToEmail !== undefined) updateData.shipToEmail = shipToEmail ?? null;
+      if (shipToPhone !== undefined) updateData.shipToPhone = shipToPhone ?? null;
+      if (shipToAddress1 !== undefined) updateData.shipToAddress1 = shipToAddress1 ?? null;
+      if (shipToAddress2 !== undefined) updateData.shipToAddress2 = shipToAddress2 ?? null;
+      if (shipToCity !== undefined) updateData.shipToCity = shipToCity ?? null;
+      if (shipToState !== undefined) updateData.shipToState = shipToState ?? null;
+      if (shipToPostalCode !== undefined) updateData.shipToPostalCode = shipToPostalCode ?? null;
+      if (shipToCountry !== undefined) updateData.shipToCountry = shipToCountry ?? null;
       if (label !== undefined) updateData.label = label; // jobLabel
       if (shippingMethod !== undefined) updateData.shippingMethod = shippingMethod;
       if (shippingMode !== undefined) updateData.shippingMode = shippingMode;
