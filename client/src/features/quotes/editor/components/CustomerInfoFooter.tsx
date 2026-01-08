@@ -67,64 +67,72 @@ export function CustomerInfoFooter({
 
     return (
         <Card className="rounded-lg border border-border/40 bg-card/30">
-            <CardContent className="p-4">
-                <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                        <div className="text-[11px] font-medium text-muted-foreground">Customer</div>
+            <CardContent className="p-3">
+                <div className="flex items-start justify-between gap-4">
+                    {/* Left cluster: Company + Contact + Email/Phone */}
+                    <div className="min-w-0 flex-1">
                         <Link
                             to={ROUTES.customers.detail(selectedCustomer.id)}
-                            className="mt-0.5 block truncate text-xs font-semibold leading-5 text-foreground hover:underline"
+                            className="block text-sm font-semibold leading-tight text-foreground hover:underline break-words"
                             title={companyName}
                         >
                             {companyName}
                         </Link>
-                        {contactName && (
-                            <div className="truncate text-[11px] text-muted-foreground" title={contactName}>
-                                {contactName}
+
+                        {(contactName || email || phone) && (
+                            <div className="mt-0.5 space-y-0.5">
+                                {contactName && (
+                                    <div className="text-xs leading-tight text-muted-foreground break-words" title={contactName}>
+                                        {contactName}
+                                    </div>
+                                )}
+
+                                {(email || phone) && (
+                                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs leading-tight text-muted-foreground">
+                                        {email && (
+                                            <span className="font-mono break-all" title={email}>
+                                                {email}
+                                            </span>
+                                        )}
+                                        {phone && (
+                                            <span className="font-mono break-all" title={phone}>
+                                                {phone}
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
 
-                    {hasAddress && (
-                        <button
-                            type="button"
-                            onClick={() => setShowCustomerAddress(v => !v)}
-                            className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
-                        >
-                            {showCustomerAddress ? "Hide address" : "Show address"}
-                        </button>
-                    )}
+                    {/* Right cluster: Address (secondary, right-aligned) + toggle */}
+                    <div className="shrink-0 text-right">
+                        {hasAddress && (
+                            <button
+                                type="button"
+                                onClick={() => setShowCustomerAddress(v => !v)}
+                                className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-4 print:hidden"
+                            >
+                                {showCustomerAddress ? "Hide address" : "Show address"}
+                            </button>
+                        )}
+
+                        {hasAddress && (
+                            <div className="mt-1 max-w-[18rem] text-xs leading-tight text-muted-foreground">
+                                <div className="hidden print:block whitespace-normal break-words">
+                                    {addressLine1 && <div>{addressLine1}</div>}
+                                    {addressLine2 && <div>{addressLine2}</div>}
+                                </div>
+                                {showCustomerAddress && (
+                                    <div className="space-y-0.5 print:hidden whitespace-normal break-words">
+                                        {addressLine1 && <div>{addressLine1}</div>}
+                                        {addressLine2 && <div>{addressLine2}</div>}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                 </div>
-
-                {(email || phone) && (
-                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] leading-4 text-muted-foreground">
-                        {email && (
-                            <span className="font-mono" title={email}>
-                                {email}
-                            </span>
-                        )}
-                        {phone && (
-                            <span className="font-mono" title={phone}>
-                                {phone}
-                            </span>
-                        )}
-                    </div>
-                )}
-
-                {hasAddress && (
-                    <div className="mt-2 text-[11px] leading-4 text-muted-foreground">
-                        <div className="hidden print:block">
-                            {addressLine1 && <div>{addressLine1}</div>}
-                            {addressLine2 && <div>{addressLine2}</div>}
-                        </div>
-                        {showCustomerAddress && (
-                            <div className="space-y-0.5 print:hidden">
-                                {addressLine1 && <div>{addressLine1}</div>}
-                                {addressLine2 && <div>{addressLine2}</div>}
-                            </div>
-                        )}
-                    </div>
-                )}
             </CardContent>
         </Card>
     );

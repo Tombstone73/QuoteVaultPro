@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useRef, useContext } from "react";
 import { useNavigate, useLocation, UNSAFE_NavigationContext } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Lock, ExternalLink } from "lucide-react";
@@ -18,7 +19,6 @@ import { QuoteHeader } from "./components/QuoteHeader";
 import { CustomerCard, type CustomerCardRef } from "./components/CustomerCard";
 import { LineItemsSection } from "./components/LineItemsSection";
 import { SummaryCard } from "./components/SummaryCard";
-import { CustomerInfoFooter } from "./components/CustomerInfoFooter";
 import { VoidQuoteDialog } from "@/components/VoidQuoteDialog";
 import { getPendingExpandedLineItemId, clearPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { getPendingScrollPosition, clearPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
@@ -1016,11 +1016,27 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             </Card>
                         )}
 
-                        {/* Customer Info Footer */}
-                        <CustomerInfoFooter
-                            selectedCustomer={state.selectedCustomer}
-                            selectedContactId={state.selectedContactId}
-                        />
+                        {/* Internal Notes (uses existing quote shippingInstructions / editor quoteNotes field) */}
+                        <Card>
+                            <CardHeader className="pb-3">
+                                <CardTitle className="text-base font-medium">Internal Notes</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <Textarea
+                                    placeholder="Visible to internal staff only"
+                                    value={state.quoteNotes}
+                                    onChange={(e) => state.handlers.setQuoteNotes(e.target.value)}
+                                    readOnly={readOnly}
+                                    rows={5}
+                                    className="w-full"
+                                />
+                                {!readOnly && state.quoteNotes.trim().length === 0 && (
+                                    <div className="mt-2 text-xs text-muted-foreground">
+                                        Add internal production notes before converting (optional)
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
 
                         {/* Timeline */}
                         <Card className="rounded-lg border border-border/40 bg-card/30">
