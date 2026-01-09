@@ -84,7 +84,7 @@ export default function InvoicesListPage() {
     .reduce((sum, inv) => sum + Number(inv.total), 0);
 
   return (
-    <Page>
+    <Page maxWidth="full">
       <PageHeader
         title="Invoices"
         subtitle="Manage invoices and payments"
