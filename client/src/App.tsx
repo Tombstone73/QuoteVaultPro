@@ -22,6 +22,7 @@ import CustomerDetail from "@/pages/customer-detail-enhanced";
 import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
 import CreateOrder from "@/pages/create-order";
+import CreateQuote from "@/pages/create-quote";
 import Contacts from "@/pages/contacts";
 import ContactDetail from "@/pages/contact-detail";
 import CompanySettingsPage from "@/pages/company-settings";
@@ -74,7 +75,7 @@ function Router() {
         <Route path="/portal/quotes/:id/checkout" element={<QuoteCheckout />} />
 
         {/* Quote routes */}
-        <Route path={ROUTES.quotes.new} element={<QuoteEditorPage mode="edit" />} />
+        <Route path={ROUTES.quotes.new} element={<CreateQuote />} />
         <Route path={ROUTES.quotes.edit(":id")} element={<QuoteEditorPage mode="edit" />} />
         <Route path={ROUTES.quotes.detail(":id")} element={<QuoteEditorPage mode="view" />} />
         <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />

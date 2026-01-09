@@ -2,22 +2,12 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
-import type { Product, Organization } from "@shared/schema";
+import type { Product } from "@shared/schema";
 import { DocumentCreateForm } from "@/features/documents/create/DocumentCreateForm";
 
-export default function CreateOrder() {
+export default function CreateQuote() {
   const navigate = useNavigate();
   const { toast } = useToast();
-
-  // Fetch organization for tax rate
-  const { data: organization } = useQuery<Organization>({
-    queryKey: ["/api/organization"],
-    queryFn: async () => {
-      const response = await fetch("/api/organization", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch organization");
-      return response.json();
-    },
-  });
 
   // Fetch products
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({
@@ -29,32 +19,42 @@ export default function CreateOrder() {
     },
   });
 
-  // Create order mutation
-  const createOrderMutation = useMutation({
+  // Create quote mutation
+  const createQuoteMutation = useMutation({
     mutationFn: async (formData: any) => {
-      const response = await fetch("/api/orders", {
+      const response = await fetch("/api/quotes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...formData,
+          customerId: formData.customerId,
+          contactId: formData.contactId,
+          jobLabel: formData.description,
+          requestedDueDate: formData.requestedDueDate,
+          priority: formData.priority,
+          poNumber: formData.poNumber,
           shippingMethod: formData.deliveryMethod,
-          shippingMode: 'single_shipment',
+          shippingInstructions: formData.shippingInstructions,
+          lineItems: formData.lineItems,
+          subtotal: formData.subtotal,
+          taxRate: formData.taxRate,
+          taxAmount: formData.taxAmount,
+          total: formData.total,
         }),
         credentials: "include",
       });
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to create order");
+        throw new Error(error.message || "Failed to create quote");
       }
       return response.json();
     },
     onSuccess: (data) => {
       toast({
         title: "Success",
-        description: "Order created successfully",
+        description: "Quote created successfully",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-      navigate(`/orders/${data.id}`);
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      navigate(`/quotes/${data.id}`);
     },
     onError: (error: Error) => {
       toast({
@@ -67,14 +67,14 @@ export default function CreateOrder() {
 
   return (
     <DocumentCreateForm
-      mode="order"
+      mode="quote"
       products={products}
       productsLoading={productsLoading}
-      onNavigateBack={() => navigate("/orders")}
+      onNavigateBack={() => navigate("/quotes")}
       onSubmit={async (formData) => {
-        createOrderMutation.mutate(formData);
+        createQuoteMutation.mutate(formData);
       }}
-      isSubmitting={createOrderMutation.isPending}
+      isSubmitting={createQuoteMutation.isPending}
     />
   );
 }
