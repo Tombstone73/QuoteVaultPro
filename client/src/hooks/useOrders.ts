@@ -54,6 +54,13 @@ export type Order = {
   customerId: string;
   contactId: string | null;
   status: string;
+  // Billing readiness (persisted)
+  billingStatus?: "not_ready" | "ready" | "billed" | string;
+  billingReadyAt?: string | null;
+  billingReadyPolicy?: "all_line_items_done" | "manual" | "none" | null;
+  billingReadyOverride?: boolean;
+  billingReadyOverrideNote?: string | null;
+  billingReadyOverrideAt?: string | null;
   priority: string;
   dueDate: string | null;
   promisedDate: string | null;

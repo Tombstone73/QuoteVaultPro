@@ -761,6 +761,20 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             const userRole = req.user?.role || 'customer';
 
+            // Safe per-order billing readiness policy updates
+            if (req.body.billingReadyPolicy !== undefined) {
+                const isAdminOrOwnerResult = ['owner', 'admin'].includes(String(userRole).toLowerCase());
+                if (!isAdminOrOwnerResult) {
+                    return res.status(403).json({ message: 'Not authorized to update billing readiness policy' });
+                }
+
+                const value = req.body.billingReadyPolicy;
+                const allowed = ['all_line_items_done', 'manual', 'none'];
+                if (value !== null && value !== undefined && (typeof value !== 'string' || !allowed.includes(value))) {
+                    return res.status(400).json({ message: `Invalid billingReadyPolicy. Must be one of: ${allowed.join(', ')} or null` });
+                }
+            }
+
             // BLOCK status changes - must use /transition endpoint
             if (req.body.status !== undefined) {
                 return res.status(400).json({
@@ -907,6 +921,19 @@ export async function registerOrderRoutes(
                 ...updateDataWithCustomer,
                 ...snapshotData,
             });
+
+            // If per-order billing policy changed, recompute readiness and return refreshed order.
+            if (req.body.billingReadyPolicy !== undefined) {
+                try {
+                    await recomputeOrderBillingStatus({ organizationId, orderId: req.params.id });
+                } catch (e) {
+                    console.warn('[BillingReady] Recompute after policy change failed:', e);
+                }
+                const refreshed = await storage.getOrderById(organizationId, req.params.id);
+                if (refreshed) {
+                    return res.json(refreshed);
+                }
+            }
 
             // Create audit log entries
             const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
@@ -3135,8 +3162,18 @@ export async function registerOrderRoutes(
             await recomputeOrderBillingStatus({ organizationId, orderId });
             res.json({ success: true, data: updatedLineItem });
         } catch (error) {
-            console.error('[OrderLineItemStatus] Failed to update line item status:', error);
-            res.status(500).json({ message: (error as any)?.message || "Failed to update line item status" });
+            const err: any = error;
+            console.error({
+                route: 'PATCH /api/orders/:orderId/line-items/:lineItemId/status',
+                orderId: req?.params?.orderId,
+                lineItemId: req?.params?.lineItemId,
+                body: req?.body,
+                errorMessage: String(err?.message || err),
+                errorStack: err?.stack,
+                pgCode: err?.code,
+                pgDetail: err?.detail,
+            });
+            res.status(500).json({ message: err?.message ?? "Internal server error" });
         }
     });
 

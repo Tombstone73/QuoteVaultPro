@@ -200,17 +200,19 @@ export function useDeleteInvoice() {
 export function useMarkInvoiceSent() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async ({ id, via }: { id: string; via: 'email' | 'manual' | 'portal' }) => {
       const res = await fetch(`/api/invoices/${id}/mark-sent`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ via }),
         credentials: 'include',
       });
       if (!res.ok) throw new Error('Failed to mark invoice sent');
       return res.json();
     },
-    onSuccess: (_, id) => {
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
     },
   });
 }

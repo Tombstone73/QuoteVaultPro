@@ -9,9 +9,10 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useApplyInvoicePayment, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useDeletePayment, useRefreshInvoiceStatus, useDeleteInvoice } from "@/hooks/useInvoices";
+import { useInvoice, useApplyInvoicePayment, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useDeletePayment, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 
@@ -47,6 +48,7 @@ export default function InvoiceDetailPage() {
   const billInvoice = useBillInvoice();
   const retryQbSync = useRetryInvoiceQbSync();
   const sendInvoice = useSendInvoice();
+  const markSent = useMarkInvoiceSent();
   const deletePayment = useDeletePayment();
   const refreshStatus = useRefreshInvoiceStatus();
   const deleteInvoice = useDeleteInvoice();
@@ -146,7 +148,18 @@ export default function InvoiceDetailPage() {
     if (!invoiceId) return;
     try {
       await billInvoice.mutateAsync(invoiceId);
-      toast({ title: 'Success', description: 'Invoice billed' });
+      toast({ title: 'Success', description: 'Invoice finalized (sync attempted)' });
+      refetch();
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const handleMarkSent = async () => {
+    if (!invoiceId) return;
+    try {
+      await markSent.mutateAsync({ id: invoiceId, via: 'manual' });
+      toast({ title: 'Success', description: 'Marked as sent' });
       refetch();
     } catch (error: any) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -188,6 +201,14 @@ export default function InvoiceDetailPage() {
   const balanceDue = Number(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid));
   const invoiceStatus = String(invoice.status || '').toLowerCase();
   const qbFailed = (invoice as any).qbSyncStatus === 'failed' || !!(invoice as any).qbLastError;
+
+  const invoiceVersion = Number((invoice as any).invoiceVersion || 1);
+  const lastSentVersion = (invoice as any).lastSentVersion == null ? null : Number((invoice as any).lastSentVersion);
+  const lastQbSyncedVersion = (invoice as any).lastQbSyncedVersion == null ? null : Number((invoice as any).lastQbSyncedVersion);
+
+  const invoiceLifecycleStatus = invoiceStatus === 'paid' ? 'Paid' : (invoiceStatus === 'draft' ? 'Draft' : 'Finalized');
+  const customerHasLatest = lastSentVersion === invoiceVersion;
+  const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
 
   return (
     <div className="p-6">
@@ -242,10 +263,24 @@ export default function InvoiceDetailPage() {
                   Refresh
                 </Button>
                 {invoiceStatus === 'draft' && (
-                  <Button onClick={handleBill} disabled={billInvoice.isPending}>
-                    {billInvoice.isPending ? 'Billing…' : 'Bill'}
-                  </Button>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button onClick={handleBill} disabled={billInvoice.isPending}>
+                          {billInvoice.isPending ? 'Finalizing…' : 'Finalize & Sync'}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Finalizes the invoice and attempts QuickBooks sync. Local billing is not blocked if sync fails.
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
+
+                <Button variant="outline" onClick={handleMarkSent} disabled={markSent.isPending}>
+                  {markSent.isPending ? 'Marking…' : 'Mark as Sent'}
+                </Button>
+
                 {invoice.status === 'draft' && payments.length === 0 && (
                   <Button variant="destructive" onClick={handleDelete}>
                     <Trash2 className="mr-2 h-4 w-4" />
@@ -344,6 +379,21 @@ export default function InvoiceDetailPage() {
                 )}
               </>
             )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Invoice Status:</span>
+            <Badge variant="secondary">{invoiceLifecycleStatus}</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Customer Status:</span>
+            <Badge variant="secondary">{customerHasLatest ? 'Customer has latest' : 'Customer has NOT been sent latest'}</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Accounting Status:</span>
+            <Badge variant="secondary">{qbUpToDate ? 'QuickBooks up to date' : 'QuickBooks out of date'}</Badge>
           </div>
         </div>
 
