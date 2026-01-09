@@ -62,11 +62,35 @@ export function useCreateInvoice() {
   });
 }
 
+// Create draft invoice from order (preferred endpoint)
+export function useCreateOrderInvoice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { orderId: string; terms?: string; customDueDate?: string }) => {
+      const res = await fetch(`/api/orders/${payload.orderId}/invoices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terms: payload.terms || 'due_on_receipt', customDueDate: payload.customDueDate }),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to create invoice');
+      }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', { orderId: variables.orderId }] });
+    },
+  });
+}
+
 // Update invoice
 export function useUpdateInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...updates }: { id: string; notesPublic?: string; notesInternal?: string; terms?: string; customDueDate?: string }) => {
+    mutationFn: async ({ id, ...updates }: { id: string; notesPublic?: string; notesInternal?: string; terms?: string; customDueDate?: string; subtotalCents?: number; taxCents?: number; shippingCents?: number }) => {
       const res = await fetch(`/api/invoices/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -79,6 +103,74 @@ export function useUpdateInvoice() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
+    },
+  });
+}
+
+// Bill invoice (draft -> billed)
+export function useBillInvoice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/invoices/${id}/bill`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to bill invoice');
+      }
+      return res.json();
+    },
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
+    },
+  });
+}
+
+// Retry QuickBooks sync for invoice
+export function useRetryInvoiceQbSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/invoices/${id}/retry-qb-sync`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to retry QuickBooks sync');
+      }
+      return res.json();
+    },
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
+    },
+  });
+}
+
+// Apply payment via invoice-scoped endpoint
+export function useApplyInvoicePayment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { invoiceId: string; amount: number; method: string; note?: string }) => {
+      const res = await fetch(`/api/invoices/${payload.invoiceId}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: payload.amount, method: payload.method, note: payload.note }),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to apply payment');
+      }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
     },
   });
 }

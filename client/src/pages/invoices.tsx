@@ -33,6 +33,8 @@ const statusLabels: Record<string, string> = {
   partially_paid: "Partially Paid",
   paid: "Paid",
   overdue: "Overdue",
+  billed: "Billed",
+  void: "Void",
 };
 
 export default function InvoicesListPage() {
@@ -143,6 +145,8 @@ export default function InvoicesListPage() {
                 <SelectItem value="partially_paid">Partially Paid</SelectItem>
                 <SelectItem value="paid">Paid</SelectItem>
                 <SelectItem value="overdue">Overdue</SelectItem>
+                <SelectItem value="billed">Billed</SelectItem>
+                <SelectItem value="void">Void</SelectItem>
               </SelectContent>
             </Select>
           </div>

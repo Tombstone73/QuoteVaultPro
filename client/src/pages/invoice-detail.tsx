@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useRoute, useLocation } from "wouter";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -11,35 +11,41 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useApplyPayment, useSendInvoice, useDeletePayment, useRefreshInvoiceStatus, useDeleteInvoice } from "@/hooks/useInvoices";
+import { useInvoice, useApplyInvoicePayment, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useDeletePayment, useRefreshInvoiceStatus, useDeleteInvoice } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 
 const statusColors: Record<string, string> = {
   draft: "bg-gray-500",
+  billed: "bg-blue-600",
   sent: "bg-blue-500",
   partially_paid: "bg-yellow-500",
   paid: "bg-green-500",
   overdue: "bg-red-500",
+  void: "bg-zinc-500",
 };
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
+  billed: "Billed",
   sent: "Sent",
   partially_paid: "Partially Paid",
   paid: "Paid",
   overdue: "Overdue",
+  void: "Void",
 };
 
 export default function InvoiceDetailPage() {
-  const [, params] = useRoute("/invoices/:id");
-  const [, setLocation] = useLocation();
-  const invoiceId = params?.id;
+  const params = useParams();
+  const navigate = useNavigate();
+  const invoiceId = (params as any)?.id as string | undefined;
   const { user } = useAuth();
   const { toast } = useToast();
 
   const { data, isLoading, refetch } = useInvoice(invoiceId);
-  const applyPayment = useApplyPayment();
+  const applyPayment = useApplyInvoicePayment();
+  const billInvoice = useBillInvoice();
+  const retryQbSync = useRetryInvoiceQbSync();
   const sendInvoice = useSendInvoice();
   const deletePayment = useDeletePayment();
   const refreshStatus = useRefreshInvoiceStatus();
@@ -78,7 +84,7 @@ export default function InvoiceDetailPage() {
         invoiceId,
         amount: Number(paymentAmount),
         method: paymentMethod,
-        notes: paymentNotes || undefined,
+        note: paymentNotes || undefined,
       });
       toast({ title: "Success", description: "Payment applied successfully" });
       setPaymentDialogOpen(false);
@@ -130,15 +136,37 @@ export default function InvoiceDetailPage() {
     try {
       await deleteInvoice.mutateAsync(invoiceId);
       toast({ title: "Success", description: "Invoice deleted" });
-      setLocation("/invoices");
+      navigate("/invoices");
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
   };
 
+  const handleBill = async () => {
+    if (!invoiceId) return;
+    try {
+      await billInvoice.mutateAsync(invoiceId);
+      toast({ title: 'Success', description: 'Invoice billed' });
+      refetch();
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const handleRetryQb = async () => {
+    if (!invoiceId) return;
+    try {
+      await retryQbSync.mutateAsync(invoiceId);
+      toast({ title: 'Success', description: 'QuickBooks sync retried' });
+      refetch();
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background p-6">
+      <div className="p-6">
         <div className="max-w-5xl mx-auto">
           <div className="text-center py-12">Loading invoice...</div>
         </div>
@@ -148,7 +176,7 @@ export default function InvoiceDetailPage() {
 
   if (!data) {
     return (
-      <div className="min-h-screen bg-background p-6">
+      <div className="p-6">
         <div className="max-w-5xl mx-auto">
           <div className="text-center py-12">Invoice not found</div>
         </div>
@@ -158,24 +186,52 @@ export default function InvoiceDetailPage() {
 
   const { invoice, lineItems, payments } = data;
   const balanceDue = Number(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid));
+  const invoiceStatus = String(invoice.status || '').toLowerCase();
+  const qbFailed = (invoice as any).qbSyncStatus === 'failed' || !!(invoice as any).qbLastError;
 
   return (
-    <div className="min-h-screen bg-background p-6">
+    <div className="p-6">
       <div className="max-w-5xl mx-auto space-y-6">
+        {qbFailed && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">QuickBooks Sync</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="text-sm text-muted-foreground">
+                  Sync failed. Local billing is not blocked.
+                </div>
+                {isAdminOrOwner && (
+                  <Button variant="outline" onClick={handleRetryQb} disabled={retryQbSync.isPending}>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    {retryQbSync.isPending ? 'Retrying…' : 'Retry Sync'}
+                  </Button>
+                )}
+              </div>
+              {(invoice as any).qbLastError && (
+                <div className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">
+                  {(invoice as any).qbLastError}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Button variant="outline" size="icon" asChild>
-              <Link href="/invoices">
+              <Link to="/invoices">
                 <ArrowLeft className="h-4 w-4" />
               </Link>
             </Button>
             <div>
               <h1 className="text-3xl font-bold">Invoice #{invoice.invoiceNumber}</h1>
-              <p className="text-muted-foreground">Issued {formatDate(invoice.issueDate)}</p>
+              <p className="text-muted-foreground">Issued {formatDate((invoice as any).issuedAt || invoice.issueDate)}</p>
             </div>
-            <Badge className={statusColors[invoice.status]}>
-              {statusLabels[invoice.status]}
+            <Badge className={statusColors[invoiceStatus] || "bg-gray-500"}>
+              {statusLabels[invoiceStatus] || invoice.status}
             </Badge>
           </div>
           <div className="flex gap-2">
@@ -185,6 +241,11 @@ export default function InvoiceDetailPage() {
                   <RefreshCw className="mr-2 h-4 w-4" />
                   Refresh
                 </Button>
+                {invoiceStatus === 'draft' && (
+                  <Button onClick={handleBill} disabled={billInvoice.isPending}>
+                    {billInvoice.isPending ? 'Billing…' : 'Bill'}
+                  </Button>
+                )}
                 {invoice.status === 'draft' && payments.length === 0 && (
                   <Button variant="destructive" onClick={handleDelete}>
                     <Trash2 className="mr-2 h-4 w-4" />
@@ -221,7 +282,7 @@ export default function InvoiceDetailPage() {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
-                {balanceDue > 0 && (
+                {balanceDue > 0 && invoiceStatus !== 'void' && (
                   <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
                     <DialogTrigger asChild>
                       <Button>

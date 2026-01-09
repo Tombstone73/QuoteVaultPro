@@ -199,6 +199,7 @@ import {
 import type { FileRole, FileSide } from "./lib/supabaseObjectHelpers";
 import { createInvoiceFromOrder, getInvoiceWithRelations, markInvoiceSent, applyPayment, refreshInvoiceStatus } from './invoicesService';
 import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
+import { registerMvpInvoicingRoutes } from './routes/mvpInvoicing.routes';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -444,6 +445,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Order routes extracted to ./routes/orders.routes.ts (do NOT re-add here)
   await registerOrderRoutes(app, { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner });
+
+  // MVP Invoicing + Payments + Billing Ready (mounted, minimal changes in routes.ts)
+  await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext });
 
   // Dev-only debug: verify status pills exist per org/state
   if (nodeEnv === 'development') {

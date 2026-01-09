@@ -35,6 +35,7 @@ import { CustomerSelect, type CustomerWithContacts } from "@/components/Customer
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, areLineItemsEditable, isOrderEditable } from "@/hooks/useOrders";
+import { useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
 import type { OrderLineItem as HookOrderLineItem, OrderWithRelations as HookOrderWithRelations } from "@/hooks/useOrders";
@@ -215,6 +216,50 @@ export default function OrderDetail() {
   const updateShipmentMutation = useUpdateShipment(orderId!);
   const generatePackingSlip = useGeneratePackingSlip(orderId!);
   const updateFulfillmentStatus = useUpdateFulfillmentStatus(orderId!);
+
+  // Billing / invoices
+  const { data: orderInvoices = [], isLoading: isInvoicesLoading } = useInvoices(orderId ? { orderId } : undefined);
+  const createOrderInvoice = useCreateOrderInvoice();
+  const [billingOverrideDialogOpen, setBillingOverrideDialogOpen] = useState(false);
+  const [billingOverrideNote, setBillingOverrideNote] = useState('');
+
+  const setBillingOverrideMutation = useMutation({
+    mutationFn: async ({ note }: { note: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/billing-ready-override`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note }),
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to set billing override');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      if (orderId) queryClient.invalidateQueries({ queryKey: ['orders', 'detail', orderId] });
+    },
+  });
+
+  const clearBillingOverrideMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/clear-billing-ready-override`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to clear billing override');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      if (orderId) queryClient.invalidateQueries({ queryKey: ['orders', 'detail', orderId] });
+    },
+  });
 
   // Check if user is admin or owner
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
@@ -917,6 +962,56 @@ export default function OrderDetail() {
   const titleText = isTest ? `${displayNumber} (Test Data)` : displayNumber;
   const showPaymentStatus = order.state === 'closed';
   const showRoutedTo = Boolean(order.routingTarget);
+
+  const billingStatus = String((order as any).billingStatus || 'not_ready');
+  const billingOverrideActive = Boolean((order as any).billingReadyOverride);
+  const billingOverrideNoteValue = String((order as any).billingReadyOverrideNote || '');
+  const billingBadgeVariant: "default" | "secondary" | "outline" =
+    billingStatus === 'ready' ? 'default' : billingStatus === 'billed' ? 'secondary' : 'outline';
+  const billingLabel =
+    billingStatus === 'ready'
+      ? 'Ready for Billing'
+      : billingStatus === 'billed'
+        ? 'Billed'
+        : 'Not Ready';
+  const canCreateInvoice = isAdminOrOwner && billingStatus !== 'billed' && (billingStatus === 'ready' || billingOverrideActive);
+
+  const handleCreateInvoice = async () => {
+    if (!orderId) return;
+    try {
+      const result = await createOrderInvoice.mutateAsync({ orderId, terms: 'due_on_receipt' });
+      const created = (result as any)?.data;
+      if (created?.id) {
+        toast({ title: 'Success', description: 'Invoice created' });
+        navigate(`/invoices/${created.id}`);
+        return;
+      }
+      toast({ title: 'Success', description: 'Invoice created' });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message || 'Failed to create invoice', variant: 'destructive' });
+    }
+  };
+
+  const handleSetBillingOverride = async () => {
+    try {
+      await setBillingOverrideMutation.mutateAsync({ note: billingOverrideNote });
+      toast({ title: 'Success', description: 'Billing override set' });
+      setBillingOverrideDialogOpen(false);
+      setBillingOverrideNote('');
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message || 'Failed to set override', variant: 'destructive' });
+    }
+  };
+
+  const handleClearBillingOverride = async () => {
+    try {
+      await clearBillingOverrideMutation.mutateAsync();
+      toast({ title: 'Success', description: 'Billing override cleared' });
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message || 'Failed to clear override', variant: 'destructive' });
+    }
+  };
 
   const normalizeAddressKey = (parts: Array<string | null | undefined>) =>
     parts
@@ -1682,6 +1777,107 @@ export default function OrderDetail() {
                 lineItems={order.lineItems as any}
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
+
+              {/* Billing */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-3">
+                    <CardTitle className="text-lg font-medium">Billing</CardTitle>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={billingBadgeVariant}>{billingLabel}</Badge>
+                      {billingOverrideActive && <Badge variant="secondary">Override</Badge>}
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {billingOverrideActive && billingOverrideNoteValue && (
+                    <div className="text-sm text-muted-foreground whitespace-pre-wrap">
+                      {billingOverrideNoteValue}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-2">
+                    <Button onClick={handleCreateInvoice} disabled={!canCreateInvoice || createOrderInvoice.isPending}>
+                      <FileText className="mr-2 h-4 w-4" />
+                      {createOrderInvoice.isPending ? 'Creating…' : 'Create Invoice'}
+                    </Button>
+
+                    {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
+                      <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(true)}>
+                        Set Ready Override
+                      </Button>
+                    )}
+
+                    {isAdminOrOwner && billingOverrideActive && (
+                      <Button variant="outline" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
+                        {clearBillingOverrideMutation.isPending ? 'Clearing…' : 'Clear Override'}
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Invoices</div>
+                    {isInvoicesLoading ? (
+                      <div className="text-sm text-muted-foreground">Loading invoices…</div>
+                    ) : orderInvoices.length === 0 ? (
+                      <div className="text-sm text-muted-foreground">No invoices for this order.</div>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Invoice</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead className="text-right">Total</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {orderInvoices.map((inv: any) => (
+                            <TableRow key={inv.id}>
+                              <TableCell className="font-medium">
+                                <Link to={`/invoices/${inv.id}`} className="hover:underline">
+                                  #{inv.invoiceNumber}
+                                </Link>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{String(inv.status || '').toUpperCase()}</Badge>
+                              </TableCell>
+                              <TableCell className="text-right">{formatCurrency(inv.total)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
+
+                  <Dialog open={billingOverrideDialogOpen} onOpenChange={setBillingOverrideDialogOpen}>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Billing Ready Override</DialogTitle>
+                        <DialogDescription>
+                          Mark this order as ready for billing, regardless of line item status.
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-2">
+                        <Label htmlFor="billingOverrideNote">Note (optional)</Label>
+                        <Textarea
+                          id="billingOverrideNote"
+                          value={billingOverrideNote}
+                          onChange={(e) => setBillingOverrideNote(e.target.value)}
+                          placeholder="Why is this order ready to bill?"
+                        />
+                      </div>
+                      <DialogFooter>
+                        <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(false)}>
+                          Cancel
+                        </Button>
+                        <Button onClick={handleSetBillingOverride} disabled={setBillingOverrideMutation.isPending}>
+                          {setBillingOverrideMutation.isPending ? 'Saving…' : 'Set Override'}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </CardContent>
+              </Card>
 
               {/* Totals */}
               <Card>

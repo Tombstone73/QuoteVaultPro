@@ -62,6 +62,11 @@ export const organizations = pgTable("organizations", {
     dateFormat?: string;
     currency?: string;
     features?: Record<string, boolean>;
+    preferences?: {
+      orders?: {
+        billingReadyPolicy?: 'all_line_items_done' | 'manual' | 'none';
+      };
+    };
     branding?: {
       logoUrl?: string;
       primaryColor?: string;
@@ -1806,6 +1811,12 @@ export const orders = pgTable("orders", {
   statusPillValue: varchar("status_pill_value", { length: 100 }), // Org-configurable status pill within current state
   paymentStatus: varchar("payment_status", { length: 50 }).default("unpaid"), // unpaid, partial, paid
   routingTarget: varchar("routing_target", { length: 50 }), // 'fulfillment' or 'invoicing' (set on production_complete)
+  // Billing readiness (MVP invoicing)
+  billingStatus: varchar("billing_status", { length: 20 }).notNull().default('not_ready'), // not_ready | ready | billed
+  billingReadyOverride: boolean("billing_ready_override").notNull().default(false),
+  billingReadyOverrideNote: text("billing_ready_override_note"),
+  billingReadyOverrideAt: timestamp("billing_ready_override_at", { withTimezone: true, mode: "string" }),
+  billingReadyOverrideByUserId: varchar("billing_ready_override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   productionCompletedAt: timestamp("production_completed_at", { withTimezone: true, mode: "string" }),
   closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
   priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low
@@ -2138,14 +2149,22 @@ export const invoices = pgTable("invoices", {
   invoiceNumber: integer("invoice_number").notNull(), // Sequential numeric per org
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
-  status: varchar("status", { length: 50 }).notNull().default('draft'), // draft, sent, partially_paid, paid, overdue
+  status: varchar("status", { length: 50 }).notNull().default('draft'), // MVP: draft | billed | paid | void (legacy values may exist)
   terms: varchar("terms", { length: 50 }).notNull().default('due_on_receipt'), // due_on_receipt, net_15, net_30, net_45, custom
   customTerms: varchar("custom_terms", { length: 255 }),
   issueDate: timestamp("issue_date", { withTimezone: true }).defaultNow().notNull(),
+  // Billing lifecycle timestamps
+  issuedAt: timestamp("issued_at", { withTimezone: true }), // set when billed
   dueDate: timestamp("due_date", { withTimezone: true }),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default('0'),
   tax: decimal("tax", { precision: 10, scale: 2 }).notNull().default('0'),
   total: decimal("total", { precision: 10, scale: 2 }).notNull().default('0'),
+  // Cents snapshot fields (MVP)
+  subtotalCents: integer("subtotal_cents").notNull().default(0),
+  taxCents: integer("tax_cents").notNull().default(0),
+  shippingCents: integer("shipping_cents").notNull().default(0),
+  totalCents: integer("total_cents").notNull().default(0),
+  currency: varchar("currency", { length: 8 }).notNull().default('USD'),
   amountPaid: decimal("amount_paid", { precision: 10, scale: 2 }).notNull().default('0'),
   balanceDue: decimal("balance_due", { precision: 10, scale: 2 }).notNull().default('0'),
   notesPublic: text("notes_public"),
@@ -2156,6 +2175,11 @@ export const invoices = pgTable("invoices", {
   syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
   syncError: text("sync_error"),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
+  // MVP QB sync fields (TitanOS system of record)
+  qbInvoiceId: text("qb_invoice_id"),
+  qbSyncStatus: varchar("qb_sync_status", { length: 20 }).notNull().default('pending'), // pending | synced | failed
+  qbLastError: text("qb_last_error"),
+  modifiedAfterBilling: boolean("modified_after_billing").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -2177,10 +2201,16 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   organizationId: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
-  status: z.enum(['draft','sent','partially_paid','paid','overdue']).default('draft'),
+  status: z.enum(['draft','billed','paid','void','sent','partially_paid','overdue']).default('draft'),
   terms: z.enum(['due_on_receipt','net_15','net_30','net_45','custom']).default('due_on_receipt'),
   customTerms: z.string().max(255).optional().nullable(),
   issueDate: z.preprocess((val) => val ? new Date(val as any) : new Date(), z.date()),
+  issuedAt: z.preprocess((val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    return val;
+  }, z.date().nullable().optional()),
   dueDate: z.preprocess((val) => {
     if (!val) return null;
     if (val instanceof Date) return val;
@@ -2190,10 +2220,19 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   subtotal: z.coerce.number().min(0),
   tax: z.coerce.number().min(0),
   total: z.coerce.number().min(0),
+  subtotalCents: z.coerce.number().int().min(0).optional(),
+  taxCents: z.coerce.number().int().min(0).optional(),
+  shippingCents: z.coerce.number().int().min(0).optional(),
+  totalCents: z.coerce.number().int().min(0).optional(),
+  currency: z.string().min(1).max(8).optional(),
   notesPublic: z.string().optional().nullable(),
   notesInternal: z.string().optional().nullable(),
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
   syncError: z.string().optional().nullable(),
+  qbInvoiceId: z.string().optional().nullable(),
+  qbSyncStatus: z.enum(['pending','synced','failed']).default('pending'),
+  qbLastError: z.string().optional().nullable(),
+  modifiedAfterBilling: z.boolean().default(false),
 });
 
 export const updateInvoiceSchema = insertInvoiceSchema.partial().extend({
@@ -2212,6 +2251,8 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'restrict' }),
   productVariantId: varchar("product_variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
   productType: varchar("product_type", { length: 50 }).notNull().default('wide_roll'),
+  name: text("name"),
+  sku: varchar("sku", { length: 100 }),
   description: text("description").notNull(),
   width: decimal("width", { precision: 10, scale: 2 }),
   height: decimal("height", { precision: 10, scale: 2 }),
@@ -2219,6 +2260,9 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   sqft: decimal("sqft", { precision: 10, scale: 2 }),
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 }).notNull(),
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull(),
+  unitPriceCents: integer("unit_price_cents").notNull().default(0),
+  lineTotalCents: integer("line_total_cents").notNull().default(0),
+  sortOrder: integer("sort_order").notNull().default(0),
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   selectedOptions: jsonb("selected_options").$type<Array<{
     optionId: string;
@@ -2260,8 +2304,11 @@ export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  amountCents: integer("amount_cents").notNull().default(0),
   method: varchar("method", { length: 50 }).notNull().default('other'), // cash, check, credit_card, ach, other
   notes: text("notes"),
+  note: text("note"),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
   appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow().notNull(),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   externalAccountingId: varchar("external_accounting_id"),
