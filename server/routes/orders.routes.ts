@@ -3116,20 +3116,27 @@ export async function registerOrderRoutes(
             const updatedLineItem = await storage.updateOrderLineItem(lineItemId, { status });
             if (userId && oldLineItem.status !== status) {
                 const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-                await storage.createOrderAuditLog({
-                    orderId: order.id,
-                    userId,
-                    userName,
-                    actionType: 'line_item_status_change',
-                    fromStatus: null,
-                    toStatus: null,
-                    note: null,
-                    metadata: { lineItemId: updatedLineItem.id, oldStatus: oldLineItem.status, newStatus: status },
-                });
+                try {
+                    await storage.createOrderAuditLog({
+                        orderId: order.id,
+                        userId,
+                        userName,
+                        actionType: 'line_item_status_change',
+                        fromStatus: null,
+                        toStatus: null,
+                        note: null,
+                        metadata: { lineItemId: updatedLineItem.id, oldStatus: oldLineItem.status, newStatus: status },
+                    });
+                } catch (e) {
+                    console.warn('[OrderLineItemStatus] audit log failed:', e);
+                }
             }
+
+            await recomputeOrderBillingStatus({ organizationId, orderId });
             res.json({ success: true, data: updatedLineItem });
         } catch (error) {
-            res.status(500).json({ message: "Failed to update line item status" });
+            console.error('[OrderLineItemStatus] Failed to update line item status:', error);
+            res.status(500).json({ message: (error as any)?.message || "Failed to update line item status" });
         }
     });
 

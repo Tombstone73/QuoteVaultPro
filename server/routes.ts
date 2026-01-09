@@ -197,7 +197,7 @@ import {
   tryExtractSupabaseObjectKeyFromUrl
 } from "./lib/supabaseObjectHelpers";
 import type { FileRole, FileSide } from "./lib/supabaseObjectHelpers";
-import { createInvoiceFromOrder, getInvoiceWithRelations, markInvoiceSent, applyPayment, refreshInvoiceStatus } from './invoicesService';
+import { getInvoiceWithRelations, applyPayment, refreshInvoiceStatus } from './invoicesService';
 import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
 import { registerMvpInvoicingRoutes } from './routes/mvpInvoicing.routes';
 
@@ -7478,143 +7478,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // INVOICES & PAYMENTS
   // ============================================================
 
-  // List invoices with basic filters
-  app.get('/api/invoices', isAuthenticated, async (req: any, res) => {
-    try {
-      const status = req.query.status as string | undefined;
-      const customerId = req.query.customerId as string | undefined;
-      const orderId = req.query.orderId as string | undefined;
-      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 200);
-      const offset = parseInt(req.query.offset as string || '0', 10);
-      // Simple query; refine later for search/sort/pagination
-      let rows = await db.select().from(invoices).limit(limit).offset(offset).orderBy(invoices.issueDate);
-      if (status) rows = rows.filter(r => r.status === status);
-      if (customerId) rows = rows.filter(r => r.customerId === customerId);
-      if (orderId) rows = rows.filter(r => r.orderId === orderId);
-      // Refresh overdue status on fetch (lazy evaluation)
-      const now = new Date();
-      const updatedStatusRows = await Promise.all(rows.map(async inv => {
-        if (inv.status !== 'paid' && inv.dueDate && new Date(inv.dueDate) < now && inv.status !== 'overdue') {
-          await refreshInvoiceStatus(inv.id);
-          const rel = await getInvoiceWithRelations(inv.id);
-          return rel?.invoice || inv;
-        }
-        return inv;
-      }));
-      res.json({ success: true, data: updatedStatusRows });
-    } catch (error) {
-      console.error('Error listing invoices:', error);
-      res.status(500).json({ error: 'Failed to list invoices' });
-    }
-  });
-
-  // Create invoice from order
-  app.post('/api/invoices', isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = getUserId(req.user);
-      const { orderId, terms, customDueDate } = req.body || {};
-      if (!orderId) return res.status(400).json({ error: 'orderId required for now (manual invoices unsupported)' });
-      const invoice = await createInvoiceFromOrder(orderId, userId!, { terms: terms || 'due_on_receipt', customDueDate: customDueDate ? new Date(customDueDate) : null });
-      res.json({ success: true, data: invoice });
-    } catch (error: any) {
-      console.error('Error creating invoice:', error);
-      res.status(500).json({ error: error.message || 'Failed to create invoice' });
-    }
-  });
-
-  // Get invoice detail
-  app.get('/api/invoices/:id', isAuthenticated, async (req: any, res) => {
-    try {
-      const rel = await getInvoiceWithRelations(req.params.id);
-      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
-      // Ensure status freshness
-      await refreshInvoiceStatus(req.params.id);
-      const refreshed = await getInvoiceWithRelations(req.params.id);
-      res.json({ success: true, data: refreshed });
-    } catch (error) {
-      console.error('Error fetching invoice:', error);
-      res.status(500).json({ error: 'Failed to fetch invoice' });
-    }
-  });
-
-  // Update invoice (limited fields)
-  app.patch('/api/invoices/:id', isAuthenticated, async (req: any, res) => {
-    try {
-      const { id } = req.params;
-      const existingRel = await getInvoiceWithRelations(id);
-      if (!existingRel) return res.status(404).json({ error: 'Invoice not found' });
-      const existing = existingRel.invoice;
-      const updates: any = {};
-      if (typeof req.body.notesPublic === 'string') updates.notesPublic = req.body.notesPublic;
-      if (typeof req.body.notesInternal === 'string') updates.notesInternal = req.body.notesInternal;
-      if (typeof req.body.terms === 'string') updates.terms = req.body.terms;
-      if (req.body.customDueDate) updates.dueDate = new Date(req.body.customDueDate);
-      if (updates.terms && updates.terms !== existing.terms) {
-        // Recompute dueDate if changing terms and not custom
-        if (updates.terms !== 'custom') {
-          const issueDate = new Date(existing.issueDate);
-          const offsetMap: Record<string, number> = { due_on_receipt: 0, net_15: 15, net_30: 30, net_45: 45 };
-          const offset = offsetMap[updates.terms] ?? 0;
-          const d = new Date(issueDate.getTime());
-          d.setDate(d.getDate() + offset);
-          updates.dueDate = d;
-        }
-      }
-      const [updated] = await db.update(invoices).set({ ...updates, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
-      res.json({ success: true, data: updated });
-    } catch (error) {
-      console.error('Error updating invoice:', error);
-      res.status(500).json({ error: 'Failed to update invoice' });
-    }
-  });
-
-  // Delete invoice (only if draft & no payments)
-  app.delete('/api/invoices/:id', isAuthenticated, async (req: any, res) => {
-    try {
-      const rel = await getInvoiceWithRelations(req.params.id);
-      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
-      if (rel.invoice.status !== 'draft') return res.status(400).json({ error: 'Only draft invoices can be deleted' });
-      if (rel.payments.length > 0) return res.status(400).json({ error: 'Cannot delete invoice with payments' });
-      await db.delete(invoices).where(eq(invoices.id, req.params.id));
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Error deleting invoice:', error);
-      res.status(500).json({ error: 'Failed to delete invoice' });
-    }
-  });
-
-  // Mark sent
-  app.post('/api/invoices/:id/mark-sent', isAuthenticated, async (req: any, res) => {
-    try {
-      const updated = await markInvoiceSent(req.params.id);
-      res.json({ success: true, data: updated });
-    } catch (error) {
-      console.error('Error marking sent:', error);
-      res.status(500).json({ error: 'Failed to mark invoice sent' });
-    }
-  });
-
-  // Send invoice via email (basic HTML - PDF stub)
-  app.post('/api/invoices/:id/send', isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-      const rel = await getInvoiceWithRelations(req.params.id);
-      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
-      const { invoice, lineItems, payments: paymentRows } = rel;
-      const customer = await storage.getCustomerById(organizationId, invoice.customerId);
-      const toEmail = customer?.email || req.body.toEmail;
-      if (!toEmail) return res.status(400).json({ error: 'No recipient email' });
-      const html = `<!DOCTYPE html><html><body><h2>Invoice #${invoice.invoiceNumber}</h2><p>Status: ${invoice.status}</p><p>Issue Date: ${new Date(invoice.issueDate).toLocaleDateString()}</p><p>Due Date: ${invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : 'N/A'}</p><h3>Line Items</h3><table cellpadding="4" border="1" style="border-collapse:collapse"><thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead><tbody>${lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${li.unitPrice}</td><td>${li.totalPrice}</td></tr>`).join('')}</tbody></table><p>Subtotal: ${invoice.subtotal}</p><p>Tax: ${invoice.tax}</p><p>Total: ${invoice.total}</p><p>Paid: ${invoice.amountPaid}</p><p>Balance Due: ${invoice.balanceDue}</p><h4>Payments</h4>${paymentRows.length ? paymentRows.map(p => `<div>${p.method}: ${p.amount} on ${new Date(p.appliedAt).toLocaleDateString()}</div>`).join('') : '<p>No payments recorded.</p>'}</body></html>`;
-      await emailService.sendEmail(organizationId, { to: toEmail, subject: `Invoice #${invoice.invoiceNumber}`, html });
-      await markInvoiceSent(invoice.id);
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Error sending invoice:', error);
-      res.status(500).json({ error: 'Failed to send invoice' });
-    }
-  });
-
   // Apply payment
   app.post('/api/payments', isAuthenticated, async (req: any, res) => {
     try {
@@ -7645,18 +7508,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error deleting payment:', error);
       res.status(500).json({ error: 'Failed to delete payment' });
-    }
-  });
-
-  // Refresh invoice status manually
-  app.post('/api/invoices/:id/refresh-status', isAuthenticated, async (req: any, res) => {
-    try {
-      const updated = await refreshInvoiceStatus(req.params.id);
-      if (!updated) return res.status(404).json({ error: 'Invoice not found' });
-      res.json({ success: true, data: updated });
-    } catch (error) {
-      console.error('Error refreshing status:', error);
-      res.status(500).json({ error: 'Failed to refresh status' });
     }
   });
 

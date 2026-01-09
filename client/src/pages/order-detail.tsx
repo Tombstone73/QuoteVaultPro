@@ -1778,107 +1778,6 @@ export default function OrderDetail() {
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
 
-              {/* Billing */}
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between gap-3">
-                    <CardTitle className="text-lg font-medium">Billing</CardTitle>
-                    <div className="flex items-center gap-2">
-                      <Badge variant={billingBadgeVariant}>{billingLabel}</Badge>
-                      {billingOverrideActive && <Badge variant="secondary">Override</Badge>}
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {billingOverrideActive && billingOverrideNoteValue && (
-                    <div className="text-sm text-muted-foreground whitespace-pre-wrap">
-                      {billingOverrideNoteValue}
-                    </div>
-                  )}
-
-                  <div className="flex flex-wrap gap-2">
-                    <Button onClick={handleCreateInvoice} disabled={!canCreateInvoice || createOrderInvoice.isPending}>
-                      <FileText className="mr-2 h-4 w-4" />
-                      {createOrderInvoice.isPending ? 'Creating…' : 'Create Invoice'}
-                    </Button>
-
-                    {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
-                      <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(true)}>
-                        Set Ready Override
-                      </Button>
-                    )}
-
-                    {isAdminOrOwner && billingOverrideActive && (
-                      <Button variant="outline" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
-                        {clearBillingOverrideMutation.isPending ? 'Clearing…' : 'Clear Override'}
-                      </Button>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">Invoices</div>
-                    {isInvoicesLoading ? (
-                      <div className="text-sm text-muted-foreground">Loading invoices…</div>
-                    ) : orderInvoices.length === 0 ? (
-                      <div className="text-sm text-muted-foreground">No invoices for this order.</div>
-                    ) : (
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Invoice</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead className="text-right">Total</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {orderInvoices.map((inv: any) => (
-                            <TableRow key={inv.id}>
-                              <TableCell className="font-medium">
-                                <Link to={`/invoices/${inv.id}`} className="hover:underline">
-                                  #{inv.invoiceNumber}
-                                </Link>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant="outline">{String(inv.status || '').toUpperCase()}</Badge>
-                              </TableCell>
-                              <TableCell className="text-right">{formatCurrency(inv.total)}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    )}
-                  </div>
-
-                  <Dialog open={billingOverrideDialogOpen} onOpenChange={setBillingOverrideDialogOpen}>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Billing Ready Override</DialogTitle>
-                        <DialogDescription>
-                          Mark this order as ready for billing, regardless of line item status.
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-2">
-                        <Label htmlFor="billingOverrideNote">Note (optional)</Label>
-                        <Textarea
-                          id="billingOverrideNote"
-                          value={billingOverrideNote}
-                          onChange={(e) => setBillingOverrideNote(e.target.value)}
-                          placeholder="Why is this order ready to bill?"
-                        />
-                      </div>
-                      <DialogFooter>
-                        <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(false)}>
-                          Cancel
-                        </Button>
-                        <Button onClick={handleSetBillingOverride} disabled={setBillingOverrideMutation.isPending}>
-                          {setBillingOverrideMutation.isPending ? 'Saving…' : 'Set Override'}
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
-                </CardContent>
-              </Card>
-
               {/* Totals */}
               <Card>
                 <CardHeader>
@@ -2422,6 +2321,107 @@ export default function OrderDetail() {
                 </div>
                     </>
                   )}
+              </CardContent>
+            </Card>
+
+            {/* Billing */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="text-lg font-medium">Billing</CardTitle>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={billingBadgeVariant}>{billingLabel}</Badge>
+                    {billingOverrideActive && <Badge variant="secondary">Override</Badge>}
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {billingOverrideActive && billingOverrideNoteValue && (
+                  <div className="text-sm text-muted-foreground whitespace-pre-wrap">
+                    {billingOverrideNoteValue}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={handleCreateInvoice} disabled={!canCreateInvoice || createOrderInvoice.isPending}>
+                    <FileText className="mr-2 h-4 w-4" />
+                    {createOrderInvoice.isPending ? 'Creating…' : 'Create Invoice'}
+                  </Button>
+
+                  {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
+                    <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(true)}>
+                      Set Ready Override
+                    </Button>
+                  )}
+
+                  {isAdminOrOwner && billingOverrideActive && (
+                    <Button variant="outline" onClick={handleClearBillingOverride} disabled={clearBillingOverrideMutation.isPending}>
+                      {clearBillingOverrideMutation.isPending ? 'Clearing…' : 'Clear Override'}
+                    </Button>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Invoices</div>
+                  {isInvoicesLoading ? (
+                    <div className="text-sm text-muted-foreground">Loading invoices…</div>
+                  ) : orderInvoices.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No invoices for this order.</div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Invoice</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {orderInvoices.map((inv: any) => (
+                          <TableRow key={inv.id}>
+                            <TableCell className="font-medium">
+                              <Link to={`/invoices/${inv.id}`} className="hover:underline">
+                                #{inv.invoiceNumber}
+                              </Link>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="outline">{String(inv.status || '').toUpperCase()}</Badge>
+                            </TableCell>
+                            <TableCell className="text-right">{formatCurrency(inv.total)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+
+                <Dialog open={billingOverrideDialogOpen} onOpenChange={setBillingOverrideDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Billing Ready Override</DialogTitle>
+                      <DialogDescription>
+                        Mark this order as ready for billing, regardless of line item status.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2">
+                      <Label htmlFor="billingOverrideNote">Note (optional)</Label>
+                      <Textarea
+                        id="billingOverrideNote"
+                        value={billingOverrideNote}
+                        onChange={(e) => setBillingOverrideNote(e.target.value)}
+                        placeholder="Why is this order ready to bill?"
+                      />
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button onClick={handleSetBillingOverride} disabled={setBillingOverrideMutation.isPending}>
+                        {setBillingOverrideMutation.isPending ? 'Saving…' : 'Set Override'}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </CardContent>
             </Card>
 
