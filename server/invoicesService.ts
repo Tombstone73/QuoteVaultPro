@@ -187,8 +187,8 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
     if (existingStatus === 'void') throw new Error('Cannot record payment on a void invoice');
 
     const amountPaidAlready = Number(invoice.amountPaid);
-    const balance = Number(invoice.balanceDue || invoice.total) - amountPaidAlready;
-    if (data.amount > balance) throw new Error('Overpayment not allowed');
+    const balanceDueNow = Number(invoice.balanceDue ?? (Number(invoice.total) - amountPaidAlready));
+    if (data.amount > balanceDueNow) throw new Error('Overpayment not allowed');
 
     const paymentInsert: InsertPayment = {
       invoiceId,
