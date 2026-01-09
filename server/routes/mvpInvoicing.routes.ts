@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, invoices, orders } from "../../shared/schema";
 import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations } from "../invoicesService";
@@ -128,7 +128,7 @@ export async function registerMvpInvoicingRoutes(
       if (inv.orderId) {
         await db
           .update(orders)
-          .set({ billingStatus: "billed", updatedAt: new Date().toISOString() as any } as any)
+          .set({ billingStatus: "billed", updatedAt: sql`now()` as any } as any)
           .where(and(eq(orders.id, inv.orderId), eq(orders.organizationId, organizationId)));
       }
 
@@ -158,6 +158,7 @@ export async function registerMvpInvoicingRoutes(
             syncStatus: "synced",
             syncError: null,
             syncedAt: new Date(),
+            lastQbSyncedVersion: Number(inv.invoiceVersion || 1),
             updatedAt: new Date(),
           } as any)
           .where(eq(invoices.id, inv.id));
@@ -213,7 +214,7 @@ export async function registerMvpInvoicingRoutes(
         const qb = await syncSingleInvoiceToQuickBooks(inv.id);
         await db
           .update(invoices)
-          .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any)
+          .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: Number(inv.invoiceVersion || 1), updatedAt: new Date() } as any)
           .where(eq(invoices.id, inv.id));
 
         try {
@@ -327,31 +328,68 @@ export async function registerMvpInvoicingRoutes(
       const balanceDue = Number(existing.balanceDue || Number(existing.total) - Number(existing.amountPaid));
       const isBilledUnpaid = existingStatus === "billed" && balanceDue > 0;
 
+      const existingInvoiceVersion = Number(existing.invoiceVersion || 1);
+
       const updates: any = {};
       if (typeof req.body.notesPublic === "string") updates.notesPublic = req.body.notesPublic;
       if (typeof req.body.notesInternal === "string") updates.notesInternal = req.body.notesInternal;
       if (typeof req.body.terms === "string") updates.terms = req.body.terms;
+
+      let nextDueDate: Date | undefined;
       if (typeof req.body.customDueDate === "string") {
         const d = new Date(req.body.customDueDate);
-        if (!Number.isNaN(d.getTime())) updates.dueDate = d;
+        if (!Number.isNaN(d.getTime())) {
+          nextDueDate = d;
+          updates.dueDate = d;
+        }
+      }
+
+      // Customer/customer-visible identity changes
+      if (typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId) {
+        if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
+        if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });
+        updates.customerId = req.body.customerId;
       }
 
       const financialUpdates: any = {};
       const hasFinancialBody = req.body.subtotalCents !== undefined || req.body.taxCents !== undefined || req.body.shippingCents !== undefined;
 
+      const existingDueMs = existing.dueDate ? new Date(existing.dueDate as any).getTime() : null;
+      const nextDueMs = nextDueDate ? nextDueDate.getTime() : null;
+
+      const nextSubtotalCents = req.body.subtotalCents !== undefined ? Number(req.body.subtotalCents) : Number(existing.subtotalCents || 0);
+      const nextTaxCents = req.body.taxCents !== undefined ? Number(req.body.taxCents) : Number(existing.taxCents || 0);
+      const nextShippingCents = req.body.shippingCents !== undefined ? Number(req.body.shippingCents) : Number(existing.shippingCents || 0);
+      const computedNextTotalCents = Math.max(0, Math.round(nextSubtotalCents) + Math.round(nextTaxCents) + Math.round(nextShippingCents));
+
+      const financialOrCustomerVisibleChanged =
+        (hasFinancialBody && (
+          Math.round(nextSubtotalCents) !== Number(existing.subtotalCents || 0) ||
+          Math.round(nextTaxCents) !== Number(existing.taxCents || 0) ||
+          Math.round(nextShippingCents) !== Number(existing.shippingCents || 0) ||
+          computedNextTotalCents !== Number(existing.totalCents || 0)
+        )) ||
+        (typeof req.body.customerId === "string" && req.body.customerId && req.body.customerId !== existing.customerId) ||
+        (nextDueDate !== undefined && existingDueMs !== nextDueMs);
+
+      const nextInvoiceVersion = financialOrCustomerVisibleChanged ? existingInvoiceVersion + 1 : existingInvoiceVersion;
+      if (financialOrCustomerVisibleChanged) {
+        updates.invoiceVersion = nextInvoiceVersion;
+
+        if (String(existing.qbSyncStatus || "") === "synced") {
+          // Financial/customer-visible changes invalidate previous accounting sync.
+          financialUpdates.qbSyncStatus = "needs_resync";
+        }
+      }
+
       if (hasFinancialBody) {
         if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
         if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });
 
-        const nextSubtotalCents = req.body.subtotalCents !== undefined ? Number(req.body.subtotalCents) : Number(existing.subtotalCents || 0);
-        const nextTaxCents = req.body.taxCents !== undefined ? Number(req.body.taxCents) : Number(existing.taxCents || 0);
-        const nextShippingCents = req.body.shippingCents !== undefined ? Number(req.body.shippingCents) : Number(existing.shippingCents || 0);
-        const nextTotalCents = Math.max(0, Math.round(nextSubtotalCents) + Math.round(nextTaxCents) + Math.round(nextShippingCents));
-
         financialUpdates.subtotalCents = Math.max(0, Math.round(nextSubtotalCents));
         financialUpdates.taxCents = Math.max(0, Math.round(nextTaxCents));
         financialUpdates.shippingCents = Math.max(0, Math.round(nextShippingCents));
-        financialUpdates.totalCents = nextTotalCents;
+        financialUpdates.totalCents = computedNextTotalCents;
         financialUpdates.subtotal = (financialUpdates.subtotalCents / 100).toFixed(2);
         financialUpdates.tax = (financialUpdates.taxCents / 100).toFixed(2);
         financialUpdates.total = (financialUpdates.totalCents / 100).toFixed(2);
@@ -363,7 +401,7 @@ export async function registerMvpInvoicingRoutes(
 
         if (isBilledUnpaid) {
           financialUpdates.modifiedAfterBilling = true;
-          financialUpdates.qbSyncStatus = "pending";
+          if (!financialUpdates.qbSyncStatus) financialUpdates.qbSyncStatus = "pending";
         }
 
         try {
@@ -391,7 +429,7 @@ export async function registerMvpInvoicingRoutes(
           const qb = await syncSingleInvoiceToQuickBooks(id);
           await db
             .update(invoices)
-            .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any)
+            .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: nextInvoiceVersion, updatedAt: new Date() } as any)
             .where(eq(invoices.id, id));
         } catch (e: any) {
           await db
@@ -410,6 +448,58 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
+  // Mark invoice as sent (read-only semantics; does not change financial status)
+  // ------------------------------------------------------------
+  app.post("/api/invoices/:id/mark-sent", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
+
+      const { id } = req.params;
+      const via = req.body?.via;
+      if (via !== "email" && via !== "manual" && via !== "portal") {
+        return res.status(400).json({ error: "Invalid via. Expected 'email' | 'manual' | 'portal'" });
+      }
+
+      const rel = await getInvoiceWithRelations(id);
+      if (!rel) return res.status(404).json({ error: "Invoice not found" });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
+
+      const now = new Date();
+      const invoiceVersion = Number(inv.invoiceVersion || 1);
+
+      await db
+        .update(invoices)
+        .set({ lastSentAt: now, lastSentVia: via, lastSentVersion: invoiceVersion, updatedAt: now } as any)
+        .where(eq(invoices.id, id));
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: "invoice.sent",
+          entityType: "invoice",
+          entityId: id,
+          entityName: String(inv.invoiceNumber),
+          description: "Invoice marked as sent",
+          newValues: { via, invoiceVersion } as any,
+          createdAt: now,
+        } as any);
+      } catch {}
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error marking invoice sent:", error);
+      res.status(500).json({ error: error.message || "Failed to mark invoice sent" });
+    }
+  });
+
+  // ------------------------------------------------------------
   // Orders: billing-ready override / clear override
   // ------------------------------------------------------------
   app.post("/api/orders/:id/billing-ready-override", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -421,9 +511,11 @@ export async function registerMvpInvoicingRoutes(
       const orderId = req.params.id;
       const note = typeof req.body?.note === "string" ? req.body.note : null;
 
+      const now = new Date();
+
       await db
         .update(orders)
-        .set({ billingStatus: "ready", billingReadyOverride: true, billingReadyOverrideNote: note, billingReadyOverrideAt: new Date().toISOString() as any, billingReadyOverrideByUserId: userId || null, updatedAt: new Date().toISOString() as any } as any)
+        .set({ billingStatus: "ready", billingReadyAt: now, billingReadyOverride: true, billingReadyOverrideNote: note, billingReadyOverrideAt: now, billingReadyOverrideByUserId: userId || null, updatedAt: sql`now()` as any } as any)
         .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
 
       res.json({ success: true });
@@ -442,7 +534,7 @@ export async function registerMvpInvoicingRoutes(
 
       await db
         .update(orders)
-        .set({ billingReadyOverride: false, billingReadyOverrideNote: null, billingReadyOverrideAt: null, billingReadyOverrideByUserId: null, updatedAt: new Date().toISOString() as any } as any)
+        .set({ billingReadyOverride: false, billingReadyOverrideNote: null, billingReadyOverrideAt: null, billingReadyOverrideByUserId: null, updatedAt: sql`now()` as any } as any)
         .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
 
       await recomputeOrderBillingStatus({ organizationId, orderId });

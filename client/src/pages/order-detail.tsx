@@ -966,6 +966,7 @@ export default function OrderDetail() {
   const billingStatus = String((order as any).billingStatus || 'not_ready');
   const billingOverrideActive = Boolean((order as any).billingReadyOverride);
   const billingOverrideNoteValue = String((order as any).billingReadyOverrideNote || '');
+  const billingReadyAtValue = (order as any).billingReadyAt as string | null | undefined;
   const billingBadgeVariant: "default" | "secondary" | "outline" =
     billingStatus === 'ready' ? 'default' : billingStatus === 'billed' ? 'secondary' : 'outline';
   const billingLabel =
@@ -2336,6 +2337,11 @@ export default function OrderDetail() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
+                {billingStatus === 'ready' && billingReadyAtValue && (
+                  <div className="text-sm text-muted-foreground">
+                    Ready since {formatDate(billingReadyAtValue)}
+                  </div>
+                )}
                 {billingOverrideActive && billingOverrideNoteValue && (
                   <div className="text-sm text-muted-foreground whitespace-pre-wrap">
                     {billingOverrideNoteValue}

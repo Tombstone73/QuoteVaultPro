@@ -1813,9 +1813,11 @@ export const orders = pgTable("orders", {
   routingTarget: varchar("routing_target", { length: 50 }), // 'fulfillment' or 'invoicing' (set on production_complete)
   // Billing readiness (MVP invoicing)
   billingStatus: varchar("billing_status", { length: 20 }).notNull().default('not_ready'), // not_ready | ready | billed
+  billingReadyAt: timestamp("billing_ready_at", { withTimezone: true }),
+  billingReadyPolicy: text("billing_ready_policy"),
   billingReadyOverride: boolean("billing_ready_override").notNull().default(false),
   billingReadyOverrideNote: text("billing_ready_override_note"),
-  billingReadyOverrideAt: timestamp("billing_ready_override_at", { withTimezone: true, mode: "string" }),
+  billingReadyOverrideAt: timestamp("billing_ready_override_at", { withTimezone: true }),
   billingReadyOverrideByUserId: varchar("billing_ready_override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   productionCompletedAt: timestamp("production_completed_at", { withTimezone: true, mode: "string" }),
   closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
@@ -2150,6 +2152,12 @@ export const invoices = pgTable("invoices", {
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }),
   customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
   status: varchar("status", { length: 50 }).notNull().default('draft'), // MVP: draft | billed | paid | void (legacy values may exist)
+  // Lightweight invoice versioning
+  invoiceVersion: integer("invoice_version").notNull().default(1),
+  lastSentVersion: integer("last_sent_version"),
+  lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
+  lastSentVia: text("last_sent_via"),
+  lastQbSyncedVersion: integer("last_qb_synced_version"),
   terms: varchar("terms", { length: 50 }).notNull().default('due_on_receipt'), // due_on_receipt, net_15, net_30, net_45, custom
   customTerms: varchar("custom_terms", { length: 255 }),
   issueDate: timestamp("issue_date", { withTimezone: true }).defaultNow().notNull(),
@@ -2199,6 +2207,11 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   amountPaid: true,
   balanceDue: true,
   organizationId: true,
+  invoiceVersion: true,
+  lastSentVersion: true,
+  lastSentAt: true,
+  lastSentVia: true,
+  lastQbSyncedVersion: true,
 }).extend({
   invoiceNumber: z.number().int().positive(),
   status: z.enum(['draft','billed','paid','void','sent','partially_paid','overdue']).default('draft'),
@@ -2230,7 +2243,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
   syncError: z.string().optional().nullable(),
   qbInvoiceId: z.string().optional().nullable(),
-  qbSyncStatus: z.enum(['pending','synced','failed']).default('pending'),
+  qbSyncStatus: z.enum(['pending','synced','failed','needs_resync']).default('pending'),
   qbLastError: z.string().optional().nullable(),
   modifiedAfterBilling: z.boolean().default(false),
 });

@@ -985,7 +985,7 @@ export class OrdersRepository {
     }
 
     async updateOrderLineItem(id: string, lineItem: Partial<InsertOrderLineItem>): Promise<OrderLineItem> {
-        const updateData: any = { ...lineItem, updatedAt: new Date().toISOString() };
+        const updateData: any = { ...lineItem, updatedAt: new Date() };
         const [updated] = await this.dbInstance
             .update(orderLineItems)
             .set(updateData)
