@@ -41,6 +41,7 @@ import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage
 import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
 import { updateOrderFulfillmentStatus } from "../fulfillmentService";
 import { portalContext, getPortalCustomer } from "../tenantContext";
+import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
@@ -1032,6 +1033,27 @@ export async function registerOrderRoutes(
                 },
             });
 
+            // Billing readiness recompute (fail-soft)
+            try {
+                const recompute = await recomputeOrderBillingStatus({ organizationId, orderId });
+                if ((recompute as any).updated) {
+                    try {
+                        await storage.createOrderAuditLog({
+                            orderId,
+                            userId,
+                            userName,
+                            actionType: 'order_billing_ready_auto',
+                            fromStatus: null,
+                            toStatus: null,
+                            note: `Billing status auto-updated: ${(recompute as any).from} → ${(recompute as any).to}`,
+                            metadata: recompute as any,
+                        });
+                    } catch { }
+                }
+            } catch (e) {
+                console.warn('[BillingReady] Recompute failed:', e);
+            }
+
             res.json({
                 success: true,
                 message: `Updated ${itemsToUpdate.length} line item(s) to ${status}`,
@@ -1231,6 +1253,27 @@ export async function registerOrderRoutes(
 
                 return { updatedOrder, didAutoMark, autoMarkedCount };
             });
+
+            // Billing readiness recompute (fail-soft)
+            try {
+                const recompute = await recomputeOrderBillingStatus({ organizationId, orderId });
+                if ((recompute as any).updated) {
+                    try {
+                        await storage.createOrderAuditLog({
+                            orderId,
+                            userId,
+                            userName,
+                            actionType: 'order_billing_ready_auto',
+                            fromStatus: null,
+                            toStatus: null,
+                            note: `Billing status auto-updated: ${(recompute as any).from} → ${(recompute as any).to}`,
+                            metadata: recompute as any,
+                        });
+                    } catch { }
+                }
+            } catch (e) {
+                console.warn('[BillingReady] Recompute failed:', e);
+            }
 
             return res.json({ success: true, data: result.updatedOrder, didAutoMark: result.didAutoMark, autoMarkedCount: result.autoMarkedCount, message: 'Order production completed' });
         } catch (error: any) {

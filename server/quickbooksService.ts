@@ -348,6 +348,57 @@ async function makeQBRequest(
   return await response.json();
 }
 
+/**
+ * Push a single local invoice to QuickBooks immediately (fail-fast).
+ * Callers should catch errors and persist qb_last_error/qb_sync_status without blocking local transitions.
+ */
+export async function syncSingleInvoiceToQuickBooks(invoiceId: string): Promise<{ qbInvoiceId: string }>{
+  const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  if (!invoice) throw new Error('Invoice not found');
+
+  const [customer] = await db.select().from(customers).where(eq(customers.id, invoice.customerId)).limit(1);
+  if (!customer?.externalAccountingId) {
+    throw new Error('Customer not synced to QuickBooks');
+  }
+
+  const lineItems = await db
+    .execute(sql`SELECT id, description, quantity, unit_price, total_price FROM invoice_line_items WHERE invoice_id = ${invoiceId} ORDER BY sort_order ASC, created_at ASC`);
+
+  const txnDate = (invoice.issuedAt || invoice.issueDate || new Date()) as any;
+
+  const qbInvoiceData: any = {
+    CustomerRef: { value: customer.externalAccountingId },
+    DocNumber: String(invoice.invoiceNumber),
+    TxnDate: new Date(txnDate).toISOString().split('T')[0],
+    DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
+    Line: (lineItems.rows || []).map((r: any) => ({
+      Amount: Number(r.total_price || 0),
+      Description: String(r.description || ''),
+      DetailType: 'DescriptionOnly',
+      DescriptionOnlyLineDetail: {},
+    })),
+  };
+
+  // Remove undefined properties for QB API
+  if (!qbInvoiceData.DueDate) delete qbInvoiceData.DueDate;
+
+  const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId) as string | null;
+  if (existingId) {
+    const existing = await makeQBRequest('GET', `/invoice/${existingId}`);
+    qbInvoiceData.Id = existingId;
+    qbInvoiceData.SyncToken = existing?.Invoice?.SyncToken;
+    const response = await makeQBRequest('POST', '/invoice', qbInvoiceData);
+    const qb = response?.Invoice;
+    if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
+    return { qbInvoiceId: qb.Id };
+  }
+
+  const response = await makeQBRequest('POST', '/invoice', qbInvoiceData);
+  const qb = response?.Invoice;
+  if (!qb?.Id) throw new Error('QuickBooks invoice create returned no Id');
+  return { qbInvoiceId: qb.Id };
+}
+
 // ==================== Customer Sync Processors ====================
 
 /**
