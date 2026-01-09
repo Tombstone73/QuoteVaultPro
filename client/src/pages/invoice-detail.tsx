@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,9 +12,57 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useApplyInvoicePayment, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useDeletePayment, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent } from "@/hooks/useInvoices";
+import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useDeletePayment, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice } from "@/hooks/useInvoices";
+import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
+import { Page } from "@/components/titan/Page";
 import { format } from "date-fns";
+import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
+import { useQuery } from "@tanstack/react-query";
+import { TimelinePanel } from "@/components/TimelinePanel";
+
+type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+
+function SaveIndicator({ state }: { state: SaveState }) {
+  if (state === 'idle') return null;
+  if (state === 'saving') return <span className="text-xs text-muted-foreground">Saving…</span>;
+  if (state === 'saved') return <span className="text-xs text-muted-foreground">Saved</span>;
+  return <span className="text-xs text-destructive">Error</span>;
+}
+
+function StatusStrip({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))] xl:[grid-template-columns:repeat(8,minmax(0,200px))] xl:[justify-content:space-between]">
+      {children}
+    </div>
+  );
+}
+
+function StatusTile({
+  label,
+  value,
+  valueClassName,
+  right,
+}: {
+  label: string;
+  value: React.ReactNode;
+  valueClassName?: string;
+  right?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-md border bg-card/50 p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
+        {right}
+      </div>
+      <div className={valueClassName ?? "mt-1 text-sm font-semibold"}>{value}</div>
+    </div>
+  );
+}
 
 const statusColors: Record<string, string> = {
   draft: "bg-gray-500",
@@ -44,7 +92,6 @@ export default function InvoiceDetailPage() {
   const { toast } = useToast();
 
   const { data, isLoading, refetch } = useInvoice(invoiceId);
-  const applyPayment = useApplyInvoicePayment();
   const billInvoice = useBillInvoice();
   const retryQbSync = useRetryInvoiceQbSync();
   const sendInvoice = useSendInvoice();
@@ -52,16 +99,92 @@ export default function InvoiceDetailPage() {
   const deletePayment = useDeletePayment();
   const refreshStatus = useRefreshInvoiceStatus();
   const deleteInvoice = useDeleteInvoice();
+  const updateInvoice = useUpdateInvoice();
 
-  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("check");
-  const [paymentNotes, setPaymentNotes] = useState("");
+  const [addPaymentDialogOpen, setAddPaymentDialogOpen] = useState(false);
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
+  const isStaffUser = !!user && user.role !== 'customer';
+
+  const invoice = data?.invoice;
+  const lineItems = data?.lineItems ?? [];
+  const payments = data?.payments ?? [];
+
+  // Orders Detail parity: when invoice is tied to an order, pull customer/contact + metadata from the order.
+  const orderId = invoice?.orderId ?? undefined;
+  const { data: orderRaw } = useOrder(orderId || undefined);
+  const order: any = orderRaw as any;
+  const linkedOrderContactId: string | null = order?.contact?.id || order?.contactId || null;
+
+  const invoiceStatus = String(invoice?.status || '').toLowerCase();
+  const balanceDue = invoice
+    ? Number(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))
+    : 0;
+
+  const canEditInvoice = !!invoice && isStaffUser && invoiceStatus !== 'paid' && invoiceStatus !== 'void';
+  const isBilledUnpaid = !!invoice && invoiceStatus === 'billed' && balanceDue > 0;
+  const canEditFinancial = canEditInvoice && (invoiceStatus === 'draft' || isBilledUnpaid);
+
+  const [termsDraft, setTermsDraft] = useState<string>('due_on_receipt');
+  const [dueDateDraft, setDueDateDraft] = useState<string>('');
+  const [notesPublicDraft, setNotesPublicDraft] = useState<string>('');
+  const [notesInternalDraft, setNotesInternalDraft] = useState<string>('');
+
+  const [customerIdDraft, setCustomerIdDraft] = useState<string | null>(null);
+  const [contactIdDraft, setContactIdDraft] = useState<string | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithContacts | undefined>(undefined);
+
+  const [customerSaveState, setCustomerSaveState] = useState<SaveState>('idle');
+  const [detailsSaveState, setDetailsSaveState] = useState<SaveState>('idle');
+  const [notesSaveState, setNotesSaveState] = useState<SaveState>('idle');
+  const [financialSaveState, setFinancialSaveState] = useState<SaveState>('idle');
+
+  const [notesPublicDirty, setNotesPublicDirty] = useState(false);
+  const [notesInternalDirty, setNotesInternalDirty] = useState(false);
+  const [contactDirty, setContactDirty] = useState(false);
+
+  const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({
+    customer: null,
+    details: null,
+    notes: null,
+    financial: null,
+  });
+
+  const setSaveState = (key: 'customer' | 'details' | 'notes' | 'financial', state: SaveState) => {
+    const existing = saveTimersRef.current[key];
+    if (existing) clearTimeout(existing);
+
+    const setter =
+      key === 'customer'
+        ? setCustomerSaveState
+        : key === 'details'
+          ? setDetailsSaveState
+          : key === 'notes'
+            ? setNotesSaveState
+            : setFinancialSaveState;
+
+    setter(state);
+    if (state === 'saved') {
+      saveTimersRef.current[key] = setTimeout(() => setter('idle'), 1500);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      Object.values(saveTimersRef.current).forEach((t) => {
+        if (t) clearTimeout(t);
+      });
+    };
+  }, []);
+
+  const [subtotalDraft, setSubtotalDraft] = useState<string>('');
+  const [taxDraft, setTaxDraft] = useState<string>('');
+  const [shippingDraft, setShippingDraft] = useState<string>('');
+
+  const [bottomPanel, setBottomPanel] = useState<"collapsed" | "timeline" | "payments" | "material">("timeline");
 
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
@@ -79,24 +202,186 @@ export default function InvoiceDetailPage() {
     }
   };
 
-  const handleApplyPayment = async () => {
-    if (!invoiceId || !paymentAmount) return;
+  const toMoneyDraft = (cents: unknown) => {
+    if (typeof cents !== 'number' || Number.isNaN(cents)) return '';
+    return (cents / 100).toFixed(2);
+  };
+
+  useEffect(() => {
+    if (!invoice) return;
+
+    setTermsDraft(String((invoice as any).terms || 'due_on_receipt'));
+    setDueDateDraft(invoice.dueDate ? format(new Date(invoice.dueDate as any), 'yyyy-MM-dd') : '');
+    setNotesPublicDraft(String(invoice.notesPublic || ''));
+    setNotesInternalDraft(String(invoice.notesInternal || ''));
+    setSubtotalDraft(toMoneyDraft((invoice as any).subtotalCents));
+    setTaxDraft(toMoneyDraft((invoice as any).taxCents));
+    setShippingDraft(toMoneyDraft((invoice as any).shippingCents));
+
+    setCustomerIdDraft(invoice.customerId || null);
+    setContactIdDraft(null);
+    setSelectedCustomer(undefined);
+    setNotesPublicDirty(false);
+    setNotesInternalDirty(false);
+    setContactDirty(false);
+    // Only reset drafts when switching invoices.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoice?.id]);
+
+  // Keep contact draft synced to the order contact unless user is actively editing it.
+  useEffect(() => {
+    if (!invoice?.id) return;
+    if (!linkedOrderContactId) return;
+    if (contactDirty) return;
+    setContactIdDraft(linkedOrderContactId);
+  }, [invoice?.id, linkedOrderContactId, contactDirty]);
+
+  const { data: customerDetail } = useQuery<CustomerWithContacts>({
+    queryKey: ["/api/customers", customerIdDraft],
+    queryFn: async () => {
+      if (!customerIdDraft) throw new Error('No customer');
+      const response = await fetch(`/api/customers/${customerIdDraft}`, { credentials: 'include' });
+      if (!response.ok) throw new Error('Failed to fetch customer');
+      return response.json();
+    },
+    enabled: !!customerIdDraft,
+    staleTime: 30000,
+  });
+
+  const effectiveCustomer: CustomerWithContacts | undefined =
+    selectedCustomer || customerDetail || ((order?.customer as any) as CustomerWithContacts | undefined);
+
+  const contactOptions = useMemo(() => {
+    const contacts = effectiveCustomer?.contacts || [];
+    return contacts
+      .map((c: any) => {
+        const name = `${c.firstName || ''} ${c.lastName || ''}`.trim() || c.name || c.email || 'Contact';
+        return { id: String(c.id), name, email: c.email ? String(c.email) : null, isPrimary: !!c.isPrimary };
+      })
+      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.name.localeCompare(b.name));
+  }, [effectiveCustomer]);
+
+  const commitOrderContact = async (nextContactId: string | null) => {
+    if (!invoice?.orderId) return;
+    if (!isStaffUser) return;
+    if (!nextContactId) return;
+
     try {
-      await applyPayment.mutateAsync({
-        invoiceId,
-        amount: Number(paymentAmount),
-        method: paymentMethod,
-        note: paymentNotes || undefined,
-      });
-      toast({ title: "Success", description: "Payment applied successfully" });
-      setPaymentDialogOpen(false);
-      setPaymentAmount("");
-      setPaymentNotes("");
-      refetch();
+      setSaveState('customer', 'saving');
+      const response = await fetch(`/api/orders/${invoice.orderId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactId: nextContactId }),
+          credentials: 'include',
+        });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to update contact');
+      }
+      setSaveState('customer', 'saved');
     } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      setSaveState('customer', 'error');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      setContactIdDraft(linkedOrderContactId);
+      setContactDirty(false);
     }
   };
+
+  // Debounced autosave for notes.
+  useEffect(() => {
+    if (!notesPublicDirty) return;
+    if (!canEditInvoice) return;
+    const t = setTimeout(() => {
+      void commitNotesPublic(notesPublicDraft);
+    }, 550);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notesPublicDraft, notesPublicDirty, canEditInvoice]);
+
+  useEffect(() => {
+    if (!notesInternalDirty) return;
+    if (!canEditInvoice) return;
+    const t = setTimeout(() => {
+      void commitNotesInternal(notesInternalDraft);
+    }, 550);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notesInternalDraft, notesInternalDirty, canEditInvoice]);
+
+  // Derivations used in both loading + main render (no hooks below this point).
+  const qbFailed = !!invoice && ((invoice as any).qbSyncStatus === 'failed' || !!(invoice as any).qbLastError);
+  const qbSyncStatusRaw = String((invoice as any)?.qbSyncStatus || '').toLowerCase();
+
+  const invoiceVersion = Number((invoice as any)?.invoiceVersion || 1);
+  const lastSentVersion = (invoice as any)?.lastSentVersion == null ? null : Number((invoice as any)?.lastSentVersion);
+  const lastQbSyncedVersion = (invoice as any)?.lastQbSyncedVersion == null ? null : Number((invoice as any)?.lastQbSyncedVersion);
+
+  const invoiceLifecycleStatus = invoiceStatus === 'paid' ? 'Paid' : (invoiceStatus === 'draft' ? 'Draft' : 'Finalized');
+  const customerHasLatest = lastSentVersion === invoiceVersion;
+  const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
+  const qbSyncLabel = qbFailed ? 'Failed' : (qbUpToDate ? 'Synced' : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Needs resync'));
+  const showRetrySync = isAdminOrOwner && (qbFailed || !qbUpToDate);
+
+  const qbWarningMessage = (() => {
+    const qb = String((invoice as any)?.qbLastError || '').trim();
+    if (qb) return qb;
+    const sync = String((invoice as any)?.syncError || '').trim();
+    if (sync) return sync;
+    if (qbFailed) return 'QuickBooks sync failed';
+    if (!qbUpToDate && invoiceStatus !== 'draft') return 'QuickBooks out of date';
+    return '';
+  })();
+
+  const orderCustomerName: string | null = order?.customer?.companyName || order?.customer?.name || order?.billToCompany || null;
+  const orderCustomerId: string | null = order?.customer?.id || order?.customerId || null;
+  const orderContactName: string | null = (() => {
+    const c: any = order?.contact;
+    if (!c) return null;
+    const name = (c.name || c.fullName || c.displayName || `${c.firstName || ""} ${c.lastName || ""}`).trim();
+    return name || null;
+  })();
+  const orderEmail: string | null = order?.contact?.email || order?.customer?.email || order?.billToEmail || null;
+  const orderPhone: string | null = order?.customer?.phone || (order?.contact as any)?.phone || (order?.contact as any)?.phoneNumber || null;
+
+  const getAddressParts = (source: {
+    street1?: string | null;
+    street2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postalCode?: string | null;
+    country?: string | null;
+  }) => {
+    const line1 = [source.street1, source.street2].filter(Boolean).join(', ');
+    const line2 = [source.city, source.state, source.postalCode].filter(Boolean).join(', ');
+    const line3 = [source.country].filter(Boolean).join(', ');
+    return { line1, line2, line3 };
+  };
+
+  const resolvedBillAddress = (() => {
+    if (!order) return null;
+    if (order.billToAddress1 || order.billToAddress2 || order.billToCity || order.billToState || order.billToPostalCode) {
+      return getAddressParts({
+        street1: order.billToAddress1,
+        street2: order.billToAddress2,
+        city: order.billToCity,
+        state: order.billToState,
+        postalCode: order.billToPostalCode,
+        country: (order as any).billToCountry,
+      });
+    }
+    if (order.contact?.street1) {
+      return getAddressParts({
+        street1: order.contact.street1,
+        street2: order.contact.street2,
+        city: order.contact.city,
+        state: order.contact.state,
+        postalCode: order.contact.postalCode,
+        country: order.contact.country,
+      });
+    }
+    return null;
+  })();
 
   const handleSendEmail = async () => {
     if (!invoiceId) return;
@@ -179,114 +464,190 @@ export default function InvoiceDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="p-6">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center py-12">Loading invoice...</div>
-        </div>
-      </div>
+      <Page>
+        <div className="text-center py-12">Loading invoice...</div>
+      </Page>
     );
   }
 
-  if (!data) {
+  if (!data || !invoice) {
     return (
-      <div className="p-6">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center py-12">Invoice not found</div>
-        </div>
-      </div>
+      <Page>
+        <div className="text-center py-12">Invoice not found</div>
+      </Page>
     );
   }
 
-  const { invoice, lineItems, payments } = data;
-  const balanceDue = Number(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid));
-  const invoiceStatus = String(invoice.status || '').toLowerCase();
-  const qbFailed = (invoice as any).qbSyncStatus === 'failed' || !!(invoice as any).qbLastError;
+  const parseMoneyToCents = (value: string): number => {
+    const cleaned = value.replace(/[^0-9.-]/g, '');
+    if (!cleaned) return 0;
+    const num = Number.parseFloat(cleaned);
+    if (Number.isNaN(num)) return 0;
+    return Math.max(0, Math.round(num * 100));
+  };
 
-  const invoiceVersion = Number((invoice as any).invoiceVersion || 1);
-  const lastSentVersion = (invoice as any).lastSentVersion == null ? null : Number((invoice as any).lastSentVersion);
-  const lastQbSyncedVersion = (invoice as any).lastQbSyncedVersion == null ? null : Number((invoice as any).lastQbSyncedVersion);
+  const commitTerms = async (next: string) => {
+    if (!invoiceId || !invoice || !canEditInvoice) return;
+    const normalized = next || 'due_on_receipt';
+    if (String((invoice as any).terms || 'due_on_receipt') === normalized) return;
 
-  const invoiceLifecycleStatus = invoiceStatus === 'paid' ? 'Paid' : (invoiceStatus === 'draft' ? 'Draft' : 'Finalized');
-  const customerHasLatest = lastSentVersion === invoiceVersion;
-  const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
+    try {
+      setSaveState('details', 'saving');
+      await updateInvoice.mutateAsync({ id: invoiceId, terms: normalized });
+      setSaveState('details', 'saved');
+    } catch (error: any) {
+      setSaveState('details', 'error');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const commitDueDate = async () => {
+    if (!invoiceId || !invoice || !canEditInvoice) return;
+    const existing = invoice.dueDate ? format(new Date(invoice.dueDate as any), 'yyyy-MM-dd') : '';
+    const next = dueDateDraft.trim();
+    if (existing === next) return;
+
+    try {
+      setSaveState('details', 'saving');
+      await updateInvoice.mutateAsync({ id: invoiceId, customDueDate: next || undefined });
+      setSaveState('details', 'saved');
+    } catch (error: any) {
+      setSaveState('details', 'error');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  async function commitCustomer(nextCustomerId: string | null, nextCustomer?: CustomerWithContacts) {
+    if (!invoiceId || !invoice || !canEditInvoice) return;
+    if (!nextCustomerId) {
+      setCustomerIdDraft(invoice.customerId || null);
+      return;
+    }
+    if (String(invoice.customerId) === String(nextCustomerId)) return;
+
+    try {
+      setSaveState('customer', 'saving');
+      await updateInvoice.mutateAsync({ id: invoiceId, customerId: nextCustomerId });
+      setSaveState('customer', 'saved');
+      setCustomerIdDraft(nextCustomerId);
+      if (nextCustomer) setSelectedCustomer(nextCustomer);
+    } catch (error: any) {
+      setSaveState('customer', 'error');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }
+
+  async function commitNotesPublic(nextValue: string) {
+    if (!invoiceId || !invoice || !canEditInvoice) return;
+    const existing = String(invoice.notesPublic || '');
+    if (existing === nextValue) return;
+
+    try {
+      setSaveState('notes', 'saving');
+      await updateInvoice.mutateAsync({ id: invoiceId, notesPublic: nextValue });
+      setSaveState('notes', 'saved');
+    } catch (error: any) {
+      setSaveState('notes', 'error');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }
+
+  async function commitNotesInternal(nextValue: string) {
+    if (!invoiceId || !invoice || !canEditInvoice) return;
+    const existing = String(invoice.notesInternal || '');
+    if (existing === nextValue) return;
+
+    try {
+      setSaveState('notes', 'saving');
+      await updateInvoice.mutateAsync({ id: invoiceId, notesInternal: nextValue });
+      setSaveState('notes', 'saved');
+    } catch (error: any) {
+      setSaveState('notes', 'error');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }
+
+  const commitFinancials = async () => {
+    if (!invoiceId || !invoice || !canEditFinancial) return;
+
+    const nextSubtotalCents = parseMoneyToCents(subtotalDraft);
+    const nextTaxCents = parseMoneyToCents(taxDraft);
+    const nextShippingCents = parseMoneyToCents(shippingDraft);
+
+    const existingSubtotalCents = Number((invoice as any).subtotalCents || 0);
+    const existingTaxCents = Number((invoice as any).taxCents || 0);
+    const existingShippingCents = Number((invoice as any).shippingCents || 0);
+
+    const changed =
+      nextSubtotalCents !== existingSubtotalCents ||
+      nextTaxCents !== existingTaxCents ||
+      nextShippingCents !== existingShippingCents;
+
+    if (!changed) return;
+
+    try {
+      setSaveState('financial', 'saving');
+      await updateInvoice.mutateAsync({
+        id: invoiceId,
+        subtotalCents: nextSubtotalCents,
+        taxCents: nextTaxCents,
+        shippingCents: nextShippingCents,
+      });
+      setSaveState('financial', 'saved');
+    } catch (error: any) {
+      setSaveState('financial', 'error');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
 
   return (
-    <div className="p-6">
-      <div className="max-w-5xl mx-auto space-y-6">
-        {qbFailed && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">QuickBooks Sync</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <div className="text-sm text-muted-foreground">
-                  Sync failed. Local billing is not blocked.
+    <Page maxWidth="full">
+      <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
+        {/* Sticky Action Bar */}
+        <div className="sticky top-0 z-20 py-3 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-3 min-w-0">
+              <Button variant="outline" size="icon" asChild>
+                <Link to="/invoices">
+                  <ArrowLeft className="h-4 w-4" />
+                </Link>
+              </Button>
+              <div className="min-w-0">
+                <div className="text-base sm:text-lg font-semibold truncate">
+                  Invoice #{invoice.invoiceNumber}
                 </div>
-                {isAdminOrOwner && (
-                  <Button variant="outline" onClick={handleRetryQb} disabled={retryQbSync.isPending}>
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                    {retryQbSync.isPending ? 'Retrying…' : 'Retry Sync'}
-                  </Button>
-                )}
+                <div className="text-sm text-muted-foreground truncate">
+                  Issued {formatDate((invoice as any).issuedAt || invoice.issueDate)}
+                </div>
               </div>
-              {(invoice as any).qbLastError && (
-                <div className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">
-                  {(invoice as any).qbLastError}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button variant="outline" size="icon" asChild>
-              <Link to="/invoices">
-                <ArrowLeft className="h-4 w-4" />
-              </Link>
-            </Button>
-            <div>
-              <h1 className="text-3xl font-bold">Invoice #{invoice.invoiceNumber}</h1>
-              <p className="text-muted-foreground">Issued {formatDate((invoice as any).issuedAt || invoice.issueDate)}</p>
             </div>
-            <Badge className={statusColors[invoiceStatus] || "bg-gray-500"}>
-              {statusLabels[invoiceStatus] || invoice.status}
-            </Badge>
-          </div>
-          <div className="flex gap-2">
+
+            {qbWarningMessage ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="sm:ml-4 inline-flex max-w-full items-center rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+                      <span className="truncate">{qbWarningMessage}</span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-[520px]">
+                    <div className="whitespace-pre-wrap text-xs">{qbWarningMessage}</div>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : null}
+
             {isAdminOrOwner && (
-              <>
+              <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
                 <Button variant="outline" onClick={handleRefreshStatus}>
                   <RefreshCw className="mr-2 h-4 w-4" />
                   Refresh
                 </Button>
-                {invoiceStatus === 'draft' && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button onClick={handleBill} disabled={billInvoice.isPending}>
-                          {billInvoice.isPending ? 'Finalizing…' : 'Finalize & Sync'}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Finalizes the invoice and attempts QuickBooks sync. Local billing is not blocked if sync fails.
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
 
                 <Button variant="outline" onClick={handleMarkSent} disabled={markSent.isPending}>
                   {markSent.isPending ? 'Marking…' : 'Mark as Sent'}
                 </Button>
 
-                {invoice.status === 'draft' && payments.length === 0 && (
-                  <Button variant="destructive" onClick={handleDelete}>
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </Button>
-                )}
                 <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
                   <DialogTrigger asChild>
                     <Button variant="outline">
@@ -317,232 +678,561 @@ export default function InvoiceDetailPage() {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
-                {balanceDue > 0 && invoiceStatus !== 'void' && (
-                  <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
-                    <DialogTrigger asChild>
-                      <Button>
-                        <DollarSign className="mr-2 h-4 w-4" />
-                        Record Payment
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Record Payment</DialogTitle>
-                      </DialogHeader>
-                      <div className="space-y-4">
-                        <div>
-                          <Label htmlFor="amount">Amount *</Label>
-                          <Input
-                            id="amount"
-                            type="number"
-                            step="0.01"
-                            value={paymentAmount}
-                            onChange={(e) => setPaymentAmount(e.target.value)}
-                            placeholder="0.00"
-                          />
-                          <p className="text-sm text-muted-foreground mt-1">
-                            Balance due: {formatCurrency(balanceDue)}
-                          </p>
-                        </div>
-                        <div>
-                          <Label htmlFor="method">Payment Method *</Label>
-                          <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="cash">Cash</SelectItem>
-                              <SelectItem value="check">Check</SelectItem>
-                              <SelectItem value="credit_card">Credit Card</SelectItem>
-                              <SelectItem value="ach">ACH</SelectItem>
-                              <SelectItem value="other">Other</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div>
-                          <Label htmlFor="notes">Notes</Label>
-                          <Textarea
-                            id="notes"
-                            value={paymentNotes}
-                            onChange={(e) => setPaymentNotes(e.target.value)}
-                            placeholder="Optional payment notes..."
-                          />
-                        </div>
-                      </div>
-                      <DialogFooter>
-                        <Button onClick={handleApplyPayment} disabled={applyPayment.isPending || !paymentAmount}>
-                          {applyPayment.isPending ? "Processing..." : "Record Payment"}
+
+                <Dialog open={addPaymentDialogOpen} onOpenChange={setAddPaymentDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button>
+                      <DollarSign className="mr-2 h-4 w-4" />
+                      Add Payment
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add Payment</DialogTitle>
+                    </DialogHeader>
+                    <div className="text-sm text-muted-foreground">
+                      Payment entry coming soon.
+                    </div>
+                    <DialogFooter>
+                      <DialogClose asChild>
+                        <Button variant="outline">Close</Button>
+                      </DialogClose>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                {invoiceStatus === 'draft' && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button onClick={handleBill} disabled={billInvoice.isPending}>
+                          {billInvoice.isPending ? 'Finalizing…' : 'Finalize & Sync'}
                         </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Finalizes the invoice and attempts QuickBooks sync. Local billing is not blocked if sync fails.
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
-              </>
+
+                {invoice.status === 'draft' && payments.length === 0 && (
+                  <Button variant="destructive" onClick={handleDelete}>
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete
+                  </Button>
+                )}
+              </div>
             )}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Invoice Status:</span>
-            <Badge variant="secondary">{invoiceLifecycleStatus}</Badge>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Customer Status:</span>
-            <Badge variant="secondary">{customerHasLatest ? 'Customer has latest' : 'Customer has NOT been sent latest'}</Badge>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Accounting Status:</span>
-            <Badge variant="secondary">{qbUpToDate ? 'QuickBooks up to date' : 'QuickBooks out of date'}</Badge>
-          </div>
-        </div>
+        {/* Status Strip (dense, responsive) */}
+        <StatusStrip>
+          <StatusTile
+            label="Total"
+            value={formatCurrency(invoice.total)}
+            valueClassName="mt-1 text-base font-semibold"
+          />
+          <StatusTile
+            label="Paid"
+            value={formatCurrency(invoice.amountPaid)}
+            valueClassName={
+              Number(invoice.amountPaid || 0) > 0
+                ? "mt-1 text-base font-semibold text-green-600"
+                : "mt-1 text-base font-semibold"
+            }
+          />
+          <StatusTile
+            label="Balance Due"
+            value={formatCurrency(balanceDue)}
+            valueClassName={
+              balanceDue > 0
+                ? "mt-1 text-base font-semibold text-red-600"
+                : "mt-1 text-base font-semibold"
+            }
+          />
+          <StatusTile
+            label="Invoice Status"
+            value={<Badge variant="secondary">{invoiceLifecycleStatus}</Badge>}
+          />
+          <StatusTile
+            label="Customer Status"
+            value={<Badge variant="secondary">{customerHasLatest ? 'Sent latest' : 'Not sent latest'}</Badge>}
+          />
+          <StatusTile
+            label="Accounting Status"
+            value={<Badge variant="secondary">{qbUpToDate ? 'QB up to date' : 'QB out of date'}</Badge>}
+          />
+          <StatusTile
+            label="QB Sync"
+            value={<Badge variant={qbFailed ? 'destructive' : 'secondary'}>{qbSyncLabel}</Badge>}
+            right={
+              showRetrySync ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-3 rounded-full transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:bg-primary focus-visible:text-primary-foreground"
+                  onClick={handleRetryQb}
+                  disabled={retryQbSync.isPending}
+                >
+                  {retryQbSync.isPending ? 'Retry…' : 'Retry'}
+                </Button>
+              ) : null
+            }
+          />
+          <StatusTile
+            label="Last Sent"
+            value={formatDate((invoice as any).lastSentAt || null)}
+            valueClassName="mt-1 text-sm font-medium"
+          />
+        </StatusStrip>
 
-        {/* Invoice Details */}
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">Total</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{formatCurrency(invoice.total)}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">Paid</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-green-600">{formatCurrency(invoice.amountPaid)}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">Balance Due</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-red-600">{formatCurrency(balanceDue)}</div>
-            </CardContent>
-          </Card>
-        </div>
+        {/* Details + Line Items (Order-style layout) */}
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
+          <div className="space-y-4 min-w-0">
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="text-base">Customer</CardTitle>
+                  <SaveIndicator state={customerSaveState} />
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <CustomerSelect
+                      value={customerIdDraft}
+                      initialCustomer={effectiveCustomer}
+                      disabled={!canEditInvoice || updateInvoice.isPending}
+                      label=""
+                      onChange={(nextCustomerId, nextCustomer, nextContactId) => {
+                        setCustomerIdDraft(nextCustomerId);
+                        setSelectedCustomer(nextCustomer);
+                        void commitCustomer(nextCustomerId, nextCustomer);
 
-        {/* Line Items */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Line Items</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Quantity</TableHead>
-                  <TableHead>Unit Price</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {lineItems.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell>
-                      <div className="font-medium">{item.description}</div>
-                      {item.width && item.height && (
-                        <div className="text-sm text-muted-foreground">
-                          {item.width}" × {item.height}"
+                        if (nextContactId) {
+                          setContactIdDraft(nextContactId);
+                          setContactDirty(true);
+                          if (invoice?.orderId) void commitOrderContact(nextContactId);
+                        }
+                      }}
+                    />
+
+                    <div className="space-y-2">
+                      <Label>Contact</Label>
+                      <Select
+                        value={contactIdDraft || ''}
+                        onValueChange={(v) => {
+                          const next = v || null;
+                          setContactIdDraft(next);
+                          setContactDirty(true);
+                          if (invoice?.orderId) void commitOrderContact(next);
+                        }}
+                        disabled={!invoice?.orderId || !isStaffUser || contactOptions.length === 0}
+                      >
+                        <SelectTrigger>
+                          <SelectValue
+                            placeholder={
+                              invoice?.orderId
+                                ? (contactOptions.length ? 'Select contact' : 'No contacts')
+                                : 'Contact is managed on the linked Order'
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {contactOptions.map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name}{c.email ? ` — ${c.email}` : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      {!invoice?.orderId ? (
+                        <div className="text-xs text-muted-foreground">
+                          Contact updates are saved on the Order.
                         </div>
-                      )}
-                    </TableCell>
-                    <TableCell>{item.quantity}</TableCell>
-                    <TableCell>{formatCurrency(item.unitPrice)}</TableCell>
-                    <TableCell className="text-right font-medium">
-                      {formatCurrency(item.totalPrice)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                <TableRow>
-                  <TableCell colSpan={3} className="text-right font-medium">Subtotal</TableCell>
-                  <TableCell className="text-right">{formatCurrency(invoice.subtotal)}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell colSpan={3} className="text-right font-medium">Tax</TableCell>
-                  <TableCell className="text-right">{formatCurrency(invoice.tax)}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell colSpan={3} className="text-right text-lg font-bold">Total</TableCell>
-                  <TableCell className="text-right text-lg font-bold">{formatCurrency(invoice.total)}</TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-
-        {/* Payment History */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Payment History</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {payments.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">No payments recorded</div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Method</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>Notes</TableHead>
-                    {isAdminOrOwner && invoice.status !== 'paid' && <TableHead>Actions</TableHead>}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {payments.map((payment) => (
-                    <TableRow key={payment.id}>
-                      <TableCell>{formatDate(payment.appliedAt)}</TableCell>
-                      <TableCell className="capitalize">{payment.method.replace('_', ' ')}</TableCell>
-                      <TableCell className="font-medium">{formatCurrency(payment.amount)}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
-                      {isAdminOrOwner && invoice.status !== 'paid' && (
-                        <TableCell>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDeletePayment(payment.id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Notes */}
-        {(invoice.notesPublic || invoice.notesInternal) && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Notes</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {invoice.notesPublic && (
-                <div>
-                  <h4 className="font-medium mb-2">Public Notes</h4>
-                  <p className="text-sm text-muted-foreground">{invoice.notesPublic}</p>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {orderCustomerId || invoice.customerId ? (
+                      <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
+                        <Link to={`/customers/${orderCustomerId || invoice.customerId}`}>View Customer</Link>
+                      </Button>
+                    ) : null}
+                    {linkedOrderContactId ? (
+                      <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
+                        <Link to={`/contacts/${linkedOrderContactId}`}>View Contact</Link>
+                      </Button>
+                    ) : null}
+                    {invoice.orderId ? (
+                      <Button variant="outline" size="sm" className="h-7 px-3 rounded-full" asChild>
+                        <Link to={`/orders/${invoice.orderId}`}>View Order</Link>
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
-              )}
-              {invoice.notesInternal && (
-                <div>
-                  <h4 className="font-medium mb-2">Internal Notes</h4>
-                  <p className="text-sm text-muted-foreground">{invoice.notesInternal}</p>
+
+                {resolvedBillAddress && (resolvedBillAddress.line1 || resolvedBillAddress.line2 || resolvedBillAddress.line3) && (
+                  <div className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+                    {resolvedBillAddress.line1 ? <div className="truncate">{resolvedBillAddress.line1}</div> : null}
+                    {resolvedBillAddress.line2 ? <div className="truncate">{resolvedBillAddress.line2}</div> : null}
+                    {resolvedBillAddress.line3 ? <div className="truncate">{resolvedBillAddress.line3}</div> : null}
+                  </div>
+                )}
+
+                {(orderEmail || orderPhone) && (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {orderEmail ? (
+                      <div className="flex items-center justify-between gap-3 rounded-md border bg-card/50 p-2.5">
+                        <span className="text-xs text-muted-foreground">Email</span>
+                        <span className="text-xs font-medium truncate max-w-[220px]">{orderEmail}</span>
+                      </div>
+                    ) : null}
+                    {orderPhone ? (
+                      <div className="flex items-center justify-between gap-3 rounded-md border bg-card/50 p-2.5">
+                        <span className="text-xs text-muted-foreground">Phone</span>
+                        <span className="text-xs font-medium">{orderPhone}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-0">
+                <div className="w-full overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Description</TableHead>
+                        <TableHead>Quantity</TableHead>
+                        <TableHead>Unit Price</TableHead>
+                        <TableHead className="text-right">Total</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {lineItems.map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell>
+                            <div className="font-medium">{item.description}</div>
+                            {item.width && item.height && (
+                              <div className="text-sm text-muted-foreground">
+                                {item.width}" × {item.height}"
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell>{item.quantity}</TableCell>
+                          <TableCell>{formatCurrency(item.unitPrice)}</TableCell>
+                          <TableCell className="text-right font-medium">
+                            {formatCurrency(item.totalPrice)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="space-y-4 pt-2.5">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="invoice-notes-public">Public Notes</Label>
+                    <SaveIndicator state={notesSaveState} />
+                  </div>
+                  <Textarea
+                    id="invoice-notes-public"
+                    value={notesPublicDraft}
+                    onChange={(e) => {
+                      setNotesPublicDraft(e.target.value);
+                      setNotesPublicDirty(true);
+                    }}
+                    onBlur={() => {
+                      setNotesPublicDirty(false);
+                      void commitNotesPublic(notesPublicDraft);
+                    }}
+                    disabled={!canEditInvoice || updateInvoice.isPending}
+                    placeholder="Visible to the customer"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="invoice-notes-internal">Internal Notes</Label>
+                    <SaveIndicator state={notesSaveState} />
+                  </div>
+                  <Textarea
+                    id="invoice-notes-internal"
+                    value={notesInternalDraft}
+                    onChange={(e) => {
+                      setNotesInternalDraft(e.target.value);
+                      setNotesInternalDirty(true);
+                    }}
+                    onBlur={() => {
+                      setNotesInternalDirty(false);
+                      void commitNotesInternal(notesInternalDraft);
+                    }}
+                    disabled={!canEditInvoice || updateInvoice.isPending}
+                    placeholder="Internal-only notes"
+                  />
+                </div>
+
+                {!canEditInvoice && (
+                  <div className="text-xs text-muted-foreground">
+                    Notes are locked for paid/void invoices.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="py-4 px-6">
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanel(prev => prev === "timeline" ? "collapsed" : "timeline")}
+                    className={
+                      `text-lg font-medium transition-colors hover:text-foreground cursor-pointer ${
+                        bottomPanel === "timeline" ? "text-foreground" : "text-muted-foreground"
+                      }`
+                    }
+                  >
+                    Timeline
+                  </button>
+
+                  <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
+
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanel(prev => prev === "payments" ? "collapsed" : "payments")}
+                    className={
+                      `text-lg font-medium transition-colors hover:text-foreground cursor-pointer ${
+                        bottomPanel === "payments" ? "text-foreground" : "text-muted-foreground"
+                      }`
+                    }
+                  >
+                    Payment History
+                  </button>
+
+                  <div className="h-4 w-px bg-muted-foreground/30" aria-hidden="true" />
+
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanel(prev => prev === "material" ? "collapsed" : "material")}
+                    className={
+                      `text-lg font-medium transition-colors hover:text-foreground cursor-pointer ${
+                        bottomPanel === "material" ? "text-foreground" : "text-muted-foreground"
+                      }`
+                    }
+                  >
+                    Material Usage
+                  </button>
+                </div>
+              </CardHeader>
+
+              {bottomPanel !== "collapsed" && (
+                <CardContent className="py-4 px-6">
+                  {bottomPanel === "timeline" && (
+                    invoice.orderId ? (
+                      <TimelinePanel orderId={invoice.orderId} />
+                    ) : (
+                      <div className="text-sm text-muted-foreground">No activity yet.</div>
+                    )
+                  )}
+
+                  {bottomPanel === "payments" && (
+                    payments.length === 0 ? (
+                      <div className="text-center py-8 text-muted-foreground">No payments recorded</div>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Method</TableHead>
+                            <TableHead>Amount</TableHead>
+                            <TableHead>Notes</TableHead>
+                            {isAdminOrOwner && invoice.status !== 'paid' && <TableHead>Actions</TableHead>}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {payments.map((payment) => (
+                            <TableRow key={payment.id}>
+                              <TableCell>{formatDate(payment.appliedAt)}</TableCell>
+                              <TableCell className="capitalize">{payment.method.replace('_', ' ')}</TableCell>
+                              <TableCell className="font-medium">{formatCurrency(payment.amount)}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
+                              {isAdminOrOwner && invoice.status !== 'paid' && (
+                                <TableCell>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => handleDeletePayment(payment.id)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </TableCell>
+                              )}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )
+                  )}
+
+                  {bottomPanel === "material" && (
+                    <div className="text-sm text-muted-foreground">
+                      Material usage is tracked on Orders. Coming soon for invoices.
+                    </div>
+                  )}
+                </CardContent>
               )}
-            </CardContent>
-          </Card>
-        )}
+            </Card>
+          </div>
+
+          <div className="space-y-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="text-base">Invoice Details</CardTitle>
+                  <SaveIndicator state={detailsSaveState} />
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-2">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Invoice #</span>
+                    <span className="text-sm font-medium">{invoice.invoiceNumber}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Issue Date</span>
+                    <span className="text-sm">{formatDate(invoice.issueDate)}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Terms</Label>
+                  <Select
+                    value={termsDraft}
+                    onValueChange={(v) => {
+                      setTermsDraft(v);
+                      void commitTerms(v);
+                    }}
+                    disabled={!canEditInvoice || updateInvoice.isPending}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select terms" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="due_on_receipt">Due on receipt</SelectItem>
+                      <SelectItem value="net_15">Net 15</SelectItem>
+                      <SelectItem value="net_30">Net 30</SelectItem>
+                      <SelectItem value="net_45">Net 45</SelectItem>
+                      <SelectItem value="custom">Custom</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="invoice-due-date">Due Date</Label>
+                  <Input
+                    id="invoice-due-date"
+                    type="date"
+                    value={dueDateDraft}
+                    onChange={(e) => setDueDateDraft(e.target.value)}
+                    onBlur={() => void commitDueDate()}
+                    disabled={!canEditInvoice || updateInvoice.isPending}
+                  />
+                </div>
+
+                {!canEditInvoice && (
+                  <div className="text-xs text-muted-foreground">
+                    Invoice details are locked for paid/void invoices.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="text-base">Totals</CardTitle>
+                  <SaveIndicator state={financialSaveState} />
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3">
+                  <div className="grid grid-cols-2 items-center gap-3">
+                    <Label htmlFor="invoice-subtotal">Subtotal</Label>
+                    <Input
+                      id="invoice-subtotal"
+                      inputMode="decimal"
+                      value={subtotalDraft}
+                      onChange={(e) => setSubtotalDraft(e.target.value)}
+                      onBlur={() => void commitFinancials()}
+                      disabled={!canEditFinancial || updateInvoice.isPending}
+                      className="text-right"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 items-center gap-3">
+                    <Label htmlFor="invoice-tax">Tax</Label>
+                    <Input
+                      id="invoice-tax"
+                      inputMode="decimal"
+                      value={taxDraft}
+                      onChange={(e) => setTaxDraft(e.target.value)}
+                      onBlur={() => void commitFinancials()}
+                      disabled={!canEditFinancial || updateInvoice.isPending}
+                      className="text-right"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 items-center gap-3">
+                    <Label htmlFor="invoice-shipping">Shipping</Label>
+                    <Input
+                      id="invoice-shipping"
+                      inputMode="decimal"
+                      value={shippingDraft}
+                      onChange={(e) => setShippingDraft(e.target.value)}
+                      onBlur={() => void commitFinancials()}
+                      disabled={!canEditFinancial || updateInvoice.isPending}
+                      className="text-right"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2 rounded-md border p-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Total</span>
+                    <span className="text-sm font-medium">{formatCurrency(invoice.total)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Paid</span>
+                    <span className="text-sm font-medium">{formatCurrency(invoice.amountPaid)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm text-muted-foreground">Balance Due</span>
+                    <span className="text-sm font-medium">{formatCurrency(balanceDue)}</span>
+                  </div>
+                </div>
+
+                {!canEditFinancial && (
+                  <div className="text-xs text-muted-foreground">
+                    Financial edits are allowed only for Draft invoices and Billed invoices with balance due.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+          </div>
+        </div>
       </div>
-    </div>
+    </Page>
   );
 }

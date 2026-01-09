@@ -90,14 +90,30 @@ export function useCreateOrderInvoice() {
 export function useUpdateInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...updates }: { id: string; notesPublic?: string; notesInternal?: string; terms?: string; customDueDate?: string; subtotalCents?: number; taxCents?: number; shippingCents?: number }) => {
+    mutationFn: async ({
+      id,
+      ...updates
+    }: {
+      id: string;
+      notesPublic?: string;
+      notesInternal?: string;
+      terms?: string;
+      customDueDate?: string;
+      subtotalCents?: number;
+      taxCents?: number;
+      shippingCents?: number;
+      customerId?: string;
+    }) => {
       const res = await fetch(`/api/invoices/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
         credentials: 'include',
       });
-      if (!res.ok) throw new Error('Failed to update invoice');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to update invoice');
+      }
       return res.json();
     },
     onSuccess: (_, variables) => {
