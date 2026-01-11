@@ -8,6 +8,7 @@ import LineItemAlertChip from "./LineItemAlertChip";
 import LineItemMainBlock from "./LineItemMainBlock";
 import LineItemQtyPill from "./LineItemQtyPill";
 import LineItemStatusPill from "./LineItemStatusPill";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 export type LineItemEnterpriseRowModel = {
   id: string;
@@ -18,9 +19,7 @@ export type LineItemEnterpriseRowModel = {
 
   flags?: string[] | null;
 
-  sku?: string | null;
-  descShort?: string | null;
-  descLong?: string | null;
+  notes?: string | null;
 
   alertText?: string | null;
   statusLabel?: string | null;
@@ -53,10 +52,8 @@ export type LineItemRowEnterpriseProps = {
 
   onRowClick?: (itemId: string) => void;
 
-  onSaveNotes?: (
-    itemId: string,
-    draft: { sku: string; descShort: string; descLong: string }
-  ) => Promise<void> | void;
+  onDescriptionCommit?: (itemId: string, nextDescription: string) => Promise<void> | void;
+  onNotesClick?: (itemId: string) => void;
 
   onQtyChange?: (itemId: string, nextQty: number) => Promise<void> | void;
   onOverrideChange?: (itemId: string, nextChecked: boolean) => void;
@@ -76,7 +73,8 @@ export default function LineItemRowEnterprise({
   thumbnail,
   dragHandleProps,
   onRowClick,
-  onSaveNotes,
+  onDescriptionCommit,
+  onNotesClick,
   onQtyChange,
   onOverrideChange,
   onOverrideUnitCommit,
@@ -90,6 +88,9 @@ export default function LineItemRowEnterprise({
   const unitValue =
     typeof item.unitPrice === "number" && Number.isFinite(item.unitPrice) ? item.unitPrice : null;
   const totalValue = typeof item.total === "number" && Number.isFinite(item.total) ? item.total : null;
+
+  const safeNotesText = (item.notes ?? "").trim();
+  const hasNotes = safeNotesText.length > 0;
 
   const canEditUnit = Boolean(item.isOverride) && typeof onOverrideUnitCommit === "function";
   const canEditTotal = Boolean(item.isOverride) && typeof onOverrideTotalCommit === "function";
@@ -199,16 +200,45 @@ export default function LineItemRowEnterprise({
 
       <LineItemMainBlock
         title={item.title}
-        subtitle={item.subtitle}
+        description={item.subtitle}
         optionsSummary={item.optionsSummary}
         flags={item.flags}
-        sku={item.sku}
-        descShort={item.descShort}
-        descLong={item.descLong}
-        onSaveNotes={(draft) => onSaveNotes?.(item.id, draft)}
+        notesText={item.notes}
+        onNotesClick={onNotesClick ? () => onNotesClick(item.id) : undefined}
+        onDescriptionCommit={
+          onDescriptionCommit
+            ? (next) => onDescriptionCommit(item.id, next)
+            : undefined
+        }
       />
 
-      <LineItemAlertChip text={item.alertText} placeholder />
+      <div className={styles.li__flagLane} aria-label="Flags">
+        <LineItemAlertChip text={item.alertText} placeholder={false} />
+        {hasNotes ? (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className={styles.li__notesChip}
+                  data-li-interactive="true"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNotesClick?.(item.id);
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  aria-label="Open notes"
+                >
+                  NOTES
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[420px] whitespace-pre-wrap break-words">
+                {safeNotesText}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : null}
+      </div>
 
       <LineItemStatusPill
         label={item.statusLabel}

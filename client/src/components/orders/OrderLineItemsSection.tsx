@@ -230,6 +230,7 @@ export function OrderLineItemsSection({
   onAfterLineItemsChange?: () => Promise<void>;
 }) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   const updateLineItem = useUpdateOrderLineItem(orderId);
   const updateLineItemSilent = useUpdateOrderLineItem(orderId, { toast: false });
@@ -290,6 +291,34 @@ export function OrderLineItemsSection({
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [overrideById, setOverrideById] = useState<Record<string, boolean>>({});
+
+  const notesEditorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const [pendingNotesFocusId, setPendingNotesFocusId] = useState<string | null>(null);
+  const [notesDraftById, setNotesDraftById] = useState<Record<string, string>>({});
+  const [savingNotesId, setSavingNotesId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingNotesFocusId) return;
+    if (expandedId !== pendingNotesFocusId) return;
+
+    const el = notesEditorRefs.current[pendingNotesFocusId];
+    if (el) {
+      try {
+        el.scrollIntoView({ block: "center" });
+      } catch {
+        // ignore
+      }
+      requestAnimationFrame(() => {
+        try {
+          el.focus();
+        } catch {
+          // ignore
+        }
+      });
+    }
+
+    setPendingNotesFocusId(null);
+  }, [expandedId, pendingNotesFocusId]);
 
   const expandedItem = useMemo(
     () => lineItems.find((li) => li.id === expandedId) ?? null,
@@ -633,12 +662,13 @@ export function OrderLineItemsSection({
 
                   const itemSelectedOptions =
                     ((item as any).selectedOptions as any[] | undefined | null) ?? (item.specsJson as any)?.selectedOptions;
-                  const optionsSummaryText = buildOneLineOptionsSummary(itemSelectedOptions);
 
-                  const subtitleText =
-                    typeof item.description === "string" && item.description.trim().length
-                      ? (productName && item.description.trim() !== String(productName).trim() ? item.description.trim() : "")
-                      : "";
+                  // TODO(v1.2): derive a human-readable option summary from real selected options using option metadata.
+                  // Avoid showing internal codes like "every_24"/raw values in the collapsed row.
+                  const optionsSummaryText: string | null = null;
+
+                  const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
+                  const subtitleText = persistedDescription;
 
                   const total = Number.parseFloat(item.totalPrice || "0") || 0;
                   const parsedUnit = Number.parseFloat(item.unitPrice || "");
@@ -653,6 +683,8 @@ export function OrderLineItemsSection({
                   const itemNotes = (itemSpecsJson as any)?.lineItemNotes as
                     | { sku?: string | null; descShort?: string | null; descLong?: string | null }
                     | undefined;
+
+                  const persistedNotesText = typeof itemNotes?.descLong === "string" ? itemNotes.descLong : "";
 
                   const persistedOverride = Boolean(
                     (itemSpecsJson as any)?.priceOverride &&
@@ -697,11 +729,9 @@ export function OrderLineItemsSection({
                     id: String(item.id),
                     title: productName,
                     subtitle: subtitleText,
-                    optionsSummary: optionsSummaryText || null,
+                    optionsSummary: optionsSummaryText,
                     flags: null,
-                    sku: itemNotes?.sku ?? null,
-                    descShort: itemNotes?.descShort ?? null,
-                    descLong: itemNotes?.descLong ?? null,
+                    notes: persistedNotesText,
                     alertText: null,
                     statusLabel,
                     statusTone,
@@ -793,6 +823,35 @@ export function OrderLineItemsSection({
                                 attributes: dragAttributes,
                                 listeners: dragListeners,
                                 disabled: reorderDisabled,
+                              }}
+                              onDescriptionCommit={
+                                readOnly
+                                  ? undefined
+                                  : async (_id, nextDescription) => {
+                                      try {
+                                        await updateLineItemSilent.mutateAsync({
+                                          id: String(item.id),
+                                          data: {
+                                            description: nextDescription,
+                                          },
+                                        });
+
+                                        await queryClient.invalidateQueries({
+                                          queryKey: ["/api/orders", orderId],
+                                        });
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Could not update description",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
+                              onNotesClick={(lineItemId) => {
+                                setExpandedId(lineItemId);
+                                setPendingNotesFocusId(lineItemId);
                               }}
                               onQtyChange={
                                 readOnly
@@ -916,27 +975,6 @@ export function OrderLineItemsSection({
                                         });
                                         throw e;
                                       }
-                                    }
-                              }
-                              onSaveNotes={
-                                readOnly
-                                  ? undefined
-                                  : async (_id, draft) => {
-                                      const nextSpecsJson = {
-                                        ...(itemSpecsJson || {}),
-                                        lineItemNotes: {
-                                          sku: draft.sku,
-                                          descShort: draft.descShort,
-                                          descLong: draft.descLong,
-                                        },
-                                      };
-
-                                      await updateLineItemSilent.mutateAsync({
-                                        id: String(item.id),
-                                        data: {
-                                          specsJson: nextSpecsJson,
-                                        },
-                                      });
                                     }
                               }
                               onOverrideChange={
@@ -1225,6 +1263,85 @@ export function OrderLineItemsSection({
                                   lineItemId={item.id}
                                   productName={productName}
                                   defaultExpanded={readOnly ? true : false}
+                                />
+                              </div>
+
+                              <div className={cn("mt-3 rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="text-sm font-medium">Notes</div>
+
+                                  {!readOnly && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      disabled={savingNotesId === String(item.id)}
+                                      onClick={async () => {
+                                        const lineItemId = String(item.id);
+                                        const draft = notesDraftById[lineItemId] ?? persistedNotesText;
+
+                                        const nextSpecsJson = {
+                                          ...(itemSpecsJson || {}),
+                                          lineItemNotes: {
+                                            ...(((itemSpecsJson as any)?.lineItemNotes as any) || {}),
+                                            descLong: draft,
+                                          },
+                                        } as any;
+
+                                        setSavingNotesId(lineItemId);
+                                        try {
+                                          await updateLineItemSilent.mutateAsync({
+                                            id: lineItemId,
+                                            data: {
+                                              specsJson: nextSpecsJson,
+                                            },
+                                          });
+
+                                          await queryClient.invalidateQueries({
+                                            queryKey: ["/api/orders", orderId],
+                                          });
+                                        } catch (e) {
+                                          toast({
+                                            variant: "destructive",
+                                            title: "Could not save notes",
+                                            description: "Please try again.",
+                                          });
+                                        } finally {
+                                          setSavingNotesId((prev) => (prev === lineItemId ? null : prev));
+                                        }
+                                      }}
+                                    >
+                                      {savingNotesId === String(item.id) ? (
+                                        <>
+                                          <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                          Saving…
+                                        </>
+                                      ) : (
+                                        "Save"
+                                      )}
+                                    </Button>
+                                  )}
+                                </div>
+
+                                <textarea
+                                  ref={(el) => {
+                                    notesEditorRefs.current[String(item.id)] = el;
+                                  }}
+                                  value={notesDraftById[String(item.id)] ?? persistedNotesText}
+                                  onChange={(e) => {
+                                    const next = e.target.value;
+                                    const lineItemId = String(item.id);
+                                    setNotesDraftById((prev) => ({ ...prev, [lineItemId]: next }));
+                                  }}
+                                  className={cn(
+                                    "w-full min-h-[120px] resize-y rounded-md border border-border bg-background/40 px-3 py-2 text-sm",
+                                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                                    readOnly && "opacity-70"
+                                  )}
+                                  placeholder={readOnly ? "" : "Add notes…"}
+                                  disabled={readOnly}
+                                  readOnly={readOnly}
                                 />
                               </div>
                             </div>
