@@ -11,6 +11,10 @@ export function AppLayout() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  const orderRightCol = isSidebarCollapsed
+    ? "clamp(340px, 24vw, 460px)"
+    : "clamp(320px, 22vw, 420px)";
+
   const toggleSidebarCollapse = () => {
     setIsSidebarCollapsed(!isSidebarCollapsed);
   };
@@ -62,7 +66,12 @@ export function AppLayout() {
         />
 
         {/* Scrollable page content */}
-        <main className="flex-1 overflow-y-auto bg-background">
+        <main
+          className="flex-1 overflow-y-auto bg-background"
+          style={{
+            ["--titan-order-right-col" as any]: orderRightCol,
+          }}
+        >
           <div className="w-full">
             <Outlet />
           </div>
