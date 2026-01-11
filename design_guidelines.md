@@ -1,5 +1,11 @@
 # Design Guidelines: Pricing Calculator Web Application
 
+## TitanOS Theme Tokens (Source of Truth)
+- Theme variables are defined in client/src/index.css (`:root`, `.dark`, and theme variants like `.theme-command`).
+- shadcn/ui + Tailwind classes like `bg-card`, `border-border`, `text-foreground`, `text-muted-foreground`, `ring-ring` resolve to those CSS variables.
+- Prefer theme tokens over hard-coded `rgba(...)`/hex colors so surfaces match across modules (Orders, Quotes, Customers).
+- If custom CSS is needed (CSS modules), use `hsl(var(--card))`, `hsl(var(--border))`, `hsl(var(--foreground))`, etc.
+
 ## Design Approach
 **System Selected:** Material Design-inspired utility framework
 **Rationale:** This is a productivity tool requiring clarity, efficiency, and data-dense displays. Professional B2B interface prioritizing function over aesthetic flourish.
