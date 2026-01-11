@@ -20,6 +20,7 @@ export default function LineItemActionButtons({
       <button
         type="button"
         className={styles.li__iconBtn}
+        data-li-interactive="true"
         onClick={(e) => {
           e.stopPropagation();
           onDuplicate?.();
@@ -34,6 +35,7 @@ export default function LineItemActionButtons({
       <button
         type="button"
         className={styles.li__iconBtn}
+        data-li-interactive="true"
         onClick={(e) => {
           e.stopPropagation();
           onDelete?.();

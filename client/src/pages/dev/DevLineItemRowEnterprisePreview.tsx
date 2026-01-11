@@ -1,7 +1,6 @@
 import * as React from "react";
 
 import { useOrder } from "@/hooks/useOrders";
-import { useUpdateOrderLineItemNotes } from "@/hooks/useOrderLineItemNotes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Page, ContentLayout, DataCard } from "@/components/titan";
@@ -35,8 +34,6 @@ export default function DevLineItemRowEnterprisePreview() {
     isLoading,
     error,
   } = useOrder(loadedOrderId);
-
-  const updateNotesMutation = useUpdateOrderLineItemNotes(loadedOrderId);
 
   const lineItems = Array.isArray(order?.lineItems) ? order!.lineItems : [];
 
@@ -119,14 +116,7 @@ export default function DevLineItemRowEnterprisePreview() {
                       <LineItemRowEnterprise
                         key={model.id}
                         item={model}
-                        onSaveNotes={async (itemId, draft) => {
-                          await updateNotesMutation.mutateAsync({
-                            lineItemId: itemId,
-                            sku: draft.sku,
-                            descShort: draft.descShort,
-                            descLong: draft.descLong,
-                          });
-                        }}
+                        onSaveNotes={undefined}
                         onQtyChange={(itemId, nextQty) => {
                           console.log("Qty change", { orderId: loadedOrderId, itemId, nextQty });
                         }}

@@ -418,9 +418,15 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
   });
 }
 
-export function useUpdateOrderLineItem(orderId: string) {
+export function useUpdateOrderLineItem(
+  orderId: string,
+  options?: {
+    toast?: boolean;
+  }
+) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const shouldToast = options?.toast !== false;
 
   return useMutation({
     mutationFn: async ({ id, data }: { id: string; data: any }) => {
@@ -460,17 +466,21 @@ export function useUpdateOrderLineItem(orderId: string) {
       // Invalidate timeline
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       
-      toast({
-        title: "Success",
-        description: "Line item updated successfully",
-      });
+      if (shouldToast) {
+        toast({
+          title: "Success",
+          description: "Line item updated successfully",
+        });
+      }
     },
     onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
+      if (shouldToast) {
+        toast({
+          title: "Error",
+          description: error.message,
+          variant: "destructive",
+        });
+      }
     },
   });
 }

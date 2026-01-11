@@ -4,14 +4,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   ChevronDown,
-  ChevronRight,
   Download,
   FileText,
   Image,
@@ -22,7 +20,6 @@ import {
   Check,
   Trash2,
   Upload,
-  GripVertical,
 } from "lucide-react";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -43,6 +40,8 @@ import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem,
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
+
+import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/components/line-items/LineItemRowEnterprise";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -191,6 +190,32 @@ function buildOneLineOptionsSummary(selectedOptions: any[] | undefined | null): 
   return `${parts.slice(0, 2).join(', ')} +${parts.length - 2} more`;
 }
 
+function buildOptionFlags(selectedOptions: any[] | undefined | null): string[] {
+  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) return [];
+
+  const flags: string[] = [];
+  for (const opt of selectedOptions) {
+    if (!opt || typeof opt !== "object") continue;
+    const name = String(opt.optionName || opt.label || opt.name || "").trim();
+    let value: any = opt.displayValue ?? opt.value;
+    if (typeof value === "boolean") {
+      if (!value) continue;
+      value = "Yes";
+    }
+    const valueStr = value != null ? String(value).trim() : "";
+    if (!name && !valueStr) continue;
+    if (valueStr === "" || valueStr.toLowerCase() === "none" || valueStr.toLowerCase() === "n/a") continue;
+
+    const compact = valueStr && /^[A-Za-z0-9./+\-]{1,12}$/.test(valueStr) ? valueStr : "";
+    const label = compact || (name ? (valueStr ? `${name}: ${valueStr}` : name) : valueStr);
+    const cleaned = label.trim();
+    if (!cleaned) continue;
+    flags.push(cleaned.length > 22 ? `${cleaned.slice(0, 21)}…` : cleaned);
+    if (flags.length >= 4) break;
+  }
+  return flags;
+}
+
 export function OrderLineItemsSection({
   orderId,
   customerId,
@@ -207,6 +232,7 @@ export function OrderLineItemsSection({
   const { toast } = useToast();
 
   const updateLineItem = useUpdateOrderLineItem(orderId);
+  const updateLineItemSilent = useUpdateOrderLineItem(orderId, { toast: false });
   const updateLineItemStatus = useUpdateOrderLineItemStatus(orderId);
   const createLineItem = useCreateOrderLineItem(orderId);
   const deleteLineItem = useDeleteOrderLineItem(orderId);
@@ -263,6 +289,7 @@ export function OrderLineItemsSection({
   );
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [overrideById, setOverrideById] = useState<Record<string, boolean>>({});
 
   const expandedItem = useMemo(
     () => lineItems.find((li) => li.id === expandedId) ?? null,
@@ -562,8 +589,8 @@ export function OrderLineItemsSection({
   const count = activeLineItems.length;
 
   return (
-    <Card className="rounded-lg border border-border/40 bg-card/50">
-      <CardHeader className="px-3 py-2 border-b border-border/40">
+    <Card className="border-0 bg-transparent shadow-none">
+      <CardHeader className="px-0 pt-0 pb-2">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="border-border/60 text-xs">
             {count} {count === 1 ? "item" : "items"}
@@ -571,7 +598,7 @@ export function OrderLineItemsSection({
         </div>
       </CardHeader>
 
-      <CardContent className="px-3 py-2 overflow-x-hidden">
+      <CardContent className="px-0 py-0 overflow-x-hidden">
         {lineItems.length === 0 ? (
           <div className="py-4 text-center text-sm text-muted-foreground">—</div>
         ) : (
@@ -604,12 +631,47 @@ export function OrderLineItemsSection({
 
                   const productName = (item as any).product?.name || item.description || "Item";
 
-                  const itemSelectedOptions = (item.specsJson as any)?.selectedOptions;
+                  const itemSelectedOptions =
+                    ((item as any).selectedOptions as any[] | undefined | null) ?? (item.specsJson as any)?.selectedOptions;
                   const optionsSummaryText = buildOneLineOptionsSummary(itemSelectedOptions);
-                  const hasNote = !!((item.specsJson as any)?.notes || item.description);
+
+                  const subtitleText =
+                    typeof item.description === "string" && item.description.trim().length
+                      ? (productName && item.description.trim() !== String(productName).trim() ? item.description.trim() : "")
+                      : "";
 
                   const total = Number.parseFloat(item.totalPrice || "0") || 0;
-                  const perEa = item.quantity > 0 ? total / item.quantity : 0;
+                  const parsedUnit = Number.parseFloat(item.unitPrice || "");
+                  const perEa = Number.isFinite(parsedUnit)
+                    ? parsedUnit
+                    : item.quantity > 0
+                      ? total / item.quantity
+                      : 0;
+
+                  const itemSpecsJson: any =
+                    item.specsJson && typeof item.specsJson === "object" ? (item.specsJson as any) : {};
+                  const itemNotes = (itemSpecsJson as any)?.lineItemNotes as
+                    | { sku?: string | null; descShort?: string | null; descLong?: string | null }
+                    | undefined;
+
+                  const persistedOverride = Boolean(
+                    (itemSpecsJson as any)?.priceOverride &&
+                      (((itemSpecsJson as any).priceOverride as any)?.mode
+                        ? ((itemSpecsJson as any).priceOverride as any)?.mode === "total"
+                        : true)
+                  );
+                  const isOverride = overrideById[String(item.id)] ?? persistedOverride;
+
+                  const statusValue = item.status || "queued";
+                  const statusLabel = statusValue.charAt(0).toUpperCase() + statusValue.slice(1);
+                  const statusTone: LineItemEnterpriseRowModel["statusTone"] =
+                    statusValue === "done"
+                      ? "green"
+                      : statusValue === "finishing"
+                        ? "purple"
+                        : statusValue === "printing"
+                          ? "blue"
+                          : "neutral";
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
 
@@ -624,181 +686,387 @@ export function OrderLineItemsSection({
                         .map((u) => getThumbSrc({ previewThumbnailUrl: u }))
                         .filter((u): u is string => typeof u === "string" && u.length > 0)
                     )
-                  ).slice(0, 3);
+                  ).slice(0, 1);
 
                   const heroTotalCount = Number(previewForLineItem?.thumbCount) || previewThumbUrls.length;
-                  const heroOverflowCount = Math.max(0, heroTotalCount - heroThumbUrls.length);
+                  const heroOverflowCount = Math.max(0, heroTotalCount - 1);
 
                   const reorderDisabled = readOnly;
+
+                  const enterpriseItem: LineItemEnterpriseRowModel = {
+                    id: String(item.id),
+                    title: productName,
+                    subtitle: subtitleText,
+                    optionsSummary: optionsSummaryText || null,
+                    flags: null,
+                    sku: itemNotes?.sku ?? null,
+                    descShort: itemNotes?.descShort ?? null,
+                    descLong: itemNotes?.descLong ?? null,
+                    alertText: null,
+                    statusLabel,
+                    statusTone,
+                    qty: typeof item.quantity === "number" ? item.quantity : null,
+                    unitPrice: perEa,
+                    isOverride,
+                    total,
+                  };
+
+                  const thumbnailNode = heroThumbUrls.length ? (
+                    <button
+                      type="button"
+                      className="w-11 h-11 relative rounded overflow-hidden"
+                      data-li-interactive="true"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setArtworkModalLineItemId(String(item.id));
+                      }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                      }}
+                      aria-label="Open artwork"
+                    >
+                      <img
+                        src={heroThumbUrls[0]}
+                        alt=""
+                        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                      />
+
+                      {heroOverflowCount > 0 && (
+                        <div
+                          className="absolute -top-1 -right-1 h-5 min-w-5 px-1 rounded-full bg-background/90 border border-border text-[11px] text-foreground flex items-center justify-center"
+                          aria-hidden
+                        >
+                          +{heroOverflowCount}
+                        </div>
+                      )}
+                    </button>
+                  ) : (
+                    <LineItemThumbnail
+                      parentId={orderId}
+                      lineItemId={item.id}
+                      parentType="order"
+                      attachments={attachmentsForThumb.length ? (attachmentsForThumb as any) : undefined}
+                    />
+                  );
 
                   return (
                     <SortableOrderLineItemWrapper key={itemKey} id={itemKey} disabled={reorderDisabled}>
                       {({ dragAttributes, dragListeners, isDragging, isOver }) => (
                         <div
                           className={cn(
-                            "rounded-md border border-border/40 bg-background/30 overflow-x-hidden",
-                            isExpanded && "bg-background/40 border-border/60",
+                            "rounded-md overflow-x-hidden",
                             isOver && !isDragging && "ring-1 ring-ring/40",
                             isDragging && "opacity-60"
                           )}
                         >
-                          <div className="flex items-start min-w-0 overflow-x-hidden">
-                            <div
-                              className={cn(
-                                "mt-2 flex h-8 w-7 shrink-0 items-center justify-center rounded-sm",
-                                "touch-none",
-                                "text-muted-foreground/70 hover:text-muted-foreground hover:bg-muted/20",
-                                reorderDisabled
-                                  ? "cursor-not-allowed opacity-50"
-                                  : "cursor-grab active:cursor-grabbing"
-                              )}
-                              {...(dragAttributes || {})}
-                              {...(dragListeners || {})}
-                              aria-label="Reorder line item"
-                            >
-                              <GripVertical className="h-4 w-4" />
-                            </div>
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            className={cn(
+                              "min-w-0 text-left p-0 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-md",
+                              isExpanded && "ring-1 ring-ring/20"
+                            )}
+                            onClick={() => {
+                              setExpandedId(isExpanded ? null : itemKey);
+                            }}
+                            onKeyDown={(e) => {
+                              const target = e.target as HTMLElement | null;
+                              if (target?.closest?.('[data-li-interactive="true"]')) return;
+                              const tag = (target?.tagName || "").toUpperCase();
+                              if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
 
-                            <div
-                              role="button"
-                              tabIndex={0}
-                              className="min-w-0 flex-1 text-left px-2.5 py-2 hover:bg-muted/15 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-md"
-                              onClick={() => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
                                 setExpandedId(isExpanded ? null : itemKey);
+                              }
+                            }}
+                            aria-expanded={isExpanded}
+                            aria-controls={contentId}
+                            aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
+                          >
+                            <LineItemRowEnterprise
+                              item={enterpriseItem}
+                              variant="tray"
+                              thumbnail={thumbnailNode}
+                              dragHandleProps={{
+                                attributes: dragAttributes,
+                                listeners: dragListeners,
+                                disabled: reorderDisabled,
                               }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  setExpandedId(isExpanded ? null : itemKey);
-                                }
-                              }}
-                              aria-expanded={isExpanded}
-                              aria-controls={contentId}
-                              aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
-                            >
-                              <div className="grid items-center gap-2 overflow-x-hidden">
-                                  {/* Desktop/large: 3-zone row; small: left + right, options below */}
-                                  <div className="grid items-center gap-2 min-w-0 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                                    {/* Left zone */}
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      {heroThumbUrls.length ? (
-                                        <button
-                                          type="button"
-                                          className="flex items-center gap-1.5 shrink-0"
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            setArtworkModalLineItemId(String(item.id));
-                                          }}
-                                          onPointerDown={(e) => {
-                                            e.stopPropagation();
-                                          }}
-                                          aria-label="Open artwork"
-                                        >
-                                          {heroThumbUrls.map((src, idx) => (
-                                            <div
-                                              key={`${item.id}-hero-thumb-${idx}`}
-                                              className="w-8 h-8 rounded overflow-hidden border border-border bg-muted/30 flex items-center justify-center"
-                                              aria-hidden
-                                            >
-                                              <img src={src} alt="" className="w-full h-full object-cover pointer-events-none" />
-                                            </div>
-                                          ))}
+                              onQtyChange={
+                                readOnly
+                                  ? undefined
+                                  : async (_id, nextQty) => {
+                                      const lineItemId = String(item.id);
+                                      const nextQtyInt = Number.isFinite(nextQty)
+                                        ? Math.max(1, Math.trunc(nextQty))
+                                        : 1;
 
-                                          {heroOverflowCount > 0 && (
-                                            <div
-                                              className="h-8 px-2 rounded border border-border text-xs text-muted-foreground flex items-center justify-center"
-                                              aria-hidden
-                                            >
-                                              +{heroOverflowCount}
-                                            </div>
-                                          )}
-                                        </button>
-                                      ) : (
-                                        <LineItemThumbnail
-                                          parentId={orderId}
-                                          lineItemId={item.id}
-                                          parentType="order"
-                                          attachments={attachmentsForThumb.length ? (attachmentsForThumb as any) : undefined}
-                                        />
-                                      )}
-                                      <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-1.5">
-                                          <span className="text-[15px] font-semibold truncate">{productName}</span>
-                                        </div>
-                                        <div className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground tabular-nums min-w-0">
-                                          <span className="font-mono truncate">
-                                            {item.width && item.height ? `${item.width}" × ${item.height}"` : "—"}
-                                          </span>
-                                          <span className="shrink-0">·</span>
-                                          <span className="shrink-0">Qty {item.quantity}</span>
-                                          {!!hasNote && <span className="shrink-0">· Note</span>}
-                                        </div>
-                                      </div>
-                                    </div>
+                                      if ((item.quantity || 0) === nextQtyInt) return;
 
-                                    {/* Middle zone (options summary) */}
-                                    <div className="hidden md:block min-w-0">
-                                      <div className="text-[15px] text-muted-foreground truncate" title={optionsSummaryText}>
-                                        {optionsSummaryText}
-                                      </div>
-                                    </div>
+                                      // If override is active, keep the overridden total and recompute unit price.
+                                      if (isOverride) {
+                                        const nextSpecsJson = {
+                                          ...(itemSpecsJson || {}),
+                                          priceOverride: {
+                                            mode: "total",
+                                            value: total,
+                                          },
+                                        } as any;
 
-                                    {/* Right zone */}
-                                    <div className="flex items-center justify-end gap-2 shrink-0">
-                                      <div
-                                        className="w-[128px] shrink-0"
-                                        onClick={(e) => e.stopPropagation()}
-                                        onPointerDown={(e) => e.stopPropagation()}
-                                      >
-                                        <Select
-                                          value={item.status || "queued"}
-                                          onValueChange={(next) => {
-                                            if (readOnly) return;
-                                            void updateLineItemStatus.mutateAsync({ lineItemId: item.id, status: next });
-                                          }}
-                                          disabled={readOnly}
-                                        >
-                                          <SelectTrigger className="h-8 w-full">
-                                            <SelectValue />
-                                          </SelectTrigger>
-                                          <SelectContent>
-                                            <SelectItem value="queued">Queued</SelectItem>
-                                            <SelectItem value="printing">Printing</SelectItem>
-                                            <SelectItem value="finishing">Finishing</SelectItem>
-                                            <SelectItem value="done">Done</SelectItem>
-                                            <SelectItem value="canceled">Canceled</SelectItem>
-                                          </SelectContent>
-                                        </Select>
-                                      </div>
+                                        const nextUnit = nextQtyInt > 0 ? total / nextQtyInt : 0;
 
-                                      <div className="text-right tabular-nums shrink-0">
-                                        <div className="font-mono text-[15px] font-semibold leading-5">{formatMoney(total)}</div>
-                                        <div className="text-sm text-muted-foreground leading-4">{formatMoney(perEa)}/ea</div>
-                                      </div>
+                                        try {
+                                          await updateLineItemSilent.mutateAsync({
+                                            id: lineItemId,
+                                            data: {
+                                              quantity: nextQtyInt,
+                                              unitPrice: nextUnit.toFixed(2),
+                                              totalPrice: total.toFixed(2),
+                                              specsJson: nextSpecsJson,
+                                            },
+                                          });
+                                        } catch (e) {
+                                          toast({
+                                            variant: "destructive",
+                                            title: "Could not update quantity",
+                                            description: "Please try again.",
+                                          });
+                                          throw e;
+                                        }
 
-                                      <ChevronRight
-                                        className={cn(
-                                          "h-4 w-4 text-muted-foreground transition-transform shrink-0",
-                                          isExpanded && "rotate-90"
-                                        )}
-                                      />
-                                    </div>
-                                  </div>
+                                        return;
+                                      }
 
-                                  {/* Small screens: show options summary on second line */}
-                                  <div className="md:hidden min-w-0">
-                                    <div className="text-sm text-muted-foreground truncate" title={optionsSummaryText}>
-                                      {optionsSummaryText}
-                                    </div>
-                                  </div>
-                                </div>
-                            </div>
+                                      // Otherwise recompute pricing server-side and persist qty/unit/total.
+                                      const productForCalc = products.find((p) => p.id === item.productId) ?? null;
+                                      const dimsRequiredForCalc = requiresDimensions(productForCalc);
+
+                                      const widthForCalc = dimsRequiredForCalc ? Number.parseFloat(item.width || "") || 0 : 1;
+                                      const heightForCalc = dimsRequiredForCalc ? Number.parseFloat(item.height || "") || 0 : 1;
+
+                                      const selections: Record<string, OptionSelection> = {};
+                                      const savedSelectedOptions = (itemSpecsJson as any)?.selectedOptions;
+                                      if (Array.isArray(savedSelectedOptions)) {
+                                        savedSelectedOptions.forEach((opt: any) => {
+                                          if (!opt?.optionId) return;
+                                          selections[opt.optionId] = {
+                                            value: opt.value,
+                                            grommetsLocation: opt.grommetsLocation,
+                                            grommetsSpacingCount: opt.grommetsSpacingCount,
+                                            grommetsPerSign: opt.grommetsPerSign,
+                                            grommetsSpacingInches: opt.grommetsSpacingInches,
+                                            customPlacementNote: opt.customPlacementNote,
+                                            hemsType: opt.hemsType,
+                                            polePocket: opt.polePocket,
+                                          };
+                                        });
+                                      }
+
+                                      try {
+                                        // If we can't compute (missing dims), still persist qty and leave pricing unchanged.
+                                        if (
+                                          dimsRequiredForCalc &&
+                                          (!Number.isFinite(widthForCalc) ||
+                                            widthForCalc <= 0 ||
+                                            !Number.isFinite(heightForCalc) ||
+                                            heightForCalc <= 0)
+                                        ) {
+                                          await updateLineItemSilent.mutateAsync({
+                                            id: lineItemId,
+                                            data: {
+                                              quantity: nextQtyInt,
+                                            },
+                                          });
+                                          return;
+                                        }
+
+                                        const calcResponse = await apiRequest("POST", "/api/quotes/calculate", {
+                                          productId: item.productId,
+                                          variantId: item.productVariantId || undefined,
+                                          width: widthForCalc,
+                                          height: heightForCalc,
+                                          quantity: nextQtyInt,
+                                          selectedOptions: selections,
+                                          customerId,
+                                        });
+
+                                        const calcData = await calcResponse.json();
+                                        const nextTotal = Number(calcData?.price);
+                                        if (!Number.isFinite(nextTotal)) {
+                                          throw new Error("Invalid price returned");
+                                        }
+
+                                        const nextUnit = nextQtyInt > 0 ? nextTotal / nextQtyInt : 0;
+
+                                        await updateLineItemSilent.mutateAsync({
+                                          id: lineItemId,
+                                          data: {
+                                            quantity: nextQtyInt,
+                                            unitPrice: nextUnit.toFixed(2),
+                                            totalPrice: nextTotal.toFixed(2),
+                                          },
+                                        });
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Could not update quantity",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
+                              onSaveNotes={
+                                readOnly
+                                  ? undefined
+                                  : async (_id, draft) => {
+                                      const nextSpecsJson = {
+                                        ...(itemSpecsJson || {}),
+                                        lineItemNotes: {
+                                          sku: draft.sku,
+                                          descShort: draft.descShort,
+                                          descLong: draft.descLong,
+                                        },
+                                      };
+
+                                      await updateLineItemSilent.mutateAsync({
+                                        id: String(item.id),
+                                        data: {
+                                          specsJson: nextSpecsJson,
+                                        },
+                                      });
+                                    }
+                              }
+                              onOverrideChange={
+                                readOnly
+                                  ? undefined
+                                  : (_id, nextChecked) => {
+                                      const lineItemId = String(item.id);
+
+                                      setOverrideById((prev) => ({ ...prev, [lineItemId]: nextChecked }));
+
+                                      const nextSpecsJson = { ...(itemSpecsJson || {}) } as any;
+                                      if (nextChecked) {
+                                        nextSpecsJson.priceOverride = {
+                                          mode: "total",
+                                          value: total,
+                                        };
+                                      } else {
+                                        delete nextSpecsJson.priceOverride;
+                                      }
+
+                                      void updateLineItemSilent
+                                        .mutateAsync({
+                                          id: lineItemId,
+                                          data: {
+                                            specsJson: nextSpecsJson,
+                                          },
+                                        })
+                                        .then(() => {
+                                          setOverrideById((prev) => {
+                                            const { [lineItemId]: _omit, ...rest } = prev;
+                                            return rest;
+                                          });
+                                        })
+                                        .catch(() => {
+                                          setOverrideById((prev) => ({ ...prev, [lineItemId]: persistedOverride }));
+                                        });
+                                    }
+                              }
+                              onOverrideTotalCommit={
+                                readOnly
+                                  ? undefined
+                                  : async (_id, nextTotal) => {
+                                      const lineItemId = String(item.id);
+                                      const qty = item.quantity > 0 ? item.quantity : 1;
+                                      const unitPrice = qty > 0 ? nextTotal / qty : 0;
+
+                                      const nextSpecsJson = {
+                                        ...(itemSpecsJson || {}),
+                                        priceOverride: {
+                                          mode: "total",
+                                          value: nextTotal,
+                                        },
+                                      };
+
+                                      try {
+                                        await updateLineItemSilent.mutateAsync({
+                                          id: lineItemId,
+                                          data: {
+                                            unitPrice: unitPrice.toFixed(2),
+                                            totalPrice: nextTotal.toFixed(2),
+                                            specsJson: nextSpecsJson,
+                                          },
+                                        });
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Could not update total",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
+                              onOverrideUnitCommit={
+                                readOnly
+                                  ? undefined
+                                  : async (_id, nextUnitPrice) => {
+                                      const lineItemId = String(item.id);
+                                      const qty = item.quantity > 0 ? item.quantity : 1;
+                                      const nextTotal = nextUnitPrice * qty;
+
+                                      const nextSpecsJson = {
+                                        ...(itemSpecsJson || {}),
+                                        priceOverride: {
+                                          mode: "total",
+                                          value: nextTotal,
+                                        },
+                                      };
+
+                                      try {
+                                        await updateLineItemSilent.mutateAsync({
+                                          id: lineItemId,
+                                          data: {
+                                            unitPrice: nextUnitPrice.toFixed(2),
+                                            totalPrice: nextTotal.toFixed(2),
+                                            specsJson: nextSpecsJson,
+                                          },
+                                        });
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Could not update unit price",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
+                              statusOptions={[
+                                { value: "queued", label: "Queued" },
+                                { value: "printing", label: "Printing" },
+                                { value: "finishing", label: "Finishing" },
+                                { value: "done", label: "Done" },
+                                { value: "canceled", label: "Canceled" },
+                              ]}
+                              onStatusChange={
+                                readOnly
+                                  ? undefined
+                                  : (_id, next) => {
+                                      void updateLineItemStatus.mutateAsync({ lineItemId: item.id, status: next });
+                                    }
+                              }
+                              onDuplicate={readOnly ? undefined : () => void handleDuplicateItem(item)}
+                              onDelete={readOnly ? undefined : () => void handleRemoveItem(item.id)}
+                            />
                           </div>
 
                           {isExpanded && expandedItem && expandedItem.id === item.id && (
                             <div id={contentId} className="px-2.5 pb-2.5">
-                              <div className="rounded-md border border-border/40 bg-background/30 p-3">
+                              <div className="rounded-md border border-border/40 bg-transparent p-3">
                                 <div className="flex flex-wrap items-end gap-3">
                                   <div className="flex items-center gap-2">
                                     <div className="flex items-center gap-2">

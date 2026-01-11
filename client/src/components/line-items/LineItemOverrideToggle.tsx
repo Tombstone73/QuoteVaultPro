@@ -20,10 +20,11 @@ export default function LineItemOverrideToggle({
 
   return (
     <div className={`${styles.li__override} ${className ?? ""}`}>
-      <div className={`${styles.li__label} ${styles.li__labelCenter}`}>{label}</div>
+      <div className={`${styles.li__label} ${styles.li__labelCenter} ${styles.li__overrideLabel}`}>{label}</div>
       <button
         type="button"
         className={`${styles.li__toggle} ${isOn ? styles.li__toggleOn : ""}`}
+        data-li-interactive="true"
         onClick={(e) => {
           e.stopPropagation();
           if (!isEditable) return;
