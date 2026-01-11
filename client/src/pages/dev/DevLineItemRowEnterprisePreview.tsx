@@ -100,6 +100,9 @@ export default function DevLineItemRowEnterprisePreview() {
                       id: String(li?.id ?? ""),
                       title: productName ?? li?.description ?? null,
                       subtitle: subtitleParts.length ? subtitleParts.join(" • ") : null,
+                      optionsSummary: null,
+                      flags: null,
+                      notes: (li?.specsJson as any)?.lineItemNotes?.descLong ?? "",
                       statusLabel: li?.status ?? null,
                       statusTone: statusToneFromStatus(li?.status),
                       alertText: null,
@@ -107,16 +110,18 @@ export default function DevLineItemRowEnterprisePreview() {
                       unitPrice: parseMoney(li?.unitPrice),
                       total: parseMoney(li?.totalPrice),
                       isOverride: null,
-                      sku: li?.sku ?? null,
-                      descShort: li?.descShort ?? null,
-                      descLong: li?.descLong ?? null,
                     };
 
                     return (
                       <LineItemRowEnterprise
                         key={model.id}
                         item={model}
-                        onSaveNotes={undefined}
+                        onDescriptionCommit={(itemId, nextDescription) => {
+                          console.log("Description commit", { orderId: loadedOrderId, itemId, nextDescription });
+                        }}
+                        onNotesClick={(itemId) => {
+                          console.log("Notes click", { orderId: loadedOrderId, itemId });
+                        }}
                         onQtyChange={(itemId, nextQty) => {
                           console.log("Qty change", { orderId: loadedOrderId, itemId, nextQty });
                         }}

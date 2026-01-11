@@ -42,6 +42,22 @@ export default function LineItemStatusPill({
   const buttonRef = React.useRef<HTMLButtonElement | null>(null);
   const [menuRect, setMenuRect] = React.useState<{ top: number; left: number; width: number } | null>(null);
 
+  const closeTimerRef = React.useRef<number | null>(null);
+
+  const clearCloseTimer = React.useCallback(() => {
+    if (closeTimerRef.current != null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleClose = React.useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setOpen(false);
+    }, 175);
+  }, [clearCloseTimer]);
+
   const syncMenuPosition = React.useCallback(() => {
     const btn = buttonRef.current;
     if (!btn) return;
@@ -78,6 +94,12 @@ export default function LineItemStatusPill({
     };
   }, [open, syncMenuPosition]);
 
+  React.useEffect(() => {
+    return () => {
+      clearCloseTimer();
+    };
+  }, [clearCloseTimer]);
+
   return (
     <div className={styles.li__statusRoot} data-li-status-root="true">
       <button
@@ -85,6 +107,15 @@ export default function LineItemStatusPill({
         type="button"
         className={`${styles.li__status} ${toneClass(tone)} ${className ?? ""}`}
         data-li-interactive="true"
+        onMouseEnter={() => {
+          if (!canChange) return;
+          clearCloseTimer();
+          setOpen(true);
+        }}
+        onMouseLeave={() => {
+          if (!canChange) return;
+          scheduleClose();
+        }}
         onClick={(e) => {
           e.stopPropagation();
           if (canChange) {
@@ -117,6 +148,12 @@ export default function LineItemStatusPill({
                 left: menuRect.left,
                 minWidth: menuRect.width,
                 zIndex: 9999,
+              }}
+              onMouseEnter={() => {
+                clearCloseTimer();
+              }}
+              onMouseLeave={() => {
+                scheduleClose();
               }}
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
