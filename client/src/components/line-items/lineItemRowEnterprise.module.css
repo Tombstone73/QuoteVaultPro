@@ -21,14 +21,14 @@
     50px
     1.6fr
     160px
-    72px
     150px
+    72px
     118px
-    74px
+    52px
     128px
     76px;
 
-  column-gap: 14px;
+  column-gap: 12px;
 
   transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
 }
@@ -80,6 +80,8 @@
   background: rgba(255, 255, 255, 0.06);
   display: grid;
   place-items: center;
+  overflow: hidden;
+  position: relative;
 }
 
 .li__thumbInner {
@@ -485,6 +487,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
 }
 
 .li__labelCenter {
@@ -529,6 +532,9 @@
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.28);
   overflow: hidden;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .li__moneyPrefix {
@@ -547,6 +553,9 @@
   text-align: right;
   outline: none;
   color: var(--text);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .li__inputMoneyEditable {
@@ -558,6 +567,36 @@
   gap: 6px;
   justify-items: center;
   align-content: center;
+}
+
+.li__overrideInline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+}
+
+.li__overrideMiniLabel {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.li__overrideLabel {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.li__optionsText {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.70);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .li__toggle {
@@ -621,6 +660,8 @@
   font-weight: 800;
   font-size: 15px;
   letter-spacing: 0.01em;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .li__actions {
@@ -666,7 +707,7 @@
   .li {
     grid-template-columns:
       34px 50px 1fr
-      170px 78px 140px 86px 150px 92px;
+      170px 78px 140px 64px 150px 92px;
   }
 
   .li__alert {
@@ -685,6 +726,7 @@
   .li__status,
   .li__field,
   .li__override,
+  .li__overrideInline,
   .li__total {
     display: none;
   }

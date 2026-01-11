@@ -14,6 +14,8 @@ export type LineItemMainBlockProps = {
   title?: string | null;
   subtitle?: string | null;
 
+  optionsSummary?: string | null;
+
   flags?: string[] | null;
 
   sku?: string | null;
@@ -31,6 +33,7 @@ function safeText(value: string | null | undefined) {
 export default function LineItemMainBlock({
   title,
   subtitle,
+  optionsSummary,
   flags,
   sku,
   descShort,
@@ -104,6 +107,12 @@ export default function LineItemMainBlock({
       <div className={styles.li__title}>{safeText(title) || "Untitled item"}</div>
       <div className={styles.li__subtitle}>{safeText(subtitle) || ""}</div>
 
+      {safeText(optionsSummary) ? (
+        <div className={styles.li__optionsText} title={safeText(optionsSummary)}>
+          {safeText(optionsSummary)}
+        </div>
+      ) : null}
+
       {Array.isArray(flags) && flags.length ? (
         <div className={styles.li__flags} data-li-interactive="true">
           {flags.slice(0, 4).map((f) => (
@@ -163,6 +172,7 @@ export default function LineItemMainBlock({
               <button
                 type="button"
                 className={styles.li__popoverClose}
+                data-li-interactive="true"
                 onClick={(e) => {
                   e.stopPropagation();
                   close();

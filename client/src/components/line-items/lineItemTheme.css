@@ -1,19 +1,19 @@
 .liTheme {
-  --bg1: #070b12;
-  --bg2: #0b1220;
+  /* TitanOS theming lives in client/src/index.css as CSS vars (used by Tailwind + shadcn):
+     Prefer theme tokens (bg-card, border-border, text-foreground, text-muted-foreground, ring) over hard-coded RGBA colors. */
 
-  --panel: rgba(255, 255, 255, 0.04);
-  --row: rgba(255, 255, 255, 0.05);
-  --row2: rgba(255, 255, 255, 0.06);
+  --panel: hsl(var(--card));
+  --row: hsl(var(--card) / 0.85);
+  --row2: hsl(var(--card) / 0.92);
 
-  --border: rgba(255, 255, 255, 0.10);
-  --border2: rgba(255, 255, 255, 0.14);
+  --border: hsl(var(--border) / 0.9);
+  --border2: hsl(var(--border));
 
-  --text: rgba(255, 255, 255, 0.92);
-  --muted: rgba(255, 255, 255, 0.62);
-  --faint: rgba(255, 255, 255, 0.42);
+  --text: hsl(var(--foreground));
+  --muted: hsl(var(--muted-foreground));
+  --faint: hsl(var(--muted-foreground) / 0.7);
 
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  --shadow: var(--shadow-lg);
 
   --blueBg: rgba(59, 130, 246, 0.16);
   --blueBr: rgba(59, 130, 246, 0.34);
@@ -27,5 +27,5 @@
   --warnBg: rgba(245, 158, 11, 0.12);
   --warnBr: rgba(245, 158, 11, 0.28);
 
-  --focus: rgba(99, 102, 241, 0.55);
+  --focus: hsl(var(--ring));
 }

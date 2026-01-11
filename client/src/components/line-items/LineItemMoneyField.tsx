@@ -23,7 +23,7 @@ export default function LineItemMoneyField({
 }: LineItemMoneyFieldProps) {
   return (
     <div className={`${styles.li__field} ${className ?? ""}`}>
-      <div className={`${styles.li__label} ${styles.li__labelRight}`}>{label}</div>
+      <div className={styles.li__label}>{label}</div>
       <div className={styles.li__moneyWrap} aria-label={label}>
         <div className={styles.li__moneyPrefix} aria-hidden="true">
           $

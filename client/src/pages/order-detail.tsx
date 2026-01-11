@@ -1121,8 +1121,8 @@ export default function OrderDetail() {
   const hasBillAddress = Boolean(billAddressLine1 || billAddressLine2);
 
   return (
-    <Page maxWidth="full">
-      <div className="mx-auto w-full max-w-[1600px]">
+    <div className="w-full px-4 py-6 sm:px-5 lg:px-5">
+      <div className="w-full max-w-none">
         <div className="flex items-center justify-between mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
             <Link to="/orders">
@@ -1186,7 +1186,7 @@ export default function OrderDetail() {
         </div>
 
         <ContentLayout>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_400px]">
+          <div className="grid grid-cols-1 gap-4 lg:gap-5 xl:gap-6 lg:[grid-template-columns:minmax(0,1fr)_var(--titan-order-right-col)]">
           {/* Main Content */}
           <div className="min-w-0 space-y-4">
             <Card className="bg-titan-bg-card border-titan-border-subtle">
@@ -1526,49 +1526,53 @@ export default function OrderDetail() {
 
                   {/* Order meta */}
                   <div className="min-w-0 space-y-4">
-                {/* TitanOS State Architecture */}
-                {(showPaymentStatus || showRoutedTo) && (
-                  <div className={cn(
-                    "grid grid-cols-1 gap-4 p-4 bg-muted/50 rounded-lg border border-border",
-                    showPaymentStatus && showRoutedTo ? "md:grid-cols-2" : "md:grid-cols-1"
-                  )}>
-                    {showPaymentStatus && (
-                      <div>
-                        <label className="text-sm font-medium text-muted-foreground">Payment</label>
-                        <div className="mt-2">
-                          <Badge variant="outline" className={
-                            order.paymentStatus === 'paid' 
-                              ? 'bg-green-100 text-green-800 border-green-300'
-                              : order.paymentStatus === 'partial'
-                              ? 'bg-yellow-100 text-yellow-800 border-yellow-300'
-                              : 'bg-gray-100 text-gray-800 border-gray-300'
-                          }>
-                            {order.paymentStatus === 'paid' && 'Paid'}
-                            {order.paymentStatus === 'partial' && 'Partial'}
-                            {order.paymentStatus === 'unpaid' && 'Unpaid'}
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Payment status
-                        </p>
+                    {/* TitanOS State Architecture */}
+                    {(showPaymentStatus || showRoutedTo) && (
+                      <div
+                        className={cn(
+                          "grid grid-cols-1 gap-4 p-4 bg-muted/50 rounded-lg border border-border",
+                          showPaymentStatus && showRoutedTo ? "md:grid-cols-2" : "md:grid-cols-1"
+                        )}
+                      >
+                        {showPaymentStatus && (
+                          <div>
+                            <label className="text-sm font-medium text-muted-foreground">Payment</label>
+                            <div className="mt-2">
+                              <Badge
+                                variant="outline"
+                                className={
+                                  order.paymentStatus === "paid"
+                                    ? "bg-green-100 text-green-800 border-green-300"
+                                    : order.paymentStatus === "partial"
+                                      ? "bg-yellow-100 text-yellow-800 border-yellow-300"
+                                      : "bg-gray-100 text-gray-800 border-gray-300"
+                                }
+                              >
+                                {order.paymentStatus === "paid" && "Paid"}
+                                {order.paymentStatus === "partial" && "Partial"}
+                                {order.paymentStatus === "unpaid" && "Unpaid"}
+                              </Badge>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-1">Payment status</p>
+                          </div>
+                        )}
+
+                        {showRoutedTo && (
+                          <div>
+                            <label className="text-sm font-medium text-muted-foreground">Routed To</label>
+                            <div className="mt-2">
+                              <Badge
+                                variant="outline"
+                                className="bg-purple-100 text-purple-800 border-purple-300"
+                              >
+                                {order.routingTarget === "fulfillment" ? "Fulfillment" : "Invoicing"}
+                              </Badge>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-1">Next workflow stage</p>
+                          </div>
+                        )}
                       </div>
                     )}
-                    
-                    {showRoutedTo && (
-                      <div>
-                        <label className="text-sm font-medium text-muted-foreground">Routed To</label>
-                        <div className="mt-2">
-                          <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-300">
-                            {order.routingTarget === 'fulfillment' ? 'Fulfillment' : 'Invoicing'}
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Next workflow stage
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
                 
                 {/* State Transition Actions */}
                 {isAdminOrOwner && (
@@ -2629,7 +2633,7 @@ export default function OrderDetail() {
         </AlertDialogContent>
       </AlertDialog>
       </div>
-    </Page>
+    </div>
   );
 }
 

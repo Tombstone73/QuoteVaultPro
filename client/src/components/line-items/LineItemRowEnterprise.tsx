@@ -6,8 +6,6 @@ import styles from "./lineItemRowEnterprise.module.css";
 import LineItemActionButtons from "./LineItemActionButtons";
 import LineItemAlertChip from "./LineItemAlertChip";
 import LineItemMainBlock from "./LineItemMainBlock";
-import LineItemMoneyField from "./LineItemMoneyField";
-import LineItemOverrideToggle from "./LineItemOverrideToggle";
 import LineItemQtyPill from "./LineItemQtyPill";
 import LineItemStatusPill from "./LineItemStatusPill";
 
@@ -15,6 +13,8 @@ export type LineItemEnterpriseRowModel = {
   id: string;
   title?: string | null;
   subtitle?: string | null;
+
+  optionsSummary?: string | null;
 
   flags?: string[] | null;
 
@@ -58,8 +58,9 @@ export type LineItemRowEnterpriseProps = {
     draft: { sku: string; descShort: string; descLong: string }
   ) => Promise<void> | void;
 
-  onQtyChange?: (itemId: string, nextQty: number) => void;
+  onQtyChange?: (itemId: string, nextQty: number) => Promise<void> | void;
   onOverrideChange?: (itemId: string, nextChecked: boolean) => void;
+  onOverrideUnitCommit?: (itemId: string, nextUnitPrice: number) => Promise<void> | void;
   onOverrideTotalCommit?: (itemId: string, nextTotal: number) => Promise<void> | void;
   statusOptions?: LineItemStatusOption[];
   onStatusChange?: (itemId: string, nextStatus: string) => void;
@@ -78,6 +79,7 @@ export default function LineItemRowEnterprise({
   onSaveNotes,
   onQtyChange,
   onOverrideChange,
+  onOverrideUnitCommit,
   onOverrideTotalCommit,
   statusOptions,
   onStatusChange,
@@ -85,12 +87,25 @@ export default function LineItemRowEnterprise({
   onDelete,
   className,
 }: LineItemRowEnterpriseProps) {
+  const unitValue =
+    typeof item.unitPrice === "number" && Number.isFinite(item.unitPrice) ? item.unitPrice : null;
   const totalValue = typeof item.total === "number" && Number.isFinite(item.total) ? item.total : null;
 
+  const canEditUnit = Boolean(item.isOverride) && typeof onOverrideUnitCommit === "function";
   const canEditTotal = Boolean(item.isOverride) && typeof onOverrideTotalCommit === "function";
+
+  const canToggleOverride = typeof onOverrideChange === "function";
+  const isOverrideOn = Boolean(item.isOverride);
+
+  const [unitText, setUnitText] = React.useState<string>(unitValue === null ? "" : unitValue.toFixed(2));
   const [totalText, setTotalText] = React.useState<string>(
     totalValue === null ? "" : totalValue.toFixed(2)
   );
+
+  React.useEffect(() => {
+    if (!canEditUnit) return;
+    setUnitText(unitValue === null ? "" : unitValue.toFixed(2));
+  }, [canEditUnit, unitValue, item.id]);
 
   React.useEffect(() => {
     if (!canEditTotal) return;
@@ -120,14 +135,36 @@ export default function LineItemRowEnterprise({
     setTotalText(totalValue === null ? "" : totalValue.toFixed(2));
   };
 
-  const commitTotal = () => {
+  const resetUnitText = () => {
+    setUnitText(unitValue === null ? "" : unitValue.toFixed(2));
+  };
+
+  const commitUnit = async () => {
+    if (!canEditUnit) return;
+    const parsed = parseCurrency(unitText);
+    if (parsed == null) {
+      resetUnitText();
+      return;
+    }
+    try {
+      await onOverrideUnitCommit?.(item.id, parsed);
+    } catch (e) {
+      console.error("Failed to update override unit price", e);
+    }
+  };
+
+  const commitTotal = async () => {
     if (!canEditTotal) return;
     const parsed = parseCurrency(totalText);
     if (parsed == null) {
       resetTotalText();
       return;
     }
-    onOverrideTotalCommit?.(item.id, parsed);
+    try {
+      await onOverrideTotalCommit?.(item.id, parsed);
+    } catch (e) {
+      console.error("Failed to update override total", e);
+    }
   };
 
   return (
@@ -163,6 +200,7 @@ export default function LineItemRowEnterprise({
       <LineItemMainBlock
         title={item.title}
         subtitle={item.subtitle}
+        optionsSummary={item.optionsSummary}
         flags={item.flags}
         sku={item.sku}
         descShort={item.descShort}
@@ -172,11 +210,6 @@ export default function LineItemRowEnterprise({
 
       <LineItemAlertChip text={item.alertText} placeholder />
 
-      <LineItemQtyPill
-        value={typeof item.qty === "number" && Number.isFinite(item.qty) ? item.qty : null}
-        onValueChange={onQtyChange ? (next) => onQtyChange(item.id, next) : undefined}
-      />
-
       <LineItemStatusPill
         label={item.statusLabel}
         tone={item.statusTone ?? "neutral"}
@@ -184,12 +217,72 @@ export default function LineItemRowEnterprise({
         onChange={onStatusChange ? (next) => onStatusChange(item.id, next) : undefined}
       />
 
-      <LineItemMoneyField label="Unit" value={item.unitPrice} />
-
-      <LineItemOverrideToggle
-        checked={item.isOverride}
-        onCheckedChange={onOverrideChange ? (next) => onOverrideChange(item.id, next) : undefined}
+      <LineItemQtyPill
+        value={typeof item.qty === "number" && Number.isFinite(item.qty) ? item.qty : null}
+        onValueChange={onQtyChange ? (next) => onQtyChange(item.id, next) : undefined}
       />
+
+      <div className={styles.li__field}>
+        <div className={styles.li__label}>Unit</div>
+        <div className={styles.li__moneyWrap} aria-label="Unit" data-li-interactive="true" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+          <div className={styles.li__moneyPrefix} aria-hidden="true">
+            $
+          </div>
+          <input
+            className={`${styles.li__inputMoney} ${canEditUnit ? styles.li__inputMoneyEditable : ""}`}
+            value={canEditUnit ? unitText : unitValue === null ? "" : new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(unitValue)}
+            placeholder={unitValue === null ? "—" : undefined}
+            readOnly={!canEditUnit}
+            tabIndex={canEditUnit ? 0 : -1}
+            onChange={canEditUnit ? (e) => setUnitText(e.target.value) : undefined}
+            onBlur={canEditUnit ? () => void commitUnit() : undefined}
+            onKeyDown={
+              canEditUnit
+                ? (e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void commitUnit();
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      resetUnitText();
+                    }
+                    if (e.key === " ") {
+                      e.stopPropagation();
+                    }
+                  }
+                : undefined
+            }
+            inputMode="decimal"
+            aria-label="Unit"
+          />
+        </div>
+      </div>
+
+      <div className={styles.li__overrideInline} data-li-interactive="true" aria-label="Override pricing">
+        <span className={styles.li__overrideMiniLabel} aria-hidden="true">
+          OVR
+        </span>
+        <button
+          type="button"
+          className={`${styles.li__toggle} ${isOverrideOn ? styles.li__toggleOn : ""}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!canToggleOverride) return;
+            onOverrideChange?.(item.id, !isOverrideOn);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          disabled={!canToggleOverride}
+          aria-pressed={isOverrideOn}
+          aria-label="Override pricing"
+        >
+          <span className={styles.li__toggleKnob} aria-hidden="true">
+            ✓
+          </span>
+        </button>
+      </div>
 
       <div className={styles.li__total}>
         <div className={`${styles.li__label} ${styles.li__labelRight}`}>Total</div>
@@ -203,12 +296,14 @@ export default function LineItemRowEnterprise({
                 className={`${styles.li__inputMoney} ${styles.li__inputMoneyEditable}`}
                 value={totalText}
                 onChange={(e) => setTotalText(e.target.value)}
-                onBlur={() => commitTotal()}
+                onBlur={() => {
+                  void commitTotal();
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
                     e.stopPropagation();
-                    commitTotal();
+                    void commitTotal();
                   }
                   if (e.key === "Escape") {
                     e.preventDefault();

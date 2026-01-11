@@ -1,4 +1,5 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 import styles from "./lineItemRowEnterprise.module.css";
 
@@ -38,24 +39,52 @@ export default function LineItemStatusPill({
 
   const canChange = Array.isArray(options) && options.length > 0 && typeof onChange === "function";
   const [open, setOpen] = React.useState(false);
+  const buttonRef = React.useRef<HTMLButtonElement | null>(null);
+  const [menuRect, setMenuRect] = React.useState<{ top: number; left: number; width: number } | null>(null);
+
+  const syncMenuPosition = React.useCallback(() => {
+    const btn = buttonRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    setMenuRect({
+      top: r.bottom + 8,
+      left: r.left,
+      width: Math.max(160, r.width),
+    });
+  }, []);
 
   React.useEffect(() => {
     if (!open) return;
+    syncMenuPosition();
+
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target) return;
       if (target.closest(`[data-li-status-root="true"]`)) return;
+      if (target.closest(`[data-li-status-portal="true"]`)) return;
       setOpen(false);
     };
+
+    const onWin = () => syncMenuPosition();
     document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [open]);
+
+    document.addEventListener("scroll", onWin, true);
+    window.addEventListener("resize", onWin);
+
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("scroll", onWin, true);
+      window.removeEventListener("resize", onWin);
+    };
+  }, [open, syncMenuPosition]);
 
   return (
     <div className={styles.li__statusRoot} data-li-status-root="true">
       <button
+        ref={buttonRef}
         type="button"
         className={`${styles.li__status} ${toneClass(tone)} ${className ?? ""}`}
+        data-li-interactive="true"
         onClick={(e) => {
           e.stopPropagation();
           if (canChange) {
@@ -75,24 +104,42 @@ export default function LineItemStatusPill({
         </span>
       </button>
 
-      {canChange && open ? (
-        <div className={styles.li__statusMenu} role="listbox" aria-label="Change status">
-          {options!.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={styles.li__statusMenuItem}
-              onClick={(e) => {
-                e.stopPropagation();
-                onChange?.(opt.value);
-                setOpen(false);
+      {canChange && open && menuRect
+        ? createPortal(
+            <div
+              className={styles.li__statusMenu}
+              data-li-status-portal="true"
+              role="listbox"
+              aria-label="Change status"
+              style={{
+                position: "fixed",
+                top: menuRect.top,
+                left: menuRect.left,
+                minWidth: menuRect.width,
+                zIndex: 9999,
               }}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
             >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+              {options!.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={styles.li__statusMenuItem}
+                  data-li-interactive="true"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onChange?.(opt.value);
+                    setOpen(false);
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
