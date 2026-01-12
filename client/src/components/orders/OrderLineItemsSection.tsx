@@ -43,7 +43,8 @@ import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
 
 import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/components/line-items/LineItemRowEnterprise";
-import { buildLineItemFlags, buildLineItemOptionSummary } from "@/lib/lineItems/lineItemDerivation";
+import { buildLineItemFlags } from "@/lib/lineItems/lineItemDerivation";
+import { formatLineItemOptionSummary } from "@shared/lineItemOptionSummary";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -559,6 +560,7 @@ export function OrderLineItemsSection({
           description: notes || "",
           unitPrice: unitPrice.toFixed(2),
           totalPrice: totalPrice.toFixed(2),
+          selectedOptions: selectedOptionsArray,
           specsJson: nextSpecsJson,
         },
       });
@@ -674,7 +676,7 @@ export function OrderLineItemsSection({
 
                   const productName = (item as any).product?.name || item.description || "Item";
 
-                  const optionSummary = buildLineItemOptionSummary(item);
+                  const optionsSummaryText = formatLineItemOptionSummary(item);
 
                   const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
                   const subtitleText = persistedDescription;
@@ -740,6 +742,7 @@ export function OrderLineItemsSection({
                       lineItemAttachments: {
                         associationKnown: lineItemAttachmentsAssociationKnown,
                         count: attachmentsForThumb.length,
+                        items: attachmentsForThumb as any,
                       },
                       lineItemAssets: {
                         associationKnown: lineItemAssetsKnownForItem,
@@ -766,7 +769,7 @@ export function OrderLineItemsSection({
                     id: String(item.id),
                     title: productName,
                     subtitle: subtitleText,
-                    optionsSummary: optionSummary,
+                    optionsSummaryText,
                     flags: derivedFlags,
                     notes: persistedNotesText,
                     alertText: null,
