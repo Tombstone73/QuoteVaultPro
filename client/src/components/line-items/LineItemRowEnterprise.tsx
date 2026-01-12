@@ -17,6 +17,7 @@ export type LineItemEnterpriseRowModel = {
   subtitle?: string | null;
 
   optionsSummary?: LineItemOptionSummaryVM | null;
+  optionsSummaryText?: string | null;
 
   flags?: LineItemFlagVM[] | null;
 
@@ -202,6 +203,7 @@ export default function LineItemRowEnterprise({
         title={item.title}
         description={item.subtitle}
         optionsSummary={item.optionsSummary}
+        optionsSummaryText={item.optionsSummaryText}
         onDescriptionCommit={
           onDescriptionCommit
             ? (next) => onDescriptionCommit(item.id, next)

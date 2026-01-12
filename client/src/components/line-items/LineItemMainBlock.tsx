@@ -9,6 +9,7 @@ export type LineItemMainBlockProps = {
   description?: string | null;
 
   optionsSummary?: LineItemOptionSummaryVM | null;
+  optionsSummaryText?: string | null;
 
   flags?: string[] | null;
 
@@ -38,6 +39,7 @@ export default function LineItemMainBlock({
   title,
   description,
   optionsSummary,
+  optionsSummaryText,
   flags,
   onDescriptionCommit,
   className,
@@ -46,7 +48,7 @@ export default function LineItemMainBlock({
   // Notes indicator is rendered in the row's right-side flag lane.
   // Keep notesText/onNotesClick in props to avoid changing the public API.
 
-  const optionSummaryText = formatOptionSummary(optionsSummary);
+  const optionSummaryTextFinal = safeText(optionsSummaryText) || formatOptionSummary(optionsSummary);
 
   const canEditDescription = typeof onDescriptionCommit === "function";
   const [draftDescription, setDraftDescription] = React.useState(safeDescription);
@@ -103,9 +105,9 @@ export default function LineItemMainBlock({
         <div className={styles.li__subtitle}>{safeDescription}</div>
       ) : null}
 
-      {optionSummaryText ? (
-        <div className={styles.li__optionsText} title={optionSummaryText}>
-          {optionSummaryText}
+      {optionSummaryTextFinal ? (
+        <div className={styles.li__optionsText} title={optionSummaryTextFinal}>
+          {optionSummaryTextFinal}
         </div>
       ) : null}
     </div>
