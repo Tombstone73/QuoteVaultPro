@@ -67,8 +67,6 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Invalid quantity for option evaluation");
   if (!Number.isFinite(basePrice)) throw new Error("Invalid basePrice for option evaluation");
 
-  const sqftEach = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? (width * height) / 144 : 0;
-
   const visibleNodeIds = resolveVisibleNodes(tree, selections);
   const selected = selections.selected ?? {};
 
@@ -83,6 +81,15 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     const selectionEntry = selected[nodeId];
     const valueRaw = selectionEntry ? selectionEntry.value : undefined;
 
+    const isSelected = (() => {
+      if (valueRaw === null || valueRaw === undefined) return false;
+      if (node.kind !== "question") return false;
+      const inputType = node.input?.type;
+      if (inputType === "boolean") return valueRaw === true;
+      if (inputType === "select") return typeof valueRaw === "string" && valueRaw.trim().length > 0;
+      return true;
+    })();
+
     let nodeCost = 0;
     const impacts = node.pricingImpact ?? [];
 
@@ -96,6 +103,8 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
         continue;
       }
 
+      if (!isSelected) continue;
+
       switch (impact.mode) {
         case "addFlat":
           nodeCost += (impact.amountCents ?? 0) / 100;
@@ -103,21 +112,8 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
         case "addPerQty":
           nodeCost += ((impact.amountCents ?? 0) / 100) * quantity;
           break;
-        case "addPerSqft":
-          nodeCost += ((impact.amountCents ?? 0) / 100) * sqftEach * quantity;
-          break;
-        case "percentOfBase":
-          nodeCost += basePrice * ((impact.percent ?? 0) / 100);
-          break;
-        case "multiplier": {
-          const factor = Number(impact.factor);
-          if (Number.isFinite(factor)) {
-            // Represent a multiplier as an additive delta on base (keeps the existing pricing pipeline stable)
-            nodeCost += basePrice * (factor - 1);
-          }
-          break;
-        }
         default:
+          // MVP: ignore unsupported impact modes.
           break;
       }
     }
@@ -126,7 +122,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       throw new Error(`Option v2 node '${nodeId}' produced invalid cost`);
     }
 
-    const hasValue = valueRaw !== null && valueRaw !== undefined;
+    const hasValue = isSelected;
     const hasCost = Math.abs(nodeCost) > 0;
 
     if (hasValue || hasCost) {

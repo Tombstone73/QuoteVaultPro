@@ -775,6 +775,7 @@ export class QuotesRepository {
             height: lineItem.height.toString(),
             quantity: lineItem.quantity,
             specsJson: (lineItem as any).specsJson || null,
+            optionSelectionsJson: (lineItem as any).optionSelectionsJson ?? null,
             selectedOptions: lineItem.selectedOptions as Array<{
                 optionId: string;
                 optionName: string;
@@ -805,6 +806,7 @@ export class QuotesRepository {
         if (lineItem.width !== undefined) updateData.width = lineItem.width.toString();
         if (lineItem.height !== undefined) updateData.height = lineItem.height.toString();
         if (lineItem.quantity !== undefined) updateData.quantity = lineItem.quantity;
+        if ((lineItem as any).optionSelectionsJson !== undefined) updateData.optionSelectionsJson = (lineItem as any).optionSelectionsJson;
         if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
         if (lineItem.linePrice !== undefined) updateData.linePrice = lineItem.linePrice.toString();
         if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
@@ -846,6 +848,7 @@ export class QuotesRepository {
             height: lineItem.height.toString(),
             quantity: lineItem.quantity,
             specsJson: (lineItem as any).specsJson ?? null,
+            optionSelectionsJson: (lineItem as any).optionSelectionsJson ?? null,
             selectedOptions: lineItem.selectedOptions ?? [],
             linePrice: lineItem.linePrice.toString(),
             priceBreakdown: lineItem.priceBreakdown as any,

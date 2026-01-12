@@ -1227,6 +1227,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Validate optionTreeJson is JSON-safe (Option Tree v2 payload).
+      if (Object.prototype.hasOwnProperty.call(productData, "optionTreeJson")) {
+        const optionTreeJson = productData.optionTreeJson;
+        if (optionTreeJson != null) {
+          let jsonText: string;
+          try {
+            jsonText = JSON.stringify(optionTreeJson);
+          } catch {
+            return res.status(400).json({ success: false, message: "optionTreeJson must be valid JSON" });
+          }
+
+          // Round-trip to ensure it can be serialized safely.
+          try {
+            productData.optionTreeJson = JSON.parse(jsonText);
+          } catch {
+            return res.status(400).json({ success: false, message: "optionTreeJson must be valid JSON" });
+          }
+        }
+      }
+
       const product = await storage.updateProduct(organizationId, productId, productData as UpdateProduct);
       res.json(product);
     } catch (error) {
@@ -1620,6 +1640,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const { evaluateOptionTreeV2, isZodError } = await import("./services/optionTreeV2Evaluator");
+      const { validateOptionTreeV2 } = await import("../shared/optionTreeV2");
       const {
         productId,
         variantId,
@@ -2428,6 +2449,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const tree = (product as any).optionTreeJson;
         if (tree && typeof tree === "object" && (tree as any).schemaVersion === 2) {
+          const graph = validateOptionTreeV2(tree);
+          if (!graph.ok) {
+            return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: graph.errors });
+          }
+
           const v2 = evaluateOptionTreeV2({
             tree,
             selections: optionSelectionsJson ?? { schemaVersion: 2, selected: {} },
@@ -4314,6 +4340,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         height: lineItem.height != null ? parseFloat(lineItem.height) : 0,
         quantity: lineItem.quantity != null ? parseInt(lineItem.quantity) : 1,
         specsJson: lineItem.specsJson || null,
+        optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
         selectedOptions: lineItem.selectedOptions || [],
         linePrice: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
         formulaLinePrice: lineItem.formulaLinePrice != null ? String(parseFloat(lineItem.formulaLinePrice)) : null,
@@ -4359,6 +4386,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         height,
         quantity,
         specsJson,
+        optionSelectionsJson,
         selectedOptions,
         linePrice,
         formulaLinePrice,
@@ -4393,6 +4421,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         height: Number.isFinite(heightNum) && heightNum > 0 ? heightNum : 1,
         quantity: Number.isFinite(quantityNum) && quantityNum > 0 ? quantityNum : 1,
         specsJson: specsJson || null,
+        optionSelectionsJson: optionSelectionsJson ?? null,
         selectedOptions: Array.isArray(selectedOptions) ? selectedOptions : [],
         linePrice: Number.isFinite(linePriceNum) && linePriceNum >= 0 ? linePriceNum : 0,
         formulaLinePrice: formulaLinePrice != null ? String(Number(formulaLinePrice)) : null,
@@ -4443,6 +4472,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (lineItem.width !== undefined) updateData.width = parseFloat(lineItem.width);
       if (lineItem.height !== undefined) updateData.height = parseFloat(lineItem.height);
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
+      if (lineItem.optionSelectionsJson !== undefined) updateData.optionSelectionsJson = lineItem.optionSelectionsJson;
       if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
       if (lineItem.linePrice !== undefined) updateData.linePrice = parseFloat(lineItem.linePrice);
       if (lineItem.formulaLinePrice !== undefined) updateData.formulaLinePrice = lineItem.formulaLinePrice != null ? String(parseFloat(lineItem.formulaLinePrice)) : null;

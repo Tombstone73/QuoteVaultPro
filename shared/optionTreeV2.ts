@@ -196,3 +196,74 @@ export const lineItemOptionSelectionsV2Schema: z.ZodType<LineItemOptionSelection
     })
     .optional(),
 });
+
+// ------------------------------------------------------------
+// Minimal graph validator (MVP)
+// ------------------------------------------------------------
+
+export function validateOptionTreeV2(tree: unknown): { ok: true } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+
+  if (!tree || typeof tree !== "object") {
+    return { ok: false, errors: ["Tree must be an object"] };
+  }
+
+  const anyTree: any = tree as any;
+
+  if (anyTree.schemaVersion !== 2) {
+    errors.push("schemaVersion must be 2");
+  }
+
+  if (!Array.isArray(anyTree.rootNodeIds) || anyTree.rootNodeIds.length === 0) {
+    errors.push("rootNodeIds must be a non-empty array");
+  }
+
+  if (!anyTree.nodes || typeof anyTree.nodes !== "object") {
+    errors.push("nodes must be an object map");
+  }
+
+  const nodes: Record<string, any> = anyTree.nodes && typeof anyTree.nodes === "object" ? anyTree.nodes : {};
+
+  // roots exist in nodes
+  if (Array.isArray(anyTree.rootNodeIds)) {
+    for (let i = 0; i < anyTree.rootNodeIds.length; i++) {
+      const rootId = anyTree.rootNodeIds[i];
+      if (typeof rootId !== "string" || !rootId.trim()) {
+        errors.push("rootNodeIds must contain non-empty strings");
+        continue;
+      }
+      if (!nodes[rootId]) {
+        errors.push(`rootNodeId '${rootId}' does not exist in nodes`);
+      }
+    }
+  }
+
+  // nodes[key].id === key
+  for (const key of Object.keys(nodes)) {
+    const node = nodes[key];
+    if (!node || typeof node !== "object") continue;
+    if (node.id !== key) {
+      errors.push(`Node id mismatch: nodes['${key}'].id must equal '${key}'`);
+    }
+  }
+
+  // no missing nodes referenced by edges.children[].toNodeId
+  for (const fromId of Object.keys(nodes)) {
+    const node = nodes[fromId];
+    const children = node?.edges?.children;
+    if (!children) continue;
+    if (!Array.isArray(children)) continue;
+
+    for (let i = 0; i < children.length; i++) {
+      const edge = children[i];
+      const toNodeId = edge?.toNodeId;
+      if (typeof toNodeId !== "string" || !toNodeId.trim()) continue;
+      if (!nodes[toNodeId]) {
+        errors.push(`Edge reference missing: '${fromId}' -> '${toNodeId}'`);
+      }
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true };
+}

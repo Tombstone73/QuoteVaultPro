@@ -4,6 +4,8 @@ import { apiRequest } from "@/lib/queryClient";
 import type { ProductBuilderDraftState } from "@/hooks/useProductBuilderDraft";
 import type { OptionSelection } from "@/features/quotes/editor/types";
 import { ProductOptionsPanel } from "@/features/quotes/editor/components/ProductOptionsPanel";
+import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Badge } from "./ui/badge";
@@ -34,9 +36,13 @@ const ProductSimulator = ({
   isDirty?: boolean;
 }) => {
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
+  const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
+  const [optionsV2Valid, setOptionsV2Valid] = useState(true);
   const { productDraft, pricingPreviewInputs, setPricingPreviewInputs } = draft;
 
   const options = (productDraft as any)?.optionsJson || [];
+  const optionTreeJson = ((productDraft as any)?.optionTreeJson ?? null) as OptionTreeV2 | null;
+  const isTreeV2 = Boolean(optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2);
 
   const widthNumRaw = Number(pricingPreviewInputs.widthIn);
   const heightNumRaw = Number(pricingPreviewInputs.heightIn);
@@ -55,11 +61,11 @@ const ProductSimulator = ({
 
   const selectionSignature = useMemo(() => {
     try {
-      return JSON.stringify(optionSelections);
+      return JSON.stringify(isTreeV2 ? optionSelectionsV2 : optionSelections);
     } catch {
       return "{}";
     }
-  }, [optionSelections]);
+  }, [isTreeV2, optionSelections, optionSelectionsV2]);
 
   const draftSignature = useMemo(() => {
     // Keep this minimal: only fields that affect pricing computation.
@@ -77,6 +83,7 @@ const ProductSimulator = ({
         materialType: p?.materialType ?? null,
         minPricePerItem: p?.minPricePerItem ?? null,
         optionsJson: p?.optionsJson ?? null,
+        optionTreeJson: p?.optionTreeJson ?? null,
       });
     } catch {
       return "{}";
@@ -92,7 +99,8 @@ const ProductSimulator = ({
     heightNum > 0 &&
     Number.isFinite(quantityNum) &&
     quantityNum > 0 &&
-    (!needsP || Boolean(primaryMaterialId));
+    (!needsP || Boolean(primaryMaterialId)) &&
+    (!isTreeV2 || optionsV2Valid);
 
   const cantSimulateReason = useMemo(() => {
     if (!pricingProfileKey) return "Select a pricing profile to preview pricing.";
@@ -132,15 +140,43 @@ const ProductSimulator = ({
     enabled: canSimulate,
     placeholderData: (prev) => prev,
     queryFn: async () => {
-      const response = await apiRequest("POST", "/api/quotes/calculate", {
-        productId: (productDraft as any)?.id ?? undefined,
-        productDraft,
-        width: debouncedInputs.width,
-        height: debouncedInputs.height,
-        quantity: debouncedInputs.quantity,
-        selectedOptions: optionSelections,
+      // How to test (Tree v2 MVP):
+      // - Edit a product, set Options Mode = Tree v2, click Initialize Tree v2 (or paste schemaVersion=2 JSON)
+      // - In the simulator, toggle root questions and verify optionsPrice changes in the result JSON
+      if (!isTreeV2) {
+        const response = await apiRequest("POST", "/api/quotes/calculate", {
+          productId: (productDraft as any)?.id ?? undefined,
+          productDraft,
+          width: debouncedInputs.width,
+          height: debouncedInputs.height,
+          quantity: debouncedInputs.quantity,
+          selectedOptions: optionSelections,
+        });
+        return await response.json();
+      }
+
+      const res = await fetch("/api/quotes/calculate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          productId: (productDraft as any)?.id ?? undefined,
+          productDraft,
+          width: debouncedInputs.width,
+          height: debouncedInputs.height,
+          quantity: debouncedInputs.quantity,
+          optionSelectionsJson: optionSelectionsV2,
+        }),
       });
-      return await response.json();
+
+      if (res.ok) return await res.json();
+
+      const text = await res.text();
+      try {
+        return { __httpError: { status: res.status, body: JSON.parse(text) } };
+      } catch {
+        return { __httpError: { status: res.status, body: { message: text || res.statusText } } };
+      }
     },
   });
 
@@ -157,6 +193,8 @@ const ProductSimulator = ({
   if (!productDraft) {
     return <div>Loading...</div>;
   }
+
+  const httpError = (pricingQuery.data as any)?.__httpError as { status: number; body: any } | undefined;
 
   return (
     <div className="space-y-4">
@@ -219,12 +257,21 @@ const ProductSimulator = ({
         </div>
       </div>
 
-      <ProductOptionsPanel
-        product={productDraft}
-        productOptions={options}
-        optionSelections={optionSelections}
-        onOptionSelectionsChange={setOptionSelections}
-      />
+      {isTreeV2 && optionTreeJson ? (
+        <ProductOptionsPanelV2
+          tree={optionTreeJson}
+          selections={optionSelectionsV2}
+          onSelectionsChange={setOptionSelectionsV2}
+          onValidityChange={setOptionsV2Valid}
+        />
+      ) : (
+        <ProductOptionsPanel
+          product={productDraft}
+          productOptions={options}
+          optionSelections={optionSelections}
+          onOptionSelectionsChange={setOptionSelections}
+        />
+      )}
 
       <div className="space-y-2">
         <div className="text-sm">
@@ -245,6 +292,14 @@ const ProductSimulator = ({
         {pricingQuery.isError ? (
           <div className="text-sm text-destructive">
             Pricing error: {pricingQuery.error instanceof Error ? pricingQuery.error.message : "Calculation failed"}
+          </div>
+        ) : null}
+
+        {httpError ? (
+          <div className="text-sm text-destructive">
+            {typeof httpError?.body?.message === "string"
+              ? httpError.body.message
+              : `Pricing error (${httpError.status})`}
           </div>
         ) : null}
 

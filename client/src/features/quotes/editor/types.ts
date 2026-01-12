@@ -14,6 +14,8 @@ export type QuoteLineItemDraft = {
   height: number;
   quantity: number;
   specsJson: Record<string, any>;
+  /** Option Tree v2 canonical selections (schemaVersion=2). */
+  optionSelectionsJson?: any;
   selectedOptions: any[];
   linePrice: number;
   /**

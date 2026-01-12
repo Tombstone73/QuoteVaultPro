@@ -125,6 +125,7 @@ async function createInvoiceFromOrderImpl(
         sortOrder: typeof (li as any).sortOrder === 'number' ? (li as any).sortOrder : idx,
         specsJson: li.specsJson as any,
         selectedOptions: li.selectedOptions as any,
+        optionSelectionsJson: (li as any).optionSelectionsJson ?? null,
       } as any));
       if (snapshotRows.length) {
         await tx.insert(invoiceLineItems).values(snapshotRows as any);
