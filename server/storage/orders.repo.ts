@@ -1149,8 +1149,13 @@ export class OrdersRepository {
         return updated as any;
     }
 
-    async detachOrderFile(id: string): Promise<void> {
-        await this.dbInstance.delete(orderAttachments).where(eq(orderAttachments.id, id));
+    async detachOrderFile(id: string): Promise<boolean> {
+        const deleted = await this.dbInstance
+            .delete(orderAttachments)
+            .where(eq(orderAttachments.id, id))
+            .returning({ id: orderAttachments.id });
+
+        return deleted.length > 0;
     }
 
     async getOrderArtworkSummary(orderId: string): Promise<{

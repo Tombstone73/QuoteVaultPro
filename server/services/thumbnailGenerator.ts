@@ -14,8 +14,9 @@ import { db } from "../db";
 import { orderAttachments, quoteAttachments } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
-import { readFile } from "../utils/fileStorage";
+import { fileExists } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
+import { normalizeTenantObjectKey } from "../utils/orgKeys";
 import path from "path";
 import * as fsPromises from "fs/promises";
 import { createRequire } from "module";
@@ -51,6 +52,32 @@ export function isThumbnailGenerationEnabled(): boolean {
     return true; // Default enabled
   }
   return envValue.toLowerCase() === 'true';
+}
+
+const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
+
+async function verifyDerivativesExist(args: {
+  storageProvider: string;
+  thumbKey: string;
+  previewKey?: string | null;
+}): Promise<{ thumbExists: boolean; previewExists: boolean }>
+{
+  const { storageProvider, thumbKey, previewKey } = args;
+
+  if (isSupabaseConfigured() && storageProvider === 'supabase') {
+    const svc = new SupabaseStorageService();
+    const [thumbExists, previewExists] = await Promise.all([
+      svc.fileExists(thumbKey),
+      previewKey ? svc.fileExists(previewKey) : Promise.resolve(true),
+    ]);
+    return { thumbExists, previewExists };
+  }
+
+  const [thumbExists, previewExists] = await Promise.all([
+    fileExists(thumbKey),
+    previewKey ? fileExists(previewKey) : Promise.resolve(true),
+  ]);
+  return { thumbExists, previewExists };
 }
 
 // Supported image MIME types
@@ -97,7 +124,7 @@ function generateDerivativeKey(args: {
   variant: 'thumb' | 'preview';
 }): string {
   const { organizationId, attachmentType, attachmentId, variant } = args;
-  return `thumbs/${organizationId}/${attachmentType}/${attachmentId}.${variant}.jpg`;
+  return normalizeTenantObjectKey(`thumbs/${organizationId}/${attachmentType}/${attachmentId}.${variant}.jpg`);
 }
 
 /**
@@ -122,30 +149,30 @@ async function downloadOriginalFile(fileKey: string, storageProvider: string): P
 
     // Local file storage - resolve path and read directly
     if (storageProvider === 'local' || !storageProvider) {
-      const resolvedPath = resolveLocalStoragePath(fileKey);
-      console.log(`[ThumbnailGenerator] Local file resolve: ${fileKey} -> ${resolvedPath}`);
-      
-      // Retry logic for timing issues (file may still be flushing after upload)
-      let lastError: Error | null = null;
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          const buffer = await fsPromises.readFile(resolvedPath);
-          console.log(`[ThumbnailGenerator] Read from local storage: ${fileKey}, size=${buffer.length} bytes (attempt ${attempt})`);
-          return buffer;
-        } catch (readError: any) {
-          lastError = readError;
-          if (readError.code === 'ENOENT') {
-            if (attempt < 2) {
-              console.log(`[ThumbnailGenerator] File not found on attempt ${attempt}, retrying after 200ms...`);
-              await new Promise(resolve => setTimeout(resolve, 200));
-              continue;
-            }
-            throw new Error(`File not found after ${attempt} attempts: fileKey=${fileKey}, resolvedPath=${resolvedPath}`);
-          }
-          throw readError;
-        }
+      const normalizedFileKey = normalizeTenantObjectKey(fileKey.replace(/\\/g, '/'));
+      const resolvedPath = resolveLocalStoragePath(normalizedFileKey);
+
+      if (process.env.DEBUG_THUMBNAILS) {
+        console.log(`[ThumbnailGenerator] Local file resolve: ${fileKey} -> ${resolvedPath}`);
       }
-      throw lastError || new Error('Unexpected retry loop exit');
+
+      // IMPORTANT: Do an existence check before attempting reads.
+      // If missing, do not retry-loop; treat as a neutral, non-processing condition.
+      const exists = await fsPromises
+        .access(resolvedPath)
+        .then(() => true)
+        .catch(() => false);
+      if (!exists) {
+        const err: any = new Error(`Local original not present: ${fileKey}`);
+        err.code = 'ENOENT';
+        throw err;
+      }
+
+      const buffer = await fsPromises.readFile(resolvedPath);
+      if (process.env.DEBUG_THUMBNAILS) {
+        console.log(`[ThumbnailGenerator] Read from local storage: ${fileKey}, size=${buffer.length} bytes`);
+      }
+      return buffer;
     }
 
     // Fail-soft: some legacy rows may have incorrect storageProvider
@@ -290,7 +317,24 @@ export async function generateImageDerivatives(
     // Download original file
     const originalBuffer = await downloadOriginalFile(fileKey, storageProvider);
     if (!originalBuffer) {
-      console.error(`[ThumbnailGenerator] Failed to download original for ${attachmentId}`);
+      const isLocal = storageProvider === 'local' || !storageProvider;
+      const marker = isLocal ? LOCAL_ORIGINAL_NOT_PRESENT : 'original_download_failed';
+      if (process.env.DEBUG_THUMBNAILS) {
+        console.warn(`[ThumbnailGenerator] Original unavailable for ${attachmentId} (storageProvider=${storageProvider})`);
+      }
+
+      // Fail-soft and stop retries: finalize as thumb_failed with a machine-readable marker.
+      await db
+        .update(baseTable)
+        .set({
+          thumbKey: null,
+          previewKey: null,
+          thumbStatus: 'thumb_failed',
+          thumbError: marker,
+          updatedAt: new Date(),
+        })
+        .where(eq(baseTable.id, attachmentId));
+
       return;
     }
 
@@ -340,6 +384,36 @@ export async function generateImageDerivatives(
       if (previewUploaded) {
         // Could delete previewKey here, but skip for now
       }
+      return;
+    }
+
+    // Enforce invariant: do not claim thumb_ready unless derivatives actually exist.
+    const { thumbExists, previewExists } = await verifyDerivativesExist({
+      storageProvider,
+      thumbKey,
+      previewKey,
+    });
+
+    if (!thumbExists || !previewExists) {
+      console.warn(`[ThumbnailGenerator] Derivative existence check failed for ${attachmentId}; not marking thumb_ready`, {
+        storageProvider,
+        thumbKey,
+        previewKey,
+        thumbExists,
+        previewExists,
+      });
+
+      await db
+        .update(baseTable)
+        .set({
+          thumbKey: null,
+          previewKey: null,
+          thumbStatus: 'thumb_failed',
+          thumbError: 'derivative_missing_after_write',
+          updatedAt: new Date(),
+        })
+        .where(eq(baseTable.id, attachmentId));
+
       return;
     }
 

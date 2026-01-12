@@ -7,6 +7,7 @@ import { objectStorageClient, ObjectStorageService } from '../../objectStorage';
 import { isSupabaseConfigured, SupabaseStorageService } from '../../supabaseStorage';
 import { normalizeObjectKeyForDb, tryExtractSupabaseObjectKeyFromUrl } from '../../lib/supabaseObjectHelpers';
 import { resolveLocalStoragePath } from '../localStoragePath';
+import { normalizeTenantObjectKey } from '../../utils/orgKeys';
 
 class AssetSourceNotReadyError extends Error {
   constructor(message: string) {
@@ -95,7 +96,7 @@ export class AssetPreviewGenerator {
         .jpeg({ quality: this.JPEG_QUALITY })
         .toBuffer();
 
-      const thumbKey = `thumbs/org_${asset.organizationId}/asset/${asset.id}/thumb.jpg`;
+      const thumbKey = normalizeTenantObjectKey(`thumbs/${asset.organizationId}/asset/${asset.id}/thumb.jpg`);
       await this.uploadBuffer(thumbKey, thumbBuffer, 'image/jpeg');
       console.log(`[AssetPreviewGenerator] Uploaded thumbnail to ${thumbKey}`);
 
@@ -105,7 +106,7 @@ export class AssetPreviewGenerator {
         .jpeg({ quality: this.JPEG_QUALITY })
         .toBuffer();
 
-      const previewKey = `thumbs/org_${asset.organizationId}/asset/${asset.id}/preview.jpg`;
+      const previewKey = normalizeTenantObjectKey(`thumbs/${asset.organizationId}/asset/${asset.id}/preview.jpg`);
       await this.uploadBuffer(previewKey, previewBuffer, 'image/jpeg');
       console.log(`[AssetPreviewGenerator] Uploaded preview to ${previewKey}`);
 

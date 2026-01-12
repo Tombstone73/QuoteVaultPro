@@ -33,9 +33,12 @@ import { isValidHttpUrl } from "@/lib/utils";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
+import { fileToBase64 } from "@/lib/uploads/fileToBase64";
+import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
-// Max file size: 50MB
-const MAX_SIZE_BYTES = 50 * 1024 * 1024;
+type StorageTarget = "supabase" | "local_dev";
 
 const FILE_ROLES = [
   { value: 'artwork', label: 'Artwork', icon: ImageIcon },
@@ -95,6 +98,8 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   // Upload state
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
 
   // Edit dialog form state
   const [editRole, setEditRole] = useState<string>('other');
@@ -102,51 +107,71 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
   const [editIsPrimary, setEditIsPrimary] = useState(false);
   const [editDescription, setEditDescription] = useState('');
 
-  // Handle file upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
+  const clearFileInput = () => {
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
-    const filesToUpload = Array.from(e.target.files);
-
-    // Check file sizes
-    const oversizedFiles = filesToUpload.filter(f => f.size > MAX_SIZE_BYTES);
-    if (oversizedFiles.length > 0) {
-      toast({
-        title: "File Too Large",
-        description: "Files larger than 50MB cannot be uploaded. Please use WeTransfer or another file sharing service for large files.",
-        variant: "destructive",
-      });
-      const validFiles = filesToUpload.filter(f => f.size <= MAX_SIZE_BYTES);
-      if (validFiles.length === 0) {
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        return;
-      }
-    }
-
+  const uploadFiles = async (filesToUpload: File[]) => {
     setIsUploading(true);
     let successCount = 0;
     let errorCount = 0;
 
     try {
       for (const file of filesToUpload) {
-        if (file.size > MAX_SIZE_BYTES) continue;
+        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
 
         try {
-          // Step 1: Get signed upload URL from backend
           const urlResponse = await fetch("/api/objects/upload", {
             method: "POST",
             credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileName: file.name,
+              fileSizeBytes: file.size,
+              requestedStorageTarget,
+            }),
           });
 
           if (!urlResponse.ok) {
             const errorData = await urlResponse.json().catch(() => ({}));
-            console.error("Failed to get upload URL:", errorData);
             throw new Error(errorData.message || "Failed to get upload URL");
           }
 
-          const { url, method, path } = await urlResponse.json();
+          const preflight = await urlResponse.json().catch(() => ({}));
+          const decidedTarget: StorageTarget =
+            (preflight?.storageTarget === "local_dev" || preflight?.storageTarget === "supabase")
+              ? preflight.storageTarget
+              : requestedStorageTarget;
 
-          // Step 2: Upload file to storage
+          if (preflight?.method === "ATOMIC" || decidedTarget === "local_dev" || !preflight?.url) {
+            const fileBufferBase64 = await fileToBase64(file);
+            const res = await fetch(`/api/orders/${orderId}/files`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                originalFilename: file.name,
+                fileName: file.name,
+                fileSize: file.size,
+                mimeType: file.type,
+                fileBuffer: fileBufferBase64,
+                role: "other",
+                side: "na",
+                requestedStorageTarget,
+              }),
+            });
+
+            if (!res.ok) {
+              const json = await res.json().catch(() => ({}));
+              throw new Error(json?.error || `Failed to attach ${file.name}`);
+            }
+
+            successCount++;
+            continue;
+          }
+
+          const { url, method, path } = preflight;
+
           const uploadResponse = await fetch(url, {
             method: method || "PUT",
             body: file,
@@ -156,23 +181,20 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
           });
 
           if (!uploadResponse.ok) {
-            console.error("Upload failed:", uploadResponse.status, uploadResponse.statusText);
             throw new Error(`Failed to upload ${file.name}`);
           }
 
-          // Step 3: Persist storage key (bucket-relative path) — never persist signed URLs.
-          // Supabase returns { url, path, token }. Replit fallback returns only { url }.
           const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
 
-          // Step 4: Attach file to order
           await attachFile.mutateAsync({
             fileName: file.name,
             fileUrl,
             fileSize: file.size,
             mimeType: file.type,
-            role: 'other',
-            side: 'na',
-          });
+            role: "other",
+            side: "na",
+            requestedStorageTarget,
+          } as any);
 
           successCount++;
         } catch (fileError: any) {
@@ -180,6 +202,11 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
           errorCount++;
         }
       }
+
+      // Ensure list refresh even for local_dev branch (bypasses the hook mutation)
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "files"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "artwork-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "timeline"] });
 
       if (successCount > 0) {
         toast({
@@ -204,10 +231,23 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
       });
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      clearFileInput();
     }
+  };
+
+  // Handle file upload
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const filesToUpload = Array.from(e.target.files);
+    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
+    if (hasOversized) {
+      setPendingFiles(filesToUpload);
+      setLargeFileDialogOpen(true);
+      return;
+    }
+
+    await uploadFiles(filesToUpload);
   };
 
   const handleEditFile = (file: OrderFileWithUser) => {
@@ -293,6 +333,20 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
 
   return (
     <>
+      <LargeFileLocalDevWarningDialog
+        open={largeFileDialogOpen}
+        onCancel={() => {
+          setLargeFileDialogOpen(false);
+          setPendingFiles(null);
+          clearFileInput();
+        }}
+        onContinue={async () => {
+          const filesToUpload = pendingFiles || [];
+          setLargeFileDialogOpen(false);
+          setPendingFiles(null);
+          await uploadFiles(filesToUpload);
+        }}
+      />
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -351,6 +405,7 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                 {files.map((file) => {
                   const source = ((file as any).__source ?? 'attachment') as 'attachment' | 'asset';
                   const isAsset = source === 'asset';
+                  const isLocalDev = !isAsset && (file as any)?.storageProvider === 'local';
                   const thumbSrc = getThumbSrc(file as any);
                   const hasError = imageErrors.has(file.id);
 
@@ -401,6 +456,20 @@ export function OrderArtworkPanel({ orderId, isAdminOrOwner }: OrderArtworkPanel
                           >
                             {file.originalFilename || file.fileName}
                           </button>
+                          {isLocalDev && (
+                            <div className="mt-1">
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Badge variant="secondary">Local (dev)</Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Stored on this machine (dev). May not be visible from other computers.
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </div>
+                          )}
                           {file.description && (
                             <div className="text-xs text-muted-foreground truncate max-w-[200px]">
                               {file.description}

@@ -1,4 +1,5 @@
 import path from 'path';
+import { normalizeTenantObjectKey } from '../utils/orgKeys';
 
 /**
  * Resolve local storage key to absolute filesystem path
@@ -30,7 +31,7 @@ export function resolveLocalStoragePath(storageKey: string): string {
   }
   
   // Normalize separators (handle both / and \)
-  const normalizedKey = storageKey.replace(/\\/g, '/');
+  const normalizedKey = normalizeTenantObjectKey(storageKey.replace(/\\/g, '/'));
   
   // Handle org-prefixed keys (e.g., "org_titan_001/orders/file.pdf")
   // These are already relative to storage root, no special handling needed

@@ -12,9 +12,15 @@ import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
+import { SUPABASE_MAX_UPLOAD_BYTES } from "@/lib/config/storage";
+import { fileToBase64 } from "@/lib/uploads/fileToBase64";
+import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
+import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
-// Max file size: 50MB
-const MAX_SIZE_BYTES = 50 * 1024 * 1024;
+type StorageTarget = "supabase" | "local_dev";
+
+const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
 // Helper: Check if error message indicates thumbnail generation is unavailable (not failed)
 function isThumbsUnavailableError(msg: string | null | undefined): boolean {
@@ -23,6 +29,11 @@ function isThumbsUnavailableError(msg: string | null | undefined): boolean {
   return lowerMsg.includes('temporarily unavailable') ||
          lowerMsg.includes('dependencies not installed') ||
          lowerMsg.includes('sharp unavailable');
+}
+
+function isLocalPreviewUnavailableError(msg: string | null | undefined): boolean {
+  if (!msg) return false;
+  return msg.toLowerCase().includes(LOCAL_ORIGINAL_NOT_PRESENT);
 }
 
 type AttachmentPage = {
@@ -38,12 +49,14 @@ type AttachmentPage = {
 
 type LineItemAttachment = {
   id: string;
+  source?: 'attachment' | 'asset';
   fileName: string;
   fileUrl: string;
   fileSize?: number | null;
   mimeType?: string | null;
   createdAt: string;
   originalFilename?: string | null;
+  storageProvider?: string | null;
   // Thumbnail scaffolding fields (migration 0034)
   thumbStatus?: 'uploaded' | 'thumb_pending' | 'thumb_ready' | 'thumb_failed';
   thumbKey?: string | null;
@@ -101,6 +114,8 @@ export function LineItemAttachmentsPanel({
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
   const [previewFile, setPreviewFile] = useState<LineItemAttachment | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
     quoteId: null,
@@ -147,9 +162,17 @@ export function LineItemAttachmentsPanel({
       const json = await response.json();
 
       if (parentType === "order") {
+        const attachments = Array.isArray(json?.data) ? json.data : [];
         const assets = Array.isArray(json?.assets) ? json.assets : [];
-        return assets.map((a: any) => ({
+
+        const mappedAttachments = attachments.map((a: any) => ({
+          ...a,
+          source: 'attachment' as const,
+        })) as LineItemAttachment[];
+
+        const mappedAssets = assets.map((a: any) => ({
           id: a.id,
+          source: 'asset' as const,
           fileName: a.fileName || a.originalFilename || "file",
           originalFilename: a.originalFilename || a.fileName || null,
           fileUrl: a.fileUrl || a.fileKey || a.key || "",
@@ -182,6 +205,8 @@ export function LineItemAttachmentsPanel({
           pageCount: a.pageCount,
           pages: a.pages,
         } as LineItemAttachment));
+
+        return [...mappedAttachments, ...mappedAssets] as LineItemAttachment[];
       }
 
       return json.data || [];
@@ -252,26 +277,11 @@ export function LineItemAttachmentsPanel({
     return File;
   };
 
-  // Handle file upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
+  const clearFileInput = () => {
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
-    const filesToUpload = Array.from(e.target.files);
-
-    // Check file sizes
-    const oversizedFiles = filesToUpload.filter(f => f.size > MAX_SIZE_BYTES);
-    if (oversizedFiles.length > 0) {
-      toast({
-        title: "File Too Large",
-        description: "Files larger than 50MB cannot be uploaded.",
-        variant: "destructive",
-      });
-      const validFiles = filesToUpload.filter(f => f.size <= MAX_SIZE_BYTES);
-      if (validFiles.length === 0) {
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        return;
-      }
-    }
+  const performUpload = async (filesToUpload: File[]) => {
 
     // CRITICAL: Ensure line item is persisted BEFORE upload
     // This happens AFTER user selected file, so we still have valid IDs
@@ -341,8 +351,10 @@ export function LineItemAttachmentsPanel({
     }
 
     // Build the API path with the (possibly newly created) quoteId and ensured lineItemId
+    // Order line-item attachments are persisted via the order attachments endpoint so we can
+    // support local_dev storage (and so DB records include storageProvider).
     const uploadApiPath = parentType === "order"
-      ? (orderId ? `/api/orders/${orderId}/line-items/${targetLineItemId}/files` : "")
+      ? (orderId ? `/api/orders/${orderId}/files` : "")
       : (targetQuoteId
           ? `/api/quotes/${targetQuoteId}/line-items/${targetLineItemId}/files`
           : `/api/line-items/${targetLineItemId}/files`);
@@ -355,22 +367,66 @@ export function LineItemAttachmentsPanel({
 
     try {
       for (const file of filesToUpload) {
-        if (file.size > MAX_SIZE_BYTES) continue;
+        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
 
         try {
-          // Step 1: Get signed upload URL from backend
           const urlResponse = await fetch("/api/objects/upload", {
             method: "POST",
             credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileName: file.name,
+              fileSizeBytes: file.size,
+              requestedStorageTarget,
+            }),
           });
 
           if (!urlResponse.ok) {
             throw new Error("Failed to get upload URL");
           }
 
-          const { url, method, path } = await urlResponse.json();
+          const preflight = await urlResponse.json().catch(() => ({}));
+          const decidedTarget: StorageTarget =
+            (preflight?.storageTarget === "local_dev" || preflight?.storageTarget === "supabase")
+              ? preflight.storageTarget
+              : requestedStorageTarget;
 
-          // Step 2: Upload file to storage
+          if (preflight?.method === "ATOMIC" || decidedTarget === "local_dev" || !preflight?.url) {
+            const fileBufferBase64 = await fileToBase64(file);
+
+            const payload: Record<string, any> = {
+              originalFilename: file.name,
+              fileName: file.name,
+              fileSize: file.size,
+              mimeType: file.type,
+              fileBuffer: fileBufferBase64,
+              requestedStorageTarget,
+            };
+
+            if (parentType === "order") {
+              payload.orderLineItemId = targetLineItemId;
+              payload.role = "other";
+              payload.side = "na";
+            }
+
+            const attachResponse = await fetch(uploadApiPath, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify(payload),
+            });
+
+            if (!attachResponse.ok) {
+              const json = await attachResponse.json().catch(() => ({}));
+              throw new Error(json?.error || `Failed to attach ${file.name}`);
+            }
+
+            successCount++;
+            continue;
+          }
+
+          const { url, method, path } = preflight;
+
           const uploadResponse = await fetch(url, {
             method: method || "PUT",
             body: file,
@@ -383,21 +439,27 @@ export function LineItemAttachmentsPanel({
             throw new Error(`Failed to upload ${file.name}`);
           }
 
-          // Step 3: Use the storage path (not the full signed URL)
-          // The path is the actual object key in the bucket (e.g., "uploads/abc-123")
-          const fileUrl = path || url.split("?")[0];
+          const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
 
-          // Step 4: Attach file to line item
+          const payload: Record<string, any> = {
+            fileName: file.name,
+            fileUrl,
+            fileSize: file.size,
+            mimeType: file.type,
+            requestedStorageTarget,
+          };
+
+          if (parentType === "order") {
+            payload.orderLineItemId = targetLineItemId;
+            payload.role = "other";
+            payload.side = "na";
+          }
+
           const attachResponse = await fetch(uploadApiPath, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "include",
-            body: JSON.stringify({
-              fileName: file.name,
-              fileUrl,
-              fileSize: file.size,
-              mimeType: file.type,
-            }),
+            body: JSON.stringify(payload),
           });
 
           if (!attachResponse.ok) {
@@ -469,18 +531,60 @@ export function LineItemAttachmentsPanel({
       });
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      clearFileInput();
     }
   };
 
+  const handleLargeFileContinue = async () => {
+    setLargeFileDialogOpen(false);
+    const files = pendingFiles;
+    setPendingFiles(null);
+    if (!files || files.length === 0) {
+      clearFileInput();
+      return;
+    }
+    await performUpload(files);
+  };
+
+  const handleLargeFileCancel = () => {
+    setLargeFileDialogOpen(false);
+    setPendingFiles(null);
+    clearFileInput();
+  };
+
+  // Handle file upload
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const filesToUpload = Array.from(e.target.files);
+    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
+    if (hasOversized) {
+      setPendingFiles(filesToUpload);
+      setLargeFileDialogOpen(true);
+      return;
+    }
+
+    await performUpload(filesToUpload);
+  };
+
   // Handle file deletion
-  const handleDeleteFile = async (fileId: string) => {
+  const handleDeleteFile = async (file: LineItemAttachment) => {
     if (!filesApiPath) return;
 
     try {
-      const response = await fetch(`${filesApiPath}/${fileId}`, {
+      let deleteUrl: string | null = `${filesApiPath}/${file.id}`;
+
+      // Order line-items can contain either:
+      // - DB-backed order_attachments (json.data) -> delete via /api/orders/:orderId/files/:fileId
+      // - Asset pipeline links (json.assets) -> unlink via /api/orders/:orderId/line-items/:lineItemId/files/:assetId
+      if (parentType === 'order') {
+        if (!orderId) return;
+        if (file.source === 'attachment') {
+          deleteUrl = `/api/orders/${orderId}/files/${file.id}`;
+        }
+      }
+
+      const response = await fetch(deleteUrl, {
         method: "DELETE",
         credentials: "include",
       });
@@ -488,6 +592,12 @@ export function LineItemAttachmentsPanel({
       if (!response.ok) {
         throw new Error("Failed to delete file");
       }
+
+      // Optimistic UI removal
+      queryClient.setQueryData<LineItemAttachment[]>([filesApiPath], (prev) => {
+        if (!Array.isArray(prev)) return prev as any;
+        return prev.filter((x) => x.id !== file.id);
+      });
 
       queryClient.invalidateQueries({ queryKey: [filesApiPath] });
 
@@ -612,10 +722,14 @@ export function LineItemAttachmentsPanel({
       queryClient.invalidateQueries({ queryKey: [filesApiPath] });
     } catch (error: any) {
       console.error("[handleGenerateThumbnails] Error:", error);
+      const msg = (error?.message || "").toString();
+      const isLocalMissing = isLocalPreviewUnavailableError(msg);
       toast({
-        title: "Thumbnail generation failed",
-        description: error?.message || "Could not generate thumbnails.",
-        variant: "destructive",
+        title: isLocalMissing ? "Preview unavailable" : "Thumbnail generation failed",
+        description: isLocalMissing
+          ? "Local dev file is not present on this machine."
+          : (error?.message || "Could not generate thumbnails."),
+        variant: isLocalMissing ? undefined : "destructive",
       });
     }
   };
@@ -751,30 +865,9 @@ export function LineItemAttachmentsPanel({
                   /\.(psd)$/i.test(file.fileName ?? "") ||
                   /(photoshop|x-photoshop)/i.test(file.mimeType ?? "");
 
-                const originalUrl = file.originalUrl ?? (file as any).originalURL ?? (file as any).url ?? null;
-                const previewUrl = file.previewUrl ?? null;
-                const thumbUrl = file.thumbUrl ?? null;
-                const pdfThumbUrl = file.pages?.[0]?.thumbUrl ?? thumbUrl ?? null;
-
-                // Unified thumb resolver that works for both signed http(s) URLs and /objects/*.
-                const unifiedThumbUrl = getThumbSrc(file);
-
-                // Prefer the unified thumb source; fall back to older heuristics.
-                // This is critical for order assets, where thumbs are usually served via /objects/*.
-                const thumbnailUrl =
-                  unifiedThumbUrl ??
-                  (isPdf
-                    ? (typeof pdfThumbUrl === "string" && (pdfThumbUrl.startsWith("/objects/") || isValidHttpUrl(pdfThumbUrl))
-                        ? pdfThumbUrl
-                        : null)
-                    : (isImage
-                        ? ((typeof previewUrl === "string" && (previewUrl.startsWith("/objects/") || isValidHttpUrl(previewUrl))
-                            ? previewUrl
-                            : null) ??
-                          (typeof originalUrl === "string" && (originalUrl.startsWith("/objects/") || isValidHttpUrl(originalUrl))
-                            ? originalUrl
-                            : null))
-                        : null));
+                // Canonical thumbnail resolver. If it returns null, do NOT attempt to render a URL.
+                // This prevents requesting mismatched/non-existent thumbnails (e.g. guessed thumbs/* paths).
+                const thumbnailUrl = getThumbSrc(file);
 
                 const hasAnyThumbnail = !!thumbnailUrl;
                 const fileName = getAttachmentDisplayName(file);
@@ -839,6 +932,20 @@ export function LineItemAttachmentsPanel({
                           <span className="text-xs truncate block">
                             {fileName}
                           </span>
+                          {file.storageProvider === "local" && (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                                    Local (dev)
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  Stored locally on this dev machine.
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )}
                           {showPageCount && (
                             <span className="text-[10px] px-1.5 py-0.5 bg-muted border border-border/60 rounded text-muted-foreground shrink-0">
                               Pages: {pageCount}
@@ -853,18 +960,21 @@ export function LineItemAttachmentsPanel({
                         )}
                         {file.thumbStatus && file.thumbStatus !== 'uploaded' && !isPdf && (() => {
                           const isUnavailable = file.thumbStatus === 'thumb_failed' && isThumbsUnavailableError(file.thumbError);
+                          const isLocalMissing = file.thumbStatus === 'thumb_failed' && isLocalPreviewUnavailableError(file.thumbError);
                           return (
                             <span className={cn(
                               "text-[10px]",
                               file.thumbStatus === 'thumb_ready' && "text-green-600",
                               file.thumbStatus === 'thumb_pending' && "text-amber-600",
-                              file.thumbStatus === 'thumb_failed' && !isUnavailable && "text-destructive",
-                              file.thumbStatus === 'thumb_failed' && isUnavailable && "text-muted-foreground"
-                            )}>
+                              file.thumbStatus === 'thumb_failed' && (isUnavailable || isLocalMissing) && "text-muted-foreground",
+                              file.thumbStatus === 'thumb_failed' && !isUnavailable && !isLocalMissing && "text-destructive"
+                            )}
+                            title={isLocalMissing ? "Preview unavailable (Local dev file not on this machine)" : undefined}>
                               {file.thumbStatus === 'thumb_ready' && '✓ Thumbs ready'}
                               {file.thumbStatus === 'thumb_pending' && '⏳ Generating...'}
-                              {file.thumbStatus === 'thumb_failed' && !isUnavailable && '✗ Generation failed'}
+                              {file.thumbStatus === 'thumb_failed' && isLocalMissing && 'Preview unavailable (Local dev file not on this machine)'}
                               {file.thumbStatus === 'thumb_failed' && isUnavailable && 'Thumbnails temporarily unavailable'}
+                              {file.thumbStatus === 'thumb_failed' && !isUnavailable && !isLocalMissing && '✗ Generation failed'}
                             </span>
                           );
                         })()}
@@ -954,7 +1064,7 @@ export function LineItemAttachmentsPanel({
                           onPointerDownCapture={(e) => e.stopPropagation()}
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleDeleteFile(file.id);
+                            void handleDeleteFile(file);
                           }}
                           title="Remove"
                         >
@@ -980,6 +1090,14 @@ export function LineItemAttachmentsPanel({
         onOpenChange={(open) => {
           if (!open) setPreviewFile(null);
         }}
+      />
+
+      <LargeFileLocalDevWarningDialog
+        open={largeFileDialogOpen}
+        onContinue={() => {
+          void handleLargeFileContinue();
+        }}
+        onCancel={handleLargeFileCancel}
       />
     </div>
   );

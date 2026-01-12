@@ -51,7 +51,7 @@ import type { FileRole, FileSide } from "../lib/supabaseObjectHelpers";
 import { ObjectStorageService, ObjectNotFoundError } from "../objectStorage";
 import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
-import { normalizeTenantObjectKey } from "../utils/orgKeys";
+import { extractNormalizedOrgIdFromKey, getTenantObjectKeyCandidates, normalizeTenantObjectKey } from "../utils/orgKeys";
 import type { DownloadIntent } from "@shared/schema";
 
 let hasLoggedPdfObjectsResponse = false;
@@ -264,14 +264,18 @@ export async function registerAttachmentRoutes(
         // keep rawKeyParam
       }
 
-      const requestedKey = normalizeTenantObjectKey(normalizeObjectKeyForDb(decodedKey));
+      const requestedKeyRaw = normalizeObjectKeyForDb(decodedKey);
+      const requestedKey = normalizeTenantObjectKey(requestedKeyRaw);
       if (!requestedKey) return res.status(400).json({ error: "Invalid key" });
 
+      const candidateKeys = getTenantObjectKeyCandidates(requestedKeyRaw);
+      if (candidateKeys.length === 0) return res.status(400).json({ error: "Invalid key" });
+
       // Tenant safety (compatible with legacy keys):
-      // - If a key is explicitly org-scoped (starts with "org_"), enforce it matches.
-      // - Otherwise allow (mirrors existing /objects behavior while still avoiding arbitrary URLs).
-      const firstSegment = requestedKey.split("/")[0] || "";
-      if (firstSegment.startsWith("org_") && firstSegment !== organizationId) {
+      // - If the key contains an org segment anywhere, enforce it matches organizationId.
+      // - Otherwise allow (mirrors existing behavior while still avoiding arbitrary URLs).
+      const orgInKey = extractNormalizedOrgIdFromKey(requestedKeyRaw);
+      if (orgInKey && orgInKey !== organizationId) {
         return res.status(403).json({ error: "Access denied" });
       }
 
@@ -286,66 +290,89 @@ export async function registerAttachmentRoutes(
 
       // 1) Supabase: fetch bytes server-side and stream with attachment headers.
       if (isSupabaseConfigured()) {
-        try {
-          const supabaseService = new SupabaseStorageService(bucketParam || undefined);
-          const signedUrl = await supabaseService.getSignedDownloadUrl(requestedKey, 3600);
-          const upstream = await fetch(signedUrl);
-          if (!upstream.ok) {
-            throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
-          }
+        const supabaseService = new SupabaseStorageService(bucketParam || undefined);
+        for (const keyToTry of candidateKeys) {
+          try {
+            const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
+            const upstream = await fetch(signedUrl);
+            if (!upstream.ok) {
+              throw new Error(`Upstream fetch failed: ${upstream.status} ${upstream.statusText}`);
+            }
 
-          res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
-          res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
-          res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+            if (process.env.NODE_ENV === "development" && keyToTry !== requestedKey) {
+              console.log(`[objects:download] resolved via fallback requested="${requestedKey}" key="${keyToTry}"`);
+            }
 
-          // Stream if possible; otherwise buffer.
-          const body: any = (upstream as any).body;
-          if (body && typeof Readable.fromWeb === "function") {
-            const nodeStream = Readable.fromWeb(body);
-            nodeStream.on("error", (err) => {
-              console.error("[objects:download] Stream error:", err);
-              if (!res.headersSent) res.status(500).end();
-            });
-            return nodeStream.pipe(res);
-          }
+            res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
+            res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
+            res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
 
-          const buf = Buffer.from(await upstream.arrayBuffer());
-          return res.send(buf);
-        } catch (supabaseError: any) {
-          // fall through to local/GCS attempts
-          if (process.env.NODE_ENV === "development") {
-            console.log(`[objects:download] supabase miss key="${requestedKey}":`, supabaseError?.message || supabaseError);
+            // Stream if possible; otherwise buffer.
+            const body: any = (upstream as any).body;
+            if (body && typeof Readable.fromWeb === "function") {
+              const nodeStream = Readable.fromWeb(body);
+              nodeStream.on("error", (err) => {
+                console.error("[objects:download] Stream error:", err);
+                if (!res.headersSent) res.status(500).end();
+              });
+              return nodeStream.pipe(res);
+            }
+
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            return res.send(buf);
+          } catch (supabaseError: any) {
+            // keep trying candidates
+            if (process.env.NODE_ENV === "development") {
+              console.log(`[objects:download] supabase miss key="${keyToTry}":`, supabaseError?.message || supabaseError);
+            }
           }
         }
       }
 
       // 2) Local filesystem
-      try {
-        const localPath = resolveLocalStoragePath(requestedKey);
-        await fsPromises.access(localPath, fsPromises.constants.R_OK);
-        return res.download(path.resolve(localPath), resolvedName);
-      } catch {
-        // fall through
+      for (const keyToTry of candidateKeys) {
+        try {
+          const localPath = resolveLocalStoragePath(keyToTry);
+          await fsPromises.access(localPath, fsPromises.constants.R_OK);
+          if (process.env.NODE_ENV === "development" && keyToTry !== requestedKey) {
+            console.log(`[objects:download] local resolved via fallback requested="${requestedKey}" key="${keyToTry}"`);
+          }
+          return res.download(path.resolve(localPath), resolvedName);
+        } catch {
+          // keep trying
+        }
       }
 
       // 3) GCS via Replit ObjectStorage
       const userId = getUserId((req as any).user);
       const objectStorageService = new ObjectStorageService();
-      const objectRoutePath = `/objects/${requestedKey}`;
-      const objectFile = await objectStorageService.getObjectEntityFile(objectRoutePath);
+      for (const keyToTry of candidateKeys) {
+        try {
+          const objectRoutePath = `/objects/${keyToTry}`;
+          const objectFile = await objectStorageService.getObjectEntityFile(objectRoutePath);
 
-      const canAccess = await objectStorageService.canAccessObjectEntity({
-        objectFile,
-        userId: userId ?? undefined,
-        requestedPermission: ObjectPermission.READ,
-      });
+          const canAccess = await objectStorageService.canAccessObjectEntity({
+            objectFile,
+            userId: userId ?? undefined,
+            requestedPermission: ObjectPermission.READ,
+          });
 
-      if (!canAccess) {
-        return res.status(403).json({ error: "Access denied" });
+          if (!canAccess) {
+            return res.status(403).json({ error: "Access denied" });
+          }
+
+          if (process.env.NODE_ENV === "development" && keyToTry !== requestedKey) {
+            console.log(`[objects:download] gcs resolved via fallback requested="${requestedKey}" key="${keyToTry}"`);
+          }
+
+          res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
+          return objectStorageService.downloadObject(objectFile, res);
+        } catch {
+          // keep trying
+        }
       }
 
-      res.setHeader("Content-Disposition", `attachment; filename="${resolvedName}"`);
-      return objectStorageService.downloadObject(objectFile, res);
+      throw new ObjectNotFoundError();
     } catch (error: any) {
       if (error instanceof ObjectNotFoundError) {
         return res.status(404).json({ error: "Object not found" });
@@ -380,26 +407,27 @@ export async function registerAttachmentRoutes(
     const objectPath = decodeURIComponent(rawObjectPath);
 
     // Canonicalize obvious key mistakes early (but keep original for logging).
-    const requestedKey = normalizeObjectKeyForDb(objectPath);
-    const compatKey = normalizeTenantObjectKey(requestedKey);
-    const candidateKeys = requestedKey === compatKey ? [requestedKey] : [requestedKey, compatKey];
+    const requestedKeyRaw = normalizeObjectKeyForDb(objectPath);
+    const requestedKey = normalizeTenantObjectKey(requestedKeyRaw);
+    const candidateKeys = getTenantObjectKeyCandidates(requestedKeyRaw);
 
     if (isDev) {
+      const compatKey = normalizeTenantObjectKey(requestedKeyRaw);
       console.log(
-        `[objects] request="${objectPath}" key="${requestedKey}"` +
-          (requestedKey !== compatKey ? ` compat="${compatKey}"` : "")
+        `[objects] request="${objectPath}" key="${requestedKeyRaw}"` +
+          (requestedKeyRaw !== compatKey ? ` compat="${compatKey}"` : "")
       );
     }
 
-    if (!requestedKey) {
+    if (!requestedKeyRaw) {
       return res.status(400).json({ error: "Invalid object path" });
     }
 
     // Tenant safety (compatible with legacy keys):
-    // - If a key is explicitly org-scoped (starts with "org_"), enforce it matches.
+    // - If the key contains an org segment anywhere, enforce it matches organizationId.
     // - Otherwise allow (mirrors existing behavior while still avoiding obvious cross-tenant reads).
-    const firstSegmentRequested = requestedKey.split("/")[0] || "";
-    if (firstSegmentRequested.startsWith("org_") && firstSegmentRequested !== organizationId) {
+    const orgInKey = extractNormalizedOrgIdFromKey(requestedKeyRaw);
+    if (orgInKey && orgInKey !== organizationId) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -469,7 +497,8 @@ export async function registerAttachmentRoutes(
             const signedUrl = await supabaseService.getSignedDownloadUrl(keyToTry, 3600);
 
             if (isDev) {
-              console.log(`[objects] resolved provider=supabase key="${keyToTry}"`);
+              const via = keyToTry === requestedKey ? "direct" : "fallback";
+              console.log(`[objects] resolved provider=supabase via=${via} key="${keyToTry}"`);
             }
 
             // Always proxy bytes for Supabase so:
@@ -605,7 +634,8 @@ export async function registerAttachmentRoutes(
           }
 
           if (isDev) {
-            console.log(`[objects] resolved provider=local key="${keyToTry}" path="${localPath}"`);
+            const via = keyToTry === requestedKey ? "direct" : "fallback";
+            console.log(`[objects] resolved provider=local via=${via} key="${keyToTry}" path="${localPath}"`);
           }
 
           return res.sendFile(path.resolve(localPath));
@@ -672,7 +702,8 @@ export async function registerAttachmentRoutes(
           }
 
           if (isDev) {
-            console.log(`[objects] resolved provider=gcs key="${keyToTry}"`);
+            const via = keyToTry === requestedKey ? "direct" : "fallback";
+            console.log(`[objects] resolved provider=gcs via=${via} key="${keyToTry}"`);
           }
 
           // Ensure /objects embed policy is consistent across providers.
@@ -694,7 +725,7 @@ export async function registerAttachmentRoutes(
     } catch (error: any) {
       if (error instanceof ObjectNotFoundError) {
         // Missing objects (e.g. thumbnails) are expected sometimes; keep 404 response but avoid scary logs.
-        logExpectedNotFoundOnce("any", requestedKey);
+        logExpectedNotFoundOnce("any", requestedKeyRaw);
         if (isDev) {
           console.log(`[objects] 404 - Object not found. Object path: "${objectPath}", Error:`, error.message);
         }
@@ -727,13 +758,40 @@ export async function registerAttachmentRoutes(
    */
   app.post("/api/objects/upload", isAuthenticated, isAdmin, async (req, res) => {
     try {
-      // Use Supabase storage if configured, otherwise fall back to Replit ObjectStorage
-      if (isSupabaseConfigured()) {
+      const { decideStorageTarget, getMaxCloudUploadBytes } = await import("../services/storageTarget");
+
+      const body = (req.body ?? {}) as any;
+      const fileName = typeof body.fileName === "string" ? body.fileName : null;
+      const fileSizeBytes =
+        body.fileSizeBytes != null
+          ? Number(body.fileSizeBytes)
+          : body.fileSize != null
+            ? Number(body.fileSize)
+            : 0;
+      const requestedStorageTarget =
+        typeof body.requestedStorageTarget === "string"
+          ? body.requestedStorageTarget
+          : typeof body.storageTarget === "string"
+            ? body.storageTarget
+            : null;
+
+      const maxCloudBytes = getMaxCloudUploadBytes();
+      const decidedTarget = decideStorageTarget({
+        fileName,
+        fileSizeBytes,
+        requestedTarget: requestedStorageTarget,
+        context: "/api/objects/upload",
+      });
+
+      // Use Supabase storage if configured and within limit
+      if (decidedTarget === "supabase" && isSupabaseConfigured()) {
         const supabaseService = new SupabaseStorageService();
         const result = await supabaseService.getSignedUploadUrl({
           folder: "uploads",
         });
         return res.json({
+          storageTarget: "supabase",
+          maxCloudBytes,
           method: "PUT",
           url: result.url,
           path: result.path,
@@ -741,10 +799,22 @@ export async function registerAttachmentRoutes(
         });
       }
 
+      // Local-dev atomic upload path (client must send file bytes to the final attach endpoint)
+      if (decidedTarget === "local_dev") {
+        return res.json({
+          storageTarget: "local_dev",
+          maxCloudBytes,
+          method: "ATOMIC",
+          message: "File exceeds cloud upload limit; use atomic upload.",
+        });
+      }
+
       // Fall back to Replit ObjectStorage (only works on Replit platform)
       const objectStorageService = new ObjectStorageService();
       const { url, path } = await objectStorageService.getObjectEntityUploadURL();
       res.json({
+        storageTarget: "supabase",
+        maxCloudBytes,
         method: "PUT",
         url,
         path,
@@ -841,7 +911,23 @@ export async function registerAttachmentRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename } = req.body;
+      const { fileName, fileUrl, fileSize, mimeType, description, fileBuffer, originalFilename, storageTarget, requestedStorageTarget } = req.body;
+
+      const requestedTarget =
+        (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
+        (typeof storageTarget === 'string' ? storageTarget : null);
+
+      const bufferForDecision = fileBuffer ? Buffer.from(fileBuffer, 'base64') : null;
+      const sizeForDecision = bufferForDecision ? bufferForDecision.length : (fileSize != null ? Number(fileSize) : 0);
+
+      const { decideStorageTarget } = await import('../services/storageTarget');
+      const decidedTarget = decideStorageTarget({
+        fileName: (originalFilename || fileName || null) as any,
+        fileSizeBytes: sizeForDecision,
+        requestedTarget,
+        organizationId,
+        context: 'POST /api/quotes/:id/files',
+      });
 
       // Detect if this is a PDF (by mimeType or filename)
       const resolvedUploadName = (originalFilename || fileName || "") as string;
@@ -871,37 +957,70 @@ export async function registerAttachmentRoutes(
         description: description || null,
       };
 
-      // New storage model with local file system
+      // Atomic upload path (server decides provider)
       if (fileBuffer && originalFilename) {
-        const { processUploadedFile } = await import("../utils/fileStorage.js");
-        const buffer = Buffer.from(fileBuffer, "base64");
+        const buffer = bufferForDecision || Buffer.from(fileBuffer, 'base64');
+        const contentType = (mimeType || 'application/octet-stream') as string;
 
-        const fileMetadata = await processUploadedFile({
-          originalFilename,
-          buffer,
-          mimeType: mimeType || "application/octet-stream",
-          organizationId,
-          resourceType: "quote",
-          resourceId: req.params.id,
-        });
+        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
+          const { SupabaseStorageService } = await import('../supabaseStorage');
+          const { generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
 
-        attachmentData = {
-          ...attachmentData,
-          // Legacy fields (for backward compatibility)
-          fileName: originalFilename,
-          fileUrl: fileMetadata.relativePath, // Store relative path in fileUrl for now
-          fileSize: fileMetadata.sizeBytes,
-          mimeType: mimeType || "application/octet-stream",
-          // New storage fields
-          originalFilename: fileMetadata.originalFilename,
-          storedFilename: fileMetadata.storedFilename,
-          relativePath: fileMetadata.relativePath,
-          storageProvider: "local",
-          extension: fileMetadata.extension,
-          sizeBytes: fileMetadata.sizeBytes,
-          checksum: fileMetadata.checksum,
-          thumbStatus: isPdfEarly && pdfColumnsExist ? ("thumb_pending" as const) : ("uploaded" as const),
-        };
+          const storedFilename = generateStoredFilename(originalFilename);
+          const relativePath = generateRelativePath({
+            organizationId,
+            resourceType: 'quote',
+            resourceId: req.params.id,
+            storedFilename,
+          });
+          const checksum = computeChecksum(buffer);
+          const extension = getFileExtension(originalFilename);
+
+          const supabase = new SupabaseStorageService();
+          const uploaded = await supabase.uploadFile(relativePath, buffer, contentType);
+
+          attachmentData = {
+            ...attachmentData,
+            fileName: originalFilename,
+            fileUrl: normalizeObjectKeyForDb(uploaded.path),
+            fileSize: buffer.length,
+            mimeType: contentType,
+            originalFilename,
+            storedFilename,
+            relativePath: normalizeObjectKeyForDb(uploaded.path),
+            storageProvider: 'supabase',
+            extension,
+            sizeBytes: buffer.length,
+            checksum,
+            thumbStatus: isPdfEarly && pdfColumnsExist ? ('thumb_pending' as const) : ('uploaded' as const),
+          };
+        } else {
+          const { processUploadedFile } = await import('../utils/fileStorage.js');
+          const fileMetadata = await processUploadedFile({
+            originalFilename,
+            buffer,
+            mimeType: contentType,
+            organizationId,
+            resourceType: 'quote',
+            resourceId: req.params.id,
+          });
+
+          attachmentData = {
+            ...attachmentData,
+            fileName: originalFilename,
+            fileUrl: fileMetadata.relativePath,
+            fileSize: fileMetadata.sizeBytes,
+            mimeType: contentType,
+            originalFilename: fileMetadata.originalFilename,
+            storedFilename: fileMetadata.storedFilename,
+            relativePath: fileMetadata.relativePath,
+            storageProvider: 'local',
+            extension: fileMetadata.extension,
+            sizeBytes: fileMetadata.sizeBytes,
+            checksum: fileMetadata.checksum,
+            thumbStatus: isPdfEarly && pdfColumnsExist ? ('thumb_pending' as const) : ('uploaded' as const),
+          };
+        }
 
         if (pdfColumnsExist) {
           attachmentData.pageCountStatus = isPdfEarly ? ("detecting" as const) : ("unknown" as const);
@@ -920,14 +1039,10 @@ export async function registerAttachmentRoutes(
         let storageProvider: string | undefined;
         if (fileUrl && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))) {
           storageProvider = undefined;
-        } else if (
-          isSupabaseConfigured() &&
-          fileUrl &&
-          (fileUrl.startsWith("uploads/") || fileUrl.startsWith("titan-private/uploads/"))
-        ) {
-          storageProvider = "supabase";
+        } else if (decidedTarget === 'supabase') {
+          storageProvider = 'supabase';
         } else {
-          storageProvider = "local";
+          storageProvider = 'local';
         }
 
         attachmentData = {
@@ -1316,12 +1431,18 @@ export async function registerAttachmentRoutes(
         // Atomic upload contract (preferred)
         files,
         description,
+        requestedStorageTarget,
+        storageTarget,
         // Legacy link-only contract (fallback)
         fileName,
         fileUrl,
         fileSize,
         mimeType,
       } = req.body;
+
+      const requestedTarget =
+        (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
+        (typeof storageTarget === 'string' ? storageTarget : null);
 
       // Validate quote belongs to org
       const [quote] = await db
@@ -1346,7 +1467,16 @@ export async function registerAttachmentRoutes(
           return res.status(400).json({ error: "Upload not finalized" });
         if (meta.quoteId && meta.quoteId !== quoteId) return res.status(400).json({ error: "Upload quoteId mismatch" });
 
-        const attachmentInsert: any = {
+        const { decideStorageTarget } = await import('../services/storageTarget');
+        const decidedTarget = decideStorageTarget({
+          fileName: meta.originalFilename,
+          fileSizeBytes: meta.sizeBytes || 0,
+          requestedTarget,
+          organizationId,
+          context: 'POST /api/quotes/:quoteId/attachments (uploadId)',
+        });
+
+        let attachmentInsert: any = {
           quoteId,
           quoteLineItemId: null,
           organizationId,
@@ -1366,6 +1496,29 @@ export async function registerAttachmentRoutes(
           sizeBytes: meta.sizeBytes,
           checksum: meta.checksum || null,
         };
+
+        // Server enforcement: if the file is under the cloud limit, store in Supabase even if it was uploaded via chunked-local.
+        if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
+          const { SupabaseStorageService } = await import('../supabaseStorage');
+          const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('../utils/fileStorage.js');
+          const fsPromises = await import('fs/promises');
+
+          const abs = getAbsolutePath(meta.relativePath);
+          const buffer = await fsPromises.readFile(abs);
+
+          const supabase = new SupabaseStorageService();
+          const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
+
+          attachmentInsert = {
+            ...attachmentInsert,
+            fileUrl: normalizeObjectKeyForDb(uploaded.path),
+            relativePath: normalizeObjectKeyForDb(uploaded.path),
+            storageProvider: 'supabase',
+          };
+
+          // Best-effort: delete the local staged file after successful cloud upload
+          await deleteLocalFile(meta.relativePath).catch(() => false);
+        }
 
         const [created] = await db.insert(quoteAttachments).values(attachmentInsert).returning();
 
@@ -1393,6 +1546,8 @@ export async function registerAttachmentRoutes(
           getFileExtension,
           deleteFile: deleteLocalFile,
         } = await import("../utils/fileStorage.js");
+
+        const { decideStorageTarget } = await import('../services/storageTarget');
 
         const uploadedKeys: Array<{ provider: "supabase" | "local"; key: string }> = [];
 
@@ -1424,7 +1579,15 @@ export async function registerAttachmentRoutes(
                 bucket: "titan-private",
               };
 
-              if (_isSupabaseConfigured()) {
+              const decidedTarget = decideStorageTarget({
+                fileName: originalFilename,
+                fileSizeBytes: buffer.length,
+                requestedTarget,
+                organizationId,
+                context: 'POST /api/quotes/:quoteId/attachments (atomic)',
+              });
+
+              if (decidedTarget === 'supabase' && _isSupabaseConfigured()) {
                 const storedFilename = generateStoredFilename(originalFilename);
                 const relativePath = generateRelativePath({
                   organizationId,
@@ -1514,14 +1677,31 @@ export async function registerAttachmentRoutes(
       if (!fileName) return res.status(400).json({ error: "fileName is required" });
       if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-      let storageProvider: string | undefined;
-      if (isSupabaseConfigured() && fileUrl && !fileUrl.startsWith("http://") && !fileUrl.startsWith("https://")) {
-        storageProvider = "supabase";
-      } else if (fileUrl && (fileUrl.startsWith("http://") || fileUrl.startsWith("https://"))) {
-        storageProvider = undefined;
-      } else {
-        storageProvider = "local";
+      const { decideStorageTarget, getMaxCloudUploadBytes } = await import('../services/storageTarget');
+      const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
+      const decidedTarget = decideStorageTarget({
+        fileName,
+        fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
+        requestedTarget,
+        organizationId,
+        context: 'POST /api/quotes/:quoteId/attachments (legacy)',
+      });
+      const maxCloudBytes = getMaxCloudUploadBytes();
+
+      // If the file is over the cloud limit, the client must use atomic upload.
+      if (decidedTarget === 'local_dev' && isSupabaseConfigured()) {
+        return res.status(400).json({
+          error: 'File exceeds cloud upload limit; use atomic upload.',
+          decidedTarget,
+          maxCloudBytes,
+        });
       }
+
+      const isHttp = fileUrl.startsWith('http://') || fileUrl.startsWith('https://');
+      const storageProvider: 'local' | 'supabase' | undefined =
+        isHttp ? undefined : (decidedTarget === 'supabase' ? 'supabase' : 'local');
+      const normalizedKey =
+        storageProvider === 'supabase' && !isHttp ? normalizeObjectKeyForDb(fileUrl) : fileUrl;
 
       const attachmentData: any = {
         quoteId,
@@ -1531,7 +1711,8 @@ export async function registerAttachmentRoutes(
         uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
         fileName,
         originalFilename: fileName,
-        fileUrl,
+        fileUrl: normalizedKey,
+        relativePath: storageProvider ? normalizedKey : null,
         fileSize: fileSize || null,
         mimeType: mimeType || null,
         description: description || null,

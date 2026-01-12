@@ -196,6 +196,43 @@ export class SupabaseStorageService {
   }
 
   /**
+   * Copy an object within the same bucket.
+   *
+   * Notes:
+   * - This does NOT delete the source.
+   * - Callers should typically check destination existence first for idempotency.
+   */
+  async copyFile(fromPath: string, toPath: string): Promise<boolean> {
+    const client = getSupabaseClient();
+
+    const from = this.normalizeObjectPath(fromPath);
+    const to = this.normalizeObjectPath(toPath);
+
+    if (!from || !to) return false;
+    if (from === to) return true;
+
+    const { error } = await client.storage.from(this.bucket).copy(from, to);
+    if (error) {
+      const msg = (error as any)?.message ? String((error as any).message) : String(error);
+
+      // Idempotency: if destination already exists, treat as success.
+      if (/already exists/i.test(msg) || /resource already exists/i.test(msg)) {
+        return true;
+      }
+
+      console.error('[SupabaseStorage] Failed to copy file:', {
+        bucket: this.bucket,
+        from,
+        to,
+        error: msg,
+      });
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Delete a file from storage
    * @param path File path in the bucket
    */

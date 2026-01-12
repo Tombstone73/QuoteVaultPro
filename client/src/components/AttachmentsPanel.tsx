@@ -2,12 +2,16 @@ import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, X, Loader2, FileText, Image, File } from "lucide-react";
 import { isValidHttpUrl } from "@/lib/utils";
+import { SUPABASE_MAX_UPLOAD_BYTES, formatBytes } from "@/lib/config/storage";
+import { fileToBase64 } from "@/lib/uploads/fileToBase64";
+import { LargeFileLocalDevWarningDialog } from "@/components/LargeFileLocalDevWarningDialog";
 
-// Max file size: 50MB
-const MAX_SIZE_BYTES = 50 * 1024 * 1024;
+type StorageTarget = "supabase" | "local_dev";
 
 type Attachment = {
   id: string;
@@ -17,6 +21,7 @@ type Attachment = {
   mimeType?: string | null;
   createdAt: string;
   originalFilename?: string | null;
+  storageProvider?: string | null;
   // Signed URLs from server (use these for display/download)
   originalUrl?: string | null;
   thumbUrl?: string | null;
@@ -40,13 +45,15 @@ export function AttachmentsPanel({
   ownerType,
   ownerId,
   title = "Attachments",
-  maxSizeBytes = MAX_SIZE_BYTES,
+  maxSizeBytes = Number.POSITIVE_INFINITY,
   compact = false,
 }: AttachmentsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+  const [largeFileDialogOpen, setLargeFileDialogOpen] = useState(false);
 
   // Build API paths based on owner type
   const filesApiPath = ownerType === "quote" 
@@ -82,10 +89,11 @@ export function AttachmentsPanel({
     return File;
   };
 
-  // Handle file upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
+  const clearFileInput = () => {
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
+  const uploadFiles = async (filesToUpload: File[]) => {
     // Guard: must have an ID to attach files
     if (!ownerId) {
       toast({
@@ -96,49 +104,82 @@ export function AttachmentsPanel({
       return;
     }
 
-    const filesToUpload = Array.from(e.target.files);
-
-    // Check file sizes
-    const oversizedFiles = filesToUpload.filter(f => f.size > maxSizeBytes);
-    if (oversizedFiles.length > 0) {
-      toast({
-        title: "File Too Large",
-        description: `Files larger than ${Math.round(maxSizeBytes / (1024 * 1024))}MB cannot be uploaded. Please use WeTransfer or another file sharing service for large files.`,
-        variant: "destructive",
-      });
-      // Filter out oversized files and continue with valid ones
-      const validFiles = filesToUpload.filter(f => f.size <= maxSizeBytes);
-      if (validFiles.length === 0) {
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        return;
-      }
-    }
-
     setIsUploading(true);
     let successCount = 0;
     let errorCount = 0;
 
     try {
       for (const file of filesToUpload) {
-        // Skip oversized files
-        if (file.size > maxSizeBytes) continue;
+        if (file.size > maxSizeBytes) {
+          toast({
+            title: "File Too Large",
+            description: `This file exceeds the maximum allowed size (${formatBytes(maxSizeBytes)}).`,
+            variant: "destructive",
+          });
+          errorCount++;
+          continue;
+        }
+
+        const requestedStorageTarget: StorageTarget = file.size > SUPABASE_MAX_UPLOAD_BYTES ? "local_dev" : "supabase";
 
         try {
-          // Step 1: Get signed upload URL from backend
           const urlResponse = await fetch("/api/objects/upload", {
             method: "POST",
             credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileName: file.name,
+              fileSizeBytes: file.size,
+              requestedStorageTarget,
+            }),
           });
 
           if (!urlResponse.ok) {
             const errorData = await urlResponse.json().catch(() => ({}));
-            console.error("Failed to get upload URL:", errorData);
             throw new Error(errorData.message || "Failed to get upload URL");
           }
 
-          const { url, method, path, token } = await urlResponse.json();
+          const preflight = await urlResponse.json().catch(() => ({}));
+          const decidedTarget: StorageTarget =
+            (preflight?.storageTarget === "local_dev" || preflight?.storageTarget === "supabase")
+              ? preflight.storageTarget
+              : requestedStorageTarget;
 
-          // Step 2: Upload file to storage (Supabase or GCS)
+          if (preflight?.method === "ATOMIC" || decidedTarget === "local_dev" || !preflight?.url) {
+            const fileBufferBase64 = await fileToBase64(file);
+
+            const attachPayload: Record<string, any> = {
+              originalFilename: file.name,
+              fileName: file.name,
+              fileSize: file.size,
+              mimeType: file.type,
+              fileBuffer: fileBufferBase64,
+              requestedStorageTarget,
+            };
+
+            if (ownerType === "order") {
+              attachPayload.role = "other";
+              attachPayload.side = "na";
+            }
+
+            const attachResponse = await fetch(filesApiPath, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify(attachPayload),
+            });
+
+            if (!attachResponse.ok) {
+              const errorData = await attachResponse.json().catch(() => ({}));
+              throw new Error(errorData.error || `Failed to attach ${file.name}`);
+            }
+
+            successCount++;
+            continue;
+          }
+
+          const { url, method, path } = preflight;
+
           const uploadResponse = await fetch(url, {
             method: method || "PUT",
             body: file,
@@ -148,22 +189,19 @@ export function AttachmentsPanel({
           });
 
           if (!uploadResponse.ok) {
-            console.error("Upload failed:", uploadResponse.status, uploadResponse.statusText);
             throw new Error(`Failed to upload ${file.name}`);
           }
 
-          // Step 3: Extract the file URL (remove query params from signed URL)
-          const fileUrl = url.split("?")[0];
+          const fileUrl = typeof path === "string" && path ? path : url.split("?")[0];
 
-          // Step 4: Attach file metadata to the resource
           const attachPayload: Record<string, any> = {
             fileName: file.name,
             fileUrl,
             fileSize: file.size,
             mimeType: file.type,
+            requestedStorageTarget,
           };
 
-          // For orders, add optional metadata
           if (ownerType === "order") {
             attachPayload.role = "other";
             attachPayload.side = "na";
@@ -178,7 +216,6 @@ export function AttachmentsPanel({
 
           if (!attachResponse.ok) {
             const errorData = await attachResponse.json().catch(() => ({}));
-            console.error("Failed to attach file:", errorData);
             throw new Error(errorData.error || `Failed to attach ${file.name}`);
           }
 
@@ -189,7 +226,6 @@ export function AttachmentsPanel({
         }
       }
 
-      // Refresh file list
       queryClient.invalidateQueries({ queryKey: [filesApiPath] });
 
       if (successCount > 0) {
@@ -215,10 +251,34 @@ export function AttachmentsPanel({
       });
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      clearFileInput();
     }
+  };
+
+  // Handle file upload
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    // Guard: must have an ID to attach files
+    if (!ownerId) {
+      toast({
+        title: `Save ${ownerType === "quote" ? "Quote" : "Order"} First`,
+        description: `Please save the ${ownerType} before attaching files.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const filesToUpload = Array.from(e.target.files);
+
+    const hasOversized = filesToUpload.some((f) => f.size > SUPABASE_MAX_UPLOAD_BYTES);
+    if (hasOversized) {
+      setPendingFiles(filesToUpload);
+      setLargeFileDialogOpen(true);
+      return;
+    }
+
+    await uploadFiles(filesToUpload);
   };
 
   // Handle file deletion
@@ -256,6 +316,20 @@ export function AttachmentsPanel({
 
   return (
     <Card className={compact ? "rounded-xl bg-card/80 border-border/60 shadow-md" : ""}>
+      <LargeFileLocalDevWarningDialog
+        open={largeFileDialogOpen}
+        onCancel={() => {
+          setLargeFileDialogOpen(false);
+          setPendingFiles(null);
+          clearFileInput();
+        }}
+        onContinue={async () => {
+          const files = pendingFiles || [];
+          setLargeFileDialogOpen(false);
+          setPendingFiles(null);
+          await uploadFiles(files);
+        }}
+      />
       <CardHeader className={compact ? "pb-2 px-5 pt-4" : ""}>
         <CardTitle className={compact ? "text-sm font-medium flex items-center gap-2" : "flex items-center gap-2"}>
           <Paperclip className={compact ? "w-4 h-4" : "w-5 h-5"} />
@@ -301,6 +375,7 @@ export function AttachmentsPanel({
           <div className="space-y-2">
             {attachments.map((file) => {
               const FileIcon = getFileIcon(file.mimeType);
+              const isLocalDev = file.storageProvider === "local";
               return (
                 <div
                   key={file.id}
@@ -308,9 +383,23 @@ export function AttachmentsPanel({
                 >
                   <FileIcon className="w-4 h-4 text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <span className="text-sm truncate block">
-                      {file.originalFilename || file.fileName}
-                    </span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm truncate block">
+                        {file.originalFilename || file.fileName}
+                      </span>
+                      {isLocalDev && (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="secondary" className="shrink-0">Local (dev)</Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              Stored on this machine (dev). May not be visible from other computers.
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                    </div>
                     {file.fileSize && (
                       <span className="text-xs text-muted-foreground">
                         {formatFileSize(file.fileSize)}
