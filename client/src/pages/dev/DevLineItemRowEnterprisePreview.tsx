@@ -101,7 +101,7 @@ export default function DevLineItemRowEnterprisePreview() {
                       title: productName ?? li?.description ?? null,
                       subtitle: subtitleParts.length ? subtitleParts.join(" • ") : null,
                       optionsSummary: null,
-                      flags: null,
+                      flags: [],
                       notes: (li?.specsJson as any)?.lineItemNotes?.descLong ?? "",
                       statusLabel: li?.status ?? null,
                       statusTone: statusToneFromStatus(li?.status),

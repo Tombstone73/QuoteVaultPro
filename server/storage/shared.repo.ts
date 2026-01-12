@@ -264,6 +264,7 @@ export class SharedRepository {
             pricingFormula: originalProduct.pricingFormula,
             pricingMode: originalProduct.pricingMode,
             isService: originalProduct.isService,
+            artworkPolicy: originalProduct.artworkPolicy,
             primaryMaterialId: originalProduct.primaryMaterialId,
             optionsJson: originalProduct.optionsJson,
             pricingProfileKey: originalProduct.pricingProfileKey ?? "default",

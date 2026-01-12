@@ -470,10 +470,10 @@
   gap: 8px;
 }
 
-.li__notesChip {
+.li__flagChipVm {
   font-size: 11px;
   letter-spacing: 0.06em;
-  text-transform: uppercase;
+  text-transform: none;
   padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -482,9 +482,29 @@
   flex: 0 0 auto;
 }
 
-.li__notesChip:hover {
+.li__flagChipVm:hover {
   background: rgba(255, 255, 255, 0.07);
   border-color: rgba(255, 255, 255, 0.18);
+}
+
+.li__flagChipVm[data-tone="warning"] {
+  border-color: var(--warnBr);
+  background: var(--warnBg);
+}
+
+.li__flagChipVm[data-tone="warning"]:hover {
+  border-color: rgba(245, 158, 11, 0.40);
+  background: rgba(245, 158, 11, 0.16);
+}
+
+.li__flagChipVm[data-tone="success"] {
+  border-color: var(--greenBr);
+  background: var(--greenBg);
+}
+
+.li__flagChipVm[data-tone="danger"] {
+  border-color: hsl(var(--destructive) / 0.40);
+  background: hsl(var(--destructive) / 0.14);
 }
 
 .li__status {

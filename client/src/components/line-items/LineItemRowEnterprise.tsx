@@ -9,15 +9,16 @@ import LineItemMainBlock from "./LineItemMainBlock";
 import LineItemQtyPill from "./LineItemQtyPill";
 import LineItemStatusPill from "./LineItemStatusPill";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import type { LineItemFlagVM, LineItemOptionSummaryVM } from "@/lib/lineItems/lineItemDerivation";
 
 export type LineItemEnterpriseRowModel = {
   id: string;
   title?: string | null;
   subtitle?: string | null;
 
-  optionsSummary?: string | null;
+  optionsSummary?: LineItemOptionSummaryVM | null;
 
-  flags?: string[] | null;
+  flags?: LineItemFlagVM[] | null;
 
   notes?: string | null;
 
@@ -89,8 +90,7 @@ export default function LineItemRowEnterprise({
     typeof item.unitPrice === "number" && Number.isFinite(item.unitPrice) ? item.unitPrice : null;
   const totalValue = typeof item.total === "number" && Number.isFinite(item.total) ? item.total : null;
 
-  const safeNotesText = (item.notes ?? "").trim();
-  const hasNotes = safeNotesText.length > 0;
+  const flagVMs = Array.isArray(item.flags) ? item.flags : [];
 
   const canEditUnit = Boolean(item.isOverride) && typeof onOverrideUnitCommit === "function";
   const canEditTotal = Boolean(item.isOverride) && typeof onOverrideTotalCommit === "function";
@@ -202,9 +202,6 @@ export default function LineItemRowEnterprise({
         title={item.title}
         description={item.subtitle}
         optionsSummary={item.optionsSummary}
-        flags={item.flags}
-        notesText={item.notes}
-        onNotesClick={onNotesClick ? () => onNotesClick(item.id) : undefined}
         onDescriptionCommit={
           onDescriptionCommit
             ? (next) => onDescriptionCommit(item.id, next)
@@ -213,29 +210,58 @@ export default function LineItemRowEnterprise({
       />
 
       <div className={styles.li__flagLane} aria-label="Flags">
-        <LineItemAlertChip text={item.alertText} placeholder={false} />
-        {hasNotes ? (
+        {item.alertText ? <LineItemAlertChip text={item.alertText} placeholder={false} /> : null}
+
+        {flagVMs.length ? (
           <TooltipProvider delayDuration={150}>
-            <Tooltip>
-              <TooltipTrigger asChild>
+            {flagVMs.map((f) => {
+              const canClick =
+                (f.onClick === "expand_notes" && typeof onNotesClick === "function") ||
+                (f.onClick === "expand_artwork" && false);
+
+              const chip = canClick ? (
                 <button
+                  key={f.key}
                   type="button"
-                  className={styles.li__notesChip}
+                  className={styles.li__flagChipVm}
+                  data-tone={f.tone}
                   data-li-interactive="true"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onNotesClick?.(item.id);
+                    if (f.onClick === "expand_notes") onNotesClick?.(item.id);
                   }}
                   onPointerDown={(e) => e.stopPropagation()}
-                  aria-label="Open notes"
+                  aria-label={f.label}
                 >
-                  NOTES
+                  {f.label}
                 </button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-[420px] whitespace-pre-wrap break-words">
-                {safeNotesText}
-              </TooltipContent>
-            </Tooltip>
+              ) : (
+                <div
+                  key={f.key}
+                  className={styles.li__flagChipVm}
+                  data-tone={f.tone}
+                  data-li-interactive="true"
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  aria-label={f.label}
+                >
+                  {f.label}
+                </div>
+              );
+
+              if (typeof f.tooltip === "string" && f.tooltip.trim().length) {
+                return (
+                  <Tooltip key={f.key}>
+                    <TooltipTrigger asChild>{chip}</TooltipTrigger>
+                    <TooltipContent className="max-w-[420px] whitespace-pre-wrap break-words">
+                      {f.tooltip}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              }
+
+              return chip;
+            })}
           </TooltipProvider>
         ) : null}
       </div>

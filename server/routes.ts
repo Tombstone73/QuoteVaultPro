@@ -923,6 +923,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             pricingProfileKey: "default",
             pricingMode: "area",
             isService: false,
+            artworkPolicy: "not_required",
             requiresProductionJob: true,
             pricingFormula: row['Pricing Formula']?.trim() || 'basePrice * quantity',
             variantLabel: row['Variant Label']?.trim(),
