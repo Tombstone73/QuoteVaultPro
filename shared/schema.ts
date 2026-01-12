@@ -461,6 +461,8 @@ export const products = pgTable("products", {
   primaryMaterialId: varchar("primary_material_id").references(() => materials.id, { onDelete: 'set null' }),
   // NEW: Inline options stored as JSON
   optionsJson: jsonb("options_json").$type<ProductOptionItem[]>(),
+  // Artwork policy for this product (controls missing_artwork derivation)
+  artworkPolicy: varchar("artwork_policy", { length: 32 }).$type<"not_required" | "required">().default("not_required").notNull(),
   // NEW: Pricing profile key - points to which calculator to use
   pricingProfileKey: varchar("pricing_profile_key", { length: 100 }).default("default"),
   // NEW: Pricing profile config - calculator-specific settings (e.g., FlatGoodsConfig)
@@ -661,6 +663,7 @@ export const insertProductSchema = createInsertSchema(products).omit({
   isService: z.boolean().default(false),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),
+  artworkPolicy: z.enum(["not_required", "required"]).default("not_required"),
   pricingProfileKey: z.enum(PRICING_PROFILE_KEYS as [string, ...string[]]).default("default"),
   pricingProfileConfig: pricingProfileConfigSchema,
   pricingFormulaId: z.string().optional().nullable(),
@@ -681,6 +684,7 @@ export const updateProductSchema = createInsertSchema(products).omit({
   isService: z.boolean().optional(),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),
+  artworkPolicy: z.enum(["not_required", "required"]).optional(),
   pricingProfileKey: z.enum(PRICING_PROFILE_KEYS as [string, ...string[]]).optional(),
   pricingProfileConfig: pricingProfileConfigSchema,
   pricingFormulaId: z.string().optional().nullable(),

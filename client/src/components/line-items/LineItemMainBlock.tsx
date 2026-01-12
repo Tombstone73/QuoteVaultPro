@@ -2,11 +2,13 @@ import * as React from "react";
 
 import styles from "./lineItemRowEnterprise.module.css";
 
+import type { LineItemOptionSummaryVM } from "@/lib/lineItems/lineItemDerivation";
+
 export type LineItemMainBlockProps = {
   title?: string | null;
   description?: string | null;
 
-  optionsSummary?: string | null;
+  optionsSummary?: LineItemOptionSummaryVM | null;
 
   flags?: string[] | null;
 
@@ -21,6 +23,17 @@ function safeText(value: string | null | undefined) {
   return (value ?? "").trim();
 }
 
+function formatOptionSummary(summary: LineItemOptionSummaryVM | null | undefined): string {
+  if (!summary) return "";
+  const primary = Array.isArray(summary.primary) ? summary.primary.filter(Boolean) : [];
+  if (!primary.length) return "";
+  const base = primary.join(" • ");
+  const extra = typeof summary.secondaryCount === "number" && summary.secondaryCount > 0
+    ? ` +${summary.secondaryCount} more`
+    : "";
+  return `${base}${extra}`;
+}
+
 export default function LineItemMainBlock({
   title,
   description,
@@ -32,6 +45,8 @@ export default function LineItemMainBlock({
   const safeDescription = safeText(description);
   // Notes indicator is rendered in the row's right-side flag lane.
   // Keep notesText/onNotesClick in props to avoid changing the public API.
+
+  const optionSummaryText = formatOptionSummary(optionsSummary);
 
   const canEditDescription = typeof onDescriptionCommit === "function";
   const [draftDescription, setDraftDescription] = React.useState(safeDescription);
@@ -88,19 +103,9 @@ export default function LineItemMainBlock({
         <div className={styles.li__subtitle}>{safeDescription}</div>
       ) : null}
 
-      {safeText(optionsSummary) ? (
-        <div className={styles.li__optionsText} title={safeText(optionsSummary)}>
-          {safeText(optionsSummary)}
-        </div>
-      ) : null}
-
-      {Array.isArray(flags) && flags.length ? (
-        <div className={styles.li__flags} data-li-interactive="true">
-          {flags.slice(0, 4).map((f) => (
-            <span key={f} className={styles.li__flagChip}>
-              {f}
-            </span>
-          ))}
+      {optionSummaryText ? (
+        <div className={styles.li__optionsText} title={optionSummaryText}>
+          {optionSummaryText}
         </div>
       ) : null}
     </div>

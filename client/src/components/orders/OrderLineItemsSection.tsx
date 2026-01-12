@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   ChevronDown,
   Download,
@@ -42,6 +43,7 @@ import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
 
 import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/components/line-items/LineItemRowEnterprise";
+import { buildLineItemFlags, buildLineItemOptionSummary } from "@/lib/lineItems/lineItemDerivation";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -249,8 +251,13 @@ export function OrderLineItemsSection({
 
   const products = (productsResponse?.data || productsResponse || []) as Product[];
 
-  const { data: allOrderFiles = [] } = useOrderFiles(orderId);
-  const { data: lineItemPreviews = {} } = useOrderLineItemPreviews(orderId);
+  const orderFilesQuery = useOrderFiles(orderId);
+  const allOrderFiles = orderFilesQuery.data ?? [];
+  const orderFilesAssociationKnown = orderFilesQuery.isSuccess;
+
+  const lineItemPreviewsQuery = useOrderLineItemPreviews(orderId);
+  const lineItemPreviews = lineItemPreviewsQuery.data ?? {};
+  const lineItemAssetsAssociationKnown = lineItemPreviewsQuery.isSuccess;
 
   // UI-only reordering: keep a stable ordered id list for the current session.
   const activeLineItems = useMemo(
@@ -372,6 +379,13 @@ export function OrderLineItemsSection({
   const [previewFile, setPreviewFile] = useState<AttachmentForPreview | null>(null);
 
   const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
+
+  const [missingArtworkSuppressReason, setMissingArtworkSuppressReason] = useState<string>("");
+  const [savingFlagLineItemId, setSavingFlagLineItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMissingArtworkSuppressReason("");
+  }, [expandedId]);
 
   // Reset PDF embed error when preview file changes
   useEffect(() => {
@@ -660,12 +674,7 @@ export function OrderLineItemsSection({
 
                   const productName = (item as any).product?.name || item.description || "Item";
 
-                  const itemSelectedOptions =
-                    ((item as any).selectedOptions as any[] | undefined | null) ?? (item.specsJson as any)?.selectedOptions;
-
-                  // TODO(v1.2): derive a human-readable option summary from real selected options using option metadata.
-                  // Avoid showing internal codes like "every_24"/raw values in the collapsed row.
-                  const optionsSummaryText: string | null = null;
+                  const optionSummary = buildLineItemOptionSummary(item);
 
                   const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
                   const subtitleText = persistedDescription;
@@ -706,10 +715,38 @@ export function OrderLineItemsSection({
                           : "neutral";
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
+                  const lineItemAttachmentsAssociationKnown =
+                    orderFilesAssociationKnown &&
+                    ((allOrderFiles as any[]).length === 0 ||
+                      (allOrderFiles as any[]).some((f) => Object.prototype.hasOwnProperty.call(f ?? {}, "orderLineItemId")));
 
                   const previewForLineItem = (lineItemPreviews as any)?.[String(item.id)] as
                     | { thumbUrls?: string[]; thumbCount?: number }
                     | undefined;
+                  const lineItemAssetsKnownForItem =
+                    lineItemAssetsAssociationKnown &&
+                    Object.prototype.hasOwnProperty.call(lineItemPreviews as any, String(item.id));
+
+                  const assetCountForItem = Number(previewForLineItem?.thumbCount) || 0;
+
+                  const productForPolicy =
+                    products.find((p) => p.id === item.productId) ?? ((item as any).product as Product | undefined) ?? null;
+                  const productArtworkPolicy = (productForPolicy as any)?.artworkPolicy ?? null;
+
+                  const derivedFlags = buildLineItemFlags(item, {
+                    notesText: persistedNotesText,
+                    productArtworkPolicy,
+                    artwork: {
+                      lineItemAttachments: {
+                        associationKnown: lineItemAttachmentsAssociationKnown,
+                        count: attachmentsForThumb.length,
+                      },
+                      lineItemAssets: {
+                        associationKnown: lineItemAssetsKnownForItem,
+                        count: assetCountForItem,
+                      },
+                    },
+                  });
 
                   const previewThumbUrls = Array.isArray(previewForLineItem?.thumbUrls) ? previewForLineItem!.thumbUrls! : [];
                   const heroThumbUrls = Array.from(
@@ -729,8 +766,8 @@ export function OrderLineItemsSection({
                     id: String(item.id),
                     title: productName,
                     subtitle: subtitleText,
-                    optionsSummary: optionsSummaryText,
-                    flags: null,
+                    optionsSummary: optionSummary,
+                    flags: derivedFlags,
                     notes: persistedNotesText,
                     alertText: null,
                     statusLabel,
@@ -1265,6 +1302,180 @@ export function OrderLineItemsSection({
                                   defaultExpanded={readOnly ? true : false}
                                 />
                               </div>
+
+                              {(() => {
+                                const policy =
+                                  productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
+                                    ? productArtworkPolicy
+                                    : null;
+
+                                const suppressedEntry =
+                                  itemSpecsJson?.flags?.suppressed && typeof itemSpecsJson.flags.suppressed === "object"
+                                    ? (itemSpecsJson.flags.suppressed as any)?.missing_artwork
+                                    : null;
+                                const suppressedReason =
+                                  typeof suppressedEntry?.reason === "string" ? suppressedEntry.reason.trim() : "";
+                                const suppressedAt = typeof suppressedEntry?.at === "string" ? suppressedEntry.at.trim() : "";
+                                const isSuppressed = Boolean(suppressedReason && suppressedAt);
+
+                                if (policy !== "required" && !isSuppressed) return null;
+
+                                const canDerive = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
+                                const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
+                                const isMissingActive = policy === "required" && canDerive && !hasAnyArtwork && !isSuppressed;
+
+                                const suppress = async () => {
+                                  if (readOnly) return;
+                                  const reason = missingArtworkSuppressReason.trim();
+                                  if (!reason) {
+                                    toast({
+                                      title: "Reason required",
+                                      description: "A reason is required to suppress this flag.",
+                                      variant: "destructive",
+                                    });
+                                    return;
+                                  }
+
+                                  const nextSpecsJson = {
+                                    ...(itemSpecsJson || {}),
+                                    flags: {
+                                      ...((itemSpecsJson?.flags as any) || {}),
+                                      suppressed: {
+                                        ...(((itemSpecsJson?.flags as any)?.suppressed as any) || {}),
+                                        missing_artwork: {
+                                          reason,
+                                          at: new Date().toISOString(),
+                                        },
+                                      },
+                                    },
+                                  };
+
+                                  setSavingFlagLineItemId(String(item.id));
+                                  try {
+                                    await updateLineItemSilent.mutateAsync({
+                                      id: String(item.id),
+                                      data: { specsJson: nextSpecsJson },
+                                    });
+                                    setMissingArtworkSuppressReason("");
+                                    await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+                                  } catch (err: any) {
+                                    toast({
+                                      title: "Failed to suppress flag",
+                                      description: err?.message || "Please try again.",
+                                      variant: "destructive",
+                                    });
+                                  } finally {
+                                    setSavingFlagLineItemId(null);
+                                  }
+                                };
+
+                                const clearSuppression = async () => {
+                                  if (readOnly) return;
+
+                                  const nextSuppressed = { ...(((itemSpecsJson?.flags as any)?.suppressed as any) || {}) };
+                                  delete nextSuppressed.missing_artwork;
+
+                                  const nextSpecsJson = {
+                                    ...(itemSpecsJson || {}),
+                                    flags: {
+                                      ...((itemSpecsJson?.flags as any) || {}),
+                                      suppressed: nextSuppressed,
+                                    },
+                                  };
+
+                                  setSavingFlagLineItemId(String(item.id));
+                                  try {
+                                    await updateLineItemSilent.mutateAsync({
+                                      id: String(item.id),
+                                      data: { specsJson: nextSpecsJson },
+                                    });
+                                    await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+                                  } catch (err: any) {
+                                    toast({
+                                      title: "Failed to clear suppression",
+                                      description: err?.message || "Please try again.",
+                                      variant: "destructive",
+                                    });
+                                  } finally {
+                                    setSavingFlagLineItemId(null);
+                                  }
+                                };
+
+                                return (
+                                  <div className={cn("mt-3 rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <div className="text-sm font-medium">Flags</div>
+                                    </div>
+
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="text-sm">Missing artwork</div>
+
+                                        <div className="mt-1">
+                                          {isSuppressed ? (
+                                            <TooltipProvider delayDuration={150}>
+                                              <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                  <Badge variant="outline" className="border-border/60 text-xs">
+                                                    Suppressed
+                                                  </Badge>
+                                                </TooltipTrigger>
+                                                <TooltipContent className="max-w-[420px] whitespace-pre-wrap break-words">
+                                                  {suppressedReason}
+                                                </TooltipContent>
+                                              </Tooltip>
+                                            </TooltipProvider>
+                                          ) : isMissingActive ? (
+                                            <Badge
+                                              variant="outline"
+                                              className="border-amber-500/30 bg-amber-500/10 text-amber-700 text-xs"
+                                            >
+                                              Active
+                                            </Badge>
+                                          ) : null}
+                                        </div>
+                                      </div>
+
+                                      <div className="flex flex-col items-end gap-2">
+                                        {isSuppressed ? (
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-8"
+                                            disabled={readOnly || savingFlagLineItemId === String(item.id)}
+                                            onClick={() => void clearSuppression()}
+                                          >
+                                            Clear
+                                          </Button>
+                                        ) : (
+                                          <div className="flex flex-col gap-2 items-end">
+                                            <div className="w-56">
+                                              <div className="text-xs text-muted-foreground mb-1">Reason</div>
+                                              <Input
+                                                value={missingArtworkSuppressReason}
+                                                onChange={(e) => setMissingArtworkSuppressReason(e.target.value)}
+                                                className="h-8"
+                                                disabled={readOnly || savingFlagLineItemId === String(item.id)}
+                                              />
+                                            </div>
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              size="sm"
+                                              className="h-8"
+                                                disabled={readOnly || savingFlagLineItemId === String(item.id)}
+                                              onClick={() => void suppress()}
+                                            >
+                                              Suppress
+                                            </Button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
 
                               <div className={cn("mt-3 rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
                                 <div className="flex items-center justify-between mb-2">

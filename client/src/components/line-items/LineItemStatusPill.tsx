@@ -130,9 +130,6 @@ export default function LineItemStatusPill({
         aria-expanded={canChange ? open : undefined}
       >
         <span>{safeLabel}</span>
-        <span className={styles.li__caret} aria-hidden="true">
-          ▾
-        </span>
       </button>
 
       {canChange && open && menuRect
