@@ -25,6 +25,19 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
+		},
+		{
+			"label": "Test initializer (jest)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test",
+				"--",
+				"--runTestsByPath",
+				"shared/tests/optionTreeV2Initializer.test.ts"
+			],
+			"isBackground": false,
+			"group": "test"
 		}
 	]
 }
