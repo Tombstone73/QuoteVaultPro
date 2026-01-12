@@ -1619,6 +1619,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const { evaluateOptionTreeV2, isZodError } = await import("./services/optionTreeV2Evaluator");
       const {
         productId,
         variantId,
@@ -1626,6 +1627,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         height,
         quantity,
         selectedOptions: selectedOptionsRaw = {},
+        optionSelectionsJson,
         productDraft,
         customerTier,
         customerId: customerIdRaw,
@@ -2419,6 +2421,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
           setupCost,
           calculatedCost,
         });
+      }
+
+      // Option Tree v2 (schemaVersion=2) additive evaluation
+      // When present on the product and provided by the client, evaluate and merge into snapshot/price.
+      try {
+        const tree = (product as any).optionTreeJson;
+        if (tree && typeof tree === "object" && (tree as any).schemaVersion === 2) {
+          const v2 = evaluateOptionTreeV2({
+            tree,
+            selections: optionSelectionsJson ?? { schemaVersion: 2, selected: {} },
+            width: widthNum,
+            height: heightNum,
+            quantity: quantityNum,
+            basePrice,
+          });
+
+          if (Array.isArray(v2.selectedOptions) && v2.selectedOptions.length > 0) {
+            for (let i = 0; i < v2.selectedOptions.length; i++) {
+              selectedOptionsArray.push(v2.selectedOptions[i]);
+            }
+          }
+
+          optionsPrice += v2.optionsPrice;
+        }
+      } catch (error) {
+        if (isZodError(error)) {
+          return res.status(400).json({ message: "Invalid optionTreeJson/optionSelectionsJson (v2)", errors: error.errors });
+        }
+        const details = (error as any)?.details;
+        if (Array.isArray(details)) {
+          return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: details });
+        }
+        return res.status(400).json({ message: (error as Error)?.message || "Failed to evaluate option tree (v2)" });
       }
 
       // CALCULATE mediaSubtotal - includes only media/printing costs, excludes finishing add-ons

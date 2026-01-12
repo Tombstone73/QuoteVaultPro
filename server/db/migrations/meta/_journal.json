@@ -2,10 +2,138 @@
   "version": "7",
   "dialect": "postgresql",
   "entries": [
-    { "idx": 0, "version": "7", "when": 0, "tag": "0000_baseline", "breakpoints": true },
-    { "idx": 1, "version": "7", "when": 0, "tag": "0001_add_quote_attachment_pages", "breakpoints": true },
-    { "idx": 2, "version": "7", "when": 0, "tag": "0002_import_jobs_and_customer_qb_overrides", "breakpoints": true },
-    { "idx": 3, "version": "7", "when": 0, "tag": "0003_fix_missing_customer_qb_field_overrides", "breakpoints": true },
-    { "idx": 4, "version": "7", "when": 1736390400000, "tag": "0019_invoice_versioning", "breakpoints": true }
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 0,
+      "tag": "0000_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 0,
+      "tag": "0001_add_quote_attachment_pages",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 0,
+      "tag": "0002_import_jobs_and_customer_qb_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 0,
+      "tag": "0003_fix_missing_customer_qb_field_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 0,
+      "tag": "0004_add_pending_approval_to_quote_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 0,
+      "tag": "0009_quote_list_notes_and_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 0,
+      "tag": "0010_add_order_list_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 0,
+      "tag": "0011_add_order_attachments_thumbnail_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 0,
+      "tag": "0012_add_order_state_timestamps",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 0,
+      "tag": "0012_order_state_architecture",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 0,
+      "tag": "0013_asset_pipeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 0,
+      "tag": "0014_standardize_organization_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 0,
+      "tag": "0015_tenant_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 0,
+      "tag": "0016_add_quote_shipping_cents",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 0,
+      "tag": "0017_add_order_shipping_cents",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 0,
+      "tag": "0018_mvp_invoicing_billing_ready",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1736390400000,
+      "tag": "0019_invoice_versioning",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 0,
+      "tag": "0020_add_product_artwork_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 0,
+      "tag": "0021_option_tree_v2",
+      "breakpoints": true
+    }
   ]
 }

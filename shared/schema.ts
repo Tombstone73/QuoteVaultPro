@@ -461,6 +461,8 @@ export const products = pgTable("products", {
   primaryMaterialId: varchar("primary_material_id").references(() => materials.id, { onDelete: 'set null' }),
   // NEW: Inline options stored as JSON
   optionsJson: jsonb("options_json").$type<ProductOptionItem[]>(),
+  // NEW: Option Tree v2 (additive, opt-in)
+  optionTreeJson: jsonb("option_tree_json").$type<any>(),
   // Artwork policy for this product (controls missing_artwork derivation)
   artworkPolicy: varchar("artwork_policy", { length: 32 }).$type<"not_required" | "required">().default("not_required").notNull(),
   // NEW: Pricing profile key - points to which calculator to use
@@ -663,6 +665,7 @@ export const insertProductSchema = createInsertSchema(products).omit({
   isService: z.boolean().default(false),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),
+  optionTreeJson: z.any().optional().nullable(),
   artworkPolicy: z.enum(["not_required", "required"]).default("not_required"),
   pricingProfileKey: z.enum(PRICING_PROFILE_KEYS as [string, ...string[]]).default("default"),
   pricingProfileConfig: pricingProfileConfigSchema,
@@ -684,6 +687,7 @@ export const updateProductSchema = createInsertSchema(products).omit({
   isService: z.boolean().optional(),
   primaryMaterialId: z.string().optional().nullable(),
   optionsJson: z.array(productOptionItemSchema).optional().nullable(),
+  optionTreeJson: z.any().optional().nullable(),
   artworkPolicy: z.enum(["not_required", "required"]).optional(),
   pricingProfileKey: z.enum(PRICING_PROFILE_KEYS as [string, ...string[]]).optional(),
   pricingProfileConfig: pricingProfileConfigSchema,
@@ -1051,6 +1055,8 @@ export const quoteLineItems = pgTable("quote_line_items", {
   height: decimal("height", { precision: 10, scale: 2 }).notNull(),
   quantity: integer("quantity").notNull(),
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
+  // NEW: v2 canonical option selections (additive)
+  optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
   selectedOptions: jsonb("selected_options").$type<Array<{
     optionId: string;
     optionName: string;
@@ -1992,6 +1998,8 @@ export const orderLineItems = pgTable("order_line_items", {
   totalPrice: decimal("total_price", { precision: 10, scale: 2 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("queued"), // queued, printing, finishing, done, canceled
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
+  // NEW: v2 canonical option selections (additive)
+  optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
   selectedOptions: jsonb("selected_options").$type<Array<{
     optionId: string;
     optionName: string;
@@ -2281,6 +2289,8 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   lineTotalCents: integer("line_total_cents").notNull().default(0),
   sortOrder: integer("sort_order").notNull().default(0),
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
+  // NEW: v2 canonical option selections (additive)
+  optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
   selectedOptions: jsonb("selected_options").$type<Array<{
     optionId: string;
     optionName: string;
