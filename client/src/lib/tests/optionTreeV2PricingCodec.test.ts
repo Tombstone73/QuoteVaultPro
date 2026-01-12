@@ -45,6 +45,21 @@ describe("optionTreeV2PricingCodec", () => {
     expect(decoded.amountCents).toBe(999);
   });
 
+  test("encode: per_sqin persists as addPerSqft * 144", () => {
+    const encoded = encodePricingImpact({
+      mode: "addPerSqft",
+      amountCents: 2,
+      displayUnit: "per_sqin",
+      taxable: true,
+    });
+    expect(encoded).toEqual({ mode: "addPerSqft", amountCents: 288 });
+
+    // Decode defaults to per_sqft (no auto-guessing sqin).
+    const decoded = decodePricingImpact(encoded!);
+    expect(decoded.displayUnit).toBe("per_sqft");
+    expect(decoded.amountCents).toBe(288);
+  });
+
   test("round-trip: percent", () => {
     const encoded = encodePricingImpact({
       mode: "percentOfBase",
