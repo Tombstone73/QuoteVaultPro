@@ -57,6 +57,7 @@ const ProductEditorPage = () => {
       artworkPolicy: "not_required",
       primaryMaterialId: null,
       optionsJson: [],
+      optionTreeJson: null,
       storeUrl: "",
       showStoreLink: true,
       thumbnailUrls: [],
@@ -89,6 +90,7 @@ const ProductEditorPage = () => {
         artworkPolicy: (product as any).artworkPolicy || "not_required",
         primaryMaterialId: product.primaryMaterialId || null,
         optionsJson: product.optionsJson || [],
+        optionTreeJson: (product as any).optionTreeJson ?? null,
         storeUrl: product.storeUrl || "",
         showStoreLink: product.showStoreLink ?? true,
         isActive: product.isActive ?? true,
@@ -120,6 +122,7 @@ const ProductEditorPage = () => {
         ...data,
         optionsJson: data.optionsJson && data.optionsJson.length > 0 ? data.optionsJson : null,
         primaryMaterialId: data.primaryMaterialId || null,
+        optionTreeJson: (data as any).optionTreeJson ?? null,
       };
       
       if (isNewProduct) {
@@ -165,6 +168,7 @@ const ProductEditorPage = () => {
   }, [form.formState.isDirty, saveMutation.isPending]);
 
   const hasInvalidChoiceValues = optionsHaveInvalidChoices(form.watch("optionsJson"));
+  const hasInvalidOptionTreeJson = Boolean((form.formState.errors as any)?.optionTreeJson);
 
   if (isLoading) {
     return <div>Loading...</div>;
@@ -237,7 +241,7 @@ const ProductEditorPage = () => {
           <Button
             type="submit"
             form="product-editor-form"
-            disabled={saveMutation.isPending || hasInvalidChoiceValues}
+            disabled={saveMutation.isPending || hasInvalidChoiceValues || hasInvalidOptionTreeJson}
           >
             <Save className="h-4 w-4 mr-2" />
             {saveLabel}
@@ -246,6 +250,9 @@ const ProductEditorPage = () => {
       </div>
       {hasInvalidChoiceValues ? (
         <div className="mt-2 text-xs text-destructive">Fix empty choice values before saving.</div>
+      ) : null}
+      {hasInvalidOptionTreeJson ? (
+        <div className="mt-2 text-xs text-destructive">Fix Option Tree v2 JSON errors before saving.</div>
       ) : null}
     </div>
   );

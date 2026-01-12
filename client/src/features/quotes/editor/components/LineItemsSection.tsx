@@ -16,6 +16,7 @@ import type { Product, ProductOptionItem } from "@shared/schema";
 import type { QuoteLineItemDraft, OptionSelection } from "../types";
 import { apiRequest } from "@/lib/queryClient";
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
+import { ProductOptionsPanelV2 } from "./ProductOptionsPanelV2";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { setPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
@@ -25,6 +26,7 @@ import { getThumbSrc } from "@/lib/getThumbSrc";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
+import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -430,6 +432,14 @@ export function LineItemsSection({
     () => (expandedItem ? getProduct(products, expandedItem.productId) : null),
     [products, expandedItem]
   );
+
+  const expandedOptionTreeJson = useMemo(() => {
+    return (((expandedProduct as any)?.optionTreeJson ?? null) as OptionTreeV2 | null) ?? null;
+  }, [expandedProduct]);
+
+  const isExpandedTreeV2 = useMemo(() => {
+    return Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
+  }, [expandedOptionTreeJson]);
   const expandedProductOptions = useMemo(
     () => {
       const base = ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [];
@@ -443,13 +453,27 @@ export function LineItemsSection({
   const [qty, setQty] = useState<number>(1);
   const [notes, setNotes] = useState<string>("");
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
+  const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
+  const [optionsV2Valid, setOptionsV2Valid] = useState(true);
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
   const [savedItemKey, setSavedItemKey] = useState<string | null>(null);
   
   // Track saved state snapshot for dirty detection
-  const savedSnapshotRef = useRef<Record<string, { width: number; height: number; quantity: number; notes: string; selectedOptions: any[] }>>({});
+  const savedSnapshotRef = useRef<
+    Record<
+      string,
+      {
+        width: number;
+        height: number;
+        quantity: number;
+        notes: string;
+        selectedOptions: any[];
+        optionSelectionsJson: any;
+      }
+    >
+  >({});
 
   useEffect(() => {
     if (!expandedItem) return;
@@ -472,6 +496,14 @@ export function LineItemsSection({
       };
     });
     setOptionSelections(selections);
+
+    const rawV2 = (expandedItem as any)?.optionSelectionsJson;
+    if (rawV2 && typeof rawV2 === "object" && (rawV2 as any)?.schemaVersion === 2) {
+      setOptionSelectionsV2(rawV2 as LineItemOptionSelectionsV2);
+    } else {
+      setOptionSelectionsV2({ schemaVersion: 2, selected: {} });
+    }
+
     setCalcError(null);
     
     // Save snapshot for dirty detection
@@ -481,6 +513,7 @@ export function LineItemsSection({
       quantity: expandedItem.quantity,
       notes: (expandedItem.specsJson as any)?.notes || expandedItem.notes || "",
       selectedOptions: expandedItem.selectedOptions || [],
+      optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
     };
   }, [expandedItem?.id, expandedItem?.tempId]);
 
@@ -499,13 +532,17 @@ export function LineItemsSection({
     const savedNotes = saved.notes || "";
     const currentOptions = JSON.stringify(expandedItem.selectedOptions || []);
     const savedOptions = JSON.stringify(saved.selectedOptions || []);
+
+    const currentV2 = JSON.stringify((expandedItem as any)?.optionSelectionsJson ?? null);
+    const savedV2 = JSON.stringify(saved.optionSelectionsJson ?? null);
     
     return (
       Math.abs(widthNum - saved.width) > 0.01 ||
       Math.abs(heightNum - saved.height) > 0.01 ||
       qtyNum !== saved.quantity ||
       currentNotes !== savedNotes ||
-      currentOptions !== savedOptions
+      currentOptions !== savedOptions ||
+      currentV2 !== savedV2
     );
   }, [expandedItem, expandedKey, widthNum, heightNum, qtyNum, notes]);
 
@@ -525,6 +562,7 @@ export function LineItemsSection({
           quantity: qtyNum,
           notes: notes || "",
           selectedOptions: expandedItem.selectedOptions || [],
+          optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
         };
         // Clear saved indicator after 2 seconds
         setTimeout(() => setSavedItemKey(null), 2000);
@@ -541,15 +579,22 @@ export function LineItemsSection({
       ...(expandedItem.specsJson || {}),
       ...(notes ? { notes } : {}),
     };
+
+    // Persist canonical v2 selections locally when the v2 panel is active.
+    const v2Patch = isExpandedTreeV2
+      ? { optionSelectionsJson: optionSelectionsV2 }
+      : {};
+
     onUpdateLineItem(expandedKey, {
       width: Number.isFinite(widthNum) && widthNum > 0 ? widthNum : expandedItem.width,
       height: Number.isFinite(heightNum) && heightNum > 0 ? heightNum : expandedItem.height,
       quantity: qtyNum,
       specsJson: nextSpecsJson,
       notes: notes || undefined,
+      ...(v2Patch as any),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedKey, widthNum, heightNum, qtyNum, notes]);
+  }, [expandedKey, widthNum, heightNum, qtyNum, notes, isExpandedTreeV2, optionSelectionsV2]);
 
   // Identity persistence must not reset edit snapshot; only explicit user saves do.
   // The snapshot is already correctly updated in handleSaveItem when user clicks Save.
@@ -563,14 +608,21 @@ export function LineItemsSection({
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
 
+      if (isExpandedTreeV2 && !optionsV2Valid) {
+        setCalcError(null);
+        return;
+      }
+
       setIsCalculating(true);
       setCalcError(null);
 
-      const selectedOptionsArray = buildSelectedOptionsArray(expandedProductOptions, optionSelections, widthNum, heightNum, qtyNum);
+      if (!isExpandedTreeV2) {
+        const selectedOptionsArray = buildSelectedOptionsArray(expandedProductOptions, optionSelections, widthNum, heightNum, qtyNum);
 
-      // Persist selectedOptions array on the item (for summary chips + save payload)
-      if (expandedKey) {
-        onUpdateLineItem(expandedKey, { selectedOptions: selectedOptionsArray });
+        // Persist selectedOptions array on the item (for summary chips + save payload)
+        if (expandedKey) {
+          onUpdateLineItem(expandedKey, { selectedOptions: selectedOptionsArray });
+        }
       }
 
       apiRequest("POST", "/api/quotes/calculate", {
@@ -579,7 +631,9 @@ export function LineItemsSection({
         width: widthNum,
         height: heightNum,
         quantity: qtyNum,
-        selectedOptions: optionSelections,
+        ...(isExpandedTreeV2
+          ? { optionSelectionsJson: optionSelectionsV2 }
+          : { selectedOptions: optionSelections }),
         customerId,
         quoteId,
       })
@@ -588,14 +642,19 @@ export function LineItemsSection({
           const price = Number(data?.price);
           if (!Number.isFinite(price)) return;
           if (expandedKey) {
+            const breakdown = data?.breakdown;
+            const snapshotSelectedOptions = Array.isArray(breakdown?.selectedOptions) ? breakdown.selectedOptions : undefined;
             onUpdateLineItem(expandedKey, {
               linePrice: price,
               formulaLinePrice: price,
-              priceBreakdown: data?.priceBreakdown || {
-                ...(expandedItem.priceBreakdown || {}),
-                basePrice: price,
-                total: price,
-              },
+              priceBreakdown:
+                breakdown ||
+                ({
+                  ...(expandedItem.priceBreakdown || {}),
+                  basePrice: price,
+                  total: price,
+                } as any),
+              ...(snapshotSelectedOptions ? { selectedOptions: snapshotSelectedOptions } : {}),
             });
           }
         })
@@ -611,6 +670,9 @@ export function LineItemsSection({
       heightText,
       qtyNum,
       optionSelections,
+      optionSelectionsV2,
+      isExpandedTreeV2,
+      optionsV2Valid,
       expandedKey,
       customerId,
       quoteId,
@@ -832,12 +894,21 @@ export function LineItemsSection({
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
                             <div className="min-w-0">
                               {/* Finishing / options */}
-                              <ProductOptionsPanel
-                                product={expandedProduct}
-                                productOptions={expandedProductOptions}
-                                optionSelections={optionSelections}
-                                onOptionSelectionsChange={setOptionSelections}
-                              />
+                              {isExpandedTreeV2 && expandedOptionTreeJson ? (
+                                <ProductOptionsPanelV2
+                                  tree={expandedOptionTreeJson}
+                                  selections={optionSelectionsV2}
+                                  onSelectionsChange={setOptionSelectionsV2}
+                                  onValidityChange={setOptionsV2Valid}
+                                />
+                              ) : (
+                                <ProductOptionsPanel
+                                  product={expandedProduct}
+                                  productOptions={expandedProductOptions}
+                                  optionSelections={optionSelections}
+                                  onOptionSelectionsChange={setOptionSelections}
+                                />
+                              )}
 
                               {/* Bottom actions - Edit mode only */}
                               {!readOnly && (
@@ -850,7 +921,7 @@ export function LineItemsSection({
                                         size="sm"
                                         className="h-8"
                                         onClick={handleSaveItem}
-                                        disabled={savingItemKey === itemKey || isCalculating}
+                                        disabled={savingItemKey === itemKey || isCalculating || (isExpandedTreeV2 && !optionsV2Valid)}
                                       >
                                         {savingItemKey === itemKey ? (
                                           <>

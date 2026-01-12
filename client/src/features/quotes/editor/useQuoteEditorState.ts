@@ -638,6 +638,7 @@ export function useQuoteEditorState() {
             height: parseFloat(item.height),
             quantity: item.quantity,
             specsJson: item.specsJson || {},
+            optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
             selectedOptions: item.selectedOptions || [],
             linePrice: parseFloat(item.linePrice),
             // Price override fields are client-side for now; default to formula pricing on load.
@@ -698,6 +699,7 @@ export function useQuoteEditorState() {
                 height: parseFloat(item.height),
                 quantity: item.quantity,
                 specsJson: item.specsJson || {},
+                optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
                 selectedOptions: item.selectedOptions || [],
                 linePrice: parseFloat(item.linePrice),
                 priceOverridden: false,
@@ -1118,7 +1120,7 @@ export function useQuoteEditorState() {
                     const data = await response.json();
                     const price = Number(data?.price);
                     if (!Number.isFinite(price)) return { key, ok: false as const };
-                    return { key, ok: true as const, price, priceBreakdown: data?.priceBreakdown };
+                    return { key, ok: true as const, price, priceBreakdown: data?.breakdown };
                 })
             );
 
@@ -2082,6 +2084,7 @@ export function useQuoteEditorState() {
                 height: 1,
                 quantity: 1,
                 specsJson: {},
+                optionSelectionsJson: null,
                 selectedOptions: [],
                 linePrice: 0,
                 priceOverridden: false,
@@ -2108,6 +2111,7 @@ export function useQuoteEditorState() {
                         height: base.height,
                         quantity: base.quantity,
                         specsJson: base.specsJson,
+                        optionSelectionsJson: (base as any).optionSelectionsJson,
                         selectedOptions: base.selectedOptions,
                         linePrice: base.linePrice,
                         priceBreakdown: base.priceBreakdown,
@@ -2164,6 +2168,7 @@ export function useQuoteEditorState() {
                 height: item.height,
                 quantity: item.quantity,
                 specsJson: item.specsJson || {},
+                optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
                 selectedOptions: item.selectedOptions || [],
                 linePrice: item.linePrice ?? 0,
                 priceBreakdown: item.priceBreakdown || {
@@ -2255,6 +2260,7 @@ export function useQuoteEditorState() {
                     height: item.height,
                     quantity: item.quantity,
                     specsJson: item.specsJson || {},
+                    optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
                     selectedOptions: item.selectedOptions || [],
                     linePrice: item.linePrice ?? 0,
                     priceBreakdown: item.priceBreakdown || {
@@ -2305,6 +2311,7 @@ export function useQuoteEditorState() {
                     height: item.height,
                     quantity: item.quantity,
                     specsJson: item.specsJson || {},
+                    optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
                     selectedOptions: item.selectedOptions || [],
                     linePrice: item.linePrice ?? 0,
                     priceBreakdown: item.priceBreakdown || {

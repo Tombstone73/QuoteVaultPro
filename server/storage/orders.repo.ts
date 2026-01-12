@@ -720,6 +720,7 @@ export class OrdersRepository {
             status: 'queued',
             specsJson: ql.specsJson,
             selectedOptions: ql.selectedOptions,
+            optionSelectionsJson: (ql as any).optionSelectionsJson ?? null,
             nestingConfigSnapshot: null,
             requiresInventory: false,
             materialId: null,

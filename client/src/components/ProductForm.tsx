@@ -10,6 +10,8 @@ import React from "react";
 import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEditor";
 import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
+import { validateOptionTreeV2 } from "@shared/optionTreeV2";
+import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -43,6 +45,93 @@ export const ProductForm = ({
 }) => {
   const addPricingProfileKey = form.watch("pricingProfileKey");
   const [addGroupSignal, setAddGroupSignal] = React.useState<number | null>(null);
+  const [optionsMode, setOptionsMode] = React.useState<"legacy" | "treeV2">("legacy");
+  const optionTreeJson = form.watch("optionTreeJson");
+
+  const [optionTreeText, setOptionTreeText] = React.useState<string>("");
+  const [optionTreeErrors, setOptionTreeErrors] = React.useState<string[]>([]);
+
+  React.useEffect(() => {
+    // Default to Tree v2 editor when an existing product already has a v2 tree.
+    if (optionsMode === "legacy" && optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
+      setOptionsMode("treeV2");
+    }
+  }, [optionTreeJson, optionsMode]);
+
+  React.useEffect(() => {
+    if (optionsMode !== "treeV2") return;
+    if (optionTreeJson == null) {
+      setOptionTreeText("");
+      setOptionTreeErrors([]);
+      return;
+    }
+    try {
+      setOptionTreeText(JSON.stringify(optionTreeJson, null, 2));
+      setOptionTreeErrors([]);
+    } catch {
+      setOptionTreeText("");
+      setOptionTreeErrors(["optionTreeJson is not serializable"]);
+    }
+  }, [optionsMode]);
+
+  const setTreeTextAndValidate = (nextText: string) => {
+    setOptionTreeText(nextText);
+
+    const trimmed = nextText.trim();
+    if (trimmed.length === 0) {
+      form.setValue("optionTreeJson", null, { shouldDirty: true });
+      form.clearErrors("optionTreeJson");
+      setOptionTreeErrors([]);
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(nextText);
+    } catch (e) {
+      form.setError("optionTreeJson", {
+        type: "manual",
+        message: e instanceof Error ? e.message : "Invalid JSON",
+      });
+      setOptionTreeErrors(["Invalid JSON"]);
+      return;
+    }
+
+    const validation = validateOptionTreeV2(parsed);
+    if (!validation.ok) {
+      form.setError("optionTreeJson", {
+        type: "manual",
+        message: "Invalid optionTreeJson (v2)",
+      });
+      setOptionTreeErrors(validation.errors);
+      return;
+    }
+
+    form.clearErrors("optionTreeJson");
+    setOptionTreeErrors([]);
+    form.setValue("optionTreeJson", parsed, { shouldDirty: true });
+  };
+
+  const initTreeV2 = () => {
+    const legacyOptionsJson = form.getValues("optionsJson");
+    const tree = buildOptionTreeV2FromLegacyOptions(legacyOptionsJson);
+
+    // Validate with the same minimal boundary validator used throughout the app.
+    const validation = validateOptionTreeV2(tree);
+    if (!validation.ok) {
+      form.setError("optionTreeJson", {
+        type: "manual",
+        message: "Invalid optionTreeJson (v2)",
+      });
+      setOptionTreeErrors(validation.errors);
+      return;
+    }
+
+    form.setValue("optionTreeJson", tree as any, { shouldDirty: true });
+    form.clearErrors("optionTreeJson");
+    setOptionTreeErrors([]);
+    setOptionTreeText(JSON.stringify(tree, null, 2));
+  };
 
   return (
     <form
@@ -319,18 +408,81 @@ export const ProductForm = ({
             <CardTitle className="text-base">Options & Add-ons</CardTitle>
             <CardDescription>Configure selectable add-ons and finishing.</CardDescription>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setAddGroupSignal(Date.now())}
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Add Option Group
-          </Button>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+              <span className="text-xs text-muted-foreground">Options Mode</span>
+              <span className="text-xs font-medium">{optionsMode === "legacy" ? "Legacy" : "Tree v2"}</span>
+              <Switch
+                checked={optionsMode === "treeV2"}
+                onCheckedChange={(checked) => {
+                  if (checked) {
+                    setOptionsMode("treeV2");
+                    setOptionTreeErrors([]);
+                    form.clearErrors("optionTreeJson");
+                    try {
+                      setOptionTreeText(optionTreeJson ? JSON.stringify(optionTreeJson, null, 2) : "");
+                    } catch {
+                      setOptionTreeText("");
+                    }
+                    return;
+                  }
+
+                  // Switching back to legacy disables v2 by clearing optionTreeJson.
+                  setOptionsMode("legacy");
+                  form.setValue("optionTreeJson", null, { shouldDirty: true });
+                  form.clearErrors("optionTreeJson");
+                  setOptionTreeErrors([]);
+                }}
+              />
+            </div>
+
+            {optionsMode === "legacy" ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAddGroupSignal(Date.now())}
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Add Option Group
+              </Button>
+            ) : (
+              <Button type="button" variant="outline" size="sm" onClick={initTreeV2}>
+                Initialize Tree v2
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
+          {optionsMode === "legacy" ? (
+            <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
+          ) : (
+            <div className="space-y-2">
+              <FormLabel>Option Tree v2 (JSON)</FormLabel>
+              <Textarea
+                value={optionTreeText}
+                onChange={(e) => setTreeTextAndValidate(e.target.value)}
+                rows={12}
+                className="font-mono text-xs"
+                placeholder='Paste a v2 tree JSON here (or leave blank for null).'
+              />
+
+              {optionTreeErrors.length > 0 ? (
+                <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                  <div className="font-medium">Option Tree v2 errors</div>
+                  <ul className="mt-1 list-disc pl-4">
+                    {optionTreeErrors.map((err) => (
+                      <li key={err}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              <FormDescription className="text-xs">
+                Tree v2 opt-in is only active when optionTreeJson exists and schemaVersion=2.
+              </FormDescription>
+            </div>
+          )}
         </CardContent>
       </Card>
 
