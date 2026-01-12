@@ -499,7 +499,8 @@ export default function Orders() {
 
         const rowPreviewThumbnailUrls = Array.isArray((row as any).previewThumbnailUrls)
           ? ((row as any).previewThumbnailUrls as any[])
-              .filter((u) => typeof u === 'string' && u.length > 0)
+              .map((u) => getThumbSrc({ thumbnailUrl: u }))
+              .filter((u): u is string => typeof u === 'string' && u.length > 0)
               .slice(0, 3)
           : [];
 

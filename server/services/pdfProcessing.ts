@@ -20,8 +20,9 @@ import { db } from "../db";
 import { orderAttachments, quoteAttachments } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
-import { readFile } from "../utils/fileStorage";
+import { fileExists, readFile } from "../utils/fileStorage";
 import { resolveLocalStoragePath } from "./localStoragePath";
+import { normalizeTenantObjectKey } from "../utils/orgKeys";
 import path from "path";
 import * as fsPromises from "fs/promises";
 
@@ -135,7 +136,8 @@ async function downloadPdfFile(fileKey: string, storageProvider: string): Promis
       return buffer;
     } else if (storageProvider === 'local') {
       // Local file storage - resolve path and read directly
-      const resolvedPath = resolveLocalStoragePath(fileKey);
+      const normalizedFileKey = normalizeTenantObjectKey(fileKey.replace(/\\/g, '/'));
+      const resolvedPath = resolveLocalStoragePath(normalizedFileKey);
       console.log(`[PdfProcessing] 📂 Source file path: fileKey=${fileKey}, resolvedPath=${resolvedPath}`);
       
       // PACK 2: Retry logic for local files (handle timing issues after upload finalize)
@@ -232,7 +234,19 @@ function generateThumbnailKey(args: {
   attachmentId: string;
 }): string {
   const { orgId, attachmentType, attachmentId } = args;
-  return `thumbs/${orgId}/${attachmentType}/${attachmentId}.thumb.jpg`;
+  return normalizeTenantObjectKey(`thumbs/${orgId}/${attachmentType}/${attachmentId}.thumb.jpg`);
+}
+
+async function verifyDerivativeExists(args: {
+  storageProvider: string;
+  thumbKey: string;
+}): Promise<boolean> {
+  const { storageProvider, thumbKey } = args;
+  if (isSupabaseConfigured() && storageProvider === 'supabase') {
+    const svc = new SupabaseStorageService();
+    return await svc.fileExists(thumbKey);
+  }
+  return await fileExists(thumbKey);
 }
 
 /**
@@ -496,6 +510,27 @@ export async function processPdfAttachmentDerivedData(args: {
 
       if (thumbUploaded) {
         console.log(`[PdfProcessing] Thumbnail stored successfully for ${attachmentId}`);
+
+        // Enforce invariant: do not claim thumb_ready unless the derivative actually exists.
+        const thumbExists = await verifyDerivativeExists({ storageProvider, thumbKey });
+        if (!thumbExists) {
+          console.warn(`[PdfProcessing] Derivative existence check failed for ${attachmentId}; not marking thumb_ready`, {
+            storageProvider,
+            thumbKey,
+          });
+
+          const baseTable = attachmentType === 'quote' ? quoteAttachments : orderAttachments;
+          await db
+            .update(baseTable)
+            .set({
+              thumbKey: null,
+              thumbStatus: 'thumb_failed',
+              thumbError: 'derivative_missing_after_write',
+              updatedAt: new Date(),
+            })
+            .where(eq(baseTable.id, attachmentId));
+          return;
+        }
         
         // Update database with thumbnail key (PERMANENT - final state)
         try {

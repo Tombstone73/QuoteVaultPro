@@ -289,44 +289,23 @@ export async function registerOrderRoutes(
                             for (const orderId of orderIds) {
                                 const totalCount = countsByOrderId[orderId] ?? 0;
                                 const previewRows = previewsByOrderId[orderId] ?? [];
-                                const supabase = isSupabaseConfigured() ? new SupabaseStorageService() : null;
 
                                 const previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }> = [];
                                 for (const att of previewRows) {
-                                    // 1) thumbnail_relative_path -> signed URL
-                                    const rawThumbRel = (att.thumbnailRelativePath ?? null) as string | null;
-                                    let thumbnailUrl: string | null = null;
-                                    if (rawThumbRel) {
-                                        const raw = rawThumbRel.toString();
-                                        const isHttp = raw.startsWith('http://') || raw.startsWith('https://');
-                                        const looksLikeSupabaseObjectUrl = raw.includes('/storage/v1/object/');
-
-                                        if (isHttp) {
-                                            // Never return raw /storage/v1/object/* URLs; re-sign if possible.
-                                            if (supabase && looksLikeSupabaseObjectUrl) {
-                                                const extracted = tryExtractSupabaseObjectKeyFromUrl(raw, 'titan-private');
-                                                thumbnailUrl = extracted ? `/objects/${extracted}` : null;
-                                            } else {
-                                                thumbnailUrl = raw;
-                                            }
-                                        } else if ((att.storageProvider ?? null) === 'local') {
-                                            thumbnailUrl = `/objects/${raw}`;
-                                        } else if (supabase && (att.storageProvider ?? null) === 'supabase') {
-                                            thumbnailUrl = `/objects/${raw}`;
-                                        } else {
-                                            thumbnailUrl = `/objects/${raw}`;
-                                        }
-                                    }
-
-                                    // 2) else if thumb_key/preview_key -> signed derivative URL via enrichAttachmentWithUrls
-                                    // NOTE: Prefer thumbUrl/previewUrl only; do not fall back to originalUrl (could be a PDF).
-                                    if (!thumbnailUrl && (att.thumbKey || att.previewKey)) {
-                                        const enriched = await enrichAttachmentWithUrls(att, { logOnce });
-                                        thumbnailUrl =
-                                            (enriched?.thumbUrl as string | null) ||
-                                            (enriched?.previewUrl as string | null) ||
-                                            null;
-                                    }
+                                    // Canonical thumbnail doctrine (READS must match WRITES):
+                                    // - Do not attempt to render legacy `thumbnailRelativePath` as a URL.
+                                    //   That field has historically carried mismatched keys (causing /objects/* -> Supabase 404 spam).
+                                    // - Prefer `thumbKey`/`previewKey` via `enrichAttachmentWithUrls`, which is aligned
+                                    //   with the current thumbnail writers (see server/workers/thumbnailWorker.ts).
+                                    // NOTE: We intentionally do NOT fall back to originalUrl here (could be a PDF).
+                                    const enriched = await enrichAttachmentWithUrls(att, { logOnce });
+                                    const thumbnailUrl =
+                                        (enriched?.thumbnailUrl as string | null) ??
+                                        (enriched?.previewThumbnailUrl as string | null) ??
+                                        (enriched?.thumbUrl as string | null) ??
+                                        (enriched?.previewUrl as string | null) ??
+                                        (enriched?.pages?.[0]?.thumbUrl as string | null) ??
+                                        null;
 
                                     previews.push({
                                         id: String(att.id),
@@ -1836,7 +1815,10 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-            const { uploadId, files, description, fileName, fileUrl, fileSize, mimeType } = req.body;
+            const { uploadId, files, description, fileName, fileUrl, fileSize, mimeType, requestedStorageTarget, storageTarget } = req.body;
+            const requestedTarget =
+                (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
+                (typeof storageTarget === 'string' ? storageTarget : null);
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -1846,6 +1828,33 @@ export async function registerOrderRoutes(
                 if (meta.organizationId !== organizationId) return res.status(404).json({ error: 'Upload not found' });
                 if (!meta.relativePath) return res.status(400).json({ error: 'Upload not finalized' });
 
+                const { decideStorageTarget } = await import('../services/storageTarget');
+                const decidedTarget = decideStorageTarget({
+                    fileName: meta.originalFilename,
+                    fileSizeBytes: meta.sizeBytes || 0,
+                    requestedTarget,
+                    organizationId,
+                    context: 'POST /api/orders/:orderId/attachments (uploadId)',
+                });
+
+                let fileKey = meta.relativePath!;
+                let storageProvider: 'local' | 'supabase' | undefined = 'local';
+                if (decidedTarget === 'supabase' && isSupabaseConfigured() && meta.relativePath) {
+                    const { SupabaseStorageService } = await import('../supabaseStorage');
+                    const { getAbsolutePath, deleteFile: deleteLocalFile } = await import('../utils/fileStorage.js');
+                    const fsPromises = await import('fs/promises');
+
+                    const abs = getAbsolutePath(meta.relativePath);
+                    const buffer = await fsPromises.readFile(abs);
+
+                    const supabase = new SupabaseStorageService();
+                    const uploaded = await supabase.uploadFile(meta.relativePath, buffer, meta.mimeType || 'application/octet-stream');
+                    fileKey = normalizeObjectKeyForDb(uploaded.path);
+                    storageProvider = 'supabase';
+
+                    await deleteLocalFile(meta.relativePath).catch(() => false);
+                }
+
                 const [created] = await db.insert(orderAttachments).values({
                     orderId,
                     quoteId: order.quoteId || null,
@@ -1853,12 +1862,12 @@ export async function registerOrderRoutes(
                     uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
                     description: description || null,
                     fileName: meta.originalFilename,
-                    fileUrl: meta.relativePath!,
+                    fileUrl: fileKey,
                     fileSize: meta.sizeBytes,
                     mimeType: meta.mimeType,
                     originalFilename: meta.originalFilename,
-                    relativePath: meta.relativePath!,
-                    storageProvider: 'local',
+                    relativePath: fileKey,
+                    storageProvider,
                     sizeBytes: meta.sizeBytes,
                 }).returning();
                 await deleteUploadSession(uploadId);
@@ -1867,11 +1876,65 @@ export async function registerOrderRoutes(
             }
 
             if (Array.isArray(files) && files.length > 0) {
-                const { processUploadedFile } = await import('../utils/fileStorage.js');
+                const { processUploadedFile, generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
+                const { decideStorageTarget } = await import('../services/storageTarget');
                 const inserted = await db.transaction(async (tx) => {
                     const results = [];
                     for (const f of files) {
-                        const fileMetadata = await processUploadedFile({ originalFilename: f.fileName, buffer: Buffer.from(f.fileBufferBase64, 'base64'), mimeType: f.mimeType, organizationId, resourceType: 'order', resourceId: orderId });
+                        const buffer = Buffer.from(f.fileBufferBase64, 'base64');
+                        const decidedTarget = decideStorageTarget({
+                            fileName: f.fileName,
+                            fileSizeBytes: buffer.length,
+                            requestedTarget,
+                            organizationId,
+                            context: 'POST /api/orders/:orderId/attachments (atomic)',
+                        });
+
+                        let storageProvider: 'local' | 'supabase' | undefined = 'local';
+                        let fileKey: string;
+                        let sizeBytes: number;
+                        let checksum: string | null = null;
+                        let extension: string | null = null;
+                        let storedFilename: string | null = null;
+                        let originalFilename: string;
+
+                        if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
+                            const { SupabaseStorageService } = await import('../supabaseStorage');
+                            storedFilename = generateStoredFilename(f.fileName);
+                            const relativePath = generateRelativePath({
+                                organizationId,
+                                orderNumber: order?.orderNumber ? String(order.orderNumber) : undefined,
+                                storedFilename,
+                                resourceType: 'order',
+                                resourceId: orderId,
+                            });
+                            checksum = computeChecksum(buffer);
+                            extension = getFileExtension(f.fileName);
+                            sizeBytes = buffer.length;
+
+                            const supabase = new SupabaseStorageService();
+                            const uploaded = await supabase.uploadFile(relativePath, buffer, f.mimeType || 'application/octet-stream');
+                            fileKey = normalizeObjectKeyForDb(uploaded.path);
+                            storageProvider = 'supabase';
+                            originalFilename = f.fileName;
+                        } else {
+                            const fileMetadata = await processUploadedFile({
+                                originalFilename: f.fileName,
+                                buffer,
+                                mimeType: f.mimeType,
+                                organizationId,
+                                resourceType: 'order',
+                                resourceId: orderId,
+                                orderNumber: order?.orderNumber ? String(order.orderNumber) : undefined,
+                            });
+                            fileKey = fileMetadata.relativePath;
+                            sizeBytes = fileMetadata.sizeBytes;
+                            checksum = fileMetadata.checksum || null;
+                            extension = fileMetadata.extension || null;
+                            storedFilename = fileMetadata.storedFilename || null;
+                            originalFilename = fileMetadata.originalFilename;
+                        }
+
                         const [created] = await tx.insert(orderAttachments).values({
                             orderId,
                             quoteId: order.quoteId || null,
@@ -1879,13 +1942,16 @@ export async function registerOrderRoutes(
                             uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
                             description: description || null,
                             fileName: f.fileName,
-                            fileUrl: fileMetadata.relativePath,
-                            fileSize: fileMetadata.sizeBytes,
+                            fileUrl: fileKey,
+                            fileSize: sizeBytes,
                             mimeType: f.mimeType,
-                            originalFilename: fileMetadata.originalFilename,
-                            relativePath: fileMetadata.relativePath,
-                            storageProvider: 'local',
-                            sizeBytes: fileMetadata.sizeBytes,
+                            originalFilename,
+                            storedFilename,
+                            relativePath: fileKey,
+                            storageProvider,
+                            extension,
+                            checksum,
+                            sizeBytes,
                         }).returning();
                         results.push(created);
                     }
@@ -1897,6 +1963,25 @@ export async function registerOrderRoutes(
             if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
             if (!fileName) return res.status(400).json({ error: "fileName is required" });
 
+            const { decideStorageTarget } = await import('../services/storageTarget');
+            const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
+            const decidedTarget = decideStorageTarget({
+                fileName,
+                fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
+                requestedTarget,
+                organizationId,
+                context: 'POST /api/orders/:orderId/attachments (legacy)',
+            });
+
+            const isHttp = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
+            const storageProvider: 'local' | 'supabase' | undefined = isHttp
+                ? undefined
+                : (decidedTarget === 'supabase' ? 'supabase' : 'local');
+            const normalizedKey =
+                storageProvider === 'supabase' && typeof fileUrl === 'string' && !isHttp
+                    ? normalizeObjectKeyForDb(fileUrl)
+                    : fileUrl;
+
             const [attachment] = await db.insert(orderAttachments).values({
                 orderId,
                 quoteId: order.quoteId || null,
@@ -1904,11 +1989,12 @@ export async function registerOrderRoutes(
                 uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
                 fileName,
                 originalFilename: fileName,
-                fileUrl,
+                fileUrl: normalizedKey,
+                relativePath: storageProvider ? normalizedKey : null,
                 fileSize: fileSize || null,
                 mimeType: mimeType || null,
                 description: description || null,
-                storageProvider: fileUrl.startsWith('http') ? undefined : 'local',
+                storageProvider,
             }).returning();
 
             // PHASE 2: Create asset + link to order (fail-soft)
@@ -1916,7 +2002,7 @@ export async function registerOrderRoutes(
                 const { assetRepository } = await import('../services/assets/AssetRepository');
                 const { assetPreviewGenerator } = await import('../services/assets/AssetPreviewGenerator');
                 const asset = await assetRepository.createAsset(organizationId, {
-                    fileKey: fileUrl,
+                    fileKey: normalizedKey,
                     fileName: fileName,
                     mimeType: mimeType || undefined,
                     sizeBytes: fileSize || undefined,
@@ -2891,8 +2977,14 @@ export async function registerOrderRoutes(
                 thumbnailUrl,
                 fileBuffer,
                 originalFilename,
-                orderNumber
+                orderNumber,
+                requestedStorageTarget,
+                storageTarget
             } = req.body;
+
+            const requestedTarget =
+                (typeof requestedStorageTarget === 'string' ? requestedStorageTarget : null) ||
+                (typeof storageTarget === 'string' ? storageTarget : null);
 
             if (!fileName && !originalFilename) {
                 return res.status(400).json({ error: 'fileName or originalFilename is required' });
@@ -2922,33 +3014,78 @@ export async function registerOrderRoutes(
             };
 
             if (fileBuffer && originalFilename) {
-                const { processUploadedFile } = await import('../utils/fileStorage.js');
+                const { decideStorageTarget } = await import('../services/storageTarget');
+                const { processUploadedFile, generateStoredFilename, generateRelativePath, computeChecksum, getFileExtension } = await import('../utils/fileStorage.js');
                 const buffer = Buffer.from(fileBuffer, 'base64');
 
-                const fileMetadata = await processUploadedFile({
-                    originalFilename,
-                    buffer,
-                    mimeType: mimeType || 'application/octet-stream',
+                const decidedTarget = decideStorageTarget({
+                    fileName: originalFilename,
+                    fileSizeBytes: buffer.length,
+                    requestedTarget,
                     organizationId,
-                    orderNumber,
-                    lineItemId: orderLineItemId,
+                    context: 'POST /api/orders/:id/files (atomic)',
                 });
 
-                attachmentData = {
-                    ...attachmentData,
-                    fileName: originalFilename,
-                    fileUrl: fileMetadata.relativePath,
-                    fileSize: fileMetadata.sizeBytes,
-                    mimeType: mimeType || 'application/octet-stream',
-                    thumbnailUrl: thumbnailUrl || null,
-                    originalFilename: fileMetadata.originalFilename,
-                    storedFilename: fileMetadata.storedFilename,
-                    relativePath: fileMetadata.relativePath,
-                    storageProvider: 'local',
-                    extension: fileMetadata.extension,
-                    sizeBytes: fileMetadata.sizeBytes,
-                    checksum: fileMetadata.checksum,
-                };
+                if (decidedTarget === 'supabase' && isSupabaseConfigured()) {
+                    const { SupabaseStorageService } = await import('../supabaseStorage');
+                    const storedFilename = generateStoredFilename(originalFilename);
+                    const relativePath = generateRelativePath({
+                        organizationId,
+                        orderNumber: orderNumber ? String(orderNumber) : undefined,
+                        lineItemId: orderLineItemId ? String(orderLineItemId) : undefined,
+                        storedFilename,
+                        resourceType: 'order',
+                        resourceId: req.params.id,
+                    });
+                    const checksum = computeChecksum(buffer);
+                    const extension = getFileExtension(originalFilename);
+                    const sizeBytes = buffer.length;
+
+                    const supabase = new SupabaseStorageService();
+                    const uploaded = await supabase.uploadFile(relativePath, buffer, mimeType || 'application/octet-stream');
+                    const fileKey = normalizeObjectKeyForDb(uploaded.path);
+
+                    attachmentData = {
+                        ...attachmentData,
+                        fileName: originalFilename,
+                        fileUrl: fileKey,
+                        fileSize: sizeBytes,
+                        mimeType: mimeType || 'application/octet-stream',
+                        thumbnailUrl: thumbnailUrl || null,
+                        originalFilename,
+                        storedFilename,
+                        relativePath: fileKey,
+                        storageProvider: 'supabase',
+                        extension,
+                        sizeBytes,
+                        checksum,
+                    };
+                } else {
+                    const fileMetadata = await processUploadedFile({
+                        originalFilename,
+                        buffer,
+                        mimeType: mimeType || 'application/octet-stream',
+                        organizationId,
+                        orderNumber,
+                        lineItemId: orderLineItemId,
+                    });
+
+                    attachmentData = {
+                        ...attachmentData,
+                        fileName: originalFilename,
+                        fileUrl: fileMetadata.relativePath,
+                        fileSize: fileMetadata.sizeBytes,
+                        mimeType: mimeType || 'application/octet-stream',
+                        thumbnailUrl: thumbnailUrl || null,
+                        originalFilename: fileMetadata.originalFilename,
+                        storedFilename: fileMetadata.storedFilename,
+                        relativePath: fileMetadata.relativePath,
+                        storageProvider: 'local',
+                        extension: fileMetadata.extension,
+                        sizeBytes: fileMetadata.sizeBytes,
+                        checksum: fileMetadata.checksum,
+                    };
+                }
             }
             else {
                 if (!fileUrl) {
@@ -2956,21 +3093,36 @@ export async function registerOrderRoutes(
                 }
                 const resolvedFileName = (fileName || originalFilename) as string;
                 const bucketName = 'titan-private';
-                const supabaseKeyFromUrl = isSupabaseConfigured() && fileUrl && (fileUrl.startsWith('http')) ? tryExtractSupabaseObjectKeyFromUrl(fileUrl, 'titan-private') : null;
 
-                let storageProvider: string | undefined;
-                if (supabaseKeyFromUrl) {
-                    storageProvider = 'supabase';
-                } else if (fileUrl && (fileUrl.startsWith('http'))) {
+                const { decideStorageTarget } = await import('../services/storageTarget');
+                const sizeForDecision = fileSize != null ? Number(fileSize) : 0;
+                const decidedTarget = decideStorageTarget({
+                    fileName: resolvedFileName,
+                    fileSizeBytes: Number.isFinite(sizeForDecision) ? sizeForDecision : 0,
+                    requestedTarget,
+                    organizationId,
+                    context: 'POST /api/orders/:id/files (legacy)',
+                });
+
+                const isHttp = typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'));
+
+                let storageProvider: 'local' | 'supabase' | undefined;
+                if (isHttp) {
                     storageProvider = undefined;
                 } else {
-                    storageProvider = 'local';
+                    storageProvider = decidedTarget === 'supabase' ? 'supabase' : 'local';
                 }
+
+                const normalizedKey =
+                    storageProvider === 'supabase' && typeof fileUrl === 'string' && !isHttp
+                        ? normalizeObjectKeyForDb(fileUrl)
+                        : fileUrl;
 
                 attachmentData = {
                     ...attachmentData,
                     fileName: resolvedFileName,
-                    fileUrl: fileUrl,
+                    fileUrl: normalizedKey,
+                    relativePath: storageProvider ? normalizedKey : null,
                     fileSize: fileSize || null,
                     mimeType: mimeType || null,
                     thumbnailUrl: storageProvider ? null : (thumbnailUrl || null),
@@ -3032,12 +3184,51 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.delete('/api/orders/:orderId/files/:fileId', isAuthenticated, async (req: any, res) => {
+    app.delete('/api/orders/:orderId/files/:fileId', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const [order] = await db.select({ id: orders.id }).from(orders)
+                .where(and(eq(orders.id, req.params.orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ error: 'Order not found' });
+
             const userId = getUserId(req.user);
             const files = await storage.getOrderAttachments(req.params.orderId);
             const file = files.find(f => f.id === req.params.fileId);
-            await storage.detachOrderFile(req.params.fileId);
+
+            if (!file) {
+                return res.status(404).json({ error: 'File not found' });
+            }
+
+            const deleted = await storage.detachOrderFile(req.params.fileId);
+            if (!deleted) {
+                return res.status(404).json({ error: 'File not found' });
+            }
+
+            // Best-effort cleanup of stored objects
+            try {
+                const keys = [
+                    file.relativePath,
+                    file.fileUrl,
+                    file.thumbnailRelativePath,
+                    (file as any).thumbKey,
+                    (file as any).previewKey,
+                ].filter((k): k is string => typeof k === 'string' && k.length > 0);
+
+                if (file.storageProvider === 'supabase' && isSupabaseConfigured()) {
+                    const supabase = new SupabaseStorageService();
+                    await Promise.all(keys.map((k) => supabase.deleteFile(normalizeObjectKeyForDb(k)).catch(() => false)));
+                } else {
+                    const { deleteFile: deleteLocalFile } = await import('../utils/fileStorage');
+                    await Promise.all(keys.map((k) => deleteLocalFile(k).catch(() => false)));
+                }
+            } catch {
+                // ignore
+            }
+
             if (file) {
                 await storage.createOrderAuditLog({
                     orderId: req.params.orderId,

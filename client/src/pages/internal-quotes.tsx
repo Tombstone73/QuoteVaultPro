@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { ConvertQuoteToOrderDialog } from "@/components/convert-quote-to-order-dialog";
+import { objectsUrlFromKey } from "@/lib/getThumbSrc";
 import {
   FileText,
   Plus,
@@ -385,7 +386,10 @@ export default function InternalQuotes() {
         const keys = quote.previewThumbnails ?? [];
         if (!keys.length) return "";
         // Export semicolon-separated URLs for compatibility.
-        return keys.map((k) => `/objects/${k}`).join(";");
+        return keys
+          .map((k) => objectsUrlFromKey(k))
+          .filter((u): u is string => typeof u === "string" && u.length > 0)
+          .join(";");
       }
       case "status": {
         const state = quote.workflowState ?? useQuoteWorkflowState(quote);
@@ -773,7 +777,7 @@ export default function InternalQuotes() {
             ) : quote.previewThumbnails && quote.previewThumbnails.length > 0 ? (
               <div className="flex items-center gap-1">
                 {quote.previewThumbnails.slice(0, 3).map((thumbKey, idx) => {
-                  const thumbUrl = `/objects/${thumbKey}`;
+                  const thumbUrl = objectsUrlFromKey(thumbKey);
                   const isLoading = loadingAttachments === quote.id;
                   
                   return (
@@ -795,7 +799,7 @@ export default function InternalQuotes() {
                         <div className="w-full h-full flex items-center justify-center">
                           <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
                         </div>
-                      ) : (
+                      ) : thumbUrl ? (
                         <img
                           src={thumbUrl}
                           alt="Preview"
@@ -813,6 +817,10 @@ export default function InternalQuotes() {
                             }
                           }}
                         />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-muted">
+                          <FileText className="w-5 h-5 text-muted-foreground" />
+                        </div>
                       )}
                     </button>
                   );
