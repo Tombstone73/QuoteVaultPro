@@ -15,6 +15,7 @@
     "fix-user": "tsx fix-user-role.ts",
     "migrate:file-storage": "powershell ./scripts/run_file_storage_migration.ps1",
     "test": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest",
+    "test:client": "jest --config client/jest.config.js",
     "test:smoke": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --testPathPattern=smoke",
     "test:watch": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --watch"
   },
@@ -138,6 +139,7 @@
     "drizzle-kit": "^0.31.4",
     "esbuild": "^0.25.0",
     "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
     "postcss": "^8.5.6",
     "supertest": "^7.1.4",
     "tailwindcss": "^3.4.19",

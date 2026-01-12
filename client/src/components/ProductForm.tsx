@@ -10,8 +10,9 @@ import React from "react";
 import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEditor";
 import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
-import { validateOptionTreeV2 } from "@shared/optionTreeV2";
+import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
+import ProductOptionsPanelV2_Mvp from "@/components/ProductOptionsPanelV2_Mvp";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -97,6 +98,16 @@ export const ProductForm = ({
       return;
     }
 
+    const zodRes = optionTreeV2Schema.safeParse(parsed);
+    if (!zodRes.success) {
+      form.setError("optionTreeJson", {
+        type: "manual",
+        message: "Invalid optionTreeJson (v2)",
+      });
+      setOptionTreeErrors(zodRes.error.issues.map((i) => i.message));
+      return;
+    }
+
     const validation = validateOptionTreeV2(parsed);
     if (!validation.ok) {
       form.setError("optionTreeJson", {
@@ -109,7 +120,7 @@ export const ProductForm = ({
 
     form.clearErrors("optionTreeJson");
     setOptionTreeErrors([]);
-    form.setValue("optionTreeJson", parsed, { shouldDirty: true });
+    form.setValue("optionTreeJson", zodRes.data, { shouldDirty: true });
   };
 
   const initTreeV2 = () => {
@@ -457,14 +468,11 @@ export const ProductForm = ({
           {optionsMode === "legacy" ? (
             <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
           ) : (
-            <div className="space-y-2">
-              <FormLabel>Option Tree v2 (JSON)</FormLabel>
-              <Textarea
-                value={optionTreeText}
-                onChange={(e) => setTreeTextAndValidate(e.target.value)}
-                rows={12}
-                className="font-mono text-xs"
-                placeholder='Paste a v2 tree JSON here (or leave blank for null).'
+            <div className="space-y-4">
+              <ProductOptionsPanelV2_Mvp
+                productId={String(form.getValues("id") ?? "new")}
+                optionTreeJson={optionTreeText}
+                onChangeOptionTreeJson={setTreeTextAndValidate}
               />
 
               {optionTreeErrors.length > 0 ? (
