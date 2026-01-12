@@ -300,6 +300,40 @@ export function OrderLineItemsSection({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [overrideById, setOverrideById] = useState<Record<string, boolean>>({});
 
+  const [pendingJumpToLineItemId, setPendingJumpToLineItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const e = event as CustomEvent<{ lineItemId?: string }>;
+      const rawId = e?.detail?.lineItemId;
+      const lineItemId = typeof rawId === "string" ? rawId : rawId != null ? String(rawId) : "";
+      if (!lineItemId) return;
+
+      setExpandedId(lineItemId);
+      setPendingJumpToLineItemId(lineItemId);
+    };
+
+    window.addEventListener("titanos:jump-to-line-item", handler);
+    return () => window.removeEventListener("titanos:jump-to-line-item", handler);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingJumpToLineItemId) return;
+    if (expandedId !== pendingJumpToLineItemId) return;
+
+    const contentId = `line-item-${pendingJumpToLineItemId}-details`;
+    const el = document.getElementById(contentId);
+    if (el) {
+      try {
+        el.scrollIntoView({ block: "start", behavior: "smooth" });
+      } catch {
+        // ignore
+      }
+    }
+
+    setPendingJumpToLineItemId(null);
+  }, [expandedId, pendingJumpToLineItemId]);
+
   const notesEditorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const [pendingNotesFocusId, setPendingNotesFocusId] = useState<string | null>(null);
   const [notesDraftById, setNotesDraftById] = useState<Record<string, string>>({});
