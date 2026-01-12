@@ -32,6 +32,9 @@ import { decodePricingImpact, encodePricingImpact, type PricingDisplayUnit } fro
 import { ArrowDown, ArrowUp, Plus, Settings2, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
+const SELECT_SENTINEL_NONE = "__sentinel_none__";
+const SELECT_SENTINEL_PICK = "__sentinel_pick__";
+
 type Props = {
   productId: string;
   optionTreeJson: string | null;
@@ -274,6 +277,18 @@ function computeGuardrailErrors(tree: OptionTreeV2 | null): GuardrailErrors {
 
     const errs: string[] = [];
 
+    // Pricing discriminator must always be schema-valid; if invalid JSON is loaded, surface the exact offending value.
+    const rawImpact = Array.isArray((node as any).pricingImpact) ? (node as any).pricingImpact[0] : null;
+    const rawMode = rawImpact && typeof rawImpact === "object" ? (rawImpact as any).mode : undefined;
+    if (typeof rawMode !== "undefined") {
+      const allowed = new Set(["addFlat", "addPerQty", "addPerSqft", "percentOfBase", "multiplier"]);
+      if (typeof rawMode !== "string" || !allowed.has(rawMode)) {
+        errs.push(
+          `Invalid pricing mode: ${JSON.stringify(rawMode)} (allowed: addFlat | addPerQty | addPerSqft | percentOfBase | multiplier)`
+        );
+      }
+    }
+
     // Select-type questions should have choices.
     if (inputType === "select" || inputType === "multiselect") {
       const choices = Array.isArray(node.choices) ? node.choices : [];
@@ -349,6 +364,7 @@ function summarizePricing(treeNode: OptionNodeV2): string {
   if (ui.displayUnit === "each") return `Adds $${(ui.amountCents / 100).toFixed(2)} (once).`;
   if (ui.displayUnit === "per_qty") return `Adds $${(ui.amountCents / 100).toFixed(2)} per quantity.`;
   if (ui.displayUnit === "per_sqft") return `Adds $${(ui.amountCents / 100).toFixed(2)} per sq ft.`;
+  if (ui.displayUnit === "per_sqin") return `Adds $${(ui.amountCents / 100).toFixed(2)} per sq in.`;
   if (ui.displayUnit === "percent") return `Adds ${ui.amountCents}% of base price.`;
   if (ui.displayUnit === "multiplier") return `Multiplies price by ${ui.amountCents}×.`;
   return "Pricing rule not set.";
@@ -609,6 +625,10 @@ export default function ProductOptionsPanelV2_Mvp({
     heightIn: 36,
   });
 
+  // UI-only pricing unit preference: for addPerSqft we can display/edit as per_sqft or per_sqin.
+  // This is intentionally NOT persisted to schema.
+  const [pricingAreaUnitByNodeId, setPricingAreaUnitByNodeId] = React.useState<Record<string, "sqft" | "sqin">>({});
+
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && (e.key === "D" || e.key === "d")) {
@@ -722,7 +742,10 @@ export default function ProductOptionsPanelV2_Mvp({
       // Reset defaults that no longer apply.
       let defaultValue: any = input.defaultValue;
       if (nextType === "boolean") defaultValue = Boolean(defaultValue);
-      else if (nextType === "select") defaultValue = typeof defaultValue === "string" ? defaultValue : "";
+      else if (nextType === "select") {
+        const s = typeof defaultValue === "string" ? defaultValue.trim() : "";
+        defaultValue = s.length > 0 ? s : undefined;
+      }
       else if (nextType === "multiselect") defaultValue = Array.isArray(defaultValue) ? defaultValue : [];
       else if (nextType === "number") defaultValue = Number.isFinite(Number(defaultValue)) ? Number(defaultValue) : 0;
       else if (nextType === "text" || nextType === "textarea") defaultValue = String(defaultValue ?? "");
@@ -957,7 +980,7 @@ export default function ProductOptionsPanelV2_Mvp({
     });
   };
 
-  const [newChildChoiceValue, setNewChildChoiceValue] = React.useState<string>("");
+  const [newChildChoiceValue, setNewChildChoiceValue] = React.useState<string>(SELECT_SENTINEL_PICK);
 
   return (
     <div className="grid grid-cols-12 gap-4">
@@ -1251,18 +1274,19 @@ export default function ProductOptionsPanelV2_Mvp({
 
                       if (t === "select") {
                         const choices = normalizeChoices(selectedNode);
+                        const current = typeof dv === "string" && dv.trim().length > 0 ? dv : SELECT_SENTINEL_NONE;
                         return (
                           <div className="space-y-1">
                             <Label className="text-sm">Default choice</Label>
                             <Select
-                              value={typeof dv === "string" ? dv : ""}
-                              onValueChange={(v) => updateSelectedInput({ defaultValue: v })}
+                              value={current}
+                              onValueChange={(v) => updateSelectedInput({ defaultValue: v === SELECT_SENTINEL_NONE ? undefined : v })}
                             >
                               <SelectTrigger>
                                 <SelectValue placeholder="None" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="">None</SelectItem>
+                                <SelectItem value={SELECT_SENTINEL_NONE}>None</SelectItem>
                                 {choices.map((c) => (
                                   <SelectItem key={c.value} value={c.value}>
                                     {c.label}
@@ -1378,11 +1402,14 @@ export default function ProductOptionsPanelV2_Mvp({
                           const current = newChildChoiceValue || choices[0]?.value || "";
                           return (
                             <div className="flex items-center gap-2">
-                              <Select value={current} onValueChange={setNewChildChoiceValue}>
+                              <Select value={current || SELECT_SENTINEL_PICK} onValueChange={setNewChildChoiceValue}>
                                 <SelectTrigger className="h-8 w-[200px]">
                                   <SelectValue placeholder="Pick a choice" />
                                 </SelectTrigger>
                                 <SelectContent>
+                                  <SelectItem value={SELECT_SENTINEL_PICK} disabled>
+                                    Pick a choice
+                                  </SelectItem>
                                   {choices.map((c) => (
                                     <SelectItem key={c.value} value={c.value}>
                                       {c.label}
@@ -1395,14 +1422,14 @@ export default function ProductOptionsPanelV2_Mvp({
                                 variant="secondary"
                                 size="sm"
                                 onClick={() => {
-                                  if (!current) return;
+                                  if (!current || current === SELECT_SENTINEL_PICK) return;
                                   addChildOption({
                                     op: inputType === "select" ? "equals" : "contains",
                                     ref: selectedId,
                                     value: current,
                                   } as any);
                                 }}
-                                disabled={choices.length === 0 || !current}
+                                disabled={choices.length === 0 || !current || current === SELECT_SENTINEL_PICK}
                               >
                                 <Plus className="h-4 w-4 mr-2" />
                                 Add Child
@@ -1427,7 +1454,7 @@ export default function ProductOptionsPanelV2_Mvp({
                           const triggerKind = edge.when?.op;
                           const currentChoiceValue = (edge.when && (edge.when.op === "equals" || edge.when.op === "contains") && (edge.when as any).ref === selectedId)
                             ? String((edge.when as any).value ?? "")
-                            : "";
+                            : SELECT_SENTINEL_NONE;
                           return (
                             <div key={`${edge.toNodeId}_${idx}`} className="flex items-start justify-between gap-3 rounded-md border border-border p-2">
                               <div className="min-w-0">
@@ -1440,6 +1467,10 @@ export default function ProductOptionsPanelV2_Mvp({
                                     <Select
                                       value={currentChoiceValue}
                                       onValueChange={(v) => {
+                                        if (v === SELECT_SENTINEL_NONE) {
+                                          updateChildEdgeWhen(edge.toNodeId, undefined);
+                                          return;
+                                        }
                                         const when: ConditionExpr = {
                                           op: inputType === "select" ? "equals" : "contains",
                                           ref: selectedId,
@@ -1452,6 +1483,7 @@ export default function ProductOptionsPanelV2_Mvp({
                                         <SelectValue placeholder="Select choice" />
                                       </SelectTrigger>
                                       <SelectContent>
+                                        <SelectItem value={SELECT_SENTINEL_NONE}>Always</SelectItem>
                                         {parentChoices.map((c) => (
                                           <SelectItem key={c.value} value={c.value}>
                                             {c.label}
@@ -1578,8 +1610,18 @@ export default function ProductOptionsPanelV2_Mvp({
 
                     const taxable = selectedId ? getPricingTaxable(selectedId) : true;
 
-                    const displayUnit = ui.mode === "none" ? ("each" as PricingDisplayUnit) : ui.displayUnit;
-                    const value = ui.amountCents;
+                    const areaPref = selectedId ? pricingAreaUnitByNodeId[selectedId] : undefined;
+                    const preferredDisplayUnit: PricingDisplayUnit =
+                      ui.displayUnit === "per_sqft" && areaPref === "sqin" ? "per_sqin" : ui.displayUnit;
+
+                    const displayUnit = ui.mode === "none" ? ("each" as PricingDisplayUnit) : preferredDisplayUnit;
+                    const value = (() => {
+                      if (ui.mode === "none") return 0;
+                      if (preferredDisplayUnit === "per_sqin" && ui.displayUnit === "per_sqft") {
+                        return ui.amountCents / 144;
+                      }
+                      return ui.amountCents;
+                    })();
 
                     const label =
                       displayUnit === "each"
@@ -1588,6 +1630,8 @@ export default function ProductOptionsPanelV2_Mvp({
                           ? "Amount per qty (cents)"
                           : displayUnit === "per_sqft"
                             ? "Amount per sq ft (cents)"
+                            : displayUnit === "per_sqin"
+                              ? "Amount per sq in (cents)"
                             : displayUnit === "percent"
                               ? "Percent"
                               : "Factor";
@@ -1595,14 +1639,26 @@ export default function ProductOptionsPanelV2_Mvp({
                     const parseSimpleAmount = (raw: string): number => {
                       const n = Number(raw);
                       if (!Number.isFinite(n)) return 0;
-                      // Add* modes are cents integers.
-                      if (displayUnit === "each" || displayUnit === "per_qty" || displayUnit === "per_sqft") return Math.trunc(n);
+                      // Add* modes are stored as cents integers; allow decimals in UI but normalize downstream.
+                      if (displayUnit === "each" || displayUnit === "per_qty" || displayUnit === "per_sqft" || displayUnit === "per_sqin") return n;
                       return n;
                     };
 
                     const summary = (() => {
-                      const base = summarizePricing(selectedNode);
-                      if (ui.mode === "none") return base;
+                      if (ui.mode === "none") return "No pricing change.";
+                      const dollars = (Number(value) / 100).toFixed(2);
+                      const base =
+                        displayUnit === "each"
+                          ? `Adds $${dollars} (once).`
+                          : displayUnit === "per_qty"
+                            ? `Adds $${dollars} per quantity.`
+                            : displayUnit === "per_sqft"
+                              ? `Adds $${dollars} per sq ft.`
+                              : displayUnit === "per_sqin"
+                                ? `Adds $${dollars} per sq in.`
+                                : displayUnit === "percent"
+                                  ? `Adds ${value}% of base price.`
+                                  : `Multiplies price by ${value}×.`;
                       return `${base} • ${taxable ? "Taxable" : "Non-taxable"}`;
                     })();
 
@@ -1621,7 +1677,18 @@ export default function ProductOptionsPanelV2_Mvp({
                                     if (!prev) return t;
                                     return { ...t, nodes: { ...t.nodes, [selectedId]: { ...prev, pricingImpact: undefined } } };
                                   });
+                                  setPricingAreaUnitByNodeId((p) => {
+                                    if (!selectedId) return p;
+                                    const { [selectedId]: _, ...rest } = p;
+                                    return rest;
+                                  });
                                   return;
+                                }
+                                if (selectedId && (v === "per_sqin" || v === "per_sqft")) {
+                                  setPricingAreaUnitByNodeId((p) => ({
+                                    ...p,
+                                    [selectedId]: v === "per_sqin" ? "sqin" : "sqft",
+                                  }));
                                 }
                                 setPricingUi(v as PricingDisplayUnit, value);
                               }}
@@ -1634,12 +1701,13 @@ export default function ProductOptionsPanelV2_Mvp({
                                 <SelectItem value="each">Each</SelectItem>
                                 <SelectItem value="per_qty">Per qty</SelectItem>
                                 <SelectItem value="per_sqft">Per sq ft</SelectItem>
+                                <SelectItem value="per_sqin">Per sq in</SelectItem>
                                 <SelectItem value="percent">Percent of base</SelectItem>
                                 <SelectItem value="multiplier">Multiplier</SelectItem>
                               </SelectContent>
                             </Select>
                             <div className="text-xs text-muted-foreground">
-                              Per sq in is not offered (cannot round-trip safely).
+                              Per sq in is stored as per sq ft × 144 (reload shows per sq ft unless you re-select per sq in).
                             </div>
                           </div>
                           <div className="space-y-1 md:col-span-2">
