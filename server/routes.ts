@@ -7194,6 +7194,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 fromStatus: row.fromStatus,
                 toStatus: row.toStatus,
                 metadata: row.metadata,
+                structuredEvent: (row.metadata as any)?.structuredEvent ?? null,
               },
             });
           }
@@ -8033,6 +8034,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { assetPreviewGenerator } = await import('./services/assets/AssetPreviewGenerator');
       const { enrichAssetWithUrls } = await import('./services/assets/enrichAssetWithUrls');
 
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
+
       console.log(`[OrderLineItemFiles:POST] Attaching ${uniqueCandidates.length} object(s) to order_line_item ${lineItemId}`);
 
       const createdAssets: any[] = [];
@@ -8052,6 +8056,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         });
         createdAssets.push({ ...enrichAssetWithUrls(asset), role: normalizeRole(c.role) });
+
+        try {
+          await storage.createOrderAuditLog({
+            orderId,
+            userId,
+            userName,
+            actionType: 'file_attached',
+            fromStatus: null,
+            toStatus: null,
+            note: null,
+            metadata: {
+              structuredEvent: {
+                eventType: 'file.attached',
+                entityType: 'line_item',
+                entityId: String(lineItemId),
+                displayLabel: `Line item ${lineItemId}`,
+                fieldKey: 'file',
+                fromValue: null,
+                toValue: asset.fileName,
+                actorUserId: userId ?? null,
+                createdAt: new Date().toISOString(),
+                metadata: {
+                  orderId,
+                  lineItemId,
+                  assetId: asset.id,
+                  fileName: asset.fileName,
+                  fileSizeBytes: asset.sizeBytes ?? c.sizeBytes ?? null,
+                  mimeType: asset.mimeType ?? c.mimeType ?? null,
+                  storageProvider: requestedTarget ?? null,
+                  fileKey: asset.fileKey,
+                  role: normalizeRole(c.role),
+                },
+              },
+            },
+          });
+        } catch (err) {
+          console.warn('[OrderLineItemFiles:POST] audit log failed', err);
+        }
       }
       return res.json({
         success: true,
@@ -8135,11 +8177,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // ignore
         }
 
+        try {
+          const userId = getUserId(req.user);
+          const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
+          await storage.createOrderAuditLog({
+            orderId,
+            userId,
+            userName,
+            actionType: 'file_removed',
+            fromStatus: null,
+            toStatus: null,
+            note: null,
+            metadata: {
+              structuredEvent: {
+                eventType: 'file.removed',
+                entityType: 'line_item',
+                entityId: String(lineItemId),
+                displayLabel: `Line item ${lineItemId}`,
+                fieldKey: 'file',
+                fromValue: record.fileUrl || record.relativePath || record.thumbKey || record.previewKey || null,
+                toValue: null,
+                actorUserId: userId ?? null,
+                createdAt: new Date().toISOString(),
+                metadata: {
+                  orderId,
+                  lineItemId,
+                  attachmentId: record.id,
+                  storageProvider: record.storageProvider || null,
+                  fileKey:
+                    record.relativePath || record.fileUrl || record.thumbnailRelativePath || record.thumbKey || record.previewKey || null,
+                },
+              },
+            },
+          });
+        } catch (err) {
+          console.warn('[OrderLineItemFiles:DELETE] audit log failed', err);
+        }
+
         return res.json({ success: true });
       }
 
       // Second try: asset pipeline link unlink (validate link existed first)
-      const { assetLinks } = await import('@shared/schema');
+      const { assetLinks, assets } = await import('@shared/schema');
       const existingLink = await db.select({ id: assetLinks.id }).from(assetLinks)
         .where(and(
           eq(assetLinks.organizationId, organizationId),
@@ -8154,7 +8233,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { assetRepository } = await import('./services/assets/AssetRepository');
+
+      let removedAsset: any = null;
+      try {
+        removedAsset = await db
+          .select({
+            id: assets.id,
+            fileName: assets.fileName,
+            fileKey: assets.fileKey,
+            mimeType: assets.mimeType,
+            sizeBytes: assets.sizeBytes,
+          })
+          .from(assets)
+          .where(and(eq(assets.organizationId, organizationId), eq(assets.id, fileId)))
+          .limit(1)
+          .then((rows) => rows[0]);
+      } catch {
+        removedAsset = null;
+      }
+
       await assetRepository.unlinkAsset(organizationId, fileId, 'order_line_item', lineItemId);
+
+      try {
+        const userId = getUserId(req.user);
+        const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email || null;
+        await storage.createOrderAuditLog({
+          orderId,
+          userId,
+          userName,
+          actionType: 'file_removed',
+          fromStatus: null,
+          toStatus: null,
+          note: null,
+          metadata: {
+            structuredEvent: {
+              eventType: 'file.removed',
+              entityType: 'line_item',
+              entityId: String(lineItemId),
+              displayLabel: `Line item ${lineItemId}`,
+              fieldKey: 'file',
+              fromValue: removedAsset?.fileName || fileId,
+              toValue: null,
+              actorUserId: userId ?? null,
+              createdAt: new Date().toISOString(),
+              metadata: {
+                orderId,
+                lineItemId,
+                assetId: fileId,
+                fileName: removedAsset?.fileName || null,
+                fileSizeBytes: removedAsset?.sizeBytes ?? null,
+                mimeType: removedAsset?.mimeType ?? null,
+                storageProvider: null,
+                fileKey: removedAsset?.fileKey ?? null,
+              },
+            },
+          },
+        });
+      } catch (err) {
+        console.warn('[OrderLineItemFiles:DELETE] audit log failed', err);
+      }
 
       return res.json({ success: true });
     } catch (error) {

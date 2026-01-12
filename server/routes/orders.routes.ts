@@ -917,48 +917,108 @@ export async function registerOrderRoutes(
             // Create audit log entries
             const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
 
-            if (userId) {
-                await storage.createAuditLog(organizationId, {
-                    userId,
-                    userName,
-                    actionType: 'UPDATE',
-                    entityType: 'order',
-                    entityId: order.id,
-                    entityName: order.orderNumber,
-                    description: `Updated order ${order.orderNumber}`,
-                    oldValues: oldOrder,
-                    newValues: order,
-                });
+            // Structured timeline events (v1): only whitelisted fields, only when values actually changed.
+            // Stored in order_audit_log.metadata. Old rows remain supported in the UI.
+            if (userId && oldOrder) {
+                const toNullableString = (v: any): string | null => {
+                    if (v == null) return null;
+                    const s = String(v);
+                    const t = s.trim();
+                    return t.length > 0 ? t : null;
+                };
 
-                if (oldOrder) {
-                    if (updateData.priority !== undefined && oldOrder.priority !== updateData.priority) {
-                        await storage.createOrderAuditLog({
-                            orderId: order.id,
-                            userId,
-                            userName,
-                            actionType: 'priority_change',
-                            fromStatus: null,
-                            toStatus: null,
-                            note: null,
-                            metadata: { oldValue: oldOrder.priority, newValue: updateData.priority },
-                        });
+                const toDateOnlyIso = (v: any): string | null => {
+                    if (!v) return null;
+                    try {
+                        const d = new Date(String(v));
+                        if (!Number.isFinite(d.getTime())) return null;
+                        return d.toISOString().split('T')[0];
+                    } catch {
+                        return null;
                     }
+                };
 
-                    if (updateData.dueDate !== undefined && oldOrder.dueDate !== updateData.dueDate) {
-                        await storage.createOrderAuditLog({
-                            orderId: order.id,
-                            userId,
-                            userName,
-                            actionType: 'due_date_change',
-                            fromStatus: null,
-                            toStatus: null,
-                            note: null,
-                            metadata: {
-                                oldValue: oldOrder.dueDate ? new Date(oldOrder.dueDate).toISOString().split('T')[0] : null,
-                                newValue: updateData.dueDate ? new Date(updateData.dueDate).toISOString().split('T')[0] : null
+                const mapFulfillmentType = (shippingMethod: any): string | null => {
+                    const v = toNullableString(shippingMethod);
+                    if (!v) return null;
+                    if (v === 'pickup') return 'pickup';
+                    if (v === 'deliver') return 'delivery';
+                    if (v === 'ship') return 'shipping';
+                    return v;
+                };
+
+                const displayLabel = `Order ${order.orderNumber}`;
+                const nowIso = new Date().toISOString();
+
+                const diffs: Array<{ fieldKey: string; fromValue: any; toValue: any }> = [];
+
+                // Order-level whitelist
+                {
+                    const from = toNullableString((oldOrder as any).poNumber);
+                    const to = toNullableString((order as any).poNumber);
+                    if (from !== to) diffs.push({ fieldKey: 'poNumber', fromValue: from ?? '', toValue: to ?? '' });
+                }
+                {
+                    const from = toNullableString((oldOrder as any).label);
+                    const to = toNullableString((order as any).label);
+                    if (from !== to) diffs.push({ fieldKey: 'jobLabel', fromValue: from ?? '', toValue: to ?? '' });
+                }
+                {
+                    const from = toNullableString((oldOrder as any).priority);
+                    const to = toNullableString((order as any).priority);
+                    if (from !== to) diffs.push({ fieldKey: 'priority', fromValue: from, toValue: to });
+                }
+                {
+                    const from = mapFulfillmentType((oldOrder as any).shippingMethod);
+                    const to = mapFulfillmentType((order as any).shippingMethod);
+                    if (from !== to) diffs.push({ fieldKey: 'fulfillmentType', fromValue: from, toValue: to });
+                }
+                {
+                    const from = toDateOnlyIso((oldOrder as any).promisedDate);
+                    const to = toDateOnlyIso((order as any).promisedDate);
+                    if (from !== to) diffs.push({ fieldKey: 'promisedDate', fromValue: from, toValue: to });
+                }
+                {
+                    const from = toDateOnlyIso((oldOrder as any).dueDate);
+                    const to = toDateOnlyIso((order as any).dueDate);
+                    if (from !== to) diffs.push({ fieldKey: 'dueDate', fromValue: from, toValue: to });
+                }
+                {
+                    const from = Boolean((oldOrder as any).billingReadyOverride);
+                    const to = Boolean((order as any).billingReadyOverride);
+                    if (from !== to) diffs.push({ fieldKey: 'billingReadyOverride', fromValue: from, toValue: to });
+                }
+                {
+                    // In UI this is currently labeled as pickup notes / shipping instructions.
+                    // v1 maps it to customerNotes as the closest whitelisted field.
+                    const from = toNullableString((oldOrder as any).shippingInstructions);
+                    const to = toNullableString((order as any).shippingInstructions);
+                    if (from !== to) diffs.push({ fieldKey: 'customerNotes', fromValue: from ?? '', toValue: to ?? '' });
+                }
+
+                for (const d of diffs) {
+                    await storage.createOrderAuditLog({
+                        orderId: order.id,
+                        userId,
+                        userName,
+                        actionType: 'order.field_changed',
+                        fromStatus: null,
+                        toStatus: null,
+                        note: null,
+                        metadata: {
+                            structuredEvent: {
+                                eventType: 'order.field_changed',
+                                entityType: 'order',
+                                entityId: order.id,
+                                displayLabel,
+                                fieldKey: d.fieldKey,
+                                fromValue: d.fromValue,
+                                toValue: d.toValue,
+                                actorUserId: userId,
+                                createdAt: nowIso,
                             },
-                        });
-                    }
+                        },
+                    });
                 }
             }
 
@@ -3307,6 +3367,196 @@ export async function registerOrderRoutes(
                     note: null,
                     metadata: { lineItemId: lineItem.id, oldStatus: oldLineItem.status, newStatus: updateData.status },
                 });
+            }
+
+            // Structured timeline events (v1)
+            if (oldLineItem && userId) {
+                const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+                const nowIso = new Date().toISOString();
+
+                const toNullableString = (v: any): string | null => {
+                    if (v == null) return null;
+                    const s = String(v);
+                    const t = s.trim();
+                    return t.length > 0 ? t : null;
+                };
+
+                const toMoneyCents = (v: any): number | null => {
+                    const n = typeof v === 'number' ? v : Number(String(v ?? '').trim());
+                    if (!Number.isFinite(n)) return null;
+                    return Math.round(n * 100);
+                };
+
+                const specsOverrideEnabled = (li: any): boolean => {
+                    const s = li?.specsJson;
+                    if (!s || typeof s !== 'object') return false;
+                    const po = (s as any).priceOverride;
+                    if (!po || typeof po !== 'object') return false;
+                    if (typeof (po as any).mode === 'string') return (po as any).mode === 'total' || (po as any).mode === 'unit';
+                    return true;
+                };
+
+                const shortValue = (v: any): string | null => {
+                    if (v == null) return null;
+                    if (typeof v === 'boolean') return v ? 'true' : 'false';
+                    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : null;
+                    if (typeof v === 'string') {
+                        const t = v.replace(/\s+/g, ' ').trim();
+                        if (!t) return null;
+                        return t.length > 60 ? `${t.slice(0, 59)}…` : t;
+                    }
+                    try {
+                        const t = JSON.stringify(v);
+                        return t.length > 60 ? `${t.slice(0, 59)}…` : t;
+                    } catch {
+                        return null;
+                    }
+                };
+
+                const displayLabel = toNullableString((lineItem as any).description) || 'Line item';
+                const diffs: Array<{ fieldKey: string; fromValue: any; toValue: any; metadata?: any }> = [];
+
+                // Line item field whitelist
+                {
+                    const from = toNullableString((oldLineItem as any).description) ?? '';
+                    const to = toNullableString((lineItem as any).description) ?? '';
+                    if (from !== to) diffs.push({ fieldKey: 'description', fromValue: from, toValue: to });
+                }
+                {
+                    const from = Number((oldLineItem as any).quantity);
+                    const to = Number((lineItem as any).quantity);
+                    if (Number.isFinite(from) && Number.isFinite(to) && from !== to) diffs.push({ fieldKey: 'quantity', fromValue: from, toValue: to });
+                }
+                {
+                    const from = toMoneyCents((oldLineItem as any).unitPrice);
+                    const to = toMoneyCents((lineItem as any).unitPrice);
+                    if (from != null && to != null && from !== to) diffs.push({ fieldKey: 'unitPriceCents', fromValue: from, toValue: to });
+                }
+                {
+                    const from = toMoneyCents((oldLineItem as any).totalPrice);
+                    const to = toMoneyCents((lineItem as any).totalPrice);
+                    if (from != null && to != null && from !== to) diffs.push({ fieldKey: 'totalPriceCents', fromValue: from, toValue: to });
+                }
+                {
+                    const from = toNullableString((oldLineItem as any).status);
+                    const to = toNullableString((lineItem as any).status);
+                    if (from !== to) diffs.push({ fieldKey: 'status', fromValue: from, toValue: to });
+                }
+                {
+                    const from = specsOverrideEnabled(oldLineItem as any);
+                    const to = specsOverrideEnabled(lineItem as any);
+                    if (from !== to) diffs.push({ fieldKey: 'overrideEnabled', fromValue: from, toValue: to });
+                }
+
+                // Option summary diffs (v1): only selection value changes, skip auto-default applications.
+                try {
+                    const productIdBefore = String((oldLineItem as any).productId || '');
+                    const productIdAfter = String((lineItem as any).productId || '');
+                    if (productIdBefore && productIdBefore === productIdAfter) {
+                        const [p] = await db.select({ optionsJson: products.optionsJson }).from(products).where(eq(products.id, productIdAfter)).limit(1);
+                        const optionDefs = Array.isArray((p as any)?.optionsJson) ? ((p as any).optionsJson as any[]) : [];
+                        const defaultsById = new Map<string, any>();
+                        const labelById = new Map<string, string>();
+                        for (const o of optionDefs) {
+                            const oid = typeof o?.id === 'string' ? o.id : '';
+                            if (!oid) continue;
+                            if (o?.defaultValue != null) defaultsById.set(oid, o.defaultValue);
+                            const lbl = typeof o?.label === 'string' ? o.label : (typeof o?.name === 'string' ? o.name : '');
+                            if (lbl) labelById.set(oid, lbl);
+                        }
+
+                        const normalizeOptVal = (v: any): string | number | boolean | null => {
+                            if (v == null) return null;
+                            if (typeof v === 'boolean') return v;
+                            if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+                            if (typeof v === 'string') {
+                                const t = v.trim();
+                                return t.length > 0 ? t : null;
+                            }
+                            return null;
+                        };
+
+                        const beforeArr = Array.isArray((oldLineItem as any).selectedOptions) ? ((oldLineItem as any).selectedOptions as any[]) : [];
+                        const afterArr = Array.isArray((lineItem as any).selectedOptions) ? ((lineItem as any).selectedOptions as any[]) : [];
+                        const beforeById = new Map<string, any>();
+                        const afterById = new Map<string, any>();
+                        for (const s of beforeArr) {
+                            const oid = typeof s?.optionId === 'string' ? s.optionId : '';
+                            if (oid) beforeById.set(oid, s);
+                        }
+                        for (const s of afterArr) {
+                            const oid = typeof s?.optionId === 'string' ? s.optionId : '';
+                            if (oid) afterById.set(oid, s);
+                        }
+
+                        const allIds = new Set<string>();
+                        for (const optionId of Array.from(beforeById.keys())) allIds.add(optionId);
+                        for (const optionId of Array.from(afterById.keys())) allIds.add(optionId);
+
+                        for (const optionId of Array.from(allIds)) {
+                            const b = beforeById.get(optionId);
+                            const a = afterById.get(optionId);
+                            const bVal = normalizeOptVal(b?.value);
+                            const aVal = normalizeOptVal(a?.value);
+
+                            // Do NOT log when value is null/unknown
+                            if (bVal == null && aVal == null) continue;
+
+                            const defaultVal = defaultsById.get(optionId);
+                            const defaultNorm = normalizeOptVal(defaultVal);
+
+                            // Skip auto-applied defaults
+                            if (bVal == null && aVal != null && defaultNorm != null && aVal === defaultNorm) continue;
+                            if (aVal == null && bVal != null && defaultNorm != null && bVal === defaultNorm) continue;
+
+                            if (bVal === aVal) continue;
+
+                            const optionLabel = labelById.get(optionId) || (typeof a?.optionName === 'string' ? a.optionName : (typeof b?.optionName === 'string' ? b.optionName : 'Option'));
+                            const fromStr = bVal == null ? 'None' : (shortValue(bVal) ?? null);
+                            const toStr = aVal == null ? 'None' : (shortValue(aVal) ?? null);
+                            if (fromStr == null || toStr == null) continue;
+
+                            diffs.push({
+                                fieldKey: `option:${optionId}`,
+                                fromValue: fromStr,
+                                toValue: toStr,
+                                metadata: { optionId, optionLabel },
+                            });
+                        }
+                    }
+                } catch {
+                    // fail-soft: do not block line item updates if option diffing fails
+                }
+
+                for (const d of diffs) {
+                    await storage.createOrderAuditLog({
+                        orderId: lineItem.orderId,
+                        userId,
+                        userName,
+                        actionType: 'line_item.field_changed',
+                        fromStatus: null,
+                        toStatus: null,
+                        note: null,
+                        metadata: {
+                            structuredEvent: {
+                                eventType: 'line_item.field_changed',
+                                entityType: 'line_item',
+                                entityId: lineItem.id,
+                                displayLabel,
+                                fieldKey: d.fieldKey,
+                                fromValue: d.fromValue,
+                                toValue: d.toValue,
+                                actorUserId: userId,
+                                createdAt: nowIso,
+                                metadata: {
+                                    orderId: lineItem.orderId,
+                                    lineItemId: lineItem.id,
+                                    ...(d.metadata || {}),
+                                },
+                            },
+                        },
+                    });
+                }
             }
             res.json(lineItem);
         } catch (error) {
