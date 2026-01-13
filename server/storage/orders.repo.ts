@@ -412,7 +412,13 @@ export class OrdersRepository {
                 if (li.productVariantId) {
                     [productVariant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, li.productVariantId));
                 }
-                return { ...li, product, productVariant, components: componentsByLineItemId.get(String(li.id)) ?? [] } as any;
+                return {
+                    ...li,
+                    product,
+                    productVariant,
+                    pbv2ActiveTreeVersionId: (product as any)?.pbv2ActiveTreeVersionId ? String((product as any).pbv2ActiveTreeVersionId) : null,
+                    components: componentsByLineItemId.get(String(li.id)) ?? [],
+                } as any;
             })
         );
         const [customer] = await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => []);

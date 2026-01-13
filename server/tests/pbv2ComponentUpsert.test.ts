@@ -125,7 +125,7 @@ describe("PBV2 order line item component helpers", () => {
 
     // Per-node effectIndex is assigned by stable sort (sourceNodeId, originalIndex) then index within each node.
     // Returned in original array order.
-    expect(out.map((x) => ({ sourceNodeId: x.sourceNodeId, effectIndex: x.effectIndex }))).toEqual([
+    expect(out.map((x: any) => ({ sourceNodeId: x.sourceNodeId, effectIndex: x.effectIndex }))).toEqual([
       { sourceNodeId: "node_b", effectIndex: 0 },
       { sourceNodeId: "node_a", effectIndex: 0 },
       { sourceNodeId: "node_b", effectIndex: 1 },
@@ -154,6 +154,6 @@ describe("PBV2 order line item component helpers", () => {
     ];
 
     const out = assignEffectIndexFallback(input);
-    expect(out.map((x) => x.effectIndex)).toEqual([5, 9]);
+    expect(out.map((x: any) => x.effectIndex)).toEqual([5, 9]);
   });
 });

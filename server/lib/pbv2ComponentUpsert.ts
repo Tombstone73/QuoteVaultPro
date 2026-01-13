@@ -1,5 +1,6 @@
 import type { ChildItemProposal } from "@shared/pbv2/pricingAdapter";
 import type { InsertOrderLineItemComponent } from "@shared/schema";
+import { assignEffectIndexFallback } from "@shared/pbv2/pbv2EffectIndex";
 
 export type BuildOrderLineItemComponentUpsertArgs = {
   organizationId: string;
@@ -65,47 +66,4 @@ export function buildOrderLineItemComponentUpsertValues(
   return base;
 }
 
-export function assignEffectIndexFallback(childItems: ChildItemProposal[]): (ChildItemProposal & { effectIndex: number })[] {
-  const items = childItems.map((ci, originalIndex) => ({ ci, originalIndex }));
-
-  // Determine which sourceNodeId groups need fallback.
-  const needsFallbackBySourceNodeId: Record<string, boolean> = {};
-  for (const { ci } of items) {
-    const key = String(ci.sourceNodeId || "");
-    if (!key) continue;
-    const hasIndex = typeof ci.effectIndex === "number" && Number.isFinite(ci.effectIndex);
-    if (!hasIndex) needsFallbackBySourceNodeId[key] = true;
-  }
-
-  // Stable ordering independent of object/map iteration order.
-  const sorted = [...items].sort((a, b) => {
-    const aKey = String(a.ci.sourceNodeId || "");
-    const bKey = String(b.ci.sourceNodeId || "");
-    if (aKey < bKey) return -1;
-    if (aKey > bKey) return 1;
-    return a.originalIndex - b.originalIndex;
-  });
-
-  const nextIndexBySourceNodeId: Record<string, number> = {};
-  const assignedByOriginalIndex = new Map<number, number>();
-
-  for (const { ci, originalIndex } of sorted) {
-    const key = String(ci.sourceNodeId || "");
-    if (!key) continue;
-
-    if (!needsFallbackBySourceNodeId[key]) {
-      const existing = typeof ci.effectIndex === "number" && Number.isFinite(ci.effectIndex) ? Math.trunc(ci.effectIndex) : 0;
-      assignedByOriginalIndex.set(originalIndex, existing);
-      continue;
-    }
-
-    const next = nextIndexBySourceNodeId[key] ?? 0;
-    assignedByOriginalIndex.set(originalIndex, next);
-    nextIndexBySourceNodeId[key] = next + 1;
-  }
-
-  return items.map(({ ci, originalIndex }) => ({
-    ...ci,
-    effectIndex: assignedByOriginalIndex.get(originalIndex) ?? 0,
-  }));
-}
+export { assignEffectIndexFallback };
