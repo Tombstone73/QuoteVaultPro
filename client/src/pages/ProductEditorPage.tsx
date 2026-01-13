@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ChevronRight, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
+import PBV2ProductBuilderSection from "@/components/PBV2ProductBuilderSection";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -272,6 +273,8 @@ const ProductEditorPage = () => {
               onSave={handleSave}
               formId="product-editor-form"
             />
+
+            {!isNewProduct && productId ? <PBV2ProductBuilderSection productId={productId} /> : null}
           </div>
         </Form>
       }
