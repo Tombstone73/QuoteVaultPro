@@ -12,6 +12,8 @@ import {
     organizations,
     customers,
     products,
+    pbv2TreeVersions,
+    orderLineItemComponents,
     customerContacts,
     jobs,
     orderStatusPills,
@@ -40,8 +42,10 @@ import { calculateQuoteOrderTotals, getOrganizationTaxSettings, type LineItemInp
 import { SupabaseStorageService, isSupabaseConfigured } from "../supabaseStorage";
 import { ensureCustomerForUser } from "../db/syncUsersToCustomers";
 import { updateOrderFulfillmentStatus } from "../fulfillmentService";
-import { portalContext, getPortalCustomer } from "../tenantContext";
+import { portalContext, tenantContext, getPortalCustomer } from "../tenantContext";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
+import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
+import { assignEffectIndexFallback, buildOrderLineItemComponentUpsertValues } from "../lib/pbv2ComponentUpsert";
 import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
@@ -59,6 +63,181 @@ function getUserId(user: any): string | undefined {
 // Helper to get organizationId from request (matches server/routes.ts behavior)
 function getRequestOrganizationId(req: any): string | undefined {
     return req.organizationId || req.headers['x-organization-id'] as string;
+}
+
+type Pbv2OrderLineItemSnapshot = {
+    treeVersionId: string;
+    evaluatedAt: string;
+    explicitSelections: Record<string, unknown>;
+    env: Record<string, unknown>;
+    pricing: { addOnCents: number; breakdown: any[] };
+    materials: any[];
+    childItems: any[];
+};
+
+type Pbv2ChildItemProposalWithIndex = {
+    kind: 'inlineSku' | 'productRef';
+    title: string;
+    skuRef?: string;
+    childProductId?: string;
+    qty: number;
+    unitPriceCents?: number;
+    amountCents?: number;
+    invoiceVisibility: 'hidden' | 'rollup' | 'separateLine';
+    sourceNodeId: string;
+    effectIndex: number;
+};
+
+function asRecordOrEmpty(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return value as Record<string, unknown>;
+}
+
+function numOrUndef(value: unknown): number | undefined {
+    if (value == null) return undefined;
+    const n = typeof value === 'number' ? value : Number(String(value));
+    return Number.isFinite(n) ? n : undefined;
+}
+
+async function evaluatePbv2SnapshotForProduct(args: {
+    organizationId: string;
+    productId: string;
+    explicitSelections: Record<string, unknown>;
+    env: Record<string, unknown>;
+}): Promise<{ treeVersionId: string; snapshotJson: Pbv2OrderLineItemSnapshot } | null> {
+    const { organizationId, productId, explicitSelections, env } = args;
+
+    const [product] = await db
+        .select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+        .from(products)
+        .where(and(eq(products.organizationId, organizationId), eq(products.id, productId)))
+        .limit(1);
+
+    if (!product?.pbv2ActiveTreeVersionId) return null;
+
+    const [treeVersion] = await db
+        .select({ id: pbv2TreeVersions.id, status: pbv2TreeVersions.status, treeJson: pbv2TreeVersions.treeJson })
+        .from(pbv2TreeVersions)
+        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId)))
+        .limit(1);
+
+    if (!treeVersion) throw new Error("PBV2 active tree version not found");
+    if (treeVersion.status === 'DRAFT') {
+        const err: any = new Error("PBV2 DRAFT tree versions cannot be persisted on orders");
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const evaluatedAt = new Date().toISOString();
+
+    let pricing;
+    let materials;
+    let childItems;
+    try {
+        const pricingRes = pbv2ToPricingAddons(treeVersion.treeJson as any, explicitSelections, env as any);
+        const materialsRes = pbv2ToMaterialEffects(treeVersion.treeJson as any, explicitSelections, env as any);
+        const childItemsRes = pbv2ToChildItemProposals(treeVersion.treeJson as any, explicitSelections, env as any);
+        pricing = { addOnCents: pricingRes.addOnCents, breakdown: pricingRes.breakdown };
+        materials = materialsRes.materials;
+        childItems = childItemsRes.childItems;
+    } catch (e: any) {
+        const err: any = new Error(e?.message || 'PBV2 evaluation failed');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const snapshotJson: Pbv2OrderLineItemSnapshot = {
+        treeVersionId: String(treeVersion.id),
+        evaluatedAt,
+        explicitSelections,
+        env,
+        pricing,
+        materials,
+        childItems,
+    };
+
+    return { treeVersionId: String(treeVersion.id), snapshotJson };
+}
+
+function toChildItemProposalsWithIndexFromSnapshot(snapshot: any): Pbv2ChildItemProposalWithIndex[] {
+    const raw = (snapshot as any)?.childItems;
+    if (!Array.isArray(raw)) return [];
+
+    const out: Pbv2ChildItemProposalWithIndex[] = [];
+    for (let i = 0; i < raw.length; i++) {
+        const ci = raw[i];
+        if (!ci || typeof ci !== 'object') continue;
+        const sourceNodeId = typeof (ci as any).sourceNodeId === 'string' ? String((ci as any).sourceNodeId) : '';
+        if (!sourceNodeId) continue;
+        const effectIndex = Number.isFinite(Number((ci as any).effectIndex)) ? Number((ci as any).effectIndex) : NaN;
+        if (!Number.isFinite(effectIndex)) continue;
+
+        const kind = (ci as any).kind === 'inlineSku' || (ci as any).kind === 'productRef' ? (ci as any).kind : null;
+        const title = typeof (ci as any).title === 'string' ? String((ci as any).title) : '';
+        const qty = Number((ci as any).qty);
+        const invoiceVisibility =
+            (ci as any).invoiceVisibility === 'hidden' || (ci as any).invoiceVisibility === 'rollup' || (ci as any).invoiceVisibility === 'separateLine'
+                ? (ci as any).invoiceVisibility
+                : 'rollup';
+
+        if (!kind || !title || !Number.isFinite(qty)) continue;
+
+        out.push({
+            kind,
+            title,
+            skuRef: typeof (ci as any).skuRef === 'string' ? String((ci as any).skuRef) : undefined,
+            childProductId: typeof (ci as any).childProductId === 'string' ? String((ci as any).childProductId) : undefined,
+            qty,
+            unitPriceCents: Number.isFinite(Number((ci as any).unitPriceCents)) ? Number((ci as any).unitPriceCents) : undefined,
+            amountCents: Number.isFinite(Number((ci as any).amountCents)) ? Number((ci as any).amountCents) : undefined,
+            invoiceVisibility,
+            sourceNodeId,
+            effectIndex: Math.trunc(effectIndex),
+        });
+    }
+
+    return out;
+}
+
+function toChildItemProposalsFromSnapshot(snapshot: any): (Omit<Pbv2ChildItemProposalWithIndex, 'effectIndex'> & { effectIndex?: number })[] {
+    const raw = (snapshot as any)?.childItems;
+    if (!Array.isArray(raw)) return [];
+
+    const out: (Omit<Pbv2ChildItemProposalWithIndex, 'effectIndex'> & { effectIndex?: number })[] = [];
+    for (let i = 0; i < raw.length; i++) {
+        const ci = raw[i];
+        if (!ci || typeof ci !== 'object') continue;
+
+        const sourceNodeId = typeof (ci as any).sourceNodeId === 'string' ? String((ci as any).sourceNodeId) : '';
+        if (!sourceNodeId) continue;
+
+        const kind = (ci as any).kind === 'inlineSku' || (ci as any).kind === 'productRef' ? (ci as any).kind : null;
+        const title = typeof (ci as any).title === 'string' ? String((ci as any).title) : '';
+        const qty = Number((ci as any).qty);
+        const invoiceVisibility =
+            (ci as any).invoiceVisibility === 'hidden' || (ci as any).invoiceVisibility === 'rollup' || (ci as any).invoiceVisibility === 'separateLine'
+                ? (ci as any).invoiceVisibility
+                : 'rollup';
+
+        if (!kind || !title || !Number.isFinite(qty)) continue;
+
+        const effectIndex = Number.isFinite(Number((ci as any).effectIndex)) ? Math.trunc(Number((ci as any).effectIndex)) : undefined;
+
+        out.push({
+            kind,
+            title,
+            skuRef: typeof (ci as any).skuRef === 'string' ? String((ci as any).skuRef) : undefined,
+            childProductId: typeof (ci as any).childProductId === 'string' ? String((ci as any).childProductId) : undefined,
+            qty,
+            unitPriceCents: Number.isFinite(Number((ci as any).unitPriceCents)) ? Number((ci as any).unitPriceCents) : undefined,
+            amountCents: Number.isFinite(Number((ci as any).amountCents)) ? Number((ci as any).amountCents) : undefined,
+            invoiceVisibility,
+            sourceNodeId,
+            effectIndex,
+        });
+    }
+
+    return out;
 }
 
 /**
@@ -3317,48 +3496,202 @@ export async function registerOrderRoutes(
     });
 
     // Order Line Items routes
-    app.get("/api/orders/:orderId/line-items", isAuthenticated, async (req, res) => {
+    app.get("/api/orders/:orderId/line-items", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
-            const lineItems = await storage.getOrderLineItems(req.params.orderId);
-            res.json(lineItems);
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const lineItems = await storage.getOrderLineItems(orderId);
+
+            const components = await db
+                .select()
+                .from(orderLineItemComponents)
+                .where(and(
+                    eq(orderLineItemComponents.organizationId, organizationId),
+                    eq(orderLineItemComponents.orderId, orderId),
+                    eq(orderLineItemComponents.status, 'ACCEPTED')
+                ));
+
+            const byLineItemId = new Map<string, any[]>();
+            for (const c of components) {
+                const key = String((c as any).orderLineItemId);
+                const arr = byLineItemId.get(key);
+                if (arr) arr.push(c as any);
+                else byLineItemId.set(key, [c as any]);
+            }
+
+            res.json(lineItems.map((li: any) => ({ ...li, components: byLineItemId.get(String(li.id)) ?? [] })));
         } catch (error) {
             res.status(500).json({ message: "Failed to fetch order line items" });
         }
     });
 
-    app.get("/api/order-line-items/:id", isAuthenticated, async (req, res) => {
+    app.get("/api/order-line-items/:id", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
-            const lineItem = await storage.getOrderLineItemById(req.params.id);
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const lineItemId = String(req.params.id);
+            const [li] = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!li) return res.status(404).json({ message: "Order line item not found" });
+
+            const lineItem = await storage.getOrderLineItemById(lineItemId);
             if (!lineItem) return res.status(404).json({ message: "Order line item not found" });
-            res.json(lineItem);
+
+            const components = await db
+                .select()
+                .from(orderLineItemComponents)
+                .where(and(
+                    eq(orderLineItemComponents.organizationId, organizationId),
+                    eq(orderLineItemComponents.orderLineItemId, lineItemId),
+                    eq(orderLineItemComponents.status, 'ACCEPTED')
+                ));
+
+            res.json({ ...(lineItem as any), components });
         } catch (error) {
             res.status(500).json({ message: "Failed to fetch order line item" });
         }
     });
 
-    app.post("/api/order-line-items", isAuthenticated, async (req, res) => {
+    app.post("/api/order-line-items", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
-            const lineItemData = insertOrderLineItemSchema.parse(req.body);
-            const lineItem = await storage.createOrderLineItem(lineItemData);
-            res.json(lineItem);
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const parsed = insertOrderLineItemSchema.parse(req.body);
+            const { pbv2ExplicitSelections, pbv2Env, ...lineItemData } = parsed as any;
+
+            const explicitSelections = (pbv2ExplicitSelections && typeof pbv2ExplicitSelections === 'object') ? pbv2ExplicitSelections : {};
+            const providedEnv = (pbv2Env && typeof pbv2Env === 'object') ? pbv2Env : {};
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.id, String(lineItemData.orderId)), eq(orders.organizationId, organizationId)))
+                .limit(1);
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const created = await storage.createOrderLineItem(lineItemData);
+
+            const widthIn = numOrUndef(lineItemData.width) ?? numOrUndef((created as any).width);
+            const heightIn = numOrUndef(lineItemData.height) ?? numOrUndef((created as any).height);
+            const quantity = numOrUndef(lineItemData.quantity) ?? numOrUndef((created as any).quantity) ?? undefined;
+
+            const computedEnv: Record<string, unknown> = {
+                widthIn,
+                heightIn,
+                quantity,
+                sqft: widthIn != null && heightIn != null ? (widthIn * heightIn) / 144 : undefined,
+                perimeterIn: widthIn != null && heightIn != null ? 2 * (widthIn + heightIn) : undefined,
+            };
+
+            const env = { ...computedEnv, ...providedEnv };
+
+            const pbv2 = await evaluatePbv2SnapshotForProduct({
+                organizationId,
+                productId: String(created.productId),
+                explicitSelections,
+                env,
+            }).catch((e: any) => {
+                if (e?.statusCode) throw e;
+                throw Object.assign(new Error(e?.message || 'PBV2 evaluation failed'), { statusCode: 400 });
+            });
+
+            const [updated] = await db
+                .update(orderLineItems)
+                .set({
+                    pbv2TreeVersionId: pbv2 ? pbv2.treeVersionId : null,
+                    pbv2SnapshotJson: pbv2 ? (pbv2.snapshotJson as any) : null,
+                    updatedAt: new Date(),
+                })
+                .where(eq(orderLineItems.id, created.id))
+                .returning();
+
+            res.json(updated ?? created);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
             res.status(500).json({ message: "Failed to create order line item" });
         }
     });
 
-    app.patch("/api/order-line-items/:id", isAuthenticated, async (req: any, res) => {
+    app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
             const userId = getUserId(req.user);
-            const lineItemData = updateOrderLineItemSchema.parse({ ...req.body, id: req.params.id });
+
+            const parsed = updateOrderLineItemSchema.parse({ ...(req.body as any), id: req.params.id });
+            const { pbv2ExplicitSelections, pbv2Env, ...lineItemData } = parsed as any;
             const { id, ...updateData } = lineItemData;
-            const oldLineItem = await storage.getOrderLineItemById(req.params.id);
-            const lineItem = await storage.updateOrderLineItem(req.params.id, updateData);
+
+            const explicitSelections = (pbv2ExplicitSelections && typeof pbv2ExplicitSelections === 'object') ? pbv2ExplicitSelections : {};
+            const providedEnv = (pbv2Env && typeof pbv2Env === 'object') ? pbv2Env : {};
+
+            const lineItemId = String(req.params.id);
+            const [ownership] = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+            if (!ownership) return res.status(404).json({ message: "Order line item not found" });
+
+            const oldLineItem = await storage.getOrderLineItemById(lineItemId);
+            const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
+
+            const widthIn = numOrUndef((updateData as any).width) ?? numOrUndef((lineItem as any).width);
+            const heightIn = numOrUndef((updateData as any).height) ?? numOrUndef((lineItem as any).height);
+            const quantity = numOrUndef((updateData as any).quantity) ?? numOrUndef((lineItem as any).quantity) ?? undefined;
+
+            const computedEnv: Record<string, unknown> = {
+                widthIn,
+                heightIn,
+                quantity,
+                sqft: widthIn != null && heightIn != null ? (widthIn * heightIn) / 144 : undefined,
+                perimeterIn: widthIn != null && heightIn != null ? 2 * (widthIn + heightIn) : undefined,
+            };
+            const env = { ...computedEnv, ...providedEnv };
+
+            const pbv2 = await evaluatePbv2SnapshotForProduct({
+                organizationId,
+                productId: String((lineItem as any).productId),
+                explicitSelections,
+                env,
+            }).catch((e: any) => {
+                if (e?.statusCode) throw e;
+                throw Object.assign(new Error(e?.message || 'PBV2 evaluation failed'), { statusCode: 400 });
+            });
+
+            const [finalLineItem] = await db
+                .update(orderLineItems)
+                .set({
+                    pbv2TreeVersionId: pbv2 ? pbv2.treeVersionId : null,
+                    pbv2SnapshotJson: pbv2 ? (pbv2.snapshotJson as any) : null,
+                    updatedAt: new Date(),
+                })
+                .where(eq(orderLineItems.id, lineItemId))
+                .returning();
 
             if (oldLineItem && updateData.status !== undefined && oldLineItem.status !== updateData.status && userId) {
                 const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
                 await storage.createOrderAuditLog({
-                    orderId: lineItem.orderId,
+                    orderId: (finalLineItem ?? lineItem).orderId,
                     userId,
                     userName,
                     actionType: 'line_item_status_change',
@@ -3413,13 +3746,13 @@ export async function registerOrderRoutes(
                     }
                 };
 
-                const displayLabel = toNullableString((lineItem as any).description) || 'Line item';
+                const displayLabel = toNullableString(((finalLineItem ?? lineItem) as any).description) || 'Line item';
                 const diffs: Array<{ fieldKey: string; fromValue: any; toValue: any; metadata?: any }> = [];
 
                 // Line item field whitelist
                 {
                     const from = toNullableString((oldLineItem as any).description) ?? '';
-                    const to = toNullableString((lineItem as any).description) ?? '';
+                    const to = toNullableString(((finalLineItem ?? lineItem) as any).description) ?? '';
                     if (from !== to) diffs.push({ fieldKey: 'description', fromValue: from, toValue: to });
                 }
                 {
@@ -3558,10 +3891,217 @@ export async function registerOrderRoutes(
                     });
                 }
             }
-            res.json(lineItem);
+            res.json(finalLineItem ?? lineItem);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+            if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
             res.status(500).json({ message: "Failed to update order line item" });
+        }
+    });
+
+    // PBV2: Accept child item proposals as persisted components
+    app.post("/api/order-line-items/:id/pbv2/components/accept", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const userId = getUserId(req.user);
+            const lineItemId = String(req.params.id);
+
+            const [li] = await db
+                .select({
+                    lineItemId: orderLineItems.id,
+                    orderId: orderLineItems.orderId,
+                    pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+                    pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
+                })
+                .from(orderLineItems)
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!li) return res.status(404).json({ message: "Order line item not found" });
+
+            const snapshot = li.pbv2SnapshotJson as any;
+            if (!snapshot || typeof snapshot !== 'object') {
+                return res.status(400).json({ message: "Order line item has no PBV2 snapshot; cannot accept components." });
+            }
+
+            const treeVersionId = String((snapshot as any).treeVersionId || li.pbv2TreeVersionId || "");
+            if (!treeVersionId) {
+                return res.status(400).json({ message: "Snapshot missing treeVersionId; cannot accept components." });
+            }
+
+            const [treeVersion] = await db
+                .select({ id: pbv2TreeVersions.id, status: pbv2TreeVersions.status, treeJson: pbv2TreeVersions.treeJson })
+                .from(pbv2TreeVersions)
+                .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, treeVersionId)))
+                .limit(1);
+
+            if (!treeVersion) return res.status(400).json({ message: "PBV2 tree version not found" });
+            if (treeVersion.status === 'DRAFT') return res.status(400).json({ message: "PBV2 DRAFT tree versions cannot be accepted on orders" });
+
+            // Prefer snapshot childItems always. If effectIndex is missing (older snapshots), assign it deterministically.
+            // Never recompute using product active trees.
+            const hasChildItemsArray = Array.isArray((snapshot as any).childItems);
+            let proposalsWithIndex: Pbv2ChildItemProposalWithIndex[] = [];
+
+            if (hasChildItemsArray) {
+                const snapshotProposals = toChildItemProposalsFromSnapshot(snapshot);
+                const withIndex = assignEffectIndexFallback(snapshotProposals as any);
+                proposalsWithIndex = withIndex
+                    .filter((ci: any) => ci && typeof ci === 'object' && typeof ci.sourceNodeId === 'string' && Number.isFinite(Number(ci.effectIndex)))
+                    .map((ci: any) => ({
+                        kind: ci.kind,
+                        title: ci.title,
+                        skuRef: ci.skuRef,
+                        childProductId: ci.childProductId,
+                        qty: Number(ci.qty),
+                        unitPriceCents: ci.unitPriceCents,
+                        amountCents: ci.amountCents,
+                        invoiceVisibility: ci.invoiceVisibility,
+                        sourceNodeId: String(ci.sourceNodeId),
+                        effectIndex: Math.trunc(Number(ci.effectIndex)),
+                    }));
+            } else {
+                // Fallback: recompute proposals only if snapshot has enough inputs AND we can resolve the exact treeVersionId.
+                const selections = (snapshot as any).explicitSelections && typeof (snapshot as any).explicitSelections === 'object' ? (snapshot as any).explicitSelections : null;
+                const env = (snapshot as any).env && typeof (snapshot as any).env === 'object' ? (snapshot as any).env : null;
+                if (!selections || !env) {
+                    return res.status(400).json({ message: "Snapshot missing inputs; cannot accept components." });
+                }
+
+                const recomputed = pbv2ToChildItemProposals(treeVersion.treeJson as any, selections as any, env as any);
+                const recomputedItems = (Array.isArray((recomputed as any)?.childItems) ? (recomputed as any).childItems : [])
+                    .filter((ci: any) => ci && typeof ci === 'object' && typeof ci.sourceNodeId === 'string')
+                    .map((ci: any) => ({
+                        kind: ci.kind,
+                        title: ci.title,
+                        skuRef: ci.skuRef,
+                        childProductId: ci.childProductId,
+                        qty: Number(ci.qty),
+                        unitPriceCents: ci.unitPriceCents,
+                        amountCents: ci.amountCents,
+                        invoiceVisibility: ci.invoiceVisibility,
+                        sourceNodeId: String(ci.sourceNodeId),
+                        effectIndex: Number.isFinite(Number(ci.effectIndex)) ? Math.trunc(Number(ci.effectIndex)) : undefined,
+                    }));
+
+                const withIndex = assignEffectIndexFallback(recomputedItems as any);
+                proposalsWithIndex = withIndex
+                    .filter((ci: any) => Number.isFinite(Number(ci.effectIndex)))
+                    .map((ci: any) => ({
+                        kind: ci.kind,
+                        title: ci.title,
+                        skuRef: ci.skuRef,
+                        childProductId: ci.childProductId,
+                        qty: Number(ci.qty),
+                        unitPriceCents: ci.unitPriceCents,
+                        amountCents: ci.amountCents,
+                        invoiceVisibility: ci.invoiceVisibility,
+                        sourceNodeId: String(ci.sourceNodeId),
+                        effectIndex: Math.trunc(Number(ci.effectIndex)),
+                    }));
+            }
+
+            if (proposalsWithIndex.length === 0) {
+                return res.json({ success: true, data: [] });
+            }
+
+            // Upsert each component idempotently using the stable PBV2 key.
+            await db.transaction(async (tx) => {
+                for (const p of proposalsWithIndex) {
+                    if (!p.sourceNodeId || !Number.isFinite(p.effectIndex)) continue;
+                    const qty = Number(p.qty);
+                    if (!Number.isFinite(qty) || qty <= 0) continue;
+
+                    const values = buildOrderLineItemComponentUpsertValues({
+                        organizationId,
+                        orderId: String(li.orderId),
+                        orderLineItemId: String(li.lineItemId),
+                        treeVersionId,
+                        proposal: {
+                            kind: p.kind,
+                            title: p.title,
+                            skuRef: p.skuRef,
+                            childProductId: p.childProductId,
+                            qty,
+                            unitPriceCents: p.unitPriceCents,
+                            amountCents: p.amountCents,
+                            invoiceVisibility: p.invoiceVisibility,
+                            sourceNodeId: p.sourceNodeId,
+                            effectIndex: p.effectIndex,
+                        },
+                        createdByUserId: userId ?? null,
+                        now: new Date(),
+                    });
+
+                    const updateSet: Partial<typeof orderLineItemComponents.$inferInsert> = {
+                        status: 'ACCEPTED',
+                        kind: values.kind,
+                        title: values.title,
+                        skuRef: values.skuRef,
+                        childProductId: values.childProductId,
+                        qty: values.qty,
+                        unitPriceCents: values.unitPriceCents,
+                        amountCents: values.amountCents,
+                        invoiceVisibility: values.invoiceVisibility,
+                        pbv2TreeVersionId: values.pbv2TreeVersionId,
+                        updatedAt: new Date(),
+                    };
+
+                    await tx
+                        .insert(orderLineItemComponents)
+                        .values(values)
+                        .onConflictDoUpdate({
+                            target: [
+                                orderLineItemComponents.organizationId,
+                                orderLineItemComponents.orderLineItemId,
+                                orderLineItemComponents.pbv2SourceNodeId,
+                                orderLineItemComponents.pbv2EffectIndex,
+                            ],
+                            // Matches the partial unique index in migration 0024.
+                            targetWhere: sql`${orderLineItemComponents.status} = 'ACCEPTED' and ${orderLineItemComponents.pbv2SourceNodeId} is not null and ${orderLineItemComponents.pbv2EffectIndex} is not null`,
+                            set: updateSet as any,
+                        });
+                }
+            });
+
+            const components = await db
+                .select()
+                .from(orderLineItemComponents)
+                .where(and(
+                    eq(orderLineItemComponents.organizationId, organizationId),
+                    eq(orderLineItemComponents.orderLineItemId, lineItemId),
+                    eq(orderLineItemComponents.status, 'ACCEPTED')
+                ));
+
+            res.json({ success: true, data: components });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to accept PBV2 components" });
+        }
+    });
+
+    // PBV2: Void a persisted component
+    app.patch("/api/order-line-item-components/:componentId/void", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const componentId = String(req.params.componentId);
+
+            const [updated] = await db
+                .update(orderLineItemComponents)
+                .set({ status: 'VOIDED', updatedAt: new Date() })
+                .where(and(eq(orderLineItemComponents.id, componentId), eq(orderLineItemComponents.organizationId, organizationId)))
+                .returning();
+
+            if (!updated) return res.status(404).json({ message: "Component not found" });
+            res.json({ success: true, data: updated });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to void component" });
         }
     });
 
@@ -3618,9 +4158,22 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.delete("/api/order-line-items/:id", isAuthenticated, isAdminOrOwner, async (req, res) => {
+    app.delete("/api/order-line-items/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
-            await storage.deleteOrderLineItem(req.params.id);
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const lineItemId = String(req.params.id);
+            const [ownership] = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+
+            if (!ownership) return res.status(404).json({ message: "Order line item not found" });
+
+            await storage.deleteOrderLineItem(lineItemId);
             res.json({ message: "Order line item deleted successfully" });
         } catch (error) {
             res.status(500).json({ message: "Failed to delete order line item" });

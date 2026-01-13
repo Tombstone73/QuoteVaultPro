@@ -309,6 +309,12 @@ function extractMaterialEffects(node: Record<string, unknown>): unknown[] {
   return Array.isArray(effects) ? effects : [];
 }
 
+function extractChildItemEffects(node: Record<string, unknown>): unknown[] {
+  const price = asRecord((node as any).price) ?? asRecord((node as any).data);
+  const effects = price ? (price as any).childItemEffects : undefined;
+  return Array.isArray(effects) ? effects : [];
+}
+
 function extractEffectOutputs(node: Record<string, unknown>): unknown[] {
   const eff = asRecord((node as any).effect) ?? asRecord((node as any).data);
   const outputs = eff ? (eff as any).outputs : undefined;
@@ -1188,6 +1194,173 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
               warningFinding({
                 code: "PBV2_W_MATERIAL_EFFECT_UNREACHABLE",
                 message: "MaterialEffect.appliesWhen is provably UNSAT (effect will never apply)",
+                path: `${ePath}.appliesWhen`,
+                entityId: n.id,
+              })
+            );
+          }
+        }
+      }
+
+      const childEffects = extractChildItemEffects(n.raw);
+      for (let i = 0; i < childEffects.length; i++) {
+        const e = asRecord(childEffects[i]);
+        const ePath = `tree.nodes[${n.id}].price.childItemEffects[${i}]`;
+        if (!e) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHILD_ITEM_EFFECT_INVALID",
+              message: "ChildItemEffect must be an object",
+              path: ePath,
+              entityId: n.id,
+            })
+          );
+          continue;
+        }
+
+        const kind = (e as any).kind;
+        const kindOk = kind === "inlineSku" || kind === "productRef";
+        if (!kindOk) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHILD_ITEM_EFFECT_INVALID",
+              message: "ChildItemEffect.kind must be 'inlineSku' or 'productRef'",
+              path: `${ePath}.kind`,
+              entityId: n.id,
+            })
+          );
+        }
+
+        const title = (e as any).title;
+        if (!isNonEmptyString(title)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHILD_ITEM_EFFECT_INVALID",
+              message: "ChildItemEffect.title must be a non-empty string",
+              path: `${ePath}.title`,
+              entityId: n.id,
+            })
+          );
+        }
+
+        const skuRef = (e as any).skuRef;
+        if (kind === "inlineSku" && !isNonEmptyString(skuRef)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHILD_ITEM_EFFECT_INVALID",
+              message: "ChildItemEffect.skuRef is required when kind='inlineSku'",
+              path: `${ePath}.skuRef`,
+              entityId: n.id,
+            })
+          );
+        }
+
+        const childProductId = (e as any).childProductId;
+        if (childProductId !== undefined && !isNonEmptyString(childProductId)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHILD_ITEM_EFFECT_INVALID",
+              message: "ChildItemEffect.childProductId must be a non-empty string when provided",
+              path: `${ePath}.childProductId`,
+              entityId: n.id,
+            })
+          );
+        }
+
+        const invoiceVisibility = (e as any).invoiceVisibility;
+        if (
+          invoiceVisibility !== undefined &&
+          invoiceVisibility !== "hidden" &&
+          invoiceVisibility !== "rollup" &&
+          invoiceVisibility !== "separateLine"
+        ) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHILD_ITEM_EFFECT_INVALID",
+              message: "ChildItemEffect.invoiceVisibility must be 'hidden', 'rollup', or 'separateLine'",
+              path: `${ePath}.invoiceVisibility`,
+              entityId: n.id,
+            })
+          );
+        }
+
+        if (!("qtyRef" in e)) {
+          findings.push(
+            errorFinding({
+              code: "PBV2_E_CHILD_ITEM_EFFECT_INVALID",
+              message: "ChildItemEffect.qtyRef is required",
+              path: ePath,
+              entityId: n.id,
+              context: { field: "qtyRef" },
+            })
+          );
+        } else {
+          const qtyRef = (e as any).qtyRef;
+          const r = typeCheckExpression(qtyRef, "COMPUTE", symbol.table, { pathBase: `${ePath}.qtyRef`, entityId: n.id });
+          findings.push(...r.findings);
+          findings.push(...findDivByZeroFindings(qtyRef, { strict: policy.divByZeroStrict, pathBase: `${ePath}.qtyRef`, entityId: n.id }));
+
+          if (r.inferred.type !== "NUMBER" || r.inferred.nullable) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHILD_ITEM_QTY_REF_INVALID",
+                message: "qtyRef must resolve to non-null NUMBER",
+                path: `${ePath}.qtyRef`,
+                entityId: n.id,
+                context: { inferred: r.inferred },
+              })
+            );
+          }
+
+          const expr = qtyRef as any;
+          if (expr?.op === "literal" && typeof expr.value === "number" && expr.value < 0) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHILD_ITEM_NEGATIVE_QUANTITY",
+                message: "qtyRef cannot be a negative literal",
+                path: `${ePath}.qtyRef`,
+                entityId: n.id,
+                context: { value: expr.value },
+              })
+            );
+          } else if (expr?.op === "sub" || expr?.op === "mul") {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHILD_ITEM_NEGATIVE_QUANTITY",
+                message: "qtyRef may produce negative quantities; clamp/guard required",
+                path: `${ePath}.qtyRef`,
+                entityId: n.id,
+              })
+            );
+          }
+        }
+
+        if ((e as any).unitPriceRef !== undefined) {
+          const unitPriceRef = (e as any).unitPriceRef;
+          const r = typeCheckExpression(unitPriceRef, "PRICE", symbol.table, { pathBase: `${ePath}.unitPriceRef`, entityId: n.id });
+          findings.push(...r.findings);
+          findings.push(...findDivByZeroFindings(unitPriceRef, { strict: policy.divByZeroStrict, pathBase: `${ePath}.unitPriceRef`, entityId: n.id }));
+          if (r.inferred.type !== "NUMBER" || r.inferred.nullable) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_CHILD_ITEM_UNIT_PRICE_REF_INVALID",
+                message: "unitPriceRef must resolve to non-null NUMBER (cents)",
+                path: `${ePath}.unitPriceRef`,
+                entityId: n.id,
+                context: { inferred: r.inferred },
+              })
+            );
+          }
+        }
+
+        if ((e as any).appliesWhen !== undefined) {
+          const c = (e as any).appliesWhen as ConditionRule;
+          findings.push(...typeCheckCondition(c, symbol.table, { pathBase: `${ePath}.appliesWhen`, entityId: n.id }).findings);
+          if (isProvablyUnsat(c)) {
+            findings.push(
+              warningFinding({
+                code: "PBV2_W_CHILD_ITEM_EFFECT_UNREACHABLE",
+                message: "ChildItemEffect.appliesWhen is provably UNSAT (effect will never apply)",
                 path: `${ePath}.appliesWhen`,
                 entityId: n.id,
               })

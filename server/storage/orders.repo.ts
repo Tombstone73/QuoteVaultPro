@@ -2,6 +2,7 @@ import { db } from "../db";
 import {
     orders,
     orderLineItems,
+    orderLineItemComponents,
     shipments,
     orderAttachments,
     orderAuditLog,
@@ -386,6 +387,24 @@ export class OrdersRepository {
         const [order] = await this.dbInstance.select().from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
         if (!order) return undefined;
         const rawLineItems = await this.dbInstance.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
+
+        const acceptedComponents = await this.dbInstance
+            .select()
+            .from(orderLineItemComponents)
+            .where(and(
+                eq(orderLineItemComponents.organizationId, organizationId),
+                eq(orderLineItemComponents.orderId, id),
+                eq(orderLineItemComponents.status, 'ACCEPTED')
+            ));
+
+        const componentsByLineItemId = new Map<string, any[]>();
+        for (const c of acceptedComponents) {
+            const key = String((c as any).orderLineItemId);
+            const arr = componentsByLineItemId.get(key);
+            if (arr) arr.push(c as any);
+            else componentsByLineItemId.set(key, [c as any]);
+        }
+
         const enrichedLineItems = await Promise.all(
             rawLineItems.map(async (li) => {
                 const [product] = await this.dbInstance.select().from(products).where(eq(products.id, li.productId));
@@ -393,7 +412,7 @@ export class OrdersRepository {
                 if (li.productVariantId) {
                     [productVariant] = await this.dbInstance.select().from(productVariants).where(eq(productVariants.id, li.productVariantId));
                 }
-                return { ...li, product, productVariant } as any;
+                return { ...li, product, productVariant, components: componentsByLineItemId.get(String(li.id)) ?? [] } as any;
             })
         );
         const [customer] = await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => []);

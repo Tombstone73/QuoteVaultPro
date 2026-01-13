@@ -361,6 +361,90 @@ export function createPbv2BannerGrommetsPricingTreeJson(): Record<string, unknow
   return tree;
 }
 
+/**
+ * Publish-valid PBV2 template proving ChildItemEffect proposals for sign-shop assemblies.
+ *
+ * Proof target: an optional aluminum extrusion frame proposal derived from perimeter.
+ * - When extrusionEnabled=true, emits a child item proposal (qty in feet, rounded up)
+ * - No pricing is invented in this template; amount is omitted.
+ */
+export function createPbv2SignExtrusionTreeJson(): Record<string, unknown> {
+  const tree: Record<string, unknown> = {
+    status: "DRAFT",
+    rootNodeIds: ["extrusionEnabled"],
+    nodes: [
+      {
+        id: "extrusionEnabled",
+        type: "INPUT",
+        status: "ENABLED",
+        key: "finishing.extrusion.enabled",
+        input: { selectionKey: "extrusionEnabled", valueType: "BOOLEAN", defaultValue: false },
+      },
+      {
+        id: "price_extrusion",
+        type: "PRICE",
+        status: "ENABLED",
+        key: "finishing.extrusion.childItems",
+        price: {
+          components: [],
+          childItemEffects: [
+            {
+              kind: "inlineSku",
+              title: "Aluminum extrusion frame",
+              skuRef: "AL_EXTRUSION_STD",
+              invoiceVisibility: "rollup",
+              // qty = ceil(perimeterIn / 12)  (feet)
+              qtyRef: {
+                op: "ceil",
+                x: {
+                  op: "div",
+                  left: { op: "ref", ref: { kind: "envRef", envKey: "perimeterIn" } },
+                  right: {
+                    op: "clamp",
+                    x: { op: "literal", value: 12 },
+                    lo: { op: "literal", value: 1 },
+                    hi: { op: "literal", value: 1000000 },
+                  },
+                },
+              },
+              appliesWhen: {
+                op: "EQ",
+                left: { op: "ref", ref: { kind: "effectiveRef", selectionKey: "extrusionEnabled" } },
+                right: { op: "literal", value: true },
+              },
+            },
+          ],
+        },
+      },
+    ],
+    edges: [
+      {
+        id: "e_extrusionEnabled_to_price_extrusion",
+        status: "ENABLED",
+        fromNodeId: "extrusionEnabled",
+        toNodeId: "price_extrusion",
+        priority: 0,
+        condition: {
+          op: "EQ",
+          left: { op: "ref", ref: { kind: "selectionRef", selectionKey: "extrusionEnabled" } },
+          right: { op: "literal", value: true },
+        },
+      },
+    ],
+  };
+
+  const res = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+  if (res.errors.length > 0 || res.warnings.length > 0) {
+    const summary = {
+      errors: res.errors.map((f) => ({ code: f.code, path: f.path })),
+      warnings: res.warnings.map((f) => ({ code: f.code, path: f.path })),
+    };
+    throw new Error(`PBV2 sign extrusion template is no longer publish-valid: ${JSON.stringify(summary)}`);
+  }
+
+  return tree;
+}
+
 export function stringifyPbv2TreeJson(tree: unknown): string {
   try {
     return JSON.stringify(tree ?? {}, null, 2);

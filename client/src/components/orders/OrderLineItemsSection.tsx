@@ -45,6 +45,7 @@ import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
 import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/components/line-items/LineItemRowEnterprise";
 import { buildLineItemFlags } from "@/lib/lineItems/lineItemDerivation";
 import { formatLineItemOptionSummary } from "@shared/lineItemOptionSummary";
+import type { PBV2Outputs } from "@/lib/pbv2/pbv2Outputs";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -91,6 +92,44 @@ function requiresDimensions(product: Product | null): boolean {
   if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") return false;
   if (anyProduct.pricingMode === "area") return true;
   return false;
+}
+
+function getPbv2SnapshotFromLineItem(lineItem: any): any | null {
+  if (!lineItem || typeof lineItem !== "object") return null;
+  return (lineItem as any).pbv2SnapshotJson ?? (lineItem as any).pbv2_snapshot_json ?? null;
+}
+
+function getAcceptedComponentsFromLineItem(item: any): any[] {
+  if (!item || typeof item !== "object") return [];
+  const comps = (item as any).components;
+  return Array.isArray(comps) ? comps : [];
+}
+
+function mapPbv2SnapshotToOutputs(snapshot: any): PBV2Outputs | undefined {
+  if (!snapshot || typeof snapshot !== "object") return undefined;
+
+  const pricing = (snapshot as any).pricing;
+  const materials = (snapshot as any).materials;
+  const childItems = (snapshot as any).childItems;
+
+  const hasAny = Boolean(pricing || materials || childItems);
+  if (!hasAny) return undefined;
+
+  return {
+    pricingAddons:
+      pricing && typeof pricing === "object"
+        ? {
+            addOnCents: Number((pricing as any).addOnCents) || 0,
+            breakdown: Array.isArray((pricing as any).breakdown) ? (pricing as any).breakdown : [],
+          }
+        : null,
+    materialEffects: {
+      materials: Array.isArray(materials) ? materials : [],
+    },
+    childItemProposals: {
+      childItems: Array.isArray(childItems) ? childItems : [],
+    },
+  };
 }
 
 function formatMoney(n: number): string {
@@ -234,6 +273,26 @@ export function OrderLineItemsSection({
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  const acceptPbv2Components = useMutation({
+    mutationFn: async (lineItemId: string) => {
+      const res = await apiRequest("POST", `/api/order-line-items/${lineItemId}/pbv2/components/accept`, {});
+      return res.json();
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+    },
+  });
+
+  const voidComponent = useMutation({
+    mutationFn: async (componentId: string) => {
+      const res = await apiRequest("PATCH", `/api/order-line-item-components/${componentId}/void`, {});
+      return res.json();
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+    },
+  });
 
   const updateLineItem = useUpdateOrderLineItem(orderId);
   const updateLineItemSilent = useUpdateOrderLineItem(orderId, { toast: false });
@@ -891,6 +950,40 @@ export function OrderLineItemsSection({
                           >
                             <LineItemRowEnterprise
                               item={enterpriseItem}
+                              pbv2Outputs={mapPbv2SnapshotToOutputs(getPbv2SnapshotFromLineItem(item as any))}
+                              pbv2AcceptedComponents={getAcceptedComponentsFromLineItem(item as any)}
+                              onAcceptPbv2Components={
+                                readOnly
+                                  ? undefined
+                                  : async (lineItemId) => {
+                                      try {
+                                        await acceptPbv2Components.mutateAsync(lineItemId);
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Could not accept PBV2 components",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
+                              onVoidPbv2Component={
+                                readOnly
+                                  ? undefined
+                                  : async (componentId) => {
+                                      try {
+                                        await voidComponent.mutateAsync(componentId);
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Could not void component",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
                               variant="tray"
                               thumbnail={thumbnailNode}
                               dragHandleProps={{

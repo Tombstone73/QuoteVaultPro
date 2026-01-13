@@ -2050,6 +2050,8 @@ export const orderLineItems = pgTable("order_line_items", {
   quoteLineItemId: varchar("quote_line_item_id").references(() => quoteLineItems.id, { onDelete: 'set null' }),
   productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'restrict' }),
   productVariantId: varchar("product_variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
+  pbv2TreeVersionId: varchar("pbv2_tree_version_id"),
+  pbv2SnapshotJson: jsonb("pbv2_snapshot_json").$type<Record<string, any>>(),
   productType: varchar("product_type", { length: 50 }).notNull().default('wide_roll'),
   description: text("description").notNull(), // Snapshot of what we sold
   width: decimal("width", { precision: 10, scale: 2 }),
@@ -2098,6 +2100,41 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_product_id_idx").on(table.productId),
   index("order_line_items_status_idx").on(table.status),
   index("order_line_items_product_type_idx").on(table.productType),
+  index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
+]);
+
+// Order Line Item Components (PBV2 child item acceptance)
+export const orderLineItemComponents = pgTable("order_line_item_components", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+
+  status: text("status").notNull().default('ACCEPTED'), // ACCEPTED | VOIDED
+  source: text("source").notNull().default('PBV2'),
+
+  kind: text("kind").notNull(), // inlineSku | productRef
+  title: text("title").notNull(),
+  skuRef: text("sku_ref"),
+  childProductId: varchar("child_product_id"),
+
+  qty: decimal("qty", { precision: 10, scale: 2 }).notNull(),
+  unitPriceCents: integer("unit_price_cents"),
+  amountCents: integer("amount_cents"),
+  invoiceVisibility: text("invoice_visibility").notNull().default('rollup'), // hidden | rollup | separateLine
+
+  pbv2TreeVersionId: varchar("pbv2_tree_version_id"),
+  pbv2SourceNodeId: varchar("pbv2_source_node_id"),
+  pbv2EffectIndex: integer("pbv2_effect_index"),
+
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_line_item_components_org_idx").on(table.organizationId),
+  index("order_line_item_components_order_id_idx").on(table.orderId),
+  index("order_line_item_components_line_item_id_idx").on(table.orderLineItemId),
+  // NOTE: PBV2 idempotency uniqueness is enforced via a PARTIAL UNIQUE INDEX in SQL migration 0024.
 ]);
 
 export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit({
@@ -2114,7 +2151,83 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   sqft: z.coerce.number().positive().optional().nullable(),
   status: z.enum(["queued", "printing", "finishing", "done", "canceled"]).default("queued"),
   specsJson: z.record(z.any()).optional().nullable(),
+  // PBV2 request-only fields (not persisted directly; snapshots are persisted).
+  // Keep validation permissive enough for future option expansions, but still JSON-safe.
+  pbv2ExplicitSelections: (() => {
+    const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+      if (!value || typeof value !== 'object') return false;
+      if (Array.isArray(value)) return false;
+      const proto = Object.getPrototypeOf(value);
+      return proto === Object.prototype || proto === null;
+    };
+
+    const isJsonValue = (value: unknown, depth = 0): boolean => {
+      // Guard against pathological inputs
+      if (depth > 50) return false;
+
+      if (value === null) return true;
+      if (typeof value === 'boolean') return true;
+      if (typeof value === 'string') return true;
+      if (typeof value === 'number') return Number.isFinite(value);
+
+      if (Array.isArray(value)) {
+        for (const v of value) {
+          if (!isJsonValue(v, depth + 1)) return false;
+        }
+        return true;
+      }
+
+      if (isPlainObject(value)) {
+        for (const v of Object.values(value)) {
+          if (!isJsonValue(v, depth + 1)) return false;
+        }
+        return true;
+      }
+
+      // Reject Date, functions, bigint, symbols, class instances, etc.
+      return false;
+    };
+
+    const zJsonObject = z.custom<Record<string, unknown>>(
+      (v) => isPlainObject(v) && isJsonValue(v),
+      { message: 'Expected JSON-serializable plain object' },
+    );
+
+    return z.preprocess((v) => (v === null ? undefined : v), zJsonObject.optional());
+  })(),
+  pbv2Env: (() => {
+    const zEnvNumber = z.preprocess(
+      (v) => {
+        if (v === null) return undefined;
+        if (typeof v === 'string') {
+          const trimmed = v.trim();
+          if (!trimmed) return v;
+          const n = Number(trimmed);
+          return n;
+        }
+        return v;
+      },
+      z.number().finite(),
+    );
+
+    return z
+      .preprocess((v) => (v === null ? undefined : v),
+        z
+          .object({
+            widthIn: zEnvNumber.optional(),
+            heightIn: zEnvNumber.optional(),
+            qty: zEnvNumber.optional(),
+            quantity: zEnvNumber.optional(),
+          })
+          // Allow additional builder variables, but keep them numeric and finite.
+          .catchall(zEnvNumber)
+          .optional(),
+      );
+  })(),
 });
+
+export type OrderLineItemComponent = typeof orderLineItemComponents.$inferSelect;
+export type InsertOrderLineItemComponent = typeof orderLineItemComponents.$inferInsert;
 
 export const updateOrderLineItemSchema = insertOrderLineItemSchema.partial().extend({
   id: z.string(),
