@@ -42,6 +42,8 @@ function normalizeType(value: unknown): PBV2Type | null {
   const upper = value.toUpperCase();
   if (upper === "NUMBER") return "NUMBER";
   if (upper === "BOOLEAN") return "BOOLEAN";
+  // PBV2 INPUT supports ENUM, which is represented as TEXT in ExpressionSpec/Ref typing.
+  if (upper === "ENUM") return "TEXT";
   if (upper === "TEXT" || upper === "STRING") return "TEXT";
   if (upper === "JSON") return "JSON";
   if (upper === "NULL") return "NULL";
