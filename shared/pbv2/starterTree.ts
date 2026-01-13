@@ -291,6 +291,13 @@ export function createPbv2BannerGrommetsPricingTreeJson(): Record<string, unknow
               },
             },
           ],
+          materialEffects: [
+            {
+              skuRef: "GROMMET_STD",
+              uom: "ea",
+              qtyRef: { op: "ref", ref: { kind: "nodeOutputRef", nodeId: "compute_totalCount", outputKey: "totalCount" } },
+            },
+          ],
         },
       },
     ],

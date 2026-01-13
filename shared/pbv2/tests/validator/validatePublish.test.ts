@@ -151,4 +151,64 @@ describe("pbv2/validator/validatePublish", () => {
     const result = validateTreeForPublish(tree as any, { ...DEFAULT_VALIDATE_OPTS, ambiguousEdgesStrict: true });
     expect(result.errors.some((f) => f.code === "PBV2_W_EDGE_AMBIGUOUS_MATCH")).toBe(true);
   });
+
+  test("MaterialEffect qtyRef unresolved => ERROR", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        { id: "root", type: "INPUT", status: "ENABLED", key: "root", input: { selectionKey: "root", valueType: "BOOLEAN" } },
+        {
+          id: "p1",
+          type: "PRICE",
+          status: "ENABLED",
+          key: "p1",
+          price: {
+            components: [],
+            materialEffects: [
+              {
+                skuRef: "SKU_X",
+                uom: "ea",
+                qtyRef: { op: "ref", ref: { kind: "selectionRef", selectionKey: "nope" } },
+              },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.some((f) => f.code === "PBV2_E_EXPR_REF_UNRESOLVED")).toBe(true);
+  });
+
+  test("MaterialEffect negative qtyRef => ERROR", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        { id: "root", type: "INPUT", status: "ENABLED", key: "root", input: { selectionKey: "root", valueType: "BOOLEAN" } },
+        {
+          id: "p1",
+          type: "PRICE",
+          status: "ENABLED",
+          key: "p1",
+          price: {
+            components: [],
+            materialEffects: [
+              {
+                skuRef: "SKU_X",
+                uom: "ea",
+                qtyRef: { op: "literal", value: -1 },
+              },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.some((f) => f.code === "PBV2_E_MATERIAL_NEGATIVE_QUANTITY")).toBe(true);
+  });
 });

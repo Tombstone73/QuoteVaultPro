@@ -32,7 +32,7 @@ import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import type { SymbolTable } from "@shared/pbv2/symbolTable";
 import { buildVariableCatalog } from "@shared/pbv2/variableCatalog";
 import { validateFormulaJson } from "@shared/pbv2/formulaValidation";
-import { pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
+import { pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
 import FormulaEditor from "@/components/FormulaEditor";
 
 type Pbv2TreeVersion = {
@@ -185,6 +185,16 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
   const [previewSelectionsText, setPreviewSelectionsText] = useState<string>("{}\n");
   const [previewError, setPreviewError] = useState<string>("");
   const [previewResult, setPreviewResult] = useState<{ addOnCents: number; breakdown: any[] } | null>(null);
+
+  const [materialNodeId, setMaterialNodeId] = useState<string>("");
+  const [materialEffectIndex, setMaterialEffectIndex] = useState<string>("0");
+  const [materialSkuRef, setMaterialSkuRef] = useState<string>("");
+  const [materialUom, setMaterialUom] = useState<string>("ea");
+  const [materialQtyText, setMaterialQtyText] = useState<string>("{}\n");
+  const [materialAppliesWhenText, setMaterialAppliesWhenText] = useState<string>("");
+
+  const [previewMaterialsError, setPreviewMaterialsError] = useState<string>("");
+  const [previewMaterialsResult, setPreviewMaterialsResult] = useState<{ materials: any[] } | null>(null);
 
   const treeQuery = useQuery<TreeResponse>({
     queryKey: ["/api/products", productId, "pbv2", "tree"],
@@ -647,6 +657,46 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
     formulaNodeId,
     priceComponentIndex,
   ]);
+
+  useEffect(() => {
+    if (!parsedDraft.ok) {
+      setMaterialSkuRef("");
+      setMaterialUom("ea");
+      setMaterialQtyText("{}\n");
+      setMaterialAppliesWhenText("");
+      return;
+    }
+
+    const findNodeRaw = (id: string) => {
+      const n = nodesAll.find((x) => x.id === id);
+      return n?.raw as any;
+    };
+
+    if (!materialNodeId.trim()) {
+      const fallback = priceNodes[0]?.id;
+      if (fallback) setMaterialNodeId(fallback);
+      return;
+    }
+
+    const node = findNodeRaw(materialNodeId);
+    if (!node) {
+      setMaterialSkuRef("");
+      setMaterialUom("ea");
+      setMaterialQtyText("{}\n");
+      setMaterialAppliesWhenText("");
+      return;
+    }
+
+    const price = (node as any).price ?? (node as any).data;
+    const effects = Array.isArray(price?.materialEffects) ? price.materialEffects : [];
+    const idx = Number(materialEffectIndex);
+    const eff = Number.isFinite(idx) ? effects[idx] : undefined;
+
+    setMaterialSkuRef(typeof eff?.skuRef === "string" ? eff.skuRef : "");
+    setMaterialUom(typeof eff?.uom === "string" ? eff.uom : "ea");
+    setMaterialQtyText(eff?.qtyRef ? JSON.stringify(eff.qtyRef, null, 2) : "{}\n");
+    setMaterialAppliesWhenText(eff?.appliesWhen ? JSON.stringify(eff.appliesWhen, null, 2) : "");
+  }, [parsedDraft.ok, nodesAll, priceNodes, materialNodeId, materialEffectIndex]);
 
   const edgesForUi = useMemo(() => {
     const list = parsedDraft.edges
@@ -1489,6 +1539,165 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
 
                 <div className="rounded-md border border-border">
                   <div className="p-3 space-y-3">
+                    <div className="text-sm font-medium">Materials (DRAFT-only)</div>
+                    <div className="text-xs text-muted-foreground">
+                      Edit PRICE.materialEffects entries (skuRef, uom, qtyRef, appliesWhen).
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <Label>PRICE node</Label>
+                        <Select value={materialNodeId || "__none__"} onValueChange={(v) => setMaterialNodeId(v === "__none__" ? "" : v)} disabled={!draft || isBusy}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select PRICE node…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">None</SelectItem>
+                            {priceNodes.map((n) => (
+                              <SelectItem key={n.id} value={n.id}>
+                                {n.id}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label>Effect index</Label>
+                        <Input type="number" value={materialEffectIndex} onChange={(e) => setMaterialEffectIndex(e.target.value)} disabled={!draft || isBusy} />
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label>skuRef</Label>
+                        <Input value={materialSkuRef} onChange={(e) => setMaterialSkuRef(e.target.value)} placeholder="e.g. GROMMET_STD" disabled={!draft || isBusy} />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <Label>uom</Label>
+                        <Select value={materialUom} onValueChange={setMaterialUom} disabled={!draft || isBusy}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ea">Each</SelectItem>
+                            <SelectItem value="sheet">Sheet</SelectItem>
+                            <SelectItem value="sqft">SqFt</SelectItem>
+                            <SelectItem value="linear_ft">Linear Ft</SelectItem>
+                            <SelectItem value="ml">mL</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="md:col-span-2" />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <FormulaEditor
+                        valueText={materialQtyText}
+                        onChangeText={setMaterialQtyText}
+                        context="COMPUTE"
+                        symbolTable={symbolTableBundle.table}
+                        variableCatalog={variableCatalog}
+                        disabled={!draft || isBusy || !materialNodeId}
+                        label="qtyRef (ExpressionSpec)"
+                      />
+
+                      <FormulaEditor
+                        valueText={materialAppliesWhenText || ""}
+                        onChangeText={setMaterialAppliesWhenText}
+                        context="CONDITION"
+                        symbolTable={symbolTableBundle.table}
+                        variableCatalog={variableCatalog}
+                        disabled={!draft || isBusy || !materialNodeId}
+                        label="appliesWhen (optional ConditionRule)"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!draft || isBusy || !parsedDraft.ok || !materialNodeId.trim()}
+                        onClick={() => {
+                          if (!parsedDraft.ok) return;
+
+                          const nodeId = materialNodeId.trim();
+                          const idx = Number(materialEffectIndex);
+                          if (!Number.isFinite(idx) || idx < 0) {
+                            toast({ title: "Invalid index", description: "Effect index must be >= 0", variant: "destructive" });
+                            return;
+                          }
+
+                          const sku = materialSkuRef.trim();
+                          if (!sku) {
+                            toast({ title: "Missing skuRef", description: "skuRef is required.", variant: "destructive" });
+                            return;
+                          }
+
+                          let qtyParsed: any;
+                          try {
+                            qtyParsed = JSON.parse(materialQtyText);
+                          } catch {
+                            toast({ title: "Invalid JSON", description: "qtyRef must be valid JSON.", variant: "destructive" });
+                            return;
+                          }
+
+                          const qtyValidated = validateFormulaJson(qtyParsed, "COMPUTE" as any, symbolTableBundle.table, { pathBase: "qtyRef" });
+                          if (!qtyValidated.ok) {
+                            toast({ title: "qtyRef invalid", description: `${qtyValidated.errors.length} error(s)`, variant: "destructive" });
+                            return;
+                          }
+
+                          let appliesWhenParsed: any = undefined;
+                          if (materialAppliesWhenText.trim()) {
+                            try {
+                              appliesWhenParsed = JSON.parse(materialAppliesWhenText);
+                            } catch {
+                              toast({ title: "Invalid JSON", description: "appliesWhen must be valid JSON.", variant: "destructive" });
+                              return;
+                            }
+
+                            const awValidated = validateFormulaJson(appliesWhenParsed, "CONDITION" as any, symbolTableBundle.table, { pathBase: "appliesWhen" });
+                            if (!awValidated.ok) {
+                              toast({ title: "appliesWhen invalid", description: `${awValidated.errors.length} error(s)`, variant: "destructive" });
+                              return;
+                            }
+                          }
+
+                          updateDraftTree(
+                            (t) => {
+                              const { tree, nodes } = normalizeTreeArrays(t);
+                              const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                              if (!n) throw new Error(`Node not found: ${nodeId}`);
+
+                              if (!(n as any).price && !(n as any).data) (n as any).price = { components: [] };
+                              const price = (n as any).price ?? (n as any).data;
+                              if (!Array.isArray(price.materialEffects)) price.materialEffects = [];
+                              if (!price.materialEffects[idx]) price.materialEffects[idx] = {};
+                              const eff = price.materialEffects[idx];
+
+                              eff.skuRef = sku;
+                              eff.uom = materialUom;
+                              eff.qtyRef = qtyParsed;
+                              if (appliesWhenParsed !== undefined) eff.appliesWhen = appliesWhenParsed;
+                              else delete eff.appliesWhen;
+
+                              return tree;
+                            },
+                            { successToast: { title: "Material effect saved", description: `PRICE.materialEffects[${idx}] @ ${nodeId}` } }
+                          );
+                        }}
+                      >
+                        Save Material Effect
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border">
+                  <div className="p-3 space-y-3">
                     <div className="text-sm font-medium">Preview pricing (DRAFT-only)</div>
                     <div className="text-xs text-muted-foreground">
                       Enter env + explicitSelections, run pricing adapter, view add-on cents + breakdown.
@@ -1618,6 +1827,110 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                                     <TableCell className="font-mono text-xs">{String(b.componentIndex ?? "")}</TableCell>
                                     <TableCell className="text-xs">{String(b.kind ?? "")}</TableCell>
                                     <TableCell className="font-mono text-xs text-right">{String(b.amountCents ?? 0)}</TableCell>
+                                  </TableRow>
+                                ))
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border">
+                  <div className="p-3 space-y-3">
+                    <div className="text-sm font-medium">Preview materials (DRAFT-only)</div>
+                    <div className="text-xs text-muted-foreground">Uses env + explicitSelections above to run material effects adapter.</div>
+
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!draft || isBusy || !parsedDraft.ok}
+                        onClick={() => {
+                          setPreviewMaterialsError("");
+                          setPreviewMaterialsResult(null);
+                          if (!parsedDraft.ok) return;
+
+                          let selections: Record<string, unknown> = {};
+                          try {
+                            const parsed = JSON.parse(previewSelectionsText || "{}");
+                            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                              throw new Error("explicitSelections must be a JSON object");
+                            }
+                            selections = parsed as Record<string, unknown>;
+                          } catch (e: any) {
+                            setPreviewMaterialsError(e?.message || "Invalid selections JSON");
+                            return;
+                          }
+
+                          const numOrUndef = (s: string) => {
+                            const t = s.trim();
+                            if (!t) return undefined;
+                            const n = Number(t);
+                            if (!Number.isFinite(n)) throw new Error(`Invalid number: '${s}'`);
+                            return n;
+                          };
+
+                          let env: any;
+                          try {
+                            env = {
+                              widthIn: numOrUndef(previewWidthIn),
+                              heightIn: numOrUndef(previewHeightIn),
+                              quantity: numOrUndef(previewQuantity),
+                              sqft: numOrUndef(previewSqft),
+                              perimeterIn: numOrUndef(previewPerimeterIn),
+                            };
+                          } catch (e: any) {
+                            setPreviewMaterialsError(e?.message || "Invalid env value");
+                            return;
+                          }
+
+                          try {
+                            const r = pbv2ToMaterialEffects(parsedDraft.tree, selections, env);
+                            setPreviewMaterialsResult(r as any);
+                          } catch (e: any) {
+                            setPreviewMaterialsError(e?.message || "Preview failed");
+                          }
+                        }}
+                      >
+                        Run Materials Preview
+                      </Button>
+                      {previewMaterialsError ? <div className="text-xs text-destructive">{previewMaterialsError}</div> : null}
+                      {previewMaterialsResult ? (
+                        <div className="text-xs text-muted-foreground">
+                          effects: <span className="font-mono">{previewMaterialsResult.materials.length}</span>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {previewMaterialsResult ? (
+                      <div className="rounded-md border border-border">
+                        <div className="p-2">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>skuRef</TableHead>
+                                <TableHead>uom</TableHead>
+                                <TableHead className="text-right">qty</TableHead>
+                                <TableHead>sourceNodeId</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {previewMaterialsResult.materials.length === 0 ? (
+                                <TableRow>
+                                  <TableCell colSpan={4} className="text-xs text-muted-foreground">
+                                    No material effects.
+                                  </TableCell>
+                                </TableRow>
+                              ) : (
+                                previewMaterialsResult.materials.map((m: any, idx: number) => (
+                                  <TableRow key={idx}>
+                                    <TableCell className="font-mono text-xs">{String(m.skuRef ?? "")}</TableCell>
+                                    <TableCell className="font-mono text-xs">{String(m.uom ?? "")}</TableCell>
+                                    <TableCell className="font-mono text-xs text-right">{String(m.qty ?? 0)}</TableCell>
+                                    <TableCell className="font-mono text-xs">{String(m.sourceNodeId ?? "")}</TableCell>
                                   </TableRow>
                                 ))
                               )}

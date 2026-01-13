@@ -1,4 +1,6 @@
 import type { ConditionRule, ExpressionLiteral, ExpressionSpec } from "./expressionSpec";
+import { buildSymbolTable } from "./symbolTable";
+import { typeCheckCondition, typeCheckExpression } from "./typeChecker";
 
 export type Pbv2Selections = {
   explicitSelections?: Record<string, unknown>;
@@ -25,6 +27,17 @@ export type Pbv2PricingBreakdownLine = {
 export type Pbv2PricingAddonsResult = {
   addOnCents: number;
   breakdown: Pbv2PricingBreakdownLine[];
+};
+
+export type MaterialEffect = {
+  skuRef: string;
+  qty: number;
+  uom: string;
+  sourceNodeId: string;
+};
+
+export type Pbv2MaterialEffectsResult = {
+  materials: MaterialEffect[];
 };
 
 type AnyRecord = Record<string, unknown>;
@@ -207,6 +220,12 @@ function extractPriceComponents(node: AnyRecord): unknown[] {
   const price = extractPricePayload(node);
   const comps = price ? (price as any).components : undefined;
   return Array.isArray(comps) ? comps : [];
+}
+
+function extractMaterialEffects(node: AnyRecord): unknown[] {
+  const price = extractPricePayload(node);
+  const effects = price ? (price as any).materialEffects : undefined;
+  return Array.isArray(effects) ? effects : [];
 }
 
 type EvalCtx = {
@@ -572,6 +591,40 @@ function topoSortComputeNodes(computeNodeIds: string[], exprByNodeId: Record<str
   return out;
 }
 
+function evaluateActiveComputeOutputs(nodes: NodeRec[], activeNodeIds: ReadonlySet<string>, evalCtx: EvalCtx): void {
+  const activeComputeNodes = nodes.filter((n) => n.status === "ENABLED" && n.type === "COMPUTE" && activeNodeIds.has(n.id));
+  const exprByComputeId: Record<string, ExpressionSpec> = {};
+  const outputsByComputeId: Record<string, string[]> = {};
+
+  for (const n of activeComputeNodes) {
+    const exprRaw = extractComputeExpression(n.raw);
+    const expr = exprRaw as ExpressionSpec;
+    if (!expr || typeof expr !== "object" || typeof (expr as any).op !== "string") {
+      throw new Error(`PBV2 compute node '${n.id}' has invalid expression`);
+    }
+    exprByComputeId[n.id] = expr;
+
+    const outputs = extractComputeOutputs(n.raw);
+    const keys = Object.keys(outputs);
+    if (keys.length !== 1) {
+      throw new Error(`PBV2 compute node '${n.id}' must define exactly 1 output key for runtime adapter`);
+    }
+    outputsByComputeId[n.id] = keys;
+  }
+
+  const computeOrder = topoSortComputeNodes(
+    activeComputeNodes.map((n) => n.id).sort(),
+    exprByComputeId
+  );
+
+  for (const id of computeOrder) {
+    const expr = exprByComputeId[id];
+    const outKey = outputsByComputeId[id][0];
+    const value = evalExpression(expr, evalCtx);
+    evalCtx.computeOutputsByNodeId[id] = { [outKey]: value };
+  }
+}
+
 export function pbv2ToPricingAddons(
   treeJson: unknown,
   selections: Pbv2Selections | Record<string, unknown> | undefined,
@@ -619,37 +672,7 @@ export function pbv2ToPricingAddons(
   const activeNodeIds = resolveActiveNodeIds(tree, nodesById, edges, evalCtx);
 
   // Evaluate COMPUTE nodes in dependency order (active subset)
-  const activeComputeNodes = nodes.filter((n) => n.status === "ENABLED" && n.type === "COMPUTE" && activeNodeIds.has(n.id));
-  const exprByComputeId: Record<string, ExpressionSpec> = {};
-  const outputsByComputeId: Record<string, string[]> = {};
-
-  for (const n of activeComputeNodes) {
-    const exprRaw = extractComputeExpression(n.raw);
-    const expr = exprRaw as ExpressionSpec;
-    if (!expr || typeof expr !== "object" || typeof (expr as any).op !== "string") {
-      throw new Error(`PBV2 compute node '${n.id}' has invalid expression`);
-    }
-    exprByComputeId[n.id] = expr;
-
-    const outputs = extractComputeOutputs(n.raw);
-    const keys = Object.keys(outputs);
-    if (keys.length !== 1) {
-      throw new Error(`PBV2 compute node '${n.id}' must define exactly 1 output key for runtime adapter`);
-    }
-    outputsByComputeId[n.id] = keys;
-  }
-
-  const computeOrder = topoSortComputeNodes(
-    activeComputeNodes.map((n) => n.id).sort(),
-    exprByComputeId
-  );
-
-  for (const id of computeOrder) {
-    const expr = exprByComputeId[id];
-    const outKey = outputsByComputeId[id][0];
-    const value = evalExpression(expr, evalCtx);
-    evalCtx.computeOutputsByNodeId[id] = { [outKey]: value };
-  }
+  evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
 
   // Evaluate PRICE nodes/components
   const breakdown: Pbv2PricingBreakdownLine[] = [];
@@ -719,4 +742,108 @@ export function pbv2ToPricingAddons(
   addOnCents = Math.round(addOnCents);
 
   return { addOnCents, breakdown };
+}
+
+export function pbv2ToMaterialEffects(
+  treeJson: unknown,
+  selections: Pbv2Selections | Record<string, unknown> | undefined,
+  env: Pbv2Env | undefined,
+  opts?: { pricebook?: Record<string, number> }
+): Pbv2MaterialEffectsResult {
+  const tree = asRecord(treeJson);
+  if (!tree) throw new Error("Invalid PBV2 treeJson");
+
+  const { table: symbolTable } = buildSymbolTable(treeJson);
+
+  const nodes = extractNodes(tree);
+  const edges = extractEdges(tree);
+
+  const nodesById: Record<string, NodeRec> = {};
+  for (const n of nodes) nodesById[n.id] = n;
+
+  const explicitSelections = (() => {
+    if (!selections) return {};
+    if ((selections as any).explicitSelections && typeof (selections as any).explicitSelections === "object") {
+      return (selections as any).explicitSelections as Record<string, unknown>;
+    }
+    return selections as Record<string, unknown>;
+  })();
+
+  const envMap: Record<string, unknown> = { ...(env ?? {}) };
+
+  const inputDefaultsBySelectionKey: Record<string, unknown> = {};
+  for (const n of nodes) {
+    if (n.status !== "ENABLED") continue;
+    if (n.type !== "INPUT") continue;
+    const payload = extractInputPayload(n.raw);
+    const selectionKey = payload && isNonEmptyString((payload as any).selectionKey) ? String((payload as any).selectionKey) : null;
+    if (!selectionKey) continue;
+    const def = extractInputDefault(n.raw);
+    if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
+  }
+
+  const evalCtx: EvalCtx = {
+    selections: explicitSelections,
+    inputDefaultsBySelectionKey,
+    computeOutputsByNodeId: {},
+    env: envMap,
+    pricebook: opts?.pricebook,
+  };
+
+  const activeNodeIds = resolveActiveNodeIds(tree, nodesById, edges, evalCtx);
+  evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
+
+  const materials: Array<MaterialEffect & { __idx: number }> = [];
+  const activePriceNodes = nodes.filter((n) => n.status === "ENABLED" && n.type === "PRICE" && activeNodeIds.has(n.id));
+
+  for (const n of activePriceNodes) {
+    const effects = extractMaterialEffects(n.raw);
+
+    for (let i = 0; i < effects.length; i++) {
+      const e = asRecord(effects[i]);
+      if (!e) continue;
+
+      const skuRef = (e as any).skuRef;
+      const uom = (e as any).uom;
+      const qtyRef = (e as any).qtyRef;
+      const appliesWhen = (e as any).appliesWhen;
+
+      if (!isNonEmptyString(skuRef)) continue;
+      if (!isNonEmptyString(uom)) continue;
+      if (!qtyRef) continue;
+
+      // Shared type checking: reuse symbolTable + refResolver + typeChecker.
+      const qtyTc = typeCheckExpression(qtyRef as any, "COMPUTE", symbolTable, {
+        pathBase: `tree.nodes[${n.id}].price.materialEffects[${i}].qtyRef`,
+        entityId: n.id,
+      });
+      if (qtyTc.findings.some((f) => f.severity === "ERROR")) {
+        throw new Error(`PBV2 MATERIAL qtyRef invalid at node '${n.id}'[${i}]`);
+      }
+      if (qtyTc.inferred.type !== "NUMBER" || qtyTc.inferred.nullable) {
+        throw new Error(`PBV2 MATERIAL qtyRef must be non-null NUMBER at node '${n.id}'[${i}]`);
+      }
+
+      if (appliesWhen !== undefined) {
+        const cTc = typeCheckCondition(appliesWhen as any, symbolTable, {
+          pathBase: `tree.nodes[${n.id}].price.materialEffects[${i}].appliesWhen`,
+          entityId: n.id,
+        });
+        if (cTc.findings.some((f) => f.severity === "ERROR")) {
+          throw new Error(`PBV2 MATERIAL appliesWhen invalid at node '${n.id}'[${i}]`);
+        }
+        if (!evalCondition(appliesWhen as any, evalCtx)) continue;
+      }
+
+      const qty = toNumberOrThrow(evalExpression(qtyRef as any, evalCtx), `MATERIAL '${n.id}' qtyRef must be NUMBER`);
+      if (!Number.isFinite(qty)) throw new Error(`PBV2 MATERIAL '${n.id}' produced invalid qty`);
+      if (qty < 0) throw new Error(`PBV2 MATERIAL '${n.id}' qtyRef evaluated negative`);
+      if (qty <= 0) continue;
+
+      materials.push({ skuRef, qty, uom, sourceNodeId: n.id, __idx: i });
+    }
+  }
+
+  materials.sort((a, b) => a.sourceNodeId.localeCompare(b.sourceNodeId) || a.__idx - b.__idx);
+  return { materials: materials.map(({ __idx, ...rest }) => rest) };
 }
