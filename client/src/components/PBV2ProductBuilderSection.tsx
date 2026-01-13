@@ -8,8 +8,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
+import { createPbv2StarterTreeJson, stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 
 type Pbv2TreeVersion = {
   id: string;
@@ -38,17 +38,58 @@ type TreeResponse = {
   message?: string;
 };
 
+type Envelope<T> = {
+  success: boolean;
+  data?: T;
+  message?: string;
+  findings?: Finding[];
+  requiresWarningsConfirm?: boolean;
+};
+
+async function readJsonSafe(res: Response): Promise<any> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+async function apiJson<T>(method: string, url: string, body?: unknown): Promise<{ status: number; ok: boolean; json: Envelope<T> }>{
+  const res = await fetch(url, {
+    method,
+    credentials: "include",
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const json = (await readJsonSafe(res)) as Envelope<T>;
+  return { status: res.status, ok: res.ok, json };
+}
+
+function envelopeMessage(status: number, json: any, fallback: string) {
+  if (json?.message && typeof json.message === "string") return json.message;
+  if (json?.error && typeof json.error === "string") return json.error;
+  if (json?.raw && typeof json.raw === "string") return json.raw;
+  return `${fallback} (${status})`;
+}
+
 export default function PBV2ProductBuilderSection({ productId }: { productId: string }) {
   const { toast } = useToast();
   const [draftText, setDraftText] = useState<string>("");
   const [findings, setFindings] = useState<Finding[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [lastError, setLastError] = useState<string>("");
 
   const treeQuery = useQuery<TreeResponse>({
     queryKey: ["/api/products", productId, "pbv2", "tree"],
     queryFn: async () => {
       const res = await fetch(`/api/products/${productId}/pbv2/tree`, { credentials: "include" });
-      return (await res.json()) as TreeResponse;
+      const json = (await readJsonSafe(res)) as any;
+      if (!res.ok) {
+        return { success: false, message: envelopeMessage(res.status, json, "Failed to load PBV2") } as TreeResponse;
+      }
+      return json as TreeResponse;
     },
   });
 
@@ -77,21 +118,77 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
 
   const createDraftMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/products/${productId}/pbv2/tree/draft`, {});
-      return res as any;
+      setLastError("");
+      const result = await apiJson<Pbv2TreeVersion>("POST", `/api/products/${productId}/pbv2/tree/draft`, {});
+      if (!result.ok || result.json.success !== true) {
+        const message = envelopeMessage(result.status, result.json, "Failed to create draft");
+        const err = new Error(message) as any;
+        err.status = result.status;
+        err.payload = result.json;
+        throw err;
+      }
+      return result.json;
     },
     onSuccess: async () => {
       setFindings([]);
+      setLastError("");
       await treeQuery.refetch();
     },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    onError: (error: any) => {
+      const payload = error?.payload;
+      if (payload?.findings) setFindings(payload.findings as Finding[]);
+      setLastError(error.message);
+      toast({ title: "Draft create failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const createStarterDraftMutation = useMutation({
+    mutationFn: async () => {
+      setLastError("");
+      const starter = createPbv2StarterTreeJson();
+
+      const created = await apiJson<Pbv2TreeVersion>("POST", `/api/products/${productId}/pbv2/tree/draft`, {});
+      if (!created.ok || created.json.success !== true) {
+        const message = envelopeMessage(created.status, created.json, "Failed to create draft");
+        const err = new Error(message) as any;
+        err.status = created.status;
+        err.payload = created.json;
+        throw err;
+      }
+
+      const draftId = (created.json as any)?.data?.id as string | undefined;
+      if (!draftId) throw new Error("Draft id missing from response");
+
+      const patched = await apiJson<Pbv2TreeVersion>("PATCH", `/api/pbv2/tree-versions/${draftId}`, { treeJson: starter });
+      if (!patched.ok || patched.json.success !== true) {
+        const message = envelopeMessage(patched.status, patched.json, "Failed to save starter draft");
+        const err = new Error(message) as any;
+        err.status = patched.status;
+        err.payload = patched.json;
+        throw err;
+      }
+
+      return { starter, draftId };
+    },
+    onSuccess: async (data) => {
+      setDraftText(stringifyPbv2TreeJson(data.starter));
+      setFindings([]);
+      setLastError("");
+      toast({ title: "Starter draft saved", description: "Draft created and populated with a publish-valid starter tree." });
+      await treeQuery.refetch();
+    },
+    onError: (error: any) => {
+      const payload = error?.payload;
+      if (payload?.findings) setFindings(payload.findings as Finding[]);
+      setLastError(error.message);
+      toast({ title: "Starter draft failed", description: error.message, variant: "destructive" });
     },
   });
 
   const saveDraftMutation = useMutation({
     mutationFn: async () => {
       if (!draft) throw new Error("No draft to save");
+      setLastError("");
 
       let parsed: any;
       try {
@@ -100,15 +197,35 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
         throw new Error("Draft JSON is invalid");
       }
 
-      const res = await apiRequest("PATCH", `/api/pbv2/tree-versions/${draft.id}`, { treeJson: parsed });
-      return res as any;
+      const result = await apiJson<Pbv2TreeVersion>("PATCH", `/api/pbv2/tree-versions/${draft.id}`, { treeJson: parsed });
+
+      if (!result.ok || result.json.success !== true) {
+        const message = envelopeMessage(result.status, result.json, "Failed to save draft");
+        const err = new Error(message) as any;
+        err.status = result.status;
+        err.payload = result.json;
+        throw err;
+      }
+
+      return result.json;
     },
     onSuccess: async () => {
       toast({ title: "Draft saved" });
+      setLastError("");
       await treeQuery.refetch();
     },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    onError: async (error: any) => {
+      const payload = error?.payload;
+      if (payload?.findings) setFindings(payload.findings as Finding[]);
+
+      if (error?.status === 409) {
+        toast({ title: "Draft locked", description: "Draft already published; refresh." });
+        await treeQuery.refetch();
+        return;
+      }
+
+      setLastError(error.message);
+      toast({ title: "Draft save failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -145,6 +262,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
   const publishMutation = useMutation({
     mutationFn: async (confirmWarnings: boolean) => {
       if (!draft) throw new Error("No draft to publish");
+      setLastError("");
       const qs = confirmWarnings ? "?confirmWarnings=true" : "";
       const res = await fetch(`/api/pbv2/tree-versions/${draft.id}/publish${qs}`, {
         method: "POST",
@@ -152,36 +270,61 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
         credentials: "include",
       });
 
-      const json = (await res.json()) as any;
+      const json = (await readJsonSafe(res)) as any;
+
       if (!res.ok) {
-        const message = json?.message || "Publish failed";
+        const message = envelopeMessage(res.status, json, "Publish failed");
         const err = new Error(message) as any;
+        err.status = res.status;
         err.payload = json;
         throw err;
       }
-      return json;
+
+      return json as Envelope<Pbv2TreeVersion>;
     },
     onSuccess: async (data: any) => {
       const nextFindings = (data?.findings ?? []) as Finding[];
       setFindings(nextFindings);
+      setLastError("");
 
       if (data?.requiresWarningsConfirm) {
         setConfirmOpen(true);
+        toast({ title: "Warnings found", description: "Review warnings and click Confirm Publish." });
         return;
       }
 
-      toast({ title: "Published", description: "Draft is now ACTIVE." });
-      setConfirmOpen(false);
       await treeQuery.refetch();
+      const activeNow = treeQuery.data?.data?.active;
+      toast({
+        title: "Published",
+        description: activeNow?.id
+          ? `Active version: ${activeNow.id}${activeNow.publishedAt ? ` (published ${new Date(activeNow.publishedAt).toLocaleString()})` : ""}`
+          : "Draft is now ACTIVE.",
+      });
+      setConfirmOpen(false);
     },
-    onError: (error: any) => {
+    onError: async (error: any) => {
       const payload = error?.payload;
       if (payload?.findings) setFindings(payload.findings as Finding[]);
+
+      if (error?.status === 409) {
+        toast({ title: "Draft locked", description: "Draft already published; refresh." });
+        await treeQuery.refetch();
+        return;
+      }
+
+      setLastError(error.message);
       toast({ title: "Publish blocked", description: error.message, variant: "destructive" });
     },
   });
 
   const canEdit = Boolean(draft);
+  const isBusy =
+    treeQuery.isFetching ||
+    createDraftMutation.isPending ||
+    createStarterDraftMutation.isPending ||
+    saveDraftMutation.isPending ||
+    publishMutation.isPending;
 
   return (
     <Card className="mt-6">
@@ -205,6 +348,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
         {treeQuery.data && treeQuery.data.success === false ? (
           <div className="text-sm text-destructive">{treeQuery.data.message || "Failed to load PBV2"}</div>
         ) : null}
+        {lastError ? <div className="text-sm text-destructive">{lastError}</div> : null}
 
         <div className="grid grid-cols-1 gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -212,9 +356,17 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
               type="button"
               variant="outline"
               onClick={() => createDraftMutation.mutate()}
-              disabled={createDraftMutation.isPending || Boolean(draft)}
+              disabled={isBusy || Boolean(draft)}
             >
               Create Draft
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => createStarterDraftMutation.mutate()}
+              disabled={isBusy}
+            >
+              Create Starter Draft
             </Button>
             <Button type="button" variant="secondary" onClick={validateLocal} disabled={!draft}>
               Validate
@@ -222,7 +374,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
             <Button
               type="button"
               onClick={() => publishMutation.mutate(false)}
-              disabled={!draft || publishMutation.isPending}
+              disabled={!draft || isBusy}
             >
               Publish
             </Button>
@@ -230,7 +382,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
               type="button"
               variant="outline"
               onClick={() => saveDraftMutation.mutate()}
-              disabled={!draft || saveDraftMutation.isPending}
+              disabled={!draft || isBusy}
             >
               Save Draft
             </Button>
@@ -316,7 +468,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
               </div>
 
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)}>
+                <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={publishMutation.isPending}>
                   Cancel
                 </Button>
                 <Button type="button" onClick={() => publishMutation.mutate(true)} disabled={publishMutation.isPending}>

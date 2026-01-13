@@ -26,7 +26,15 @@ npm start
 2. Ensure PostgreSQL database is running (Neon or local)
 3. Run `npm install` to install dependencies
 4. Run `npm run db:push` to sync database schema (development only)
+	- To check what migrations are applied, run `npm run db:status`
+	- For a more detailed migration/journal view, run `npm run db:migrate:verbose`
+	- To verify PBV2 DB schema (read-only), run `npm run db:pbv2:check`
 5. Run `npm run dev` to start the development server
+
+### PBV2 Dev Smoke
+
+- PBV2 HTTP smoke (requires authenticated session cookie):
+  - `npm run pbv2:http:smoke -- --productId <productId> --cookie "connect.sid=..."`
 
 ## 📋 How to Contribute
 
@@ -100,6 +108,9 @@ Every data query must:
 ```bash
 # Type checking
 npm run check
+
+# PBV2 validator tests (in-memory)
+npm test -- --runTestsByPath shared/pbv2/tests/
 
 # Run tests (if configured)
 npm test
