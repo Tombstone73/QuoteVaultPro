@@ -1,5 +1,7 @@
 type Json = Record<string, any>;
 
+export {};
+
 type Finding = {
   severity: "ERROR" | "WARNING" | "INFO";
   code: string;
