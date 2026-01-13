@@ -32,8 +32,10 @@ import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import type { SymbolTable } from "@shared/pbv2/symbolTable";
 import { buildVariableCatalog } from "@shared/pbv2/variableCatalog";
 import { validateFormulaJson } from "@shared/pbv2/formulaValidation";
-import { pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
+import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
 import FormulaEditor from "@/components/FormulaEditor";
+import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/components/line-items/LineItemRowEnterprise";
+import type { PBV2Outputs } from "@/lib/pbv2/pbv2Outputs";
 
 type Pbv2TreeVersion = {
   id: string;
@@ -195,6 +197,33 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
 
   const [previewMaterialsError, setPreviewMaterialsError] = useState<string>("");
   const [previewMaterialsResult, setPreviewMaterialsResult] = useState<{ materials: any[] } | null>(null);
+
+  const [childNodeId, setChildNodeId] = useState<string>("");
+  const [childEffectIndex, setChildEffectIndex] = useState<string>("0");
+  const [childKind, setChildKind] = useState<"inlineSku" | "productRef">("inlineSku");
+  const [childTitle, setChildTitle] = useState<string>("");
+  const [childSkuRef, setChildSkuRef] = useState<string>("");
+  const [childProductId, setChildProductId] = useState<string>("");
+  const [childInvoiceVisibility, setChildInvoiceVisibility] = useState<"hidden" | "rollup" | "separateLine">("rollup");
+  const [childQtyText, setChildQtyText] = useState<string>("{}\n");
+  const [childUnitPriceText, setChildUnitPriceText] = useState<string>("{}\n");
+  const [childAppliesWhenText, setChildAppliesWhenText] = useState<string>("");
+
+  const [previewChildItemsError, setPreviewChildItemsError] = useState<string>("");
+  const [previewChildItemsResult, setPreviewChildItemsResult] = useState<{ childItems: any[] } | null>(null);
+
+  const [removeMaterialConfirmOpen, setRemoveMaterialConfirmOpen] = useState(false);
+  const [removeMaterialTarget, setRemoveMaterialTarget] = useState<null | { nodeId: string; idx: number; summary: string }>(null);
+
+  type InlineFinding = { severity: "ERROR" | "WARNING"; message: string };
+  const [materialValidationByKey, setMaterialValidationByKey] = useState<Record<string, { findings: InlineFinding[] }>>({});
+  const [materialRowExpandedByKey, setMaterialRowExpandedByKey] = useState<Record<string, boolean>>({});
+  const [lastFormulaApplyFindings, setLastFormulaApplyFindings] = useState<null | { findings: InlineFinding[]; note?: string }>(null);
+
+  const [removeChildConfirmOpen, setRemoveChildConfirmOpen] = useState(false);
+  const [removeChildTarget, setRemoveChildTarget] = useState<null | { nodeId: string; idx: number; summary: string }>(null);
+  const [childValidationByKey, setChildValidationByKey] = useState<Record<string, { findings: InlineFinding[] }>>({});
+  const [childRowExpandedByKey, setChildRowExpandedByKey] = useState<Record<string, boolean>>({});
 
   const treeQuery = useQuery<TreeResponse>({
     queryKey: ["/api/products", productId, "pbv2", "tree"],
@@ -531,6 +560,121 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
     }
   }, [draft, draftText]);
 
+  const isMissingQtyRef = (value: unknown): boolean => {
+    if (value === null || value === undefined) return true;
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+    return Object.keys(value as any).length === 0;
+  };
+
+  const validateInline = (expr: unknown, ctx: "COMPUTE" | "CONDITION" | "PRICE", pathBase: string): InlineFinding[] => {
+    const validated = validateFormulaJson(expr as any, ctx as any, symbolTableBundle.table, { pathBase });
+    const out: InlineFinding[] = [];
+    for (const e of validated.errors ?? []) out.push({ severity: "ERROR", message: `${e.code}: ${e.message}` });
+    for (const w of validated.warnings ?? []) out.push({ severity: "WARNING", message: `${w.code}: ${w.message}` });
+    return out;
+  };
+
+  const computeMaterialRowFindings = (row: any): InlineFinding[] => {
+    const out: InlineFinding[] = [];
+    const sku = typeof row?.skuRef === "string" ? row.skuRef.trim() : "";
+    const uom = typeof row?.uom === "string" ? row.uom.trim() : "";
+    if (!sku) out.push({ severity: "ERROR", message: "skuRef is empty" });
+    if (!uom) out.push({ severity: "ERROR", message: "uom is empty" });
+
+    if (isMissingQtyRef(row?.qtyRef)) {
+      out.push({ severity: "ERROR", message: "qtyRef is missing" });
+    } else {
+      out.push(...validateInline(row.qtyRef, "COMPUTE", "qtyRef"));
+    }
+
+    if (row?.appliesWhen !== undefined) {
+      out.push(...validateInline(row.appliesWhen, "CONDITION", "appliesWhen"));
+    }
+
+    return out;
+  };
+
+  const computeChildItemRowFindings = (row: any): InlineFinding[] => {
+    const out: InlineFinding[] = [];
+    const kind = row?.kind;
+    if (kind !== "inlineSku" && kind !== "productRef") out.push({ severity: "ERROR", message: "kind must be inlineSku or productRef" });
+    const title = typeof row?.title === "string" ? row.title.trim() : "";
+    if (!title) out.push({ severity: "ERROR", message: "title is empty" });
+
+    if (kind === "inlineSku") {
+      const sku = typeof row?.skuRef === "string" ? row.skuRef.trim() : "";
+      if (!sku) out.push({ severity: "ERROR", message: "skuRef is required for inlineSku" });
+    }
+
+    if (kind === "productRef") {
+      if (row?.childProductId !== undefined) {
+        const pid = typeof row?.childProductId === "string" ? row.childProductId.trim() : "";
+        if (!pid) out.push({ severity: "ERROR", message: "childProductId must be non-empty when provided" });
+      }
+    }
+
+    const iv = row?.invoiceVisibility;
+    if (iv !== undefined && iv !== "hidden" && iv !== "rollup" && iv !== "separateLine") {
+      out.push({ severity: "ERROR", message: "invoiceVisibility must be hidden|rollup|separateLine" });
+    }
+
+    if (isMissingQtyRef(row?.qtyRef)) out.push({ severity: "ERROR", message: "qtyRef is missing" });
+    else out.push(...validateInline(row.qtyRef, "COMPUTE", "qtyRef"));
+
+    if (row?.unitPriceRef !== undefined) {
+      out.push(...validateInline(row.unitPriceRef, "PRICE", "unitPriceRef"));
+    }
+
+    if (row?.appliesWhen !== undefined) out.push(...validateInline(row.appliesWhen, "CONDITION", "appliesWhen"));
+
+    return out;
+  };
+
+  const toCompactExpr = (value: unknown): string => {
+    if (value === null || value === undefined) return "(missing)";
+    try {
+      const s = JSON.stringify(value);
+      if (!s) return "(missing)";
+      return s.length > 80 ? `${s.slice(0, 77)}...` : s;
+    } catch {
+      return "(unstringifiable)";
+    }
+  };
+
+  const materialRowsForSelectedPriceNode = useMemo(() => {
+    if (!parsedDraft.ok) return [] as any[];
+    const nodeId = materialNodeId.trim();
+    if (!nodeId) return [] as any[];
+    const { nodes } = normalizeTreeArrays(parsedDraft.tree);
+    const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+    if (!n) return [] as any[];
+    const price = (n as any).price ?? (n as any).data;
+    return Array.isArray(price?.materialEffects) ? price.materialEffects : [];
+  }, [parsedDraft.ok, parsedDraft.tree, materialNodeId]);
+
+  const childRowsForSelectedPriceNode = useMemo(() => {
+    if (!parsedDraft.ok) return [] as any[];
+    const nodeId = childNodeId.trim();
+    if (!nodeId) return [] as any[];
+    const { nodes } = normalizeTreeArrays(parsedDraft.tree);
+    const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+    if (!n) return [] as any[];
+    const price = (n as any).price ?? (n as any).data;
+    return Array.isArray(price?.childItemEffects) ? price.childItemEffects : [];
+  }, [parsedDraft.ok, parsedDraft.tree, childNodeId]);
+
+  const disableSaveDraftBecauseNewMaterialRowEmpty = useMemo(() => {
+    if (!parsedDraft.ok) return false;
+    const nodeId = materialNodeId.trim();
+    if (!nodeId) return false;
+    const rows = materialRowsForSelectedPriceNode;
+    if (rows.length === 0) return false;
+    const last = rows[rows.length - 1];
+    const skuEmpty = typeof last?.skuRef !== "string" || !last.skuRef.trim();
+    const qtyMissing = isMissingQtyRef(last?.qtyRef);
+    return skuEmpty && qtyMissing;
+  }, [parsedDraft.ok, materialNodeId, materialRowsForSelectedPriceNode]);
+
   const emptySymbolTable = useMemo<SymbolTable>(() => {
     return {
       nodeTypesById: {},
@@ -697,6 +841,62 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
     setMaterialQtyText(eff?.qtyRef ? JSON.stringify(eff.qtyRef, null, 2) : "{}\n");
     setMaterialAppliesWhenText(eff?.appliesWhen ? JSON.stringify(eff.appliesWhen, null, 2) : "");
   }, [parsedDraft.ok, nodesAll, priceNodes, materialNodeId, materialEffectIndex]);
+
+  useEffect(() => {
+    if (!parsedDraft.ok) {
+      setChildKind("inlineSku");
+      setChildTitle("");
+      setChildSkuRef("");
+      setChildProductId("");
+      setChildInvoiceVisibility("rollup");
+      setChildQtyText("{}\n");
+      setChildUnitPriceText("{}\n");
+      setChildAppliesWhenText("");
+      return;
+    }
+
+    const findNodeRaw = (id: string) => {
+      const n = nodesAll.find((x) => x.id === id);
+      return n?.raw as any;
+    };
+
+    if (!childNodeId.trim()) {
+      const fallback = priceNodes[0]?.id;
+      if (fallback) setChildNodeId(fallback);
+      return;
+    }
+
+    const node = findNodeRaw(childNodeId);
+    if (!node) {
+      setChildKind("inlineSku");
+      setChildTitle("");
+      setChildSkuRef("");
+      setChildProductId("");
+      setChildInvoiceVisibility("rollup");
+      setChildQtyText("{}\n");
+      setChildUnitPriceText("{}\n");
+      setChildAppliesWhenText("");
+      return;
+    }
+
+    const price = (node as any).price ?? (node as any).data;
+    const effects = Array.isArray(price?.childItemEffects) ? price.childItemEffects : [];
+    const idx = Number(childEffectIndex);
+    const eff = Number.isFinite(idx) ? effects[idx] : undefined;
+
+    setChildKind(eff?.kind === "productRef" ? "productRef" : "inlineSku");
+    setChildTitle(typeof eff?.title === "string" ? eff.title : "");
+    setChildSkuRef(typeof eff?.skuRef === "string" ? eff.skuRef : "");
+    setChildProductId(typeof eff?.childProductId === "string" ? eff.childProductId : "");
+    setChildInvoiceVisibility(
+      eff?.invoiceVisibility === "hidden" || eff?.invoiceVisibility === "separateLine" || eff?.invoiceVisibility === "rollup"
+        ? eff.invoiceVisibility
+        : "rollup"
+    );
+    setChildQtyText(eff?.qtyRef ? JSON.stringify(eff.qtyRef, null, 2) : "{}\n");
+    setChildUnitPriceText(eff?.unitPriceRef ? JSON.stringify(eff.unitPriceRef, null, 2) : "{}\n");
+    setChildAppliesWhenText(eff?.appliesWhen ? JSON.stringify(eff.appliesWhen, null, 2) : "");
+  }, [parsedDraft.ok, nodesAll, priceNodes, childNodeId, childEffectIndex]);
 
   const edgesForUi = useMemo(() => {
     const list = parsedDraft.edges
@@ -894,10 +1094,16 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
               type="button"
               variant="outline"
               onClick={() => saveDraftMutation.mutate()}
-              disabled={!draft || isBusy}
+              disabled={!draft || isBusy || disableSaveDraftBecauseNewMaterialRowEmpty}
             >
               Save Draft
             </Button>
+
+            {disableSaveDraftBecauseNewMaterialRowEmpty ? (
+              <div className="text-xs text-muted-foreground">
+                Fill the newly added material row before saving.
+              </div>
+            ) : null}
 
             <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
               <span>Errors: {counts.errors}</span>
@@ -1479,27 +1685,22 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                         onClick={() => {
                           if (!parsedDraft.ok) return;
                           let parsed: any;
+                          let parseNote: string | undefined;
                           try {
                             parsed = JSON.parse(formulaText);
                           } catch {
-                            toast({ title: "Invalid JSON", description: "Formula JSON must be valid JSON.", variant: "destructive" });
-                            return;
+                            parsed = {};
+                            parseNote = "Invalid JSON; applied {}";
                           }
 
-                          const ctx =
-                            formulaTarget === "PRICE_COMPONENT_APPLIES_WHEN"
-                              ? "CONDITION"
-                              : formulaTarget === "COMPUTE_EXPRESSION"
-                              ? "COMPUTE"
-                              : "PRICE";
-                          const validated = validateFormulaJson(parsed, ctx as any, symbolTableBundle.table, { pathBase: "expr" });
-                          if (!validated.ok) {
-                            toast({ title: "Formula invalid", description: `${validated.errors.length} error(s)`, variant: "destructive" });
-                            return;
-                          }
+                          const ctx: "CONDITION" | "COMPUTE" | "PRICE" =
+                            formulaTarget === "PRICE_COMPONENT_APPLIES_WHEN" ? "CONDITION" : formulaTarget === "COMPUTE_EXPRESSION" ? "COMPUTE" : "PRICE";
 
                           const nodeId = formulaNodeId.trim();
                           const componentIdx = Number(priceComponentIndex);
+
+                          const nextFindings = validateInline(parsed, ctx, "expr");
+                          setLastFormulaApplyFindings({ findings: nextFindings, note: parseNote });
 
                           updateDraftTree(
                             (t) => {
@@ -1533,6 +1734,15 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                       >
                         Save Formula
                       </Button>
+
+                      {lastFormulaApplyFindings ? (
+                        <div className="text-xs text-muted-foreground">
+                          {lastFormulaApplyFindings.findings.some((f) => f.severity === "ERROR")
+                            ? "Invalid (publish will fail)"
+                            : "Valid"}
+                          {lastFormulaApplyFindings.note ? ` — ${lastFormulaApplyFindings.note}` : ""}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1542,6 +1752,197 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                     <div className="text-sm font-medium">Materials (DRAFT-only)</div>
                     <div className="text-xs text-muted-foreground">
                       Edit PRICE.materialEffects entries (skuRef, uom, qtyRef, appliesWhen).
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!draft || isBusy || !parsedDraft.ok || !materialNodeId.trim()}
+                        onClick={() => {
+                          if (!parsedDraft.ok) return;
+                          const nodeId = materialNodeId.trim();
+                          if (!nodeId) return;
+
+                          const defaultQtyRef = { op: "literal", value: 1 };
+                          const currentCount = materialRowsForSelectedPriceNode.length;
+
+                          updateDraftTree(
+                            (t) => {
+                              const { tree, nodes } = normalizeTreeArrays(t);
+                              const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                              if (!n) throw new Error(`Node not found: ${nodeId}`);
+
+                              if (!(n as any).price && !(n as any).data) (n as any).price = { components: [] };
+                              const price = (n as any).price ?? (n as any).data;
+                              if (!Array.isArray(price.materialEffects)) price.materialEffects = [];
+                              price.materialEffects.push({ skuRef: "", uom: "ea", qtyRef: defaultQtyRef });
+                              return tree;
+                            },
+                            { successToast: { title: "Material added", description: `PRICE.materialEffects[${currentCount}] @ ${nodeId}` } }
+                          );
+
+                          setMaterialEffectIndex(String(currentCount));
+                          setMaterialSkuRef("");
+                          setMaterialUom("ea");
+                          setMaterialQtyText(JSON.stringify(defaultQtyRef, null, 2));
+                          setMaterialAppliesWhenText("");
+                        }}
+                      >
+                        + Add material
+                      </Button>
+                    </div>
+
+                    <div className="rounded-md border border-border">
+                      <div className="p-2">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-[60px]">#</TableHead>
+                              <TableHead>Summary</TableHead>
+                              <TableHead className="text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {materialNodeId.trim() && materialRowsForSelectedPriceNode.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={3} className="text-xs text-muted-foreground">
+                                  No material effects yet. Click “+ Add material”.
+                                </TableCell>
+                              </TableRow>
+                            ) : !materialNodeId.trim() ? (
+                              <TableRow>
+                                <TableCell colSpan={3} className="text-xs text-muted-foreground">
+                                  Select a PRICE node to edit material effects.
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              materialRowsForSelectedPriceNode.map((row: any, idx: number) => {
+                                const sku = typeof row?.skuRef === "string" ? row.skuRef.trim() : "";
+                                const uom = typeof row?.uom === "string" ? row.uom.trim() : "";
+                                const qtyMissing = isMissingQtyRef(row?.qtyRef);
+                                const qtyCompact = toCompactExpr(row?.qtyRef);
+                                const summary = `SKU: ${sku || "(empty)"} | qty: ${qtyCompact} | uom: ${uom || "(empty)"}`;
+                                const key = `${materialNodeId.trim()}|${idx}`;
+                                const computedFindings = computeMaterialRowFindings(row);
+                                const rowFindings = materialValidationByKey[key]?.findings ?? computedFindings;
+                                const hasError = rowFindings.some((f) => f.severity === "ERROR");
+                                const expanded = !!materialRowExpandedByKey[key];
+                                const shown = expanded ? rowFindings : rowFindings.slice(0, 3);
+
+                                const isSelected = Number(materialEffectIndex) === idx;
+
+                                return (
+                                  <TableRow key={idx} className={isSelected ? "bg-muted/50" : undefined}>
+                                    <TableCell className="font-mono text-xs">{idx}</TableCell>
+                                    <TableCell>
+                                      <div className="text-xs font-mono">{summary}</div>
+                                      <div className="text-xs text-muted-foreground">{hasError ? "Invalid (publish will fail)" : "Valid"}</div>
+
+                                      {rowFindings.length > 0 ? (
+                                        <div className="space-y-0.5 mt-1">
+                                          {shown.map((f, i) => (
+                                            <div
+                                              key={i}
+                                              className={
+                                                f.severity === "ERROR"
+                                                  ? "text-xs text-destructive"
+                                                  : "text-xs text-muted-foreground"
+                                              }
+                                            >
+                                              {f.message}
+                                            </div>
+                                          ))}
+                                          {rowFindings.length > 3 ? (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="ghost"
+                                              className="h-7 px-2 text-xs"
+                                              onClick={() =>
+                                                setMaterialRowExpandedByKey((prev) => ({
+                                                  ...prev,
+                                                  [key]: !prev[key],
+                                                }))
+                                              }
+                                            >
+                                              {expanded ? "Show less" : "Show all"}
+                                            </Button>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                      <div className="flex justify-end gap-2">
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          disabled={!draft || isBusy}
+                                          onClick={() => {
+                                            setMaterialEffectIndex(String(idx));
+                                          }}
+                                        >
+                                          Edit
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          disabled={!draft || isBusy || !parsedDraft.ok}
+                                          onClick={() => {
+                                            if (!parsedDraft.ok) return;
+                                            const nodeId = materialNodeId.trim();
+                                            if (!nodeId) return;
+                                            const cloned = (() => {
+                                              try {
+                                                return JSON.parse(JSON.stringify(row ?? {}));
+                                              } catch {
+                                                return { ...(row ?? {}) };
+                                              }
+                                            })();
+                                            const currentCount = materialRowsForSelectedPriceNode.length;
+                                            updateDraftTree(
+                                              (t) => {
+                                                const { tree, nodes } = normalizeTreeArrays(t);
+                                                const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                                                if (!n) throw new Error(`Node not found: ${nodeId}`);
+                                                if (!(n as any).price && !(n as any).data) (n as any).price = { components: [] };
+                                                const price = (n as any).price ?? (n as any).data;
+                                                if (!Array.isArray(price.materialEffects)) price.materialEffects = [];
+                                                price.materialEffects.push(cloned);
+                                                return tree;
+                                              },
+                                              { successToast: { title: "Material duplicated", description: `PRICE.materialEffects[${currentCount}] @ ${nodeId}` } }
+                                            );
+                                            setMaterialEffectIndex(String(currentCount));
+                                          }}
+                                        >
+                                          Duplicate
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="destructive"
+                                          disabled={!draft || isBusy}
+                                          onClick={() => {
+                                            const nodeId = materialNodeId.trim();
+                                            if (!nodeId) return;
+                                            setRemoveMaterialTarget({ nodeId, idx, summary });
+                                            setRemoveMaterialConfirmOpen(true);
+                                          }}
+                                        >
+                                          Remove
+                                        </Button>
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1570,6 +1971,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                       <div className="space-y-1">
                         <Label>skuRef</Label>
                         <Input value={materialSkuRef} onChange={(e) => setMaterialSkuRef(e.target.value)} placeholder="e.g. GROMMET_STD" disabled={!draft || isBusy} />
+                        {!materialSkuRef.trim() ? <div className="text-xs text-muted-foreground">Warning: skuRef is empty</div> : null}
                       </div>
                     </div>
 
@@ -1588,6 +1990,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                             <SelectItem value="ml">mL</SelectItem>
                           </SelectContent>
                         </Select>
+                        {!materialUom.trim() ? <div className="text-xs text-muted-foreground">Warning: uom is empty</div> : null}
                       </div>
 
                       <div className="md:col-span-2" />
@@ -1603,6 +2006,16 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                         disabled={!draft || isBusy || !materialNodeId}
                         label="qtyRef (ExpressionSpec)"
                       />
+
+                      {(() => {
+                        let parsed: any = null;
+                        try {
+                          parsed = JSON.parse(materialQtyText || "null");
+                        } catch {
+                          return <div className="text-xs text-muted-foreground">Warning: qtyRef JSON is invalid</div>;
+                        }
+                        return isMissingQtyRef(parsed) ? <div className="text-xs text-muted-foreground">Warning: qtyRef is missing</div> : null;
+                      })()}
 
                       <FormulaEditor
                         valueText={materialAppliesWhenText || ""}
@@ -1630,41 +2043,41 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                             return;
                           }
 
-                          const sku = materialSkuRef.trim();
-                          if (!sku) {
-                            toast({ title: "Missing skuRef", description: "skuRef is required.", variant: "destructive" });
-                            return;
-                          }
+                          const sku = materialSkuRef;
 
                           let qtyParsed: any;
+                          let qtyParseFailed = false;
                           try {
                             qtyParsed = JSON.parse(materialQtyText);
                           } catch {
-                            toast({ title: "Invalid JSON", description: "qtyRef must be valid JSON.", variant: "destructive" });
-                            return;
-                          }
-
-                          const qtyValidated = validateFormulaJson(qtyParsed, "COMPUTE" as any, symbolTableBundle.table, { pathBase: "qtyRef" });
-                          if (!qtyValidated.ok) {
-                            toast({ title: "qtyRef invalid", description: `${qtyValidated.errors.length} error(s)`, variant: "destructive" });
-                            return;
+                            qtyParsed = {};
+                            qtyParseFailed = true;
                           }
 
                           let appliesWhenParsed: any = undefined;
+                          let appliesWhenParseFailed = false;
                           if (materialAppliesWhenText.trim()) {
                             try {
                               appliesWhenParsed = JSON.parse(materialAppliesWhenText);
                             } catch {
-                              toast({ title: "Invalid JSON", description: "appliesWhen must be valid JSON.", variant: "destructive" });
-                              return;
-                            }
-
-                            const awValidated = validateFormulaJson(appliesWhenParsed, "CONDITION" as any, symbolTableBundle.table, { pathBase: "appliesWhen" });
-                            if (!awValidated.ok) {
-                              toast({ title: "appliesWhen invalid", description: `${awValidated.errors.length} error(s)`, variant: "destructive" });
-                              return;
+                              appliesWhenParsed = {};
+                              appliesWhenParseFailed = true;
                             }
                           }
+
+                          const key = `${nodeId}|${idx}`;
+                          const nextRow = {
+                            skuRef: sku,
+                            uom: materialUom,
+                            qtyRef: qtyParsed,
+                            ...(appliesWhenParsed !== undefined ? { appliesWhen: appliesWhenParsed } : {}),
+                          };
+
+                          const nextFindings: InlineFinding[] = [];
+                          if (qtyParseFailed) nextFindings.push({ severity: "ERROR", message: "qtyRef JSON is invalid (applied {})" });
+                          if (appliesWhenParseFailed) nextFindings.push({ severity: "ERROR", message: "appliesWhen JSON is invalid (applied {})" });
+                          nextFindings.push(...computeMaterialRowFindings(nextRow));
+                          setMaterialValidationByKey((prev) => ({ ...prev, [key]: { findings: nextFindings } }));
 
                           updateDraftTree(
                             (t) => {
@@ -1695,6 +2108,549 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                     </div>
                   </div>
                 </div>
+
+                <Dialog
+                  open={removeMaterialConfirmOpen}
+                  onOpenChange={(open) => {
+                    setRemoveMaterialConfirmOpen(open);
+                    if (!open) setRemoveMaterialTarget(null);
+                  }}
+                >
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Remove material effect?</DialogTitle>
+                      <DialogDescription>
+                        This cannot be recovered unless you undo before saving.
+                      </DialogDescription>
+                    </DialogHeader>
+                    {removeMaterialTarget ? (
+                      <div className="text-xs font-mono text-muted-foreground">{removeMaterialTarget.summary}</div>
+                    ) : null}
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setRemoveMaterialConfirmOpen(false);
+                          setRemoveMaterialTarget(null);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        disabled={!draft || isBusy || !parsedDraft.ok || !removeMaterialTarget}
+                        onClick={() => {
+                          if (!parsedDraft.ok) return;
+                          const target = removeMaterialTarget;
+                          if (!target) return;
+                          const nodeId = target.nodeId;
+                          const idx = target.idx;
+
+                          updateDraftTree(
+                            (t) => {
+                              const { tree, nodes } = normalizeTreeArrays(t);
+                              const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                              if (!n) throw new Error(`Node not found: ${nodeId}`);
+                              const price = (n as any).price ?? (n as any).data;
+                              if (!price || !Array.isArray(price.materialEffects)) return tree;
+                              if (idx < 0 || idx >= price.materialEffects.length) return tree;
+                              price.materialEffects.splice(idx, 1);
+                              return tree;
+                            },
+                            { successToast: { title: "Material removed", description: `PRICE.materialEffects[${idx}] @ ${nodeId}` } }
+                          );
+
+                          setRemoveMaterialConfirmOpen(false);
+                          setRemoveMaterialTarget(null);
+
+                          const curIdx = Number(materialEffectIndex);
+                          if (Number.isFinite(curIdx)) {
+                            if (curIdx === idx) setMaterialEffectIndex("0");
+                            else if (curIdx > idx) setMaterialEffectIndex(String(curIdx - 1));
+                          }
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                <div className="rounded-md border border-border">
+                  <div className="p-3 space-y-3">
+                    <div className="text-sm font-medium">Child items (DRAFT-only)</div>
+                    <div className="text-xs text-muted-foreground">
+                      Edit PRICE.childItemEffects entries (kind, title, sku/product, qtyRef, unitPriceRef, invoiceVisibility, appliesWhen).
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!draft || isBusy || !parsedDraft.ok || !childNodeId.trim()}
+                        onClick={() => {
+                          if (!parsedDraft.ok) return;
+                          const nodeId = childNodeId.trim();
+                          if (!nodeId) return;
+
+                          const defaultQtyRef = { op: "literal", value: 1 };
+                          const currentCount = childRowsForSelectedPriceNode.length;
+
+                          updateDraftTree(
+                            (t) => {
+                              const { tree, nodes } = normalizeTreeArrays(t);
+                              const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                              if (!n) throw new Error(`Node not found: ${nodeId}`);
+                              if (!(n as any).price && !(n as any).data) (n as any).price = { components: [] };
+                              const price = (n as any).price ?? (n as any).data;
+                              if (!Array.isArray(price.childItemEffects)) price.childItemEffects = [];
+                              price.childItemEffects.push({
+                                kind: "inlineSku",
+                                title: "",
+                                skuRef: "",
+                                qtyRef: defaultQtyRef,
+                                invoiceVisibility: "rollup",
+                              });
+                              return tree;
+                            },
+                            { successToast: { title: "Child item added", description: `PRICE.childItemEffects[${currentCount}] @ ${nodeId}` } }
+                          );
+
+                          setChildEffectIndex(String(currentCount));
+                          setChildKind("inlineSku");
+                          setChildTitle("");
+                          setChildSkuRef("");
+                          setChildProductId("");
+                          setChildInvoiceVisibility("rollup");
+                          setChildQtyText(JSON.stringify(defaultQtyRef, null, 2));
+                          setChildUnitPriceText("{}\n");
+                          setChildAppliesWhenText("");
+                        }}
+                      >
+                        + Add child item
+                      </Button>
+                    </div>
+
+                    <div className="rounded-md border border-border">
+                      <div className="p-2">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-[60px]">#</TableHead>
+                              <TableHead>Summary</TableHead>
+                              <TableHead className="text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {childNodeId.trim() && childRowsForSelectedPriceNode.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={3} className="text-xs text-muted-foreground">
+                                  No child items yet. Click “+ Add child item”.
+                                </TableCell>
+                              </TableRow>
+                            ) : !childNodeId.trim() ? (
+                              <TableRow>
+                                <TableCell colSpan={3} className="text-xs text-muted-foreground">
+                                  Select a PRICE node to edit child items.
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              childRowsForSelectedPriceNode.map((row: any, idx: number) => {
+                                const kind = row?.kind === "productRef" ? "productRef" : "inlineSku";
+                                const title = typeof row?.title === "string" ? row.title.trim() : "";
+                                const ref =
+                                  kind === "inlineSku"
+                                    ? `sku=${typeof row?.skuRef === "string" ? row.skuRef.trim() : ""}`
+                                    : `product=${typeof row?.childProductId === "string" ? row.childProductId.trim() : ""}`;
+                                const qtyCompact = toCompactExpr(row?.qtyRef);
+                                const summary = `title: ${title || "(empty)"} | kind: ${kind} | ${ref || ""} | qty: ${qtyCompact}`;
+
+                                const key = `${childNodeId.trim()}|${idx}`;
+                                const computedFindings = computeChildItemRowFindings(row);
+                                const rowFindings = childValidationByKey[key]?.findings ?? computedFindings;
+                                const hasError = rowFindings.some((f) => f.severity === "ERROR");
+                                const expanded = !!childRowExpandedByKey[key];
+                                const shown = expanded ? rowFindings : rowFindings.slice(0, 3);
+                                const isSelected = Number(childEffectIndex) === idx;
+
+                                return (
+                                  <TableRow key={idx} className={isSelected ? "bg-muted/50" : undefined}>
+                                    <TableCell className="font-mono text-xs">{idx}</TableCell>
+                                    <TableCell>
+                                      <div className="text-xs font-mono">{summary}</div>
+                                      <div className="text-xs text-muted-foreground">{hasError ? "Invalid (publish will fail)" : "Valid"}</div>
+
+                                      {rowFindings.length > 0 ? (
+                                        <div className="space-y-0.5 mt-1">
+                                          {shown.map((f, i) => (
+                                            <div key={i} className={f.severity === "ERROR" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                                              {f.message}
+                                            </div>
+                                          ))}
+                                          {rowFindings.length > 3 ? (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="ghost"
+                                              className="h-7 px-2 text-xs"
+                                              onClick={() =>
+                                                setChildRowExpandedByKey((prev) => ({
+                                                  ...prev,
+                                                  [key]: !prev[key],
+                                                }))
+                                              }
+                                            >
+                                              {expanded ? "Show less" : "Show all"}
+                                            </Button>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                      <div className="flex justify-end gap-2">
+                                        <Button type="button" size="sm" variant="outline" disabled={!draft || isBusy} onClick={() => setChildEffectIndex(String(idx))}>
+                                          Edit
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          disabled={!draft || isBusy || !parsedDraft.ok}
+                                          onClick={() => {
+                                            if (!parsedDraft.ok) return;
+                                            const nodeId = childNodeId.trim();
+                                            if (!nodeId) return;
+                                            const cloned = (() => {
+                                              try {
+                                                return JSON.parse(JSON.stringify(row ?? {}));
+                                              } catch {
+                                                return { ...(row ?? {}) };
+                                              }
+                                            })();
+                                            const currentCount = childRowsForSelectedPriceNode.length;
+                                            updateDraftTree(
+                                              (t) => {
+                                                const { tree, nodes } = normalizeTreeArrays(t);
+                                                const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                                                if (!n) throw new Error(`Node not found: ${nodeId}`);
+                                                if (!(n as any).price && !(n as any).data) (n as any).price = { components: [] };
+                                                const price = (n as any).price ?? (n as any).data;
+                                                if (!Array.isArray(price.childItemEffects)) price.childItemEffects = [];
+                                                price.childItemEffects.push(cloned);
+                                                return tree;
+                                              },
+                                              { successToast: { title: "Child item duplicated", description: `PRICE.childItemEffects[${currentCount}] @ ${nodeId}` } }
+                                            );
+                                            setChildEffectIndex(String(currentCount));
+                                          }}
+                                        >
+                                          Duplicate
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="destructive"
+                                          disabled={!draft || isBusy}
+                                          onClick={() => {
+                                            const nodeId = childNodeId.trim();
+                                            if (!nodeId) return;
+                                            setRemoveChildTarget({ nodeId, idx, summary });
+                                            setRemoveChildConfirmOpen(true);
+                                          }}
+                                        >
+                                          Remove
+                                        </Button>
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })
+                            )}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <Label>PRICE node</Label>
+                        <Select value={childNodeId} onValueChange={setChildNodeId} disabled={!draft || isBusy}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select PRICE node…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">None</SelectItem>
+                            {priceNodes.map((n) => (
+                              <SelectItem key={n.id} value={n.id}>
+                                {n.id}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label>Effect index</Label>
+                        <Input type="number" value={childEffectIndex} onChange={(e) => setChildEffectIndex(e.target.value)} disabled={!draft || isBusy} />
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label>kind</Label>
+                        <Select value={childKind} onValueChange={(v) => setChildKind(v as any)} disabled={!draft || isBusy}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="inlineSku">inlineSku</SelectItem>
+                            <SelectItem value="productRef">productRef</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label>title</Label>
+                        <Input value={childTitle} onChange={(e) => setChildTitle(e.target.value)} placeholder="e.g. Aluminum extrusion frame" disabled={!draft || isBusy} />
+                        {!childTitle.trim() ? <div className="text-xs text-muted-foreground">Warning: title is empty</div> : null}
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label>invoiceVisibility</Label>
+                        <Select value={childInvoiceVisibility} onValueChange={(v) => setChildInvoiceVisibility(v as any)} disabled={!draft || isBusy}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="rollup">rollup</SelectItem>
+                            <SelectItem value="separateLine">separateLine</SelectItem>
+                            <SelectItem value="hidden">hidden</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    {childKind === "inlineSku" ? (
+                      <div className="space-y-1">
+                        <Label>skuRef</Label>
+                        <Input value={childSkuRef} onChange={(e) => setChildSkuRef(e.target.value)} placeholder="e.g. AL_EXTRUSION_STD" disabled={!draft || isBusy} />
+                        {!childSkuRef.trim() ? <div className="text-xs text-muted-foreground">Warning: skuRef is empty</div> : null}
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <Label>childProductId (optional placeholder)</Label>
+                        <Input value={childProductId} onChange={(e) => setChildProductId(e.target.value)} placeholder="e.g. prod_..." disabled={!draft || isBusy} />
+                      </div>
+                    )}
+
+                    <div className="space-y-3">
+                      <FormulaEditor
+                        valueText={childQtyText}
+                        onChangeText={setChildQtyText}
+                        context="COMPUTE"
+                        symbolTable={symbolTableBundle.table}
+                        variableCatalog={variableCatalog}
+                        disabled={!draft || isBusy || !childNodeId}
+                        label="qtyRef (ExpressionSpec)"
+                      />
+
+                      <FormulaEditor
+                        valueText={childUnitPriceText}
+                        onChangeText={setChildUnitPriceText}
+                        context="PRICE"
+                        symbolTable={symbolTableBundle.table}
+                        variableCatalog={variableCatalog}
+                        disabled={!draft || isBusy || !childNodeId}
+                        label="unitPriceRef (optional ExpressionSpec cents)"
+                      />
+
+                      <FormulaEditor
+                        valueText={childAppliesWhenText || ""}
+                        onChangeText={setChildAppliesWhenText}
+                        context="CONDITION"
+                        symbolTable={symbolTableBundle.table}
+                        variableCatalog={variableCatalog}
+                        disabled={!draft || isBusy || !childNodeId}
+                        label="appliesWhen (optional ConditionRule)"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!draft || isBusy || !parsedDraft.ok || !childNodeId.trim()}
+                        onClick={() => {
+                          if (!parsedDraft.ok) return;
+
+                          const nodeId = childNodeId.trim();
+                          const idx = Number(childEffectIndex);
+                          if (!Number.isFinite(idx) || idx < 0) {
+                            toast({ title: "Invalid index", description: "Effect index must be >= 0", variant: "destructive" });
+                            return;
+                          }
+
+                          let qtyParsed: any;
+                          let qtyParseFailed = false;
+                          try {
+                            qtyParsed = JSON.parse(childQtyText);
+                          } catch {
+                            qtyParsed = {};
+                            qtyParseFailed = true;
+                          }
+
+                          let unitPriceParsed: any = undefined;
+                          let unitPriceParseFailed = false;
+                          if (childUnitPriceText.trim()) {
+                            try {
+                              unitPriceParsed = JSON.parse(childUnitPriceText);
+                            } catch {
+                              unitPriceParsed = {};
+                              unitPriceParseFailed = true;
+                            }
+                          }
+
+                          let appliesWhenParsed: any = undefined;
+                          let appliesWhenParseFailed = false;
+                          if (childAppliesWhenText.trim()) {
+                            try {
+                              appliesWhenParsed = JSON.parse(childAppliesWhenText);
+                            } catch {
+                              appliesWhenParsed = {};
+                              appliesWhenParseFailed = true;
+                            }
+                          }
+
+                          const key = `${nodeId}|${idx}`;
+                          const nextRow: any = {
+                            kind: childKind,
+                            title: childTitle,
+                            invoiceVisibility: childInvoiceVisibility,
+                            qtyRef: qtyParsed,
+                          };
+                          if (childKind === "inlineSku") nextRow.skuRef = childSkuRef;
+                          else if (childProductId.trim()) nextRow.childProductId = childProductId;
+                          if (unitPriceParsed !== undefined) nextRow.unitPriceRef = unitPriceParsed;
+                          if (appliesWhenParsed !== undefined) nextRow.appliesWhen = appliesWhenParsed;
+
+                          const nextFindings: InlineFinding[] = [];
+                          if (qtyParseFailed) nextFindings.push({ severity: "ERROR", message: "qtyRef JSON is invalid (applied {})" });
+                          if (unitPriceParseFailed) nextFindings.push({ severity: "ERROR", message: "unitPriceRef JSON is invalid (applied {})" });
+                          if (appliesWhenParseFailed) nextFindings.push({ severity: "ERROR", message: "appliesWhen JSON is invalid (applied {})" });
+                          nextFindings.push(...computeChildItemRowFindings(nextRow));
+                          setChildValidationByKey((prev) => ({ ...prev, [key]: { findings: nextFindings } }));
+
+                          updateDraftTree(
+                            (t) => {
+                              const { tree, nodes } = normalizeTreeArrays(t);
+                              const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                              if (!n) throw new Error(`Node not found: ${nodeId}`);
+                              if (!(n as any).price && !(n as any).data) (n as any).price = { components: [] };
+                              const price = (n as any).price ?? (n as any).data;
+                              if (!Array.isArray(price.childItemEffects)) price.childItemEffects = [];
+                              if (!price.childItemEffects[idx]) price.childItemEffects[idx] = {};
+                              const eff = price.childItemEffects[idx];
+
+                              eff.kind = childKind;
+                              eff.title = childTitle;
+                              eff.invoiceVisibility = childInvoiceVisibility;
+                              eff.qtyRef = qtyParsed;
+
+                              if (childKind === "inlineSku") {
+                                eff.skuRef = childSkuRef;
+                                delete eff.childProductId;
+                              } else {
+                                delete eff.skuRef;
+                                if (childProductId.trim()) eff.childProductId = childProductId;
+                                else delete eff.childProductId;
+                              }
+
+                              if (unitPriceParsed !== undefined) eff.unitPriceRef = unitPriceParsed;
+                              else delete eff.unitPriceRef;
+
+                              if (appliesWhenParsed !== undefined) eff.appliesWhen = appliesWhenParsed;
+                              else delete eff.appliesWhen;
+
+                              return tree;
+                            },
+                            { successToast: { title: "Child item saved", description: `PRICE.childItemEffects[${idx}] @ ${nodeId}` } }
+                          );
+                        }}
+                      >
+                        Save Child Item
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <Dialog
+                  open={removeChildConfirmOpen}
+                  onOpenChange={(open) => {
+                    setRemoveChildConfirmOpen(open);
+                    if (!open) setRemoveChildTarget(null);
+                  }}
+                >
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Remove child item effect?</DialogTitle>
+                      <DialogDescription>
+                        This cannot be recovered unless you undo before saving.
+                      </DialogDescription>
+                    </DialogHeader>
+                    {removeChildTarget ? <div className="text-xs font-mono text-muted-foreground">{removeChildTarget.summary}</div> : null}
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setRemoveChildConfirmOpen(false);
+                          setRemoveChildTarget(null);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        disabled={!draft || isBusy || !parsedDraft.ok || !removeChildTarget}
+                        onClick={() => {
+                          if (!parsedDraft.ok) return;
+                          const target = removeChildTarget;
+                          if (!target) return;
+                          const nodeId = target.nodeId;
+                          const idx = target.idx;
+
+                          updateDraftTree(
+                            (t) => {
+                              const { tree, nodes } = normalizeTreeArrays(t);
+                              const n = nodes.find((x: any) => String(x?.id ?? "") === nodeId);
+                              if (!n) throw new Error(`Node not found: ${nodeId}`);
+                              const price = (n as any).price ?? (n as any).data;
+                              if (!price || !Array.isArray(price.childItemEffects)) return tree;
+                              if (idx < 0 || idx >= price.childItemEffects.length) return tree;
+                              price.childItemEffects.splice(idx, 1);
+                              return tree;
+                            },
+                            { successToast: { title: "Child item removed", description: `PRICE.childItemEffects[${idx}] @ ${nodeId}` } }
+                          );
+
+                          setRemoveChildConfirmOpen(false);
+                          setRemoveChildTarget(null);
+
+                          const curIdx = Number(childEffectIndex);
+                          if (Number.isFinite(curIdx)) {
+                            if (curIdx === idx) setChildEffectIndex("0");
+                            else if (curIdx > idx) setChildEffectIndex(String(curIdx - 1));
+                          }
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
 
                 <div className="rounded-md border border-border">
                   <div className="p-3 space-y-3">
@@ -1941,6 +2897,162 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                     ) : null}
                   </div>
                 </div>
+
+                <div className="rounded-md border border-border">
+                  <div className="p-3 space-y-3">
+                    <div className="text-sm font-medium">Preview child items (DRAFT-only)</div>
+                    <div className="text-xs text-muted-foreground">Uses env + explicitSelections above to run child item proposals adapter.</div>
+
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!draft || isBusy || !parsedDraft.ok}
+                        onClick={() => {
+                          setPreviewChildItemsError("");
+                          setPreviewChildItemsResult(null);
+                          if (!parsedDraft.ok) return;
+
+                          let selections: Record<string, unknown> = {};
+                          try {
+                            const parsed = JSON.parse(previewSelectionsText || "{}");
+                            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                              throw new Error("explicitSelections must be a JSON object");
+                            }
+                            selections = parsed as Record<string, unknown>;
+                          } catch (e: any) {
+                            setPreviewChildItemsError(e?.message || "Invalid selections JSON");
+                            return;
+                          }
+
+                          const numOrUndef = (s: string) => {
+                            const t = s.trim();
+                            if (!t) return undefined;
+                            const n = Number(t);
+                            if (!Number.isFinite(n)) throw new Error(`Invalid number: '${s}'`);
+                            return n;
+                          };
+
+                          let env: any;
+                          try {
+                            env = {
+                              widthIn: numOrUndef(previewWidthIn),
+                              heightIn: numOrUndef(previewHeightIn),
+                              quantity: numOrUndef(previewQuantity),
+                              sqft: numOrUndef(previewSqft),
+                              perimeterIn: numOrUndef(previewPerimeterIn),
+                            };
+                          } catch (e: any) {
+                            setPreviewChildItemsError(e?.message || "Invalid env value");
+                            return;
+                          }
+
+                          try {
+                            const r = pbv2ToChildItemProposals(parsedDraft.tree, selections, env);
+                            setPreviewChildItemsResult(r as any);
+                          } catch (e: any) {
+                            setPreviewChildItemsError(e?.message || "Preview failed");
+                          }
+                        }}
+                      >
+                        Run Child Items Preview
+                      </Button>
+                      {previewChildItemsError ? <div className="text-xs text-destructive">{previewChildItemsError}</div> : null}
+                      {previewChildItemsResult ? (
+                        <div className="text-xs text-muted-foreground">
+                          items: <span className="font-mono">{previewChildItemsResult.childItems.length}</span>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {previewChildItemsResult ? (
+                      <div className="rounded-md border border-border">
+                        <div className="p-2">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>title</TableHead>
+                                <TableHead>kind</TableHead>
+                                <TableHead>sku/product</TableHead>
+                                <TableHead className="text-right">qty</TableHead>
+                                <TableHead className="text-right">amountCents</TableHead>
+                                <TableHead>invoiceVisibility</TableHead>
+                                <TableHead>sourceNodeId</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {previewChildItemsResult.childItems.length === 0 ? (
+                                <TableRow>
+                                  <TableCell colSpan={7} className="text-xs text-muted-foreground">
+                                    No child item proposals.
+                                  </TableCell>
+                                </TableRow>
+                              ) : (
+                                previewChildItemsResult.childItems.map((ci: any, idx: number) => (
+                                  <TableRow key={idx}>
+                                    <TableCell className="text-xs">{String(ci.title ?? "")}</TableCell>
+                                    <TableCell className="text-xs">{String(ci.kind ?? "")}</TableCell>
+                                    <TableCell className="font-mono text-xs">
+                                      {ci.kind === "inlineSku"
+                                        ? String(ci.skuRef ?? "")
+                                        : String(ci.childProductId ?? "")}
+                                    </TableCell>
+                                    <TableCell className="font-mono text-xs text-right">{String(ci.qty ?? 0)}</TableCell>
+                                    <TableCell className="font-mono text-xs text-right">
+                                      {ci.amountCents === undefined ? "" : String(ci.amountCents)}
+                                    </TableCell>
+                                    <TableCell className="text-xs">{String(ci.invoiceVisibility ?? "")}</TableCell>
+                                    <TableCell className="font-mono text-xs">{String(ci.sourceNodeId ?? "")}</TableCell>
+                                  </TableRow>
+                                ))
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                {previewResult || previewMaterialsResult || previewChildItemsResult ? (
+                  <div className="rounded-md border border-border">
+                    <div className="p-3 space-y-3">
+                      <div className="text-sm font-medium">PBV2 Outputs (Global line item preview)</div>
+                      <div className="text-xs text-muted-foreground">
+                        Uses the shared line item UI; outputs are passed in and not recomputed here.
+                      </div>
+
+                      {(() => {
+                        const model: LineItemEnterpriseRowModel = {
+                          id: "pbv2-outputs-preview",
+                          title: "PBV2 Outputs",
+                          subtitle: "Preview-only (no persistence)",
+                          optionsSummary: null,
+                          optionsSummaryText: null,
+                          flags: [],
+                          notes: null,
+                          alertText: null,
+                          statusLabel: null,
+                          statusTone: "neutral",
+                          qty: null,
+                          unitPrice: null,
+                          isOverride: null,
+                          total: null,
+                        };
+
+                        const outputs: PBV2Outputs = {
+                          pricingAddons: previewResult ?? undefined,
+                          materialEffects: previewMaterialsResult ?? undefined,
+                          childItemProposals: previewChildItemsResult ?? undefined,
+                        };
+
+                        return (
+                          <LineItemRowEnterprise item={model} variant="tray" pbv2Outputs={outputs} />
+                        );
+                      })()}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

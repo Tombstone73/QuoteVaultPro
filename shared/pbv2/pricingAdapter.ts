@@ -40,6 +40,25 @@ export type Pbv2MaterialEffectsResult = {
   materials: MaterialEffect[];
 };
 
+export type ChildItemProposal = {
+  kind: "inlineSku" | "productRef";
+  title: string;
+  skuRef?: string;
+  childProductId?: string;
+  qty: number;
+  unitPriceCents?: number;
+  amountCents?: number;
+  invoiceVisibility: "hidden" | "rollup" | "separateLine";
+  sourceNodeId: string;
+  // Stable per-tree key: index within the node's childItemEffects array.
+  // Included for downstream persistence/idempotency; older snapshots may omit this.
+  effectIndex?: number;
+};
+
+export type Pbv2ChildItemProposalsResult = {
+  childItems: ChildItemProposal[];
+};
+
 type AnyRecord = Record<string, unknown>;
 
 type NodeStatus = "ENABLED" | "DISABLED" | "DELETED";
@@ -225,6 +244,12 @@ function extractPriceComponents(node: AnyRecord): unknown[] {
 function extractMaterialEffects(node: AnyRecord): unknown[] {
   const price = extractPricePayload(node);
   const effects = price ? (price as any).materialEffects : undefined;
+  return Array.isArray(effects) ? effects : [];
+}
+
+function extractChildItemEffects(node: AnyRecord): unknown[] {
+  const price = extractPricePayload(node);
+  const effects = price ? (price as any).childItemEffects : undefined;
   return Array.isArray(effects) ? effects : [];
 }
 
@@ -846,4 +871,155 @@ export function pbv2ToMaterialEffects(
 
   materials.sort((a, b) => a.sourceNodeId.localeCompare(b.sourceNodeId) || a.__idx - b.__idx);
   return { materials: materials.map(({ __idx, ...rest }) => rest) };
+}
+
+export function pbv2ToChildItemProposals(
+  treeJson: unknown,
+  selections: Pbv2Selections | Record<string, unknown> | undefined,
+  env: Pbv2Env | undefined,
+  opts?: { pricebook?: Record<string, number> }
+): Pbv2ChildItemProposalsResult {
+  const tree = asRecord(treeJson);
+  if (!tree) throw new Error("Invalid PBV2 treeJson");
+
+  const { table: symbolTable } = buildSymbolTable(treeJson);
+
+  const nodes = extractNodes(tree);
+  const edges = extractEdges(tree);
+
+  const nodesById: Record<string, NodeRec> = {};
+  for (const n of nodes) nodesById[n.id] = n;
+
+  const explicitSelections = (() => {
+    if (!selections) return {};
+    if ((selections as any).explicitSelections && typeof (selections as any).explicitSelections === "object") {
+      return (selections as any).explicitSelections as Record<string, unknown>;
+    }
+    return selections as Record<string, unknown>;
+  })();
+
+  const envMap: Record<string, unknown> = { ...(env ?? {}) };
+
+  const inputDefaultsBySelectionKey: Record<string, unknown> = {};
+  for (const n of nodes) {
+    if (n.status !== "ENABLED") continue;
+    if (n.type !== "INPUT") continue;
+    const payload = extractInputPayload(n.raw);
+    const selectionKey = payload && isNonEmptyString((payload as any).selectionKey) ? String((payload as any).selectionKey) : null;
+    if (!selectionKey) continue;
+    const def = extractInputDefault(n.raw);
+    if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
+  }
+
+  const evalCtx: EvalCtx = {
+    selections: explicitSelections,
+    inputDefaultsBySelectionKey,
+    computeOutputsByNodeId: {},
+    env: envMap,
+    pricebook: opts?.pricebook,
+  };
+
+  const activeNodeIds = resolveActiveNodeIds(tree, nodesById, edges, evalCtx);
+  evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
+
+  const childItems: Array<ChildItemProposal & { __idx: number }> = [];
+  const activePriceNodes = nodes.filter((n) => n.status === "ENABLED" && n.type === "PRICE" && activeNodeIds.has(n.id));
+
+  for (const n of activePriceNodes) {
+    const effects = extractChildItemEffects(n.raw);
+
+    for (let i = 0; i < effects.length; i++) {
+      const e = asRecord(effects[i]);
+      if (!e) continue;
+
+      const kindRaw = (e as any).kind;
+      const kind = kindRaw === "inlineSku" || kindRaw === "productRef" ? (kindRaw as "inlineSku" | "productRef") : null;
+      if (!kind) continue;
+
+      const title = (e as any).title;
+      if (!isNonEmptyString(title)) continue;
+
+      const skuRef = (e as any).skuRef;
+      const childProductId = (e as any).childProductId;
+      if (kind === "inlineSku" && !isNonEmptyString(skuRef)) continue;
+      if (kind === "productRef" && childProductId !== undefined && !isNonEmptyString(childProductId)) continue;
+
+      const qtyRef = (e as any).qtyRef;
+      if (!qtyRef) continue;
+
+      const appliesWhen = (e as any).appliesWhen;
+      if (appliesWhen !== undefined) {
+        const cTc = typeCheckCondition(appliesWhen as any, symbolTable, {
+          pathBase: `tree.nodes[${n.id}].price.childItemEffects[${i}].appliesWhen`,
+          entityId: n.id,
+        });
+        if (cTc.findings.some((f) => f.severity === "ERROR")) {
+          throw new Error(`PBV2 CHILD_ITEM appliesWhen invalid at node '${n.id}'[${i}]`);
+        }
+        if (!evalCondition(appliesWhen as any, evalCtx)) continue;
+      }
+
+      const qtyTc = typeCheckExpression(qtyRef as any, "COMPUTE", symbolTable, {
+        pathBase: `tree.nodes[${n.id}].price.childItemEffects[${i}].qtyRef`,
+        entityId: n.id,
+      });
+      if (qtyTc.findings.some((f) => f.severity === "ERROR")) {
+        throw new Error(`PBV2 CHILD_ITEM qtyRef invalid at node '${n.id}'[${i}]`);
+      }
+      if (qtyTc.inferred.type !== "NUMBER" || qtyTc.inferred.nullable) {
+        throw new Error(`PBV2 CHILD_ITEM qtyRef must be non-null NUMBER at node '${n.id}'[${i}]`);
+      }
+
+      const qty = toNumberOrThrow(evalExpression(qtyRef as any, evalCtx), `CHILD_ITEM '${n.id}' qtyRef must be NUMBER`);
+      if (!Number.isFinite(qty)) throw new Error(`PBV2 CHILD_ITEM '${n.id}' produced invalid qty`);
+      if (qty < 0) throw new Error(`PBV2 CHILD_ITEM '${n.id}' qtyRef evaluated negative`);
+      if (qty <= 0) continue;
+
+      const invoiceVisibilityRaw = (e as any).invoiceVisibility;
+      const invoiceVisibility: "hidden" | "rollup" | "separateLine" =
+        invoiceVisibilityRaw === "hidden" || invoiceVisibilityRaw === "rollup" || invoiceVisibilityRaw === "separateLine" ? invoiceVisibilityRaw : "rollup";
+
+      const unitPriceRef = (e as any).unitPriceRef as ExpressionSpec | undefined;
+      let unitPriceCents: number | undefined;
+      let amountCents: number | undefined;
+
+      if (unitPriceRef) {
+        const pTc = typeCheckExpression(unitPriceRef as any, "PRICE", symbolTable, {
+          pathBase: `tree.nodes[${n.id}].price.childItemEffects[${i}].unitPriceRef`,
+          entityId: n.id,
+        });
+        if (pTc.findings.some((f) => f.severity === "ERROR")) {
+          throw new Error(`PBV2 CHILD_ITEM unitPriceRef invalid at node '${n.id}'[${i}]`);
+        }
+        if (pTc.inferred.type !== "NUMBER" || pTc.inferred.nullable) {
+          throw new Error(`PBV2 CHILD_ITEM unitPriceRef must be non-null NUMBER at node '${n.id}'[${i}]`);
+        }
+
+        unitPriceCents = toNumberOrThrow(
+          evalExpression(unitPriceRef as any, evalCtx),
+          `CHILD_ITEM '${n.id}' unitPriceRef must be NUMBER (cents)`
+        );
+        if (!Number.isFinite(unitPriceCents)) throw new Error(`PBV2 CHILD_ITEM '${n.id}' produced invalid unitPriceCents`);
+
+        amountCents = Math.round(qty * unitPriceCents);
+        unitPriceCents = Math.round(unitPriceCents);
+      }
+
+      childItems.push({
+        kind,
+        title,
+        skuRef: kind === "inlineSku" ? String(skuRef) : undefined,
+        childProductId: kind === "productRef" && isNonEmptyString(childProductId) ? String(childProductId) : undefined,
+        qty,
+        unitPriceCents,
+        amountCents,
+        invoiceVisibility,
+        sourceNodeId: n.id,
+        __idx: i,
+      });
+    }
+  }
+
+  childItems.sort((a, b) => a.sourceNodeId.localeCompare(b.sourceNodeId) || a.__idx - b.__idx);
+  return { childItems: childItems.map(({ __idx, ...rest }) => ({ ...rest, effectIndex: __idx })) };
 }
