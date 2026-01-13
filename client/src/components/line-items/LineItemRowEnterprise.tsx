@@ -11,6 +11,17 @@ import LineItemStatusPill from "./LineItemStatusPill";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -20,6 +31,8 @@ import {
 } from "@/components/ui/table";
 import type { LineItemFlagVM, LineItemOptionSummaryVM } from "@/lib/lineItems/lineItemDerivation";
 import type { PBV2Outputs } from "@/lib/pbv2/pbv2Outputs";
+import { assignEffectIndexFallback } from "@shared/pbv2/pbv2EffectIndex";
+import { normalizePbv2DiffComponent, pbv2DiffComponents } from "@shared/pbv2/pbv2ComponentDiff";
 
 export type LineItemEnterpriseRowModel = {
   id: string;
@@ -54,6 +67,11 @@ export type LineItemRowEnterpriseProps = {
 
   pbv2Outputs?: PBV2Outputs;
 
+  pbv2IsStale?: boolean;
+  onRecomputePbv2?: (itemId: string) => Promise<void> | void;
+  onKeepExistingPbv2?: (itemId: string) => Promise<void> | void;
+  onApplyPbv2Updates?: (itemId: string) => Promise<void> | void;
+
   pbv2AcceptedComponents?: Array<{
     id: string;
     kind: string;
@@ -61,10 +79,12 @@ export type LineItemRowEnterpriseProps = {
     skuRef?: string | null;
     childProductId?: string | null;
     qty: any;
+    unitPriceCents?: number | null;
     amountCents?: number | null;
     invoiceVisibility?: string | null;
     pbv2SourceNodeId?: string | null;
     pbv2EffectIndex?: number | null;
+    status?: string | null;
   }>;
 
   onAcceptPbv2Components?: (itemId: string) => Promise<void> | void;
@@ -100,6 +120,10 @@ export type LineItemRowEnterpriseProps = {
 export default function LineItemRowEnterprise({
   item,
   pbv2Outputs,
+  pbv2IsStale,
+  onRecomputePbv2,
+  onKeepExistingPbv2,
+  onApplyPbv2Updates,
   pbv2AcceptedComponents,
   onAcceptPbv2Components,
   onVoidPbv2Component,
@@ -217,12 +241,68 @@ export default function LineItemRowEnterprise({
     pbv2Outputs?.pricingAddons || pbv2Outputs?.materialEffects || pbv2Outputs?.childItemProposals
   );
 
+  const showPbv2Stale = Boolean(pbv2IsStale);
+  const canRecomputePbv2 = showPbv2Stale && typeof onRecomputePbv2 === "function";
+  const canKeepExistingPbv2 = showPbv2Stale && typeof onKeepExistingPbv2 === "function";
+
   const acceptedComponents = Array.isArray(pbv2AcceptedComponents) ? pbv2AcceptedComponents : [];
   const hasAcceptedComponents = acceptedComponents.length > 0;
   const canAcceptComponents =
     typeof onAcceptPbv2Components === "function" &&
     Boolean(pbv2Outputs?.childItemProposals?.childItems?.length) &&
     !hasAcceptedComponents;
+
+  const acceptedForDiff = acceptedComponents
+    .filter((c: any) => (c?.status ? String(c.status).toUpperCase() === "ACCEPTED" : true))
+    .map((c: any) =>
+      normalizePbv2DiffComponent({
+        pbv2SourceNodeId: c.pbv2SourceNodeId,
+        pbv2EffectIndex: c.pbv2EffectIndex,
+        kind: c.kind,
+        title: c.title,
+        skuRef: c.skuRef,
+        childProductId: c.childProductId,
+        qty: c.qty,
+        unitPriceCents: c.unitPriceCents,
+        amountCents: c.amountCents,
+        invoiceVisibility: c.invoiceVisibility ?? "rollup",
+      })
+    )
+    .filter(Boolean) as any[];
+
+  const proposalsRaw = Array.isArray(pbv2Outputs?.childItemProposals?.childItems)
+    ? (pbv2Outputs?.childItemProposals?.childItems as any[])
+    : [];
+
+  const proposedForDiff = assignEffectIndexFallback(proposalsRaw as any)
+    .filter((p: any) => p && typeof p === "object" && typeof p.sourceNodeId === "string")
+    .filter((p: any) => {
+      const qty = Number(p.qty);
+      return Number.isFinite(qty) && qty > 0;
+    })
+    .map((p: any) =>
+      normalizePbv2DiffComponent({
+        pbv2SourceNodeId: p.sourceNodeId,
+        pbv2EffectIndex: p.effectIndex,
+        kind: p.kind,
+        title: p.title,
+        skuRef: p.skuRef,
+        childProductId: p.childProductId,
+        qty: p.qty,
+        unitPriceCents: p.unitPriceCents,
+        amountCents: p.amountCents,
+        invoiceVisibility: p.invoiceVisibility ?? "rollup",
+      })
+    )
+    .filter(Boolean) as any[];
+
+  const pbv2Diff = pbv2DiffComponents(acceptedForDiff as any, proposedForDiff as any);
+  const pbv2HasDiffChanges =
+    pbv2Diff.added.length > 0 || pbv2Diff.removed.length > 0 || pbv2Diff.modified.length > 0;
+  const showPbv2Changes = !showPbv2Stale && hasAcceptedComponents && pbv2HasDiffChanges;
+  const canApplyPbv2Updates = showPbv2Changes && typeof onApplyPbv2Updates === "function";
+  const voidCount = pbv2Diff.removed.length + pbv2Diff.modified.length;
+  const acceptCount = pbv2Diff.added.length + pbv2Diff.modified.length;
 
   return (
     <div className="liTheme">
@@ -455,7 +535,14 @@ export default function LineItemRowEnterprise({
         <div className="mt-2 rounded-md border border-border/60 bg-background/20 p-2" data-li-interactive="true" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
           <Collapsible open={pbv2Open} onOpenChange={setPbv2Open}>
             <div className="flex items-center justify-between gap-3">
-              <div className="text-xs font-medium">PBV2 Outputs</div>
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-medium">PBV2 Outputs</div>
+                {showPbv2Stale ? (
+                  <span className="inline-flex items-center rounded-full border border-border/60 bg-background/40 px-2 py-0.5 text-[11px] text-foreground">
+                    PBV2 out of date
+                  </span>
+                ) : null}
+              </div>
               <CollapsibleTrigger asChild>
                 <button type="button" className="text-xs text-muted-foreground hover:text-foreground">
                   {pbv2Open ? "Hide" : "Show"}
@@ -473,6 +560,46 @@ export default function LineItemRowEnterprise({
             </div>
 
             <CollapsibleContent className="mt-2 space-y-3">
+              {showPbv2Stale ? (
+                <div className="flex items-center gap-2">
+                  {canRecomputePbv2 ? (
+                    <button
+                      type="button"
+                      className="text-xs rounded-md border border-border/60 bg-background/40 px-2 py-1 hover:bg-background/60"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        try {
+                          await onRecomputePbv2?.(item.id);
+                        } catch (err) {
+                          console.error("Failed to recompute PBV2", err);
+                        }
+                      }}
+                    >
+                      Recompute PBV2
+                    </button>
+                  ) : null}
+
+                  {canKeepExistingPbv2 ? (
+                    <button
+                      type="button"
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        try {
+                          await onKeepExistingPbv2?.(item.id);
+                        } catch (err) {
+                          console.error("Failed to keep existing PBV2 snapshot", err);
+                        }
+                      }}
+                    >
+                      Keep existing PBV2
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
               {pbv2Outputs?.pricingAddons ? (
                 <div className="rounded-md border border-border/60 bg-background/30">
                   <div className="px-3 py-2 text-xs font-medium">Pricing add-ons</div>
@@ -549,6 +676,146 @@ export default function LineItemRowEnterprise({
                         )}
                       </TableBody>
                     </Table>
+                  </div>
+                </div>
+              ) : null}
+
+              {showPbv2Changes ? (
+                <div className="rounded-md border border-border/60 bg-background/30">
+                  <div className="flex items-center justify-between gap-3 px-3 py-2">
+                    <div className="text-xs font-medium">PBV2 Changes</div>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <button
+                          type="button"
+                          className="text-xs rounded-md border border-border/60 bg-background/40 px-2 py-1 hover:bg-background/60 disabled:opacity-50"
+                          disabled={!canApplyPbv2Updates}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                        >
+                          Apply PBV2 Updates
+                        </button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Apply PBV2 Updates?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will void {voidCount} components and accept {acceptCount} new ones.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={async (e) => {
+                              e.preventDefault();
+                              try {
+                                await onApplyPbv2Updates?.(item.id);
+                              } catch (err) {
+                                console.error("Failed to apply PBV2 updates", err);
+                              }
+                            }}
+                          >
+                            Apply
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+
+                  <div className="px-2 pb-3 space-y-3">
+                    {pbv2Diff.added.length > 0 ? (
+                      <div>
+                        <div className="px-1 text-xs font-medium mb-2">Added</div>
+                        <Table className="text-xs">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="h-8 px-2">title</TableHead>
+                              <TableHead className="h-8 px-2 text-right">qty</TableHead>
+                              <TableHead className="h-8 px-2">sku/product</TableHead>
+                              <TableHead className="h-8 px-2 text-right">amount</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {pbv2Diff.added.map((c) => (
+                              <TableRow key={`${c.key.pbv2SourceNodeId}::${c.key.pbv2EffectIndex}`}>
+                                <TableCell className="px-2 py-2">{c.title}</TableCell>
+                                <TableCell className="px-2 py-2 text-right font-mono">{c.qty}</TableCell>
+                                <TableCell className="px-2 py-2 font-mono">
+                                  {c.kind === "inlineSku" ? c.skuRef || "" : c.childProductId || ""}
+                                </TableCell>
+                                <TableCell className="px-2 py-2 text-right font-mono">
+                                  {typeof c.amountCents === "number" ? formatUsdFromCents(c.amountCents) : ""}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : null}
+
+                    {pbv2Diff.modified.length > 0 ? (
+                      <div>
+                        <div className="px-1 text-xs font-medium mb-2">Modified</div>
+                        <Table className="text-xs">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="h-8 px-2">title</TableHead>
+                              <TableHead className="h-8 px-2">fields</TableHead>
+                              <TableHead className="h-8 px-2 text-right">before</TableHead>
+                              <TableHead className="h-8 px-2 text-right">after</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {pbv2Diff.modified.map((m) => (
+                              <TableRow key={`${m.key.pbv2SourceNodeId}::${m.key.pbv2EffectIndex}`}>
+                                <TableCell className="px-2 py-2">{m.after.title || m.before.title}</TableCell>
+                                <TableCell className="px-2 py-2 font-mono">{m.changedFields.join(", ")}</TableCell>
+                                <TableCell className="px-2 py-2 text-right font-mono">
+                                  {m.before.qty}
+                                  {typeof m.before.amountCents === "number" ? ` / ${formatUsdFromCents(m.before.amountCents)}` : ""}
+                                </TableCell>
+                                <TableCell className="px-2 py-2 text-right font-mono">
+                                  {m.after.qty}
+                                  {typeof m.after.amountCents === "number" ? ` / ${formatUsdFromCents(m.after.amountCents)}` : ""}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : null}
+
+                    {pbv2Diff.removed.length > 0 ? (
+                      <div>
+                        <div className="px-1 text-xs font-medium mb-2">Removed</div>
+                        <Table className="text-xs">
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="h-8 px-2">title</TableHead>
+                              <TableHead className="h-8 px-2 text-right">qty</TableHead>
+                              <TableHead className="h-8 px-2">sku/product</TableHead>
+                              <TableHead className="h-8 px-2 text-right">amount</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {pbv2Diff.removed.map((c) => (
+                              <TableRow key={`${c.key.pbv2SourceNodeId}::${c.key.pbv2EffectIndex}`}>
+                                <TableCell className="px-2 py-2">{c.title}</TableCell>
+                                <TableCell className="px-2 py-2 text-right font-mono">{c.qty}</TableCell>
+                                <TableCell className="px-2 py-2 font-mono">
+                                  {c.kind === "inlineSku" ? c.skuRef || "" : c.childProductId || ""}
+                                </TableCell>
+                                <TableCell className="px-2 py-2 text-right font-mono">
+                                  {typeof c.amountCents === "number" ? formatUsdFromCents(c.amountCents) : ""}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

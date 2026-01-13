@@ -217,6 +217,16 @@ export default function OrderDetail() {
   const generatePackingSlip = useGeneratePackingSlip(orderId!);
   const updateFulfillmentStatus = useUpdateFulfillmentStatus(orderId!);
 
+  const pbv2RollupQuery = useQuery({
+    queryKey: ["/api/orders", orderId, "pbv2", "rollup"],
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const res = await fetch(`/api/orders/${orderId}/pbv2/rollup`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load PBV2 rollup");
+      return res.json();
+    },
+  });
+
   // Billing / invoices
   const { data: orderInvoices = [], isLoading: isInvoicesLoading } = useInvoices(orderId ? { orderId } : undefined);
   const createOrderInvoice = useCreateOrderInvoice();
@@ -1782,6 +1792,110 @@ export default function OrderDetail() {
                 lineItems={order.lineItems as any}
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg font-medium">PBV2 Production Rollup</CardTitle>
+                  <CardDescription>Materials + accepted PBV2 components</CardDescription>
+                </CardHeader>
+
+                <CardContent className="space-y-4">
+                  {pbv2RollupQuery.isLoading ? (
+                    <div className="text-sm text-muted-foreground">Loading rollup…</div>
+                  ) : pbv2RollupQuery.isError ? (
+                    <div className="text-sm text-destructive">Failed to load rollup.</div>
+                  ) : (
+                    (() => {
+                      const data = pbv2RollupQuery.data as any;
+                      const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+                      const materials = Array.isArray(data?.materials) ? data.materials : [];
+                      const components = Array.isArray(data?.components) ? data.components : [];
+
+                      return (
+                        <div className="space-y-4">
+                          {warnings.length > 0 ? (
+                            <div className="rounded-md border border-border/60 bg-background/30 p-3">
+                              <div className="text-sm font-medium">Warnings</div>
+                              <div className="mt-1 space-y-1 text-sm text-muted-foreground">
+                                {warnings.map((w: any, idx: number) => (
+                                  <div key={idx}>
+                                    {w.lineItemId ? `Line item ${w.lineItemId}: ` : ""}
+                                    {String(w.message || w.code || "Warning")}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div>
+                            <div className="text-sm font-medium mb-2">Materials</div>
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>SKU</TableHead>
+                                  <TableHead>UOM</TableHead>
+                                  <TableHead className="text-right">Total Qty</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {materials.length === 0 ? (
+                                  <TableRow>
+                                    <TableCell colSpan={3} className="text-sm text-muted-foreground">
+                                      No PBV2 materials found.
+                                    </TableCell>
+                                  </TableRow>
+                                ) : (
+                                  materials.map((m: any) => (
+                                    <TableRow key={`${m.skuRef}::${m.uom}`}>
+                                      <TableCell className="font-mono">{String(m.skuRef || "")}</TableCell>
+                                      <TableCell className="font-mono">{String(m.uom || "")}</TableCell>
+                                      <TableCell className="text-right font-mono">{String(m.qty || "")}</TableCell>
+                                    </TableRow>
+                                  ))
+                                )}
+                              </TableBody>
+                            </Table>
+                          </div>
+
+                          <div>
+                            <div className="text-sm font-medium mb-2">Accepted Components</div>
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Title</TableHead>
+                                  <TableHead>SKU/Product</TableHead>
+                                  <TableHead className="text-right">Qty</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {components.length === 0 ? (
+                                  <TableRow>
+                                    <TableCell colSpan={3} className="text-sm text-muted-foreground">
+                                      No accepted components.
+                                    </TableCell>
+                                  </TableRow>
+                                ) : (
+                                  components.map((c: any, idx: number) => (
+                                    <TableRow key={`${c.lineItemId || ""}::${c.title || ""}::${idx}`}>
+                                      <TableCell>{String(c.title || "")}</TableCell>
+                                      <TableCell className="font-mono">
+                                        {String(c.kind || "") === "inlineSku"
+                                          ? String(c.skuRef || "")
+                                          : String(c.childProductId || "")}
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono">{String(c.qty || "")}</TableCell>
+                                    </TableRow>
+                                  ))
+                                )}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </div>
+                      );
+                    })()
+                  )}
+                </CardContent>
+              </Card>
 
               {/* Totals */}
               <Card>

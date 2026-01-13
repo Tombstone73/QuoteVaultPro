@@ -46,6 +46,7 @@ import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/compon
 import { buildLineItemFlags } from "@/lib/lineItems/lineItemDerivation";
 import { formatLineItemOptionSummary } from "@shared/lineItemOptionSummary";
 import type { PBV2Outputs } from "@/lib/pbv2/pbv2Outputs";
+import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -274,6 +275,10 @@ export function OrderLineItemsSection({
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  const [pbv2CurrentSignatureByLineItemId, setPbv2CurrentSignatureByLineItemId] = useState<Record<string, string>>({});
+  const [pbv2SnapshotSignatureByLineItemId, setPbv2SnapshotSignatureByLineItemId] = useState<Record<string, string>>({});
+  const [pbv2KeepAckByLineItemId, setPbv2KeepAckByLineItemId] = useState<Record<string, string>>({});
+
   const acceptPbv2Components = useMutation({
     mutationFn: async (lineItemId: string) => {
       const res = await apiRequest("POST", `/api/order-line-items/${lineItemId}/pbv2/components/accept`, {});
@@ -291,6 +296,55 @@ export function OrderLineItemsSection({
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+    },
+  });
+
+  const recomputePbv2 = useMutation({
+    mutationFn: async ({ lineItemId, body }: { lineItemId: string; body: any }) => {
+      const res = await apiRequest("POST", `/api/order-line-items/${lineItemId}/pbv2/recompute`, body);
+      return res.json();
+    },
+    onSuccess: async (_data, variables) => {
+      setPbv2KeepAckByLineItemId((prev) => {
+        const next = { ...prev };
+        delete next[variables.lineItemId];
+        return next;
+      });
+      await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+      await onAfterLineItemsChange?.();
+    },
+  });
+
+  const keepExistingPbv2 = useMutation({
+    mutationFn: async (lineItemId: string) => {
+      const res = await apiRequest("POST", `/api/order-line-items/${lineItemId}/pbv2/keep-existing`, {});
+      return res.json();
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+      await onAfterLineItemsChange?.();
+    },
+  });
+
+  const applyPbv2Updates = useMutation({
+    mutationFn: async (lineItemId: string) => {
+      const res = await apiRequest("POST", `/api/order-line-items/${lineItemId}/pbv2/apply`, {});
+      return res.json();
+    },
+    onSuccess: async (data: any) => {
+      toast({
+        title: "PBV2 updates applied",
+        description: typeof data?.message === "string" ? data.message : undefined,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+      await onAfterLineItemsChange?.();
+    },
+    onError: () => {
+      toast({
+        variant: "destructive",
+        title: "Failed to apply PBV2 updates",
+        description: "Please try again.",
+      });
     },
   });
 
@@ -324,6 +378,87 @@ export function OrderLineItemsSection({
     () => lineItems.filter((li) => li.status !== "canceled"),
     [lineItems]
   );
+
+  const buildComputedPbv2Env = (li: any): Record<string, unknown> => {
+    const widthIn = typeof li?.width === "number" && Number.isFinite(li.width) ? li.width : li?.width ? Number(li.width) : undefined;
+    const heightIn = typeof li?.height === "number" && Number.isFinite(li.height) ? li.height : li?.height ? Number(li.height) : undefined;
+    const quantity = typeof li?.quantity === "number" && Number.isFinite(li.quantity) ? li.quantity : li?.quantity ? Number(li.quantity) : undefined;
+
+    return {
+      widthIn: Number.isFinite(widthIn) ? widthIn : undefined,
+      heightIn: Number.isFinite(heightIn) ? heightIn : undefined,
+      quantity: Number.isFinite(quantity) ? quantity : undefined,
+      sqft:
+        Number.isFinite(widthIn) && Number.isFinite(heightIn)
+          ? (Number(widthIn) * Number(heightIn)) / 144
+          : undefined,
+      perimeterIn:
+        Number.isFinite(widthIn) && Number.isFinite(heightIn)
+          ? 2 * (Number(widthIn) + Number(heightIn))
+          : undefined,
+    };
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      const nextCurrent: Record<string, string> = {};
+      const nextSnapshot: Record<string, string> = {};
+
+      for (const li of activeLineItems as any[]) {
+        const snapshot = getPbv2SnapshotFromLineItem(li as any);
+        if (!snapshot || typeof snapshot !== "object") continue;
+
+        const treeVersionIdSnapshot = String((snapshot as any).treeVersionId || "");
+        if (!treeVersionIdSnapshot) continue;
+
+        const explicitSelections =
+          (snapshot as any).explicitSelections && typeof (snapshot as any).explicitSelections === "object"
+            ? (snapshot as any).explicitSelections
+            : {};
+
+        const envSnapshot =
+          (snapshot as any).env && typeof (snapshot as any).env === "object" ? (snapshot as any).env : {};
+
+        const snapshotSig =
+          typeof (snapshot as any).pbv2InputSignature === "string" && (snapshot as any).pbv2InputSignature.length
+            ? String((snapshot as any).pbv2InputSignature)
+            : await computePbv2InputSignature({
+                treeVersionId: treeVersionIdSnapshot,
+                explicitSelections,
+                env: envSnapshot,
+              });
+
+        const activeTreeVersionId = String((li as any).pbv2ActiveTreeVersionId || "");
+        const treeVersionIdCurrent = activeTreeVersionId || treeVersionIdSnapshot;
+
+        const computedEnv = buildComputedPbv2Env(li);
+        const envExtras = pickPbv2EnvExtras(envSnapshot);
+        const envCurrent = { ...computedEnv, ...envExtras };
+
+        const currentSig = await computePbv2InputSignature({
+          treeVersionId: treeVersionIdCurrent,
+          explicitSelections,
+          env: envCurrent,
+        });
+
+        nextSnapshot[String(li.id)] = snapshotSig;
+        nextCurrent[String(li.id)] = currentSig;
+      }
+
+      if (cancelled) return;
+      setPbv2SnapshotSignatureByLineItemId(nextSnapshot);
+      setPbv2CurrentSignatureByLineItemId(nextCurrent);
+    };
+
+    run().catch((e) => {
+      console.error("[OrderLineItemsSection] PBV2 signature compute failed", e);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLineItems]);
 
   const [orderedKeys, setOrderedKeys] = useState<string[]>([]);
 
@@ -952,6 +1087,86 @@ export function OrderLineItemsSection({
                               item={enterpriseItem}
                               pbv2Outputs={mapPbv2SnapshotToOutputs(getPbv2SnapshotFromLineItem(item as any))}
                               pbv2AcceptedComponents={getAcceptedComponentsFromLineItem(item as any)}
+                              pbv2IsStale={(() => {
+                                const snapshot = getPbv2SnapshotFromLineItem(item as any);
+                                if (!snapshot) return false;
+                                const snapshotSig = pbv2SnapshotSignatureByLineItemId[String(item.id)];
+                                const currentSig = pbv2CurrentSignatureByLineItemId[String(item.id)];
+                                if (!snapshotSig || !currentSig) return false;
+                                const isStale = snapshotSig !== currentSig;
+                                if (!isStale) return false;
+                                return pbv2KeepAckByLineItemId[String(item.id)] !== currentSig;
+                              })()}
+                              onRecomputePbv2={
+                                readOnly
+                                  ? undefined
+                                  : async (lineItemId) => {
+                                      const liAny = item as any;
+                                      const snapshot = getPbv2SnapshotFromLineItem(liAny);
+                                      if (!snapshot || typeof snapshot !== "object") {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Cannot recompute PBV2",
+                                          description: "Missing PBV2 snapshot inputs.",
+                                        });
+                                        return;
+                                      }
+
+                                      const explicitSelections =
+                                        (snapshot as any).explicitSelections && typeof (snapshot as any).explicitSelections === "object"
+                                          ? (snapshot as any).explicitSelections
+                                          : {};
+                                      const envSnapshot =
+                                        (snapshot as any).env && typeof (snapshot as any).env === "object" ? (snapshot as any).env : {};
+                                      const computedEnv = buildComputedPbv2Env(liAny);
+                                      const envExtras = pickPbv2EnvExtras(envSnapshot);
+                                      const pbv2Env = { ...computedEnv, ...envExtras };
+
+                                      try {
+                                        await recomputePbv2.mutateAsync({
+                                          lineItemId,
+                                          body: {
+                                            pbv2ExplicitSelections: explicitSelections,
+                                            pbv2Env,
+                                          },
+                                        });
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "PBV2 recompute failed",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
+                              onKeepExistingPbv2={
+                                readOnly
+                                  ? undefined
+                                  : async (lineItemId) => {
+                                      const currentSig = pbv2CurrentSignatureByLineItemId[String(item.id)];
+                                      if (!currentSig) return;
+
+                                      try {
+                                        await keepExistingPbv2.mutateAsync(lineItemId);
+                                        setPbv2KeepAckByLineItemId((prev) => ({ ...prev, [String(lineItemId)]: currentSig }));
+                                      } catch (e) {
+                                        toast({
+                                          variant: "destructive",
+                                          title: "Could not keep existing PBV2",
+                                          description: "Please try again.",
+                                        });
+                                        throw e;
+                                      }
+                                    }
+                              }
+                              onApplyPbv2Updates={
+                                readOnly
+                                  ? undefined
+                                  : async (lineItemId) => {
+                                      await applyPbv2Updates.mutateAsync(lineItemId);
+                                    }
+                              }
                               onAcceptPbv2Components={
                                 readOnly
                                   ? undefined
