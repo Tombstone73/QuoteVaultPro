@@ -463,6 +463,10 @@ export const products = pgTable("products", {
   optionsJson: jsonb("options_json").$type<ProductOptionItem[]>(),
   // NEW: Option Tree v2 (additive, opt-in)
   optionTreeJson: jsonb("option_tree_json").$type<any>(),
+
+  // PBV2: Active tree version pointer (draft is derived by querying pbv2_tree_versions where status=DRAFT)
+  // Note: Foreign key is enforced at the DB level via migration; keep this column simple here to avoid circular refs.
+  pbv2ActiveTreeVersionId: varchar("pbv2_active_tree_version_id"),
   // Artwork policy for this product (controls missing_artwork derivation)
   artworkPolicy: varchar("artwork_policy", { length: 32 }).$type<"not_required" | "required">().default("not_required").notNull(),
   // NEW: Pricing profile key - points to which calculator to use
@@ -496,7 +500,65 @@ export const products = pgTable("products", {
   index("products_organization_id_idx").on(table.organizationId),
   index("products_primary_material_id_idx").on(table.primaryMaterialId),
   index("products_pricing_formula_id_idx").on(table.pricingFormulaId),
+  index("products_pbv2_active_tree_version_id_idx").on(table.pbv2ActiveTreeVersionId),
 ]);
+
+// ============================================================
+// PRODUCT BUILDER V2 (PBV2) - VERSIONED TREE MODEL
+// ============================================================
+
+export const pbv2TreeVersionStatusEnum = pgEnum("pbv2_tree_version_status", [
+  "DRAFT",
+  "ACTIVE",
+  "DEPRECATED",
+  "ARCHIVED",
+]);
+
+export const pbv2TreeVersions = pgTable(
+  "pbv2_tree_versions",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    productId: varchar("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+
+    status: pbv2TreeVersionStatusEnum("status").notNull().default("DRAFT"),
+    schemaVersion: integer("schema_version").notNull().default(1),
+    treeJson: jsonb("tree_json").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
+
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    updatedByUserId: varchar("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("pbv2_tree_versions_org_id_idx").on(table.organizationId),
+    index("pbv2_tree_versions_product_id_idx").on(table.productId),
+    index("pbv2_tree_versions_status_idx").on(table.status),
+    index("pbv2_tree_versions_org_product_status_idx").on(table.organizationId, table.productId, table.status),
+    index("pbv2_tree_versions_updated_at_idx").on(table.updatedAt),
+  ]
+);
+
+export const insertPbv2TreeVersionSchema = createInsertSchema(pbv2TreeVersions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  publishedAt: true,
+  organizationId: true,
+  createdByUserId: true,
+  updatedByUserId: true,
+});
+
+export const updatePbv2TreeVersionSchema = insertPbv2TreeVersionSchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertPbv2TreeVersion = z.infer<typeof insertPbv2TreeVersionSchema>;
+export type UpdatePbv2TreeVersion = z.infer<typeof updatePbv2TreeVersionSchema>;
+export type Pbv2TreeVersion = typeof pbv2TreeVersions.$inferSelect;
 
 // Zod schema for product options with enhanced sub-options
 const productOptionItemSchema = z.object({

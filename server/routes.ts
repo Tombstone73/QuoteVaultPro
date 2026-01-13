@@ -7,7 +7,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -37,6 +37,7 @@ import {
 } from "@shared/quoteWorkflow";
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
 import { registerOrderRoutes } from "./routes/orders.routes";
+import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -1004,6 +1005,253 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error importing products:", error);
       res.status(500).json({ message: "Failed to import products" });
+    }
+  });
+
+  // ============================================================================
+  // PBV2 (Product Builder v2) - Versioned Tree Lifecycle
+  // ============================================================================
+
+  app.get("/api/products/:productId/pbv2/tree", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { productId } = req.params;
+
+      const [product] = await db
+        .select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+        .limit(1);
+
+      if (!product) return res.status(404).json({ success: false, message: "Product not found" });
+
+      const [draft] = await db
+        .select()
+        .from(pbv2TreeVersions)
+        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.productId, productId), eq(pbv2TreeVersions.status, "DRAFT")))
+        .orderBy(desc(pbv2TreeVersions.updatedAt))
+        .limit(1);
+
+      const activeId = product.pbv2ActiveTreeVersionId;
+      const active = activeId
+        ? (
+            await db
+              .select()
+              .from(pbv2TreeVersions)
+              .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, activeId)))
+              .limit(1)
+          )[0]
+        : undefined;
+
+      return res.json({ success: true, data: { draft: draft ?? null, active: active ?? null } });
+    } catch (error: any) {
+      console.error("Error fetching PBV2 tree versions:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch PBV2 tree versions" });
+    }
+  });
+
+  app.post("/api/products/:productId/pbv2/tree/draft", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { productId } = req.params;
+      const userId = getUserId(req.user);
+
+      const [product] = await db
+        .select({ id: products.id })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+        .limit(1);
+
+      if (!product) return res.status(404).json({ success: false, message: "Product not found" });
+
+      const [existingDraft] = await db
+        .select()
+        .from(pbv2TreeVersions)
+        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.productId, productId), eq(pbv2TreeVersions.status, "DRAFT")))
+        .orderBy(desc(pbv2TreeVersions.updatedAt))
+        .limit(1);
+
+      if (existingDraft) return res.json({ success: true, data: existingDraft });
+
+      const initialTreeJson: Record<string, any> = {
+        schemaVersion: 1,
+        status: "DRAFT",
+        roots: [],
+        nodes: {},
+        edges: {},
+      };
+
+      const [draft] = await db
+        .insert(pbv2TreeVersions)
+        .values({
+          organizationId,
+          productId,
+          status: "DRAFT",
+          schemaVersion: 1,
+          treeJson: initialTreeJson,
+          createdByUserId: userId ?? null,
+          updatedByUserId: userId ?? null,
+        })
+        .returning();
+
+      return res.json({ success: true, data: draft });
+    } catch (error: any) {
+      console.error("Error creating PBV2 draft:", error);
+      return res.status(500).json({ success: false, message: "Failed to create PBV2 draft" });
+    }
+  });
+
+  app.patch("/api/pbv2/tree-versions/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = req.params;
+      const userId = getUserId(req.user);
+
+      const [existing] = await db
+        .select()
+        .from(pbv2TreeVersions)
+        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)))
+        .limit(1);
+
+      if (!existing) return res.status(404).json({ success: false, message: "Tree version not found" });
+      if (existing.status !== "DRAFT") {
+        return res.status(409).json({ success: false, message: "Only DRAFT tree versions can be edited" });
+      }
+
+      const treeJson = (req.body as any)?.treeJson;
+      if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
+        return res.status(400).json({ success: false, message: "treeJson must be an object" });
+      }
+
+      // Ensure JSON-serializable payload.
+      try {
+        JSON.stringify(treeJson);
+      } catch {
+        return res.status(400).json({ success: false, message: "treeJson must be valid JSON" });
+      }
+
+      // Enforce PBV2 metadata invariants server-side.
+      const normalizedTreeJson: Record<string, any> = {
+        ...treeJson,
+        schemaVersion: 1,
+        status: "DRAFT",
+      };
+
+      const [updated] = await db
+        .update(pbv2TreeVersions)
+        .set({
+          treeJson: normalizedTreeJson,
+          updatedAt: new Date(),
+          updatedByUserId: userId ?? null,
+        })
+        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)))
+        .returning();
+
+      return res.json({ success: true, data: updated });
+    } catch (error: any) {
+      console.error("Error updating PBV2 tree version:", error);
+      return res.status(500).json({ success: false, message: "Failed to update PBV2 tree version" });
+    }
+  });
+
+  app.post("/api/pbv2/tree-versions/:id/publish", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { id } = req.params;
+      const confirmWarnings = String((req.query as any)?.confirmWarnings ?? "").toLowerCase() === "true";
+      const userId = getUserId(req.user);
+
+      const [draft] = await db
+        .select()
+        .from(pbv2TreeVersions)
+        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)))
+        .limit(1);
+
+      if (!draft) return res.status(404).json({ success: false, message: "Tree version not found" });
+      if (draft.status !== "DRAFT") {
+        return res.status(409).json({ success: false, message: "Only DRAFT tree versions can be published" });
+      }
+
+      // Validate publish gate (Appendix 5)
+      const validation = validateTreeForPublish((draft as any).treeJson as any, DEFAULT_VALIDATE_OPTS);
+      if (validation.errors.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "PBV2 publish blocked by validation errors",
+          findings: validation.findings,
+        });
+      }
+
+      if (validation.warnings.length > 0 && !confirmWarnings) {
+        return res.json({
+          success: true,
+          requiresWarningsConfirm: true,
+          findings: validation.findings,
+        });
+      }
+
+      const publishedAt = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const [product] = await tx
+          .select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+          .from(products)
+          .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)))
+          .limit(1);
+
+        if (!product) {
+          throw Object.assign(new Error("Product not found"), { statusCode: 404 });
+        }
+
+        const previousActiveId = product.pbv2ActiveTreeVersionId;
+        if (previousActiveId && previousActiveId !== draft.id) {
+          await tx
+            .update(pbv2TreeVersions)
+            .set({ status: "DEPRECATED", updatedAt: publishedAt, updatedByUserId: userId ?? null })
+            .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, previousActiveId)));
+        }
+
+        const nextTreeJson: Record<string, any> = {
+          ...(draft as any).treeJson,
+          schemaVersion: 1,
+          status: "ACTIVE",
+        };
+
+        const [updatedVersion] = await tx
+          .update(pbv2TreeVersions)
+          .set({
+            status: "ACTIVE",
+            publishedAt,
+            updatedAt: publishedAt,
+            updatedByUserId: userId ?? null,
+            treeJson: nextTreeJson,
+          })
+          .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, draft.id)))
+          .returning();
+
+        await tx
+          .update(products)
+          .set({ pbv2ActiveTreeVersionId: draft.id, updatedAt: publishedAt })
+          .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)));
+
+        return updatedVersion;
+      });
+
+      return res.json({ success: true, data: result, findings: validation.findings });
+    } catch (error: any) {
+      if (error?.statusCode === 404) {
+        return res.status(404).json({ success: false, message: error.message });
+      }
+      console.error("Error publishing PBV2 tree version:", error);
+      return res.status(500).json({ success: false, message: "Failed to publish PBV2 tree version" });
     }
   });
 
