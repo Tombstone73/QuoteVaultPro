@@ -180,6 +180,8 @@ export default function OrderDetail() {
 
   const [rightPanel, setRightPanel] = useState<"collapsed" | "timeline" | "material">("collapsed");
 
+  const [showReleaseReservationsDialog, setShowReleaseReservationsDialog] = useState(false);
+
   const [showCustomerAddress, setShowCustomerAddress] = useState(true);
 
   // Auto-open pickers when entering edit mode
@@ -224,6 +226,61 @@ export default function OrderDetail() {
       const res = await fetch(`/api/orders/${orderId}/pbv2/rollup`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load PBV2 rollup");
       return res.json();
+    },
+  });
+
+  const inventoryQuery = useQuery({
+    queryKey: ["/api/orders", orderId, "inventory"],
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const res = await fetch(`/api/orders/${orderId}/inventory`, { credentials: "include" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).message || "Failed to load inventory reservations");
+      }
+      return res.json();
+    },
+  });
+
+  const reserveInventoryMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/orders/${orderId}/inventory/reserve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any).message || "Failed to reserve inventory");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "inventory"] });
+      toast({ title: "Inventory reserved" });
+    },
+    onError: (e: any) => {
+      toast({ title: "Reserve failed", description: String(e?.message || "Unknown error"), variant: "destructive" });
+    },
+  });
+
+  const releaseInventoryMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/orders/${orderId}/inventory/release`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any).message || "Failed to release inventory");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "inventory"] });
+      toast({ title: "Inventory released" });
+    },
+    onError: (e: any) => {
+      toast({ title: "Release failed", description: String(e?.message || "Unknown error"), variant: "destructive" });
     },
   });
 
@@ -1897,6 +1954,90 @@ export default function OrderDetail() {
                 </CardContent>
               </Card>
 
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-lg font-medium">Inventory Reservations</CardTitle>
+                      <CardDescription>Derived from PBV2 rollup</CardDescription>
+                    </div>
+                    {(() => {
+                      const data = inventoryQuery.data as any;
+                      const hasActive = Boolean(data?.hasActiveReservations);
+
+                      if (!orderId) return null;
+
+                      return hasActive ? (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => setShowReleaseReservationsDialog(true)}
+                          disabled={releaseInventoryMutation.isPending || inventoryQuery.isLoading}
+                        >
+                          Release
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          onClick={() => reserveInventoryMutation.mutate()}
+                          disabled={reserveInventoryMutation.isPending || inventoryQuery.isLoading}
+                        >
+                          Reserve
+                        </Button>
+                      );
+                    })()}
+                  </div>
+                </CardHeader>
+
+                <CardContent className="space-y-3">
+                  {inventoryQuery.isLoading ? (
+                    <div className="text-sm text-muted-foreground">Loading reservations…</div>
+                  ) : inventoryQuery.isError ? (
+                    <div className="text-sm text-destructive">Failed to load reservations.</div>
+                  ) : (
+                    (() => {
+                      const data = inventoryQuery.data as any;
+                      const items = Array.isArray(data?.reserved?.items) ? data.reserved.items : [];
+
+                      return (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Source Key</TableHead>
+                              <TableHead>UOM</TableHead>
+                              <TableHead className="text-right">Total</TableHead>
+                              <TableHead className="text-right">Material</TableHead>
+                              <TableHead className="text-right">Component</TableHead>
+                              <TableHead className="text-right">Manual</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {items.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="text-sm text-muted-foreground">
+                                  No active reservations.
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              items.map((it: any) => (
+                                <TableRow key={`${it.sourceKey}::${it.uom}`}>
+                                  <TableCell className="font-mono">{String(it.sourceKey || "")}</TableCell>
+                                  <TableCell className="font-mono">{String(it.uom || "")}</TableCell>
+                                  <TableCell className="text-right font-mono">{String(it.qty || "")}</TableCell>
+                                  <TableCell className="text-right font-mono">{String(it.bySourceType?.PBV2_MATERIAL || "0.00")}</TableCell>
+                                  <TableCell className="text-right font-mono">{String(it.bySourceType?.PBV2_COMPONENT || "0.00")}</TableCell>
+                                  <TableCell className="text-right font-mono">{String(it.bySourceType?.MANUAL || "0.00")}</TableCell>
+                                </TableRow>
+                              ))
+                            )}
+                          </TableBody>
+                        </Table>
+                      );
+                    })()
+                  )}
+                </CardContent>
+              </Card>
+
               {/* Totals */}
               <Card>
                 <CardHeader>
@@ -2643,6 +2784,29 @@ export default function OrderDetail() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showReleaseReservationsDialog} onOpenChange={setShowReleaseReservationsDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Release inventory reservations?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will mark all active reservations on this order as released.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowReleaseReservationsDialog(false);
+                releaseInventoryMutation.mutate();
+              }}
+              disabled={releaseInventoryMutation.isPending}
+            >
+              Release
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

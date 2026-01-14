@@ -3347,6 +3347,54 @@ export const insertOrderMaterialUsageSchema = createInsertSchema(orderMaterialUs
 export type InsertOrderMaterialUsage = z.infer<typeof insertOrderMaterialUsageSchema>;
 export type OrderMaterialUsage = typeof orderMaterialUsage.$inferSelect;
 
+// ============================================================
+// INVENTORY RESERVATIONS (Order intent; no purchasing yet)
+// ============================================================
+
+export const inventoryReservations = pgTable("inventory_reservations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+
+  orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: 'set null' }),
+
+  sourceType: text("source_type").notNull(), // PBV2_MATERIAL | PBV2_COMPONENT | MANUAL
+  sourceKey: text("source_key").notNull(), // skuRef or productId
+  uom: text("uom").notNull(),
+  qty: decimal("qty", { precision: 10, scale: 2 }).notNull(),
+
+  status: text("status").notNull().default('RESERVED'), // RESERVED | RELEASED
+
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("inventory_reservations_org_id_idx").on(table.organizationId),
+  index("inventory_reservations_order_id_idx").on(table.orderId),
+  index("inventory_reservations_org_order_source_status_idx").on(
+    table.organizationId,
+    table.orderId,
+    table.sourceKey,
+    table.uom,
+    table.status,
+  ),
+]);
+
+export const insertInventoryReservationSchema = createInsertSchema(inventoryReservations).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(["RESERVED", "RELEASED"]).default("RESERVED"),
+  sourceType: z.enum(["PBV2_MATERIAL", "PBV2_COMPONENT", "MANUAL"]),
+  sourceKey: z.string().min(1),
+  uom: z.string().min(1),
+  qty: z.coerce.number().positive(),
+});
+
+export type InsertInventoryReservation = z.infer<typeof insertInventoryReservationSchema>;
+export type InventoryReservation = typeof inventoryReservations.$inferSelect;
+
 // Relations for invoicing & payments
 export const invoicesRelations = relations(invoices, ({ one, many }) => ({
   customer: one(customers, {

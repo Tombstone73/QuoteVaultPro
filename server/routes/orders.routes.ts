@@ -24,6 +24,7 @@ import {
     materials,
     inventoryAdjustments,
     orderMaterialUsage,
+    inventoryReservations,
     insertOrderSchema,
     updateOrderSchema,
     insertOrderLineItemSchema,
@@ -52,6 +53,11 @@ import { assertPbv2TreeVersionNotDraft } from "../lib/pbv2TreeVersionGuards";
 import { normalizePbv2DiffComponent, pbv2DiffComponents } from "@shared/pbv2/pbv2ComponentDiff";
 import { buildOrderPbv2Rollup } from "@shared/pbv2/pbv2OrderRollup";
 import { buildPbv2OrderRollupResponse } from "../lib/pbv2OrderRollupResponse";
+import {
+    buildInventoryReservationsFromRollup,
+    buildInventoryRollup,
+    diffReservationsForInsert,
+} from "../lib/pbv2InventoryReservations";
 import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
@@ -4677,6 +4683,211 @@ export async function registerOrderRoutes(
         } catch (error) {
             const err: any = error;
             res.status(500).json({ message: err?.message ?? "Failed to build PBV2 rollup" });
+        }
+    });
+
+    // Inventory reservations (derived from PBV2 rollups)
+    const handleGetOrderInventory = async (req: any, res: any) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+
+            // Ensure order exists in this org.
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const rows = await db
+                .select({
+                    sourceType: inventoryReservations.sourceType,
+                    sourceKey: inventoryReservations.sourceKey,
+                    uom: inventoryReservations.uom,
+                    qty: inventoryReservations.qty,
+                    status: inventoryReservations.status,
+                })
+                .from(inventoryReservations)
+                .where(and(eq(inventoryReservations.organizationId, organizationId), eq(inventoryReservations.orderId, orderId)));
+
+            const reserved = buildInventoryRollup({ reservations: rows as any, status: "RESERVED" });
+            const released = buildInventoryRollup({ reservations: rows as any, status: "RELEASED" });
+
+            res.json({
+                orderId,
+                reserved,
+                released,
+                hasActiveReservations: reserved.items.length > 0,
+            });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to load inventory reservations" });
+        }
+    };
+
+    app.get("/api/orders/:orderId/inventory", isAuthenticated, tenantContext, handleGetOrderInventory);
+    app.get("/api/orders/:orderId/inventory/reservations", isAuthenticated, tenantContext, handleGetOrderInventory);
+
+    app.post("/api/orders/:orderId/inventory/reserve", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+
+            // Ensure order exists in this org.
+            const [order] = await db
+                .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const isCanceled = String((order as any).state || "") === "canceled" || String((order as any).status || "") === "canceled" || Boolean((order as any).canceledAt);
+            if (isCanceled) {
+                return res.status(409).json({ message: "Cannot reserve inventory for a canceled order." });
+            }
+
+            const lineItems = await db
+                .select({
+                    id: orderLineItems.id,
+                    pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+                })
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId));
+
+            const acceptedComponents = await db
+                .select({
+                    orderLineItemId: orderLineItemComponents.orderLineItemId,
+                    kind: orderLineItemComponents.kind,
+                    title: orderLineItemComponents.title,
+                    skuRef: orderLineItemComponents.skuRef,
+                    childProductId: orderLineItemComponents.childProductId,
+                    qty: orderLineItemComponents.qty,
+                    invoiceVisibility: orderLineItemComponents.invoiceVisibility,
+                })
+                .from(orderLineItemComponents)
+                .where(and(
+                    eq(orderLineItemComponents.organizationId, organizationId),
+                    eq(orderLineItemComponents.orderId, orderId),
+                    eq(orderLineItemComponents.status, "ACCEPTED"),
+                ));
+
+            const rollup = await buildOrderPbv2Rollup({
+                orderId,
+                lineItems: lineItems.map((li: any) => ({ id: String(li.id), pbv2SnapshotJson: (li as any).pbv2SnapshotJson ?? null })),
+                acceptedComponents: acceptedComponents as any,
+            });
+
+            const staleWarnings = (rollup.warnings ?? []).filter((w: any) => String(w.code || "").startsWith("PBV2_SNAPSHOT_"));
+            if (staleWarnings.length > 0) {
+                return res.status(409).json({
+                    message: "PBV2 snapshot is stale for one or more line items; cannot reserve inventory.",
+                    warnings: staleWarnings,
+                });
+            }
+
+            const createdByUserId = getUserId(req.user) ?? null;
+            const desired = buildInventoryReservationsFromRollup({ organizationId, orderId, rollup, createdByUserId });
+
+            // If there are existing RESERVED rows, only allow re-reserve if it matches exactly.
+            const existingReservedRows = await db
+                .select({
+                    sourceType: inventoryReservations.sourceType,
+                    sourceKey: inventoryReservations.sourceKey,
+                    uom: inventoryReservations.uom,
+                    qty: inventoryReservations.qty,
+                    status: inventoryReservations.status,
+                })
+                .from(inventoryReservations)
+                .where(and(
+                    eq(inventoryReservations.organizationId, organizationId),
+                    eq(inventoryReservations.orderId, orderId),
+                    eq(inventoryReservations.status, "RESERVED"),
+                ));
+
+            const normalizeQty = (v: any) => {
+                const n = Number(String(v));
+                if (!Number.isFinite(n)) return "0.00";
+                return (Math.round(n * 100) / 100).toFixed(2);
+            };
+            const toKey = (r: any) => `${r.sourceType}::${r.sourceKey}::${r.uom}`;
+            const desiredMap = new Map(desired.map((r) => [toKey(r), normalizeQty(r.qty)]));
+            const existingMap = new Map<string, string>();
+            for (const r of existingReservedRows as any[]) {
+                const k = toKey(r);
+                const prev = existingMap.get(k) ?? "0.00";
+                const sum = Number(prev) + Number(normalizeQty(r.qty));
+                existingMap.set(k, sum.toFixed(2));
+            }
+
+            if (existingMap.size > 0) {
+                if (existingMap.size !== desiredMap.size) {
+                    return res.status(409).json({
+                        message: "Active reservations exist for this order but PBV2 intent has drifted. Release inventory before reserving again.",
+                    });
+                }
+                for (const [k, v] of existingMap.entries()) {
+                    if (!desiredMap.has(k) || desiredMap.get(k) !== v) {
+                        return res.status(409).json({
+                            message: "Active reservations exist for this order but PBV2 intent has drifted. Release inventory before reserving again.",
+                        });
+                    }
+                }
+            }
+
+            const toInsert = diffReservationsForInsert({ desired, existingReserved: existingReservedRows as any });
+
+            if (toInsert.length > 0) {
+                await db.insert(inventoryReservations).values(toInsert as any);
+            }
+
+            res.json({ orderId, insertedCount: toInsert.length });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to reserve inventory" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/inventory/release", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+
+            // Ensure order exists in this org.
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+            const now = new Date();
+
+            const updated = await db
+                .update(inventoryReservations)
+                .set({
+                    status: "RELEASED",
+                    updatedAt: now,
+                })
+                .where(and(
+                    eq(inventoryReservations.organizationId, organizationId),
+                    eq(inventoryReservations.orderId, orderId),
+                    eq(inventoryReservations.status, "RESERVED"),
+                ))
+                .returning({ id: inventoryReservations.id });
+
+            res.json({ orderId, releasedCount: updated.length });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to release inventory" });
         }
     });
 
