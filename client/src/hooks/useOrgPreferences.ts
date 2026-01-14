@@ -18,7 +18,26 @@ export interface OrgPreferences {
     requireAllLineItemsDoneToComplete?: boolean;
     requireLineItemsDoneToComplete?: boolean;
   };
+  inventoryPolicy?: {
+    mode?: "off" | "advisory" | "enforced";
+    // Back-compat (older stored prefs)
+    reservationsEnabled?: boolean;
+    autoReserveOnApplyPbV2?: boolean;
+    autoReserveOnOrderConfirm?: boolean;
+    enforcementMode?: "off" | "warn_only" | "block_on_shortage";
+    allowNegative?: boolean;
+  };
 }
+
+type InventoryPolicyPatch = {
+  enabled?: boolean;
+  reservationsEnabled?: boolean;
+  mode?: "off" | "advisory" | "enforced";
+  enforcementMode?: "off" | "warn_only" | "block_on_shortage";
+  autoReserveOnApplyPbV2?: boolean;
+  autoReserveOnOrderConfirm?: boolean;
+  allowNegative?: boolean;
+};
 
 export function useOrgPreferences() {
   const { toast } = useToast();
@@ -67,10 +86,49 @@ export function useOrgPreferences() {
     },
   });
 
+  const inventoryPolicyMutation = useMutation({
+    mutationFn: async (patch: InventoryPolicyPatch) => {
+      const response = await fetch("/api/organization/preferences/inventory-policy", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+        credentials: "include",
+      });
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error((payload as any).message || "Failed to update inventory policy");
+      }
+
+      if ((payload as any)?.success === false) {
+        throw new Error((payload as any).message || "Failed to update inventory policy");
+      }
+
+      return payload as any;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/organization/preferences"] });
+      toast({
+        title: "Inventory policy updated",
+        description: "Your changes have been saved",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to update inventory policy",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   return {
     preferences: preferences || {},
     isLoading,
     updatePreferences: mutation.mutateAsync,
     isUpdating: mutation.isPending,
+    updateInventoryPolicy: inventoryPolicyMutation.mutateAsync,
+    isUpdatingInventoryPolicy: inventoryPolicyMutation.isPending,
   };
 }

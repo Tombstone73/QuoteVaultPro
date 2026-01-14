@@ -59,6 +59,10 @@ import {
     diffReservationsForInsert,
 } from "../lib/pbv2InventoryReservations";
 import {
+    getInventoryReservationsGate,
+    resolveInventoryPolicyFromOrgPreferences,
+} from "@shared/inventoryPolicy";
+import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
     normalizeObjectKeyForDb,
@@ -75,6 +79,34 @@ function getUserId(user: any): string | undefined {
 // Helper to get organizationId from request (matches server/routes.ts behavior)
 function getRequestOrganizationId(req: any): string | undefined {
     return req.organizationId || req.headers['x-organization-id'] as string;
+}
+
+async function loadInventoryPolicyForOrg(organizationId: string) {
+    const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+    const prefs = (org?.settings as any)?.preferences;
+    return resolveInventoryPolicyFromOrgPreferences(prefs);
+}
+
+async function requireInventoryReservationsNotOff(req: any, res: any) {
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) {
+        res.status(500).json({ message: "Missing organization context" });
+        return null;
+    }
+
+    const policy = await loadInventoryPolicyForOrg(organizationId);
+    const gate = getInventoryReservationsGate(policy);
+    if (!gate.allowed) {
+        res.status(gate.status).json(gate.body);
+        return null;
+    }
+
+    return policy;
 }
 
 type Pbv2OrderLineItemSnapshot = {
@@ -4689,6 +4721,9 @@ export async function registerOrderRoutes(
     // Inventory reservations (derived from PBV2 rollups)
     const handleGetOrderInventory = async (req: any, res: any) => {
         try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
@@ -4734,6 +4769,9 @@ export async function registerOrderRoutes(
 
     app.post("/api/orders/:orderId/inventory/reserve", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
@@ -4832,7 +4870,7 @@ export async function registerOrderRoutes(
                         message: "Active reservations exist for this order but PBV2 intent has drifted. Release inventory before reserving again.",
                     });
                 }
-                for (const [k, v] of existingMap.entries()) {
+                for (const [k, v] of Array.from(existingMap.entries())) {
                     if (!desiredMap.has(k) || desiredMap.get(k) !== v) {
                         return res.status(409).json({
                             message: "Active reservations exist for this order but PBV2 intent has drifted. Release inventory before reserving again.",
@@ -4847,7 +4885,17 @@ export async function registerOrderRoutes(
                 await db.insert(inventoryReservations).values(toInsert as any);
             }
 
-            res.json({ orderId, insertedCount: toInsert.length });
+            // TODO(inventory-availability): When mode=enforced, block on insufficient on-hand once availability checks are implemented.
+            const meta = policy.mode === "enforced"
+                ? {
+                    inventoryPolicy: {
+                        mode: policy.mode,
+                        warning: "Enforced mode is not fully implemented yet (availability checks are pending). No additional blocking is applied.",
+                    },
+                }
+                : undefined;
+
+            res.json({ orderId, insertedCount: toInsert.length, ...(meta ? { meta } : {}) });
         } catch (error) {
             const err: any = error;
             res.status(500).json({ message: err?.message ?? "Failed to reserve inventory" });
@@ -4856,6 +4904,9 @@ export async function registerOrderRoutes(
 
     app.post("/api/orders/:orderId/inventory/release", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
@@ -4884,7 +4935,17 @@ export async function registerOrderRoutes(
                 ))
                 .returning({ id: inventoryReservations.id });
 
-            res.json({ orderId, releasedCount: updated.length });
+            // TODO(inventory-availability): When mode=enforced, block on insufficient on-hand once availability checks are implemented.
+            const meta = policy.mode === "enforced"
+                ? {
+                    inventoryPolicy: {
+                        mode: policy.mode,
+                        warning: "Enforced mode is not fully implemented yet (availability checks are pending). No additional blocking is applied.",
+                    },
+                }
+                : undefined;
+
+            res.json({ orderId, releasedCount: updated.length, ...(meta ? { meta } : {}) });
         } catch (error) {
             const err: any = error;
             res.status(500).json({ message: err?.message ?? "Failed to release inventory" });

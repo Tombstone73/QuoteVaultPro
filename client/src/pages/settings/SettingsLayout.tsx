@@ -7,6 +7,13 @@ import { useTheme } from "@/hooks/useTheme";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -374,7 +381,36 @@ export function AppearanceSettings() {
 }
 
 export function PreferencesSettings() {
-  const { preferences, isLoading, updatePreferences, isUpdating } = useOrgPreferences();
+  const {
+    preferences,
+    isLoading,
+    updatePreferences,
+    isUpdating,
+    updateInventoryPolicy,
+    isUpdatingInventoryPolicy,
+  } = useOrgPreferences();
+
+  type InventoryUiMode = "off" | "advisory" | "enforced";
+
+  const toUiMode = (mode: any): InventoryUiMode => {
+    if (mode === "enforced") return "enforced";
+    if (mode === "advisory") return "advisory";
+    // Back-compat: older stored values
+    if (mode === "block_on_shortage") return "enforced";
+    if (mode === "warn_only") return "advisory";
+    return "off";
+  };
+
+  const enabledFromPrefs = toUiMode((preferences as any)?.inventoryPolicy?.mode) !== "off";
+  const modeFromPrefs: InventoryUiMode = toUiMode((preferences as any)?.inventoryPolicy?.mode);
+
+  const [inventoryEnabledDraft, setInventoryEnabledDraft] = React.useState<boolean>(enabledFromPrefs);
+  const [inventoryModeDraft, setInventoryModeDraft] = React.useState<InventoryUiMode>(modeFromPrefs);
+
+  React.useEffect(() => {
+    setInventoryEnabledDraft(enabledFromPrefs);
+    setInventoryModeDraft(modeFromPrefs);
+  }, [enabledFromPrefs, modeFromPrefs]);
   
   const handleQuoteToggle = async (key: string, value: boolean) => {
     await updatePreferences({
@@ -523,6 +559,77 @@ export function PreferencesSettings() {
                 onCheckedChange={(checked) => handleOrderToggle('requireAllLineItemsDoneToComplete', checked)}
                 disabled={isUpdating}
               />
+            </div>
+          </div>
+        </div>
+
+        {/* Inventory Reservations Section */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-titan-base font-medium text-titan-text-primary">Inventory Reservations</h3>
+            <p className="text-titan-sm text-titan-text-muted mt-1">
+              Off: reservation endpoints disabled. Advisory: reservations allowed; warnings only. Enforced (future): will block on shortages once availability checks are wired.
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="inventory-reservations-enabled" className="text-titan-sm font-medium text-titan-text-primary cursor-pointer">
+                  Enable inventory reservations
+                </Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Controls access to order reservation endpoints and related UI.
+                </p>
+              </div>
+              <Switch
+                id="inventory-reservations-enabled"
+                checked={inventoryEnabledDraft}
+                onCheckedChange={async (checked) => {
+                  setInventoryEnabledDraft(checked);
+                  const nextMode: InventoryUiMode = checked
+                    ? (inventoryModeDraft === "off" ? "advisory" : inventoryModeDraft)
+                    : "off";
+                  setInventoryModeDraft(nextMode);
+                  await updateInventoryPolicy({ mode: nextMode });
+                }}
+                disabled={isUpdatingInventoryPolicy}
+              />
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-titan-lg border border-titan-border-subtle p-4">
+              <div className="flex-1 space-y-1">
+                <Label className="text-titan-sm font-medium text-titan-text-primary">Reservation mode</Label>
+                <p className="text-titan-xs text-titan-text-muted">
+                  Advisory is the recommended starting mode. Enforced is reserved for future stock-shortage blocking.
+                </p>
+              </div>
+              <div className="w-[180px]">
+                <Select
+                  value={inventoryEnabledDraft ? inventoryModeDraft : "off"}
+                  onValueChange={async (value) => {
+                    const nextMode = value as InventoryUiMode;
+                    setInventoryModeDraft(nextMode);
+
+                    const nextEnabled = nextMode !== "off";
+                    setInventoryEnabledDraft(nextEnabled);
+
+                    await updateInventoryPolicy({ mode: nextMode });
+                  }}
+                  disabled={isUpdatingInventoryPolicy}
+                >
+                  <SelectTrigger className={cn("h-9", isUpdatingInventoryPolicy && "opacity-70")}
+                    aria-label="Inventory reservation mode"
+                  >
+                    <SelectValue placeholder="Select mode" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="off">Off</SelectItem>
+                    <SelectItem value="advisory">Advisory</SelectItem>
+                    <SelectItem value="enforced">Enforced (future)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
         </div>
