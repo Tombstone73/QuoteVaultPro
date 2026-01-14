@@ -38,6 +38,8 @@ import {
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
 import { registerOrderRoutes } from "./routes/orders.routes";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
+import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
+import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -664,8 +666,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Extract preferences from settings.preferences, default to empty object
-      const preferences = (org.settings as any)?.preferences || {};
-      res.json(preferences);
+      const rawPreferences = (org.settings as any)?.preferences;
+      const preferences = rawPreferences && typeof rawPreferences === "object" ? rawPreferences : {};
+
+      // Ensure stable defaults for inventory policy toggles
+      const inventoryPolicy = resolveInventoryPolicyFromOrgPreferences(preferences);
+
+      res.json({
+        ...(preferences as any),
+        inventoryPolicy,
+      });
     } catch (error) {
       console.error("Error fetching organization preferences:", error);
       res.status(500).json({ message: "Failed to fetch preferences" });
@@ -719,6 +729,105 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error updating organization preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
+    }
+  });
+
+  // Safely patch ONLY the inventory policy preferences (does not overwrite other keys)
+  app.patch('/api/organization/preferences/inventory-policy', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ success: false, message: "No organization context" });
+      }
+
+      // Only allow owners/admins to update preferences
+      const userRole = req.user?.role || 'customer';
+      if (!['owner', 'admin'].includes(userRole)) {
+        return res.status(403).json({ success: false, message: "Only owners and admins can update preferences" });
+      }
+
+      const patchSchema = z
+        .object({
+          enabled: z.boolean().optional(),
+          reservationsEnabled: z.boolean().optional(),
+          mode: z.enum(["off", "advisory", "enforced"]).optional(),
+          enforcementMode: z.enum(["off", "warn_only", "block_on_shortage"]).optional(),
+          autoReserveOnApplyPbV2: z.boolean().optional(),
+          autoReserveOnOrderConfirm: z.boolean().optional(),
+          allowNegative: z.boolean().optional(),
+        })
+        .strict()
+        .refine((obj) => Object.keys(obj).length > 0, {
+          message: "At least one inventory policy field is required",
+        })
+        .superRefine((obj, ctx) => {
+          if (
+            typeof obj.enabled === "boolean" &&
+            typeof obj.reservationsEnabled === "boolean" &&
+            obj.enabled !== obj.reservationsEnabled
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "enabled and reservationsEnabled must match when both are provided",
+              path: ["reservationsEnabled"],
+            });
+          }
+        });
+
+      const parsed = patchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const message = fromZodError(parsed.error).toString();
+        return res.status(400).json({ success: false, message });
+      }
+
+      // Load current settings
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        return res.status(404).json({ success: false, message: "Organization not found" });
+      }
+
+      const currentSettings = (org.settings || {}) as any;
+      const currentPreferences = (currentSettings as any)?.preferences || {};
+
+      const normalized = normalizeInventoryPolicyPatch(parsed.data);
+      const updatedPreferences = mergeInventoryPolicyIntoPreferences(currentPreferences, normalized.patch);
+
+      // Update organization settings without clobbering unrelated settings keys
+      const updatedSettings = {
+        ...currentSettings,
+        preferences: updatedPreferences,
+      };
+
+      await db
+        .update(organizations)
+        .set({
+          settings: updatedSettings as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, organizationId));
+
+      // TODO(org-preferences-audit): add audit log event for org preference patches
+
+      // Return canonical preferences payload (same shape as GET)
+      const canonicalPreferences = {
+        ...(updatedPreferences as any),
+        inventoryPolicy: resolveInventoryPolicyFromOrgPreferences(updatedPreferences),
+      };
+
+      return res.json({
+        success: true,
+        data: canonicalPreferences,
+        message: "Inventory policy updated",
+        ...(normalized.warnings.length > 0 ? { meta: { warnings: normalized.warnings } } : {}),
+      });
+    } catch (error) {
+      console.error("Error patching inventory policy:", error);
+      return res.status(500).json({ success: false, message: "Failed to update inventory policy" });
     }
   });
 

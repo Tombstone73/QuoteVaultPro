@@ -52,6 +52,7 @@ import { Page, ContentLayout, DataCard, StatusPill } from "@/components/titan";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
+import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -123,6 +124,8 @@ const DATE_DISPLAY_STYLE: "short" | "numeric" = "short";
 export default function OrderDetail() {
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
+  const inventoryPolicy = resolveInventoryPolicyFromOrgPreferences(preferences);
+  const inventoryReservationsEnabled = inventoryPolicy.mode !== "off";
   const params = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -231,7 +234,7 @@ export default function OrderDetail() {
 
   const inventoryQuery = useQuery({
     queryKey: ["/api/orders", orderId, "inventory"],
-    enabled: Boolean(orderId),
+    enabled: Boolean(orderId) && inventoryReservationsEnabled,
     queryFn: async () => {
       const res = await fetch(`/api/orders/${orderId}/inventory`, { credentials: "include" });
       if (!res.ok) {
@@ -1959,9 +1962,21 @@ export default function OrderDetail() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <CardTitle className="text-lg font-medium">Inventory Reservations</CardTitle>
-                      <CardDescription>Derived from PBV2 rollup</CardDescription>
+                      <CardDescription>
+                        {inventoryReservationsEnabled
+                          ? "Derived from PBV2 rollup"
+                          : "Inventory reservations are disabled in settings."}
+                      </CardDescription>
                     </div>
                     {(() => {
+                      if (!inventoryReservationsEnabled) {
+                        return (
+                          <Button size="sm" disabled>
+                            Reserve
+                          </Button>
+                        );
+                      }
+
                       const data = inventoryQuery.data as any;
                       const hasActive = Boolean(data?.hasActiveReservations);
 
@@ -1990,7 +2005,11 @@ export default function OrderDetail() {
                 </CardHeader>
 
                 <CardContent className="space-y-3">
-                  {inventoryQuery.isLoading ? (
+                  {!inventoryReservationsEnabled ? (
+                    <div className="text-sm text-muted-foreground">
+                      Enable Inventory Reservations in Organization Settings to view and manage reservations for this order.
+                    </div>
+                  ) : inventoryQuery.isLoading ? (
                     <div className="text-sm text-muted-foreground">Loading reservations…</div>
                   ) : inventoryQuery.isError ? (
                     <div className="text-sm text-destructive">Failed to load reservations.</div>
