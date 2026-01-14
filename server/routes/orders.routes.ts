@@ -51,6 +51,7 @@ import { assignEffectIndexFallback, buildOrderLineItemComponentUpsertValues } fr
 import { assertPbv2TreeVersionNotDraft } from "../lib/pbv2TreeVersionGuards";
 import { normalizePbv2DiffComponent, pbv2DiffComponents } from "@shared/pbv2/pbv2ComponentDiff";
 import { buildOrderPbv2Rollup } from "@shared/pbv2/pbv2OrderRollup";
+import { buildPbv2OrderRollupResponse } from "../lib/pbv2OrderRollupResponse";
 import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
@@ -4672,7 +4673,7 @@ export async function registerOrderRoutes(
                 acceptedComponents: acceptedComponents as any,
             });
 
-            res.json(rollup);
+            res.json(buildPbv2OrderRollupResponse(rollup));
         } catch (error) {
             const err: any = error;
             res.status(500).json({ message: err?.message ?? "Failed to build PBV2 rollup" });
