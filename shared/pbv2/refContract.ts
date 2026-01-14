@@ -5,6 +5,8 @@ export type RefContext = "INPUT" | "COMPUTE" | "PRICE" | "CONDITION" | "EFFECT";
 export type RefKind =
   | "selectionRef"
   | "effectiveRef"
+  | "optionValueParamRef"
+  | "optionValueParamJsonRef"
   | "nodeOutputRef"
   | "envRef"
   | "pricebookRef"
@@ -15,6 +17,8 @@ export type ConstantValue = number | boolean | string | null;
 export type Ref =
   | { kind: "selectionRef"; selectionKey: string }
   | { kind: "effectiveRef"; selectionKey: string }
+  | { kind: "optionValueParamRef"; selectionKey: string; paramPath: string; defaultValue?: number }
+  | { kind: "optionValueParamJsonRef"; selectionKey: string; paramPath: string; defaultValue?: unknown }
   | { kind: "nodeOutputRef"; nodeId: string; outputKey: string }
   | { kind: "envRef"; envKey: string }
   | { kind: "pricebookRef"; key: string }
@@ -25,9 +29,34 @@ export type EnvKey = (typeof DEFAULT_ENV_KEYS)[number];
 
 export const REF_KIND_LEGALITY: Readonly<Record<RefContext, ReadonlySet<RefKind>>> = {
   INPUT: new Set<RefKind>(["constant"]),
-  COMPUTE: new Set<RefKind>(["constant", "selectionRef", "effectiveRef", "nodeOutputRef", "envRef"]),
-  CONDITION: new Set<RefKind>(["constant", "selectionRef", "effectiveRef", "nodeOutputRef", "envRef"]),
-  PRICE: new Set<RefKind>(["constant", "selectionRef", "effectiveRef", "nodeOutputRef", "envRef", "pricebookRef"]),
+  COMPUTE: new Set<RefKind>([
+    "constant",
+    "selectionRef",
+    "effectiveRef",
+    "optionValueParamRef",
+    "optionValueParamJsonRef",
+    "nodeOutputRef",
+    "envRef",
+  ]),
+  CONDITION: new Set<RefKind>([
+    "constant",
+    "selectionRef",
+    "effectiveRef",
+    "optionValueParamRef",
+    "optionValueParamJsonRef",
+    "nodeOutputRef",
+    "envRef",
+  ]),
+  PRICE: new Set<RefKind>([
+    "constant",
+    "selectionRef",
+    "effectiveRef",
+    "optionValueParamRef",
+    "optionValueParamJsonRef",
+    "nodeOutputRef",
+    "envRef",
+    "pricebookRef",
+  ]),
   EFFECT: new Set<RefKind>(["constant", "selectionRef", "effectiveRef", "nodeOutputRef", "envRef"]),
 } as const;
 
