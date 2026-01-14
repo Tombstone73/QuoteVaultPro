@@ -70,6 +70,7 @@ import {
     tryExtractSupabaseObjectKeyFromUrl
 } from "../lib/supabaseObjectHelpers";
 import type { FileRole, FileSide } from "../lib/supabaseObjectHelpers";
+import { InventoryReservationsRepository } from "../storage/inventoryReservations.repo";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -108,6 +109,8 @@ async function requireInventoryReservationsNotOff(req: any, res: any) {
 
     return policy;
 }
+
+const manualReservationsRepo = new InventoryReservationsRepository(db);
 
 type Pbv2OrderLineItemSnapshot = {
     treeVersionId: string;
@@ -4763,6 +4766,119 @@ export async function registerOrderRoutes(
             res.status(500).json({ message: err?.message ?? "Failed to load inventory reservations" });
         }
     };
+
+    // Manual reservations (explicit add/remove; no PBV2 coupling)
+    app.get("/api/orders/:orderId/manual-reservations", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const reservations = await manualReservationsRepo.listManualReservationsForOrder({ organizationId, orderId });
+            return res.json({ success: true, data: reservations });
+        } catch (error) {
+            const err: any = error;
+            return res.status(500).json({ success: false, message: err?.message ?? "Failed to load manual reservations" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/manual-reservations", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const userId = getUserId(req.user) ?? null;
+            const orderId = String(req.params.orderId);
+
+            const bodySchema = z.object({
+                materialId: z.string().min(1),
+                quantity: z.coerce.number().positive(),
+            });
+            const parsed = bodySchema.safeParse(req.body);
+            if (!parsed.success) {
+                return res.status(400).json({ success: false, message: fromZodError(parsed.error).message });
+            }
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const created = await manualReservationsRepo.createManualReservationForOrder({
+                organizationId,
+                orderId,
+                materialId: parsed.data.materialId,
+                quantity: parsed.data.quantity,
+                createdByUserId: userId,
+            });
+
+            return res.json({ success: true, data: created });
+        } catch (error) {
+            const err: any = error;
+            const status = Number(err?.statusCode) || 500;
+            if (status >= 400 && status < 500) {
+                return res.status(status).json({ success: false, message: err?.message ?? "Failed to create manual reservation" });
+            }
+            return res.status(500).json({ success: false, message: err?.message ?? "Failed to create manual reservation" });
+        }
+    });
+
+    app.delete("/api/orders/:orderId/manual-reservations/:reservationId", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+            const reservationId = String(req.params.reservationId);
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const result = await manualReservationsRepo.deleteManualReservationForOrder({
+                organizationId,
+                orderId,
+                reservationId,
+            });
+
+            if (!result.deleted) {
+                if (result.reason === "not_found") {
+                    return res.status(404).json({ success: false, message: "Reservation not found" });
+                }
+                return res.status(409).json({ success: false, message: "Only MANUAL reservations can be deleted here." });
+            }
+
+            return res.json({ success: true });
+        } catch (error) {
+            const err: any = error;
+            return res.status(500).json({ success: false, message: err?.message ?? "Failed to delete manual reservation" });
+        }
+    });
 
     app.get("/api/orders/:orderId/inventory", isAuthenticated, tenantContext, handleGetOrderInventory);
     app.get("/api/orders/:orderId/inventory/reservations", isAuthenticated, tenantContext, handleGetOrderInventory);

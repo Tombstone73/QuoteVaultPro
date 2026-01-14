@@ -63,6 +63,7 @@ import {
 import type { OrderState } from "@/hooks/useOrderState";
 import { isTerminalState as checkIfTerminalState } from "@/hooks/useOrderState";
 import { OrderLineItemsSection } from "@/components/orders/OrderLineItemsSection";
+import ManualReservationsCard from "@/components/orders/ManualReservationsCard";
 
 /**
  * OrderDetail renders some legacy "bill to / ship to / shipping" snapshot fields
@@ -2056,6 +2057,14 @@ export default function OrderDetail() {
                   )}
                 </CardContent>
               </Card>
+
+              {orderId ? (
+                <ManualReservationsCard
+                  orderId={orderId}
+                  enabled={inventoryReservationsEnabled}
+                  policyMode={inventoryPolicy.mode}
+                />
+              ) : null}
 
               {/* Totals */}
               <Card>
