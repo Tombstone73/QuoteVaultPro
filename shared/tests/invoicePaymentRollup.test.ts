@@ -46,4 +46,16 @@ describe('computeInvoicePaymentRollup', () => {
     });
     expect(r).toEqual({ amountPaidCents: 0, amountDueCents: 1000, paymentStatus: 'refunded' });
   });
+
+  test('ignores pending and voided payments', () => {
+    const r = computeInvoicePaymentRollup({
+      invoiceTotalCents: 1000,
+      payments: [
+        { status: 'succeeded', amountCents: 250 },
+        { status: 'pending', amountCents: 500 },
+        { status: 'voided', amountCents: 500 },
+      ],
+    });
+    expect(r).toEqual({ amountPaidCents: 250, amountDueCents: 750, paymentStatus: 'partial' });
+  });
 });

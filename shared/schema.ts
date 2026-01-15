@@ -2540,6 +2540,10 @@ export const payments = pgTable("payments", {
   index("payments_sync_status_idx").on(table.syncStatus),
 ]);
 
+// Manual payment methods (non-Stripe). NOTE: Terms are not a payment method.
+export const manualPaymentMethodSchema = z.enum(['cash', 'check', 'wire', 'bank_transfer', 'ach', 'other']);
+export type ManualPaymentMethod = z.infer<typeof manualPaymentMethodSchema>;
+
 export const insertPaymentSchema = createInsertSchema(payments).omit({
   id: true,
   createdAt: true,
@@ -2549,9 +2553,9 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
 }).extend({
   amount: z.coerce.number().positive(),
   provider: z.enum(['manual','stripe']).default('manual'),
-  status: z.enum(['pending','succeeded','failed','canceled','refunded']).default('succeeded'),
+  status: z.enum(['pending','succeeded','failed','canceled','refunded','voided']).default('succeeded'),
   currency: z.string().min(1).max(8).default('USD'),
-  method: z.enum(['cash','check','credit_card','ach','other']).default('other'),
+  method: z.enum(['cash','check','wire','bank_transfer','credit_card','ach','other']).default('other'),
   notes: z.string().optional().nullable(),
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
 });

@@ -1,12 +1,13 @@
 import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, invoices, orders, payments, paymentWebhookEvents } from "../../shared/schema";
+import { auditLogs, invoices, orders, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { syncSingleInvoiceToQuickBooks } from "../quickbooksService";
 import { computeInvoicePaymentRollup } from "../../shared/rollups/invoicePaymentRollup";
 import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
+import { z } from "zod";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -130,15 +131,290 @@ export async function registerMvpInvoicingRoutes(
       if (inv.organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
 
       const rows = await db
-        .select()
+        .select({
+          payment: payments,
+          createdBy: users,
+        })
         .from(payments)
+        .leftJoin(users, eq(payments.createdByUserId, users.id))
         .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
         .orderBy(desc(payments.createdAt));
 
-      return res.json({ success: true, data: rows });
+      const data = rows.map((r: any) => {
+        const u = r.createdBy as any;
+        const name = u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() : '';
+        return {
+          ...(r.payment as any),
+          createdBy: u
+            ? {
+                id: u.id,
+                name: name || u.email || null,
+                email: u.email || null,
+              }
+            : null,
+        };
+      });
+
+      return res.json({ success: true, data });
     } catch (error: any) {
       console.error('Error fetching invoice payments:', error);
       return res.status(500).json({ error: error.message || 'Failed to fetch payments' });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Manual payments v1: Record a non-Stripe payment
+  // ------------------------------------------------------------
+  app.post('/api/invoices/:id/payments/manual', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email;
+      if (!userId) return res.status(401).json({ error: 'Missing user' });
+
+      const body = z
+        .object({
+          amountCents: z.coerce.number().int().positive(),
+          method: manualPaymentMethodSchema,
+          appliedAt: z.string().optional(),
+          notes: z.string().max(5000).optional(),
+          reference: z.string().max(255).optional(),
+        })
+        .parse(req.body || {});
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
+
+      const status = String(inv.status || '').toLowerCase();
+      if (status === 'void') return res.status(400).json({ error: 'Cannot record payment on a void invoice' });
+
+      const appliedAt = body.appliedAt ? new Date(body.appliedAt) : new Date();
+      if (Number.isNaN(appliedAt.getTime())) return res.status(400).json({ error: 'Invalid appliedAt' });
+
+      const amountCents = Math.max(0, Math.round(Number(body.amountCents || 0)));
+      if (amountCents <= 0) return res.status(400).json({ error: 'amountCents must be > 0' });
+
+      const currency = String(inv.currency || 'USD');
+      const now = new Date();
+
+      const paymentRows = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
+
+      const rollupBefore = computeInvoicePaymentRollup({
+        invoiceTotalCents: Number(inv.totalCents || 0),
+        payments: paymentRows.map((p: any) => ({
+          status: String(p.status || 'succeeded'),
+          amountCents: Number(p.amountCents || 0),
+        })),
+      });
+
+      if (rollupBefore.amountDueCents <= 0) {
+        return res.status(400).json({ error: 'Invoice is already paid' });
+      }
+
+      const [payment] = await db
+        .insert(payments)
+        .values({
+          organizationId,
+          invoiceId: inv.id,
+          provider: 'manual',
+          status: 'succeeded',
+          amount: (amountCents / 100).toFixed(2),
+          amountCents,
+          currency,
+          method: body.method,
+          notes: body.notes,
+          note: body.notes,
+          appliedAt,
+          paidAt: appliedAt,
+          succeededAt: appliedAt,
+          metadata: {
+            ...(body.reference ? { reference: body.reference } : {}),
+          },
+          createdByUserId: userId,
+          syncStatus: 'pending',
+          createdAt: now,
+          updatedAt: now,
+        } as any)
+        .returning();
+
+      const updatedInvoice = await refreshInvoiceStatus(inv.id);
+
+      const paymentRowsAfter = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
+
+      const rollup = computeInvoicePaymentRollup({
+        invoiceTotalCents: Number(inv.totalCents || 0),
+        payments: paymentRowsAfter.map((p: any) => ({
+          status: String(p.status || 'succeeded'),
+          amountCents: Number(p.amountCents || 0),
+        })),
+      });
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: 'manual_payment_recorded',
+          entityType: 'invoice',
+          entityId: inv.id,
+          entityName: String(inv.invoiceNumber),
+          description: 'Manual payment recorded',
+          newValues: {
+            paymentId: payment?.id,
+            amountCents,
+            method: body.method,
+            appliedAt: appliedAt.toISOString(),
+            reference: body.reference || null,
+          } as any,
+          createdAt: now,
+        } as any);
+      } catch {}
+
+      return res.json({
+        success: true,
+        data: {
+          payment,
+          invoice: updatedInvoice,
+          rollup,
+        },
+      });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') {
+        return res.status(400).json({ error: error.message || 'Invalid request' });
+      }
+      console.error('Error recording manual payment:', error);
+      return res.status(500).json({ error: error.message || 'Failed to record manual payment' });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Manual payments v1: Void (soft-void) a manual payment
+  // ------------------------------------------------------------
+  app.post('/api/invoices/:id/payments/:paymentId/void', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email;
+      if (!userId) return res.status(401).json({ error: 'Missing user' });
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
+
+      const paymentId = String(req.params.paymentId || '');
+      if (!paymentId) return res.status(400).json({ error: 'Missing paymentId' });
+
+      const [payment] = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.id, paymentId), eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
+        .limit(1);
+
+      if (!payment) return res.status(404).json({ error: 'Payment not found' });
+
+      const provider = String((payment as any).provider || '').toLowerCase();
+      if (provider === 'stripe') return res.status(400).json({ error: 'Stripe payments cannot be voided here' });
+
+      const currentStatus = String((payment as any).status || '').toLowerCase();
+      if (currentStatus === 'voided') {
+        const updatedInvoice = await refreshInvoiceStatus(inv.id);
+        const paymentRowsAfter = await db
+          .select()
+          .from(payments)
+          .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
+
+        const rollup = computeInvoicePaymentRollup({
+          invoiceTotalCents: Number(inv.totalCents || 0),
+          payments: paymentRowsAfter.map((p: any) => ({
+            status: String(p.status || 'succeeded'),
+            amountCents: Number(p.amountCents || 0),
+          })),
+        });
+
+        return res.json({ success: true, data: { payment, invoice: updatedInvoice, rollup } });
+      }
+
+      const now = new Date();
+      const nextMetadata = {
+        ...((payment as any).metadata || {}),
+        voidedAt: now.toISOString(),
+        voidedByUserId: userId,
+      };
+
+      const [updatedPayment] = await db
+        .update(payments)
+        .set({
+          status: 'voided',
+          canceledAt: now,
+          metadata: nextMetadata as any,
+          updatedAt: now,
+        } as any)
+        .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
+        .returning();
+
+      const updatedInvoice = await refreshInvoiceStatus(inv.id);
+
+      const paymentRowsAfter = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
+
+      const rollup = computeInvoicePaymentRollup({
+        invoiceTotalCents: Number(inv.totalCents || 0),
+        payments: paymentRowsAfter.map((p: any) => ({
+          status: String(p.status || 'succeeded'),
+          amountCents: Number(p.amountCents || 0),
+        })),
+      });
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: 'manual_payment_voided',
+          entityType: 'invoice',
+          entityId: inv.id,
+          entityName: String(inv.invoiceNumber),
+          description: 'Manual payment voided',
+          oldValues: {
+            paymentId: (payment as any).id,
+            status: (payment as any).status,
+            amountCents: Number((payment as any).amountCents || 0),
+          } as any,
+          newValues: {
+            paymentId: (payment as any).id,
+            status: 'voided',
+            voidedAt: now.toISOString(),
+          } as any,
+          createdAt: now,
+        } as any);
+      } catch {}
+
+      return res.json({
+        success: true,
+        data: {
+          payment: updatedPayment,
+          invoice: updatedInvoice,
+          rollup,
+        },
+      });
+    } catch (error: any) {
+      console.error('Error voiding manual payment:', error);
+      return res.status(500).json({ error: error.message || 'Failed to void payment' });
     }
   });
 
