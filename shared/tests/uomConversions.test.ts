@@ -13,13 +13,13 @@ describe("uomConversions", () => {
   });
 
   test("sqft base allows linear_ft only when width exists", () => {
-    expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "sqft", width: null })).toEqual(["sqft"]);
-    expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "sqft", width: "" })).toEqual(["sqft"]);
+    expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "sqft", width: null })).toEqual(["sqft", "linear_ft"]);
+    expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "sqft", width: "" })).toEqual(["sqft", "linear_ft"]);
     expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "sqft", width: "60" })).toEqual(["sqft", "linear_ft"]);
   });
 
   test("linear_ft base allows sqft only when width exists", () => {
-    expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "linear_ft", width: null })).toEqual(["linear_ft"]);
+    expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "linear_ft", width: null })).toEqual(["linear_ft", "sqft"]);
     expect(getAllowedInputUomsForMaterial({ unitOfMeasure: "linear_ft", width: "48" })).toEqual(["linear_ft", "sqft"]);
   });
 

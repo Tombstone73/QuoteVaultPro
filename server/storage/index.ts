@@ -118,6 +118,7 @@ export const createProduct = sharedRepo.createProduct.bind(sharedRepo);
 export const updateProduct = sharedRepo.updateProduct.bind(sharedRepo);
 export const deleteProduct = sharedRepo.deleteProduct.bind(sharedRepo);
 export const cloneProduct = sharedRepo.cloneProduct.bind(sharedRepo);
+export const duplicateProduct = sharedRepo.duplicateProduct.bind(sharedRepo);
 
 // Product options operations
 export const getProductOptions = sharedRepo.getProductOptions.bind(sharedRepo);
@@ -351,6 +352,7 @@ export const storage = {
     updateProduct,
     deleteProduct,
     cloneProduct,
+    duplicateProduct,
     getProductOptions,
     createProductOption,
     updateProductOption,
