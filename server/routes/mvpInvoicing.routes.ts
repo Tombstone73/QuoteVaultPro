@@ -1,10 +1,12 @@
 import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, invoices, orders } from "../../shared/schema";
-import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations } from "../invoicesService";
+import { auditLogs, invoices, orders, payments, paymentWebhookEvents } from "../../shared/schema";
+import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { syncSingleInvoiceToQuickBooks } from "../quickbooksService";
+import { computeInvoicePaymentRollup } from "../../shared/rollups/invoicePaymentRollup";
+import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -23,6 +25,296 @@ export async function registerMvpInvoicingRoutes(
   }
 ) {
   const { isAuthenticated, tenantContext } = deps;
+
+  // ------------------------------------------------------------
+  // Stripe: Create PaymentIntent for invoice (full payment only)
+  // ------------------------------------------------------------
+  app.post("/api/invoices/:id/payments/stripe/create-intent", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
+      if (!userId) return res.status(401).json({ error: "Missing user" });
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ error: "Invoice not found" });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
+
+      const status = String(inv.status || '').toLowerCase();
+      if (status === 'void') return res.status(400).json({ error: "Cannot pay a void invoice" });
+
+      const paymentRows = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
+        .orderBy(desc(payments.createdAt));
+
+      const rollup = computeInvoicePaymentRollup({
+        invoiceTotalCents: Number(inv.totalCents || 0),
+        payments: paymentRows.map((p: any) => ({ status: String(p.status || 'succeeded'), amountCents: Number(p.amountCents || 0) })),
+      });
+
+      if (rollup.amountDueCents <= 0) return res.status(400).json({ error: "Invoice is already paid" });
+
+      const currency = String(inv.currency || 'USD');
+
+      const { paymentIntentId, clientSecret } = await createInvoicePaymentIntent({
+        amountCents: rollup.amountDueCents,
+        currency,
+        organizationId,
+        invoiceId: inv.id,
+        description: `Invoice #${inv.invoiceNumber}`,
+      });
+
+      const now = new Date();
+      const [payment] = await db
+        .insert(payments)
+        .values({
+          organizationId,
+          invoiceId: inv.id,
+          provider: 'stripe',
+          status: 'pending',
+          amount: (rollup.amountDueCents / 100).toFixed(2),
+          amountCents: rollup.amountDueCents,
+          currency,
+          stripePaymentIntentId: paymentIntentId,
+          metadata: {
+            invoiceId: inv.id,
+            organizationId,
+          },
+          method: 'credit_card',
+          appliedAt: now,
+          createdByUserId: userId,
+          syncStatus: 'pending',
+          createdAt: now,
+          updatedAt: now,
+        } as any)
+        .returning();
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: 'payment_intent_created',
+          entityType: 'invoice',
+          entityId: inv.id,
+          entityName: String(inv.invoiceNumber),
+          description: 'Stripe PaymentIntent created',
+          newValues: { provider: 'stripe', stripePaymentIntentId: paymentIntentId, amountCents: rollup.amountDueCents } as any,
+          createdAt: now,
+        } as any);
+      } catch {}
+
+      return res.json({ success: true, data: { clientSecret, paymentId: payment?.id } });
+    } catch (error: any) {
+      console.error('Error creating Stripe PaymentIntent:', error);
+      return res.status(500).json({ error: error.message || 'Failed to create payment intent' });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Payments list (invoice-scoped, tenant-scoped)
+  // ------------------------------------------------------------
+  app.get('/api/invoices/:id/payments', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ error: 'Invoice not found' });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
+
+      const rows = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
+        .orderBy(desc(payments.createdAt));
+
+      return res.json({ success: true, data: rows });
+    } catch (error: any) {
+      console.error('Error fetching invoice payments:', error);
+      return res.status(500).json({ error: error.message || 'Failed to fetch payments' });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Stripe webhook (no auth) - idempotent + fail-soft
+  // Uses req.rawBody (captured by express.json verify in server/index.ts)
+  // ------------------------------------------------------------
+  app.post('/api/payments/stripe/webhook', async (req: any, res) => {
+    const signature = req.headers['stripe-signature'];
+    if (!signature || typeof signature !== 'string') return res.status(400).send('Missing stripe-signature');
+
+    let event: any;
+    try {
+      const stripe = getStripeClient();
+      const webhookSecret = getStripeWebhookSecret();
+      const rawBody: Buffer = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(req.rawBody || '');
+      event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
+    } catch (err: any) {
+      console.error('[StripeWebhook] signature verification failed:', err);
+      return res.status(400).send('Invalid signature');
+    }
+
+    const provider = 'stripe';
+    const eventId = String(event.id);
+    const type = String(event.type);
+    const receivedAt = new Date();
+
+    // Attempt to extract orgId from metadata (if available)
+    const obj: any = event?.data?.object;
+    const orgFromMetadata = obj?.metadata?.organizationId ? String(obj.metadata.organizationId) : null;
+
+    try {
+      await db
+        .insert(paymentWebhookEvents)
+        .values({
+          provider,
+          eventId,
+          type,
+          organizationId: orgFromMetadata,
+          status: 'received',
+          receivedAt,
+          payload: event as any,
+        } as any)
+        .onConflictDoNothing({ target: [paymentWebhookEvents.provider, paymentWebhookEvents.eventId] });
+
+      const [existing] = await db
+        .select()
+        .from(paymentWebhookEvents)
+        .where(and(eq(paymentWebhookEvents.provider, provider), eq(paymentWebhookEvents.eventId, eventId)))
+        .limit(1);
+
+      if (existing?.processedAt && String(existing.status) === 'processed') {
+        return res.json({ received: true });
+      }
+
+      // Process events
+      if (type === 'payment_intent.succeeded') {
+        const pi: any = obj;
+        const intentId = String(pi.id);
+        const invoiceId = pi?.metadata?.invoiceId ? String(pi.metadata.invoiceId) : null;
+        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : null;
+
+        if (!invoiceId || !organizationId) {
+          throw new Error('Missing invoiceId/organizationId in PaymentIntent metadata');
+        }
+
+        const amountCents = Math.max(0, Math.round(Number(pi.amount_received ?? pi.amount ?? 0)));
+        const currency = String(pi.currency || 'usd').toUpperCase();
+        const now = new Date();
+
+        const matches = await db
+          .select()
+          .from(payments)
+          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)))
+          .limit(2);
+
+        const paymentRow: any = matches[0];
+
+        if (!paymentRow) {
+          // Recovery path: insert succeeded payment row if missing
+          const [inv] = await db.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId))).limit(1);
+          if (!inv) throw new Error('Invoice not found for webhook metadata');
+
+          await db.insert(payments).values({
+            organizationId,
+            invoiceId,
+            provider: 'stripe',
+            status: 'succeeded',
+            amount: (amountCents / 100).toFixed(2),
+            amountCents,
+            currency,
+            stripePaymentIntentId: intentId,
+            method: 'credit_card',
+            paidAt: now,
+            succeededAt: now,
+            metadata: { paymentIntent: { id: intentId } },
+            createdByUserId: null,
+            syncStatus: 'pending',
+            createdAt: now,
+            updatedAt: now,
+          } as any);
+        } else {
+          // Idempotent transition
+          const currentStatus = String(paymentRow.status || '').toLowerCase();
+          if (currentStatus !== 'succeeded') {
+            await db
+              .update(payments)
+              .set({ status: 'succeeded', paidAt: now, succeededAt: now, updatedAt: now } as any)
+              .where(eq(payments.id, paymentRow.id));
+          }
+        }
+
+        // Refresh invoice rollup (status-aware)
+        await refreshInvoiceStatus(invoiceId);
+
+        // Best-effort audit
+        try {
+          await db.insert(auditLogs).values({
+            organizationId,
+            userId: null,
+            userName: 'stripe_webhook',
+            actionType: 'payment_succeeded',
+            entityType: 'invoice',
+            entityId: invoiceId,
+            entityName: String(invoiceId),
+            description: 'Stripe payment succeeded (webhook)',
+            newValues: { stripePaymentIntentId: intentId, amountCents } as any,
+            createdAt: now,
+          } as any);
+        } catch {}
+      } else if (type === 'payment_intent.payment_failed') {
+        const pi: any = obj;
+        const intentId = String(pi.id);
+        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : null;
+        const now = new Date();
+
+        if (organizationId) {
+          await db
+            .update(payments)
+            .set({ status: 'failed', failedAt: now, updatedAt: now } as any)
+            .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
+        }
+      } else if (type === 'payment_intent.canceled') {
+        const pi: any = obj;
+        const intentId = String(pi.id);
+        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : null;
+        const now = new Date();
+
+        if (organizationId) {
+          await db
+            .update(payments)
+            .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
+            .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
+        }
+      } else {
+        // ignore safely
+      }
+
+      await db
+        .update(paymentWebhookEvents)
+        .set({ status: 'processed', processedAt: new Date() } as any)
+        .where(and(eq(paymentWebhookEvents.provider, provider), eq(paymentWebhookEvents.eventId, eventId)));
+
+      return res.json({ received: true });
+    } catch (err: any) {
+      console.error('[StripeWebhook] processing failed:', err);
+      try {
+        await db
+          .update(paymentWebhookEvents)
+          .set({ status: 'error', error: String(err?.message || err), processedAt: new Date() } as any)
+          .where(and(eq(paymentWebhookEvents.provider, provider), eq(paymentWebhookEvents.eventId, eventId)));
+      } catch {}
+      // Return 500 so Stripe retries (idempotency table prevents double-processing)
+      return res.status(500).send('Webhook processing failed');
+    }
+  });
 
   // ------------------------------------------------------------
   // Invoices: list/detail (tenant-scoped)

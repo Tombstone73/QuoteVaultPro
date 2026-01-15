@@ -2504,15 +2504,25 @@ export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
 // Payments table (applied to invoices)
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  provider: varchar("provider", { length: 20 }).notNull().default('manual'), // manual | stripe
+  status: varchar("status", { length: 20 }).notNull().default('succeeded'), // pending | succeeded | failed | canceled | refunded
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
   amountCents: integer("amount_cents").notNull().default(0),
+  currency: varchar("currency", { length: 8 }).notNull().default('USD'),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  succeededAt: timestamp("succeeded_at", { withTimezone: true }),
+  failedAt: timestamp("failed_at", { withTimezone: true }),
+  canceledAt: timestamp("canceled_at", { withTimezone: true }),
+  refundedAt: timestamp("refunded_at", { withTimezone: true }),
+  metadata: jsonb("metadata").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
   method: varchar("method", { length: 50 }).notNull().default('other'), // cash, check, credit_card, ach, other
   notes: text("notes"),
   note: text("note"),
   paidAt: timestamp("paid_at", { withTimezone: true }),
   appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow().notNull(),
-  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'restrict' }),
   externalAccountingId: varchar("external_accounting_id"),
   syncStatus: varchar("sync_status", { length: 50 }).notNull().default('pending'), // pending, synced, error, skipped
   syncError: text("sync_error"),
@@ -2520,7 +2530,11 @@ export const payments = pgTable("payments", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  index("payments_organization_id_idx").on(table.organizationId),
   index("payments_invoice_id_idx").on(table.invoiceId),
+  index("payments_provider_idx").on(table.provider),
+  index("payments_status_idx").on(table.status),
+  uniqueIndex("payments_org_stripe_payment_intent_id_uidx").on(table.organizationId, table.stripePaymentIntentId),
   index("payments_method_idx").on(table.method),
   index("payments_created_by_user_id_idx").on(table.createdByUserId),
   index("payments_sync_status_idx").on(table.syncStatus),
@@ -2531,8 +2545,12 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   createdAt: true,
   updatedAt: true,
   syncedAt: true,
+  organizationId: true,
 }).extend({
   amount: z.coerce.number().positive(),
+  provider: z.enum(['manual','stripe']).default('manual'),
+  status: z.enum(['pending','succeeded','failed','canceled','refunded']).default('succeeded'),
+  currency: z.string().min(1).max(8).default('USD'),
   method: z.enum(['cash','check','credit_card','ach','other']).default('other'),
   notes: z.string().optional().nullable(),
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
@@ -2545,6 +2563,34 @@ export const updatePaymentSchema = insertPaymentSchema.partial().extend({
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type UpdatePayment = z.infer<typeof updatePaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
+
+// Stripe/Webhook events (idempotency + audit trail)
+export const paymentWebhookEvents = pgTable("payment_webhook_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  provider: varchar("provider", { length: 20 }).notNull(), // stripe
+  eventId: text("event_id").notNull(),
+  type: text("type").notNull(),
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: 'set null' }),
+  status: varchar("status", { length: 20 }).notNull().default('received'), // received | processed | error
+  receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  payload: jsonb("payload").$type<Record<string, any>>().notNull(),
+  error: text("error"),
+}, (table) => [
+  uniqueIndex("payment_webhook_events_provider_event_id_uidx").on(table.provider, table.eventId),
+  index("payment_webhook_events_org_id_idx").on(table.organizationId),
+  index("payment_webhook_events_received_at_idx").on(table.receivedAt),
+  index("payment_webhook_events_status_idx").on(table.status),
+]);
+
+export const insertPaymentWebhookEventSchema = createInsertSchema(paymentWebhookEvents).omit({
+  id: true,
+  receivedAt: true,
+  processedAt: true,
+});
+
+export type InsertPaymentWebhookEvent = z.infer<typeof insertPaymentWebhookEventSchema>;
+export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 
 // -------------------- Shipping & Fulfillment --------------------
 

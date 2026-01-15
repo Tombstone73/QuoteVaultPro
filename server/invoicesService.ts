@@ -2,6 +2,7 @@ import { db } from './db';
 import { invoices, invoiceLineItems, payments, orders, orderLineItems, globalVariables } from '../shared/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceLineItem, InsertPayment } from '../shared/schema';
+import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -31,6 +32,11 @@ function toCents(value: unknown): number {
 function centsToDecimalString(cents: number): string {
   const safe = Number.isFinite(cents) ? cents : 0;
   return (safe / 100).toFixed(2);
+}
+
+function normalizePaymentStatus(raw: unknown): string {
+  if (!raw) return 'succeeded';
+  return String(raw).trim().toLowerCase();
 }
 
 function calculateDueDate(issueDate: Date, terms: string, customProvided?: Date | null): Date | null {
@@ -175,7 +181,10 @@ export async function getInvoiceWithRelations(id: string) {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, id));
   if (!invoice) return null;
   const lineItems = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id));
-  const paymentRows = await db.select().from(payments).where(eq(payments.invoiceId, id));
+  const paymentRows = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.invoiceId, id), eq(payments.organizationId, (invoice as any).organizationId)));
   return { invoice, lineItems, payments: paymentRows };
 }
 
@@ -193,6 +202,11 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
 
     const paymentInsert: InsertPayment = {
       invoiceId,
+      // orgId enforced on all payment rows
+      organizationId: (invoice as any).organizationId,
+      provider: 'manual' as any,
+      status: 'succeeded' as any,
+      currency: (invoice as any).currency || 'USD',
       amount: data.amount,
       amountCents: toCents(data.amount),
       method: data.method as any,
@@ -206,18 +220,24 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
 
     // Recalculate totals
     const paymentRows = await tx.select().from(payments).where(eq(payments.invoiceId, invoiceId));
-    const totalPaid = paymentRows.reduce((s, p) => s + Number(p.amount), 0);
-    const balanceDue = Number(invoice.total) - totalPaid;
+    const rollup = computeInvoicePaymentRollup({
+      invoiceTotalCents: Number((invoice as any).totalCents || 0),
+      payments: paymentRows.map((p: any) => ({ status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
+    });
+
+    const amountPaid = centsToDecimalString(rollup.amountPaidCents);
+    const balanceDue = centsToDecimalString(rollup.amountDueCents);
     let newStatus = invoice.status;
-    if (balanceDue <= 0) newStatus = 'paid' as any;
+    if (rollup.amountDueCents <= 0) newStatus = 'paid' as any;
     else {
       // Keep billed status if already billed; otherwise leave as-is (legacy statuses supported)
       if (String(invoice.status || '').toLowerCase() === 'billed') newStatus = 'billed' as any;
+      else if (rollup.amountPaidCents > 0) newStatus = 'partially_paid' as any;
     }
 
     await tx.update(invoices).set({
-      amountPaid: totalPaid.toString(),
-      balanceDue: balanceDue.toString(),
+      amountPaid,
+      balanceDue,
       status: newStatus,
       updatedAt: new Date(),
     }).where(eq(invoices.id, invoiceId));
@@ -238,15 +258,21 @@ export async function refreshInvoiceStatus(id: string) {
   const rel = await getInvoiceWithRelations(id);
   if (!rel) return null;
   const { invoice, payments: paymentRows } = rel;
-  const totalPaid = paymentRows.reduce((s, p) => s + Number(p.amount), 0);
-  const balanceDue = Number(invoice.total) - totalPaid;
+  const rollup = computeInvoicePaymentRollup({
+    invoiceTotalCents: Number((invoice as any).totalCents || 0),
+    payments: paymentRows.map((p: any) => ({ status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
+  });
+
+  const amountPaid = centsToDecimalString(rollup.amountPaidCents);
+  const balanceDue = centsToDecimalString(rollup.amountDueCents);
+
   let status = invoice.status;
-  if (balanceDue <= 0) status = 'paid';
-  else if (totalPaid > 0) status = 'partially_paid';
+  if (rollup.amountDueCents <= 0) status = 'paid';
+  else if (rollup.amountPaidCents > 0) status = 'partially_paid';
   if (status !== 'paid' && invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
     status = 'overdue';
   }
-  const [updated] = await db.update(invoices).set({ amountPaid: totalPaid.toString(), balanceDue: balanceDue.toString(), status, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
+  const [updated] = await db.update(invoices).set({ amountPaid, balanceDue, status, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
   return updated;
 }
 
