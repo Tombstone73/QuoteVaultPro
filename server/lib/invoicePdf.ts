@@ -1,4 +1,4 @@
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
 
@@ -73,6 +73,14 @@ type InvoicePdfParams = {
     poNumber?: string | null;
     jobNumber?: string | null;
   } | null;
+  overrides?: {
+    // Data URL only (no remote fetch)
+    logoDataUrl?: string | null;
+    footerText?: string | null;
+    showTradeTerms?: boolean;
+    // Overrides watermark text when enabled
+    watermarkText?: string | null;
+  };
 };
 
 const toRgb = (c: Rgb) => rgb(c[0], c[1], c[2]);
@@ -111,7 +119,15 @@ const fmtDate = (d: unknown): string => {
   if (!d) return '';
   const dt = d instanceof Date ? d : new Date(String(d));
   if (Number.isNaN(dt.getTime())) return '';
-  return dt.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' });
+
+  // Deterministic: force UTC so output doesn't vary by server locale/timezone.
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    timeZone: 'UTC',
+  });
+  return fmt.format(dt);
 };
 
 function buildAddressBlock(params: {
@@ -196,12 +212,12 @@ function wrapText(params: {
 
 function statusBadgeBg(label: string, theme: InvoicePdfTheme): Rgb {
   const s = String(label || '').trim().toLowerCase();
-  if (s === 'paid') return theme.colors.statusPaidBg;
-  if (s === 'partially paid') return theme.colors.statusPartialBg;
-  if (s === 'unpaid') return theme.colors.statusUnpaidBg;
-  if (s === 'draft') return theme.colors.statusDraftBg;
-  if (s === 'voided') return theme.colors.statusVoidedBg;
-  return theme.colors.statusDraftBg;
+  if (s === 'paid') return theme.statusBadge.backgrounds.paid;
+  if (s === 'partially paid') return theme.statusBadge.backgrounds.partial;
+  if (s === 'unpaid') return theme.statusBadge.backgrounds.unpaid;
+  if (s === 'draft') return theme.statusBadge.backgrounds.draft;
+  if (s === 'voided') return theme.statusBadge.backgrounds.voided;
+  return theme.statusBadge.backgrounds.draft;
 }
 
 function tryDecodeDataUrl(dataUrl: string): { mime: 'png' | 'jpeg'; bytes: Uint8Array } | null {
@@ -223,10 +239,27 @@ function tryDecodeDataUrl(dataUrl: string): { mime: 'png' | 'jpeg'; bytes: Uint8
   }
 }
 
+export async function generateInvoicePdfBytes(invoice: InvoiceLike, theme?: InvoicePdfTheme): Promise<Uint8Array>;
+export async function generateInvoicePdfBytes(params: InvoicePdfParams, theme?: InvoicePdfTheme): Promise<Uint8Array>;
 export async function generateInvoicePdfBytes(
-  params: InvoicePdfParams,
+  arg1: InvoicePdfParams | InvoiceLike,
   theme: InvoicePdfTheme = DEFAULT_INVOICE_PDF_THEME
 ): Promise<Uint8Array> {
+  const params: InvoicePdfParams =
+    arg1 && typeof arg1 === 'object' && 'paymentSummary' in (arg1 as any) && 'lineItems' in (arg1 as any)
+      ? (arg1 as InvoicePdfParams)
+      : {
+          invoice: arg1 as InvoiceLike,
+          customer: null,
+          companySettings: null,
+          paymentSummary: {
+            amountPaidCents: 0,
+            amountDueCents: toSafeCents((arg1 as any)?.totalCents ?? 0),
+            statusLabel: String((arg1 as any)?.status || '').trim() || null,
+          },
+          lineItems: [],
+        };
+
   const invoice = params.invoice || {};
   const customer = params.customer || {};
   const companySettings = params.companySettings || null;
@@ -234,13 +267,27 @@ export async function generateInvoicePdfBytes(
   const currency = String(invoice.currency || 'USD').toUpperCase();
 
   const pdfDoc = await PDFDocument.create();
+
+  // Deterministic metadata (do not leak wall-clock time into output).
+  const fixedDate = new Date('2000-01-01T00:00:00.000Z');
+  try {
+    pdfDoc.setCreator('QuoteVaultPro');
+    pdfDoc.setProducer('QuoteVaultPro');
+    pdfDoc.setCreationDate(fixedDate);
+    pdfDoc.setModificationDate(fixedDate);
+  } catch {
+    // ignore - metadata setters are optional
+  }
+
   let page = pdfDoc.addPage([theme.page.width, theme.page.height]);
   const { width, height } = page.getSize();
 
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const font = await pdfDoc.embedFont(StandardFonts[theme.fonts.regular]);
+  const fontBold = await pdfDoc.embedFont(StandardFonts[theme.fonts.bold]);
 
   const margin = theme.page.margin;
+  const footerReserve = theme.footer.enabled ? theme.footer.reservedHeight : 0;
+  const bottomSafeY = margin + footerReserve;
   let y = height - margin;
 
   const drawText = (text: string, opts: { x: number; y: number; size?: number; bold?: boolean; color?: Rgb }) => {
@@ -273,10 +320,101 @@ export async function generateInvoicePdfBytes(
     return { bottomY: cy, linesCount: lines.length };
   };
 
+  const resolveLogoDataUrl = (): string | null => {
+    const override = (params.overrides?.logoDataUrl || '').trim();
+    if (override) return override;
+
+    const themeLogo = (theme.header.logo.dataUrl || '').trim();
+    if (themeLogo) return themeLogo;
+
+    const csLogo = String(companySettings?.logoUrl || '').trim();
+    if (csLogo.startsWith('data:')) return csLogo;
+
+    return null;
+  };
+
+  const resolveFooterText = (): string => {
+    const override = params.overrides?.footerText;
+    if (override != null) return String(override).trim();
+    return String(theme.footer.text || '').trim();
+  };
+
+  const normalizeStatusLabel = (raw: unknown): string => String(raw || '').trim().toLowerCase();
+
+  const resolveWatermarkText = (): string => {
+    const override = (params.overrides?.watermarkText || '').trim();
+    if (override) return override;
+
+    if (!theme.watermark.enabled) return '';
+    if (theme.watermark.mode === 'none') return '';
+    if (theme.watermark.mode === 'paid') return theme.watermark.textPaid;
+    if (theme.watermark.mode === 'draft') return theme.watermark.textDraft;
+
+    const statusLabel = normalizeStatusLabel(params.paymentSummary?.statusLabel);
+    const invoiceStatus = normalizeStatusLabel(invoice.status);
+
+    if (invoiceStatus === 'draft' || statusLabel === 'draft') return theme.watermark.textDraft;
+    if (invoiceStatus === 'paid' || statusLabel === 'paid') return theme.watermark.textPaid;
+    return '';
+  };
+
+  const drawWatermark = () => {
+    const text = resolveWatermarkText();
+    if (!text) return;
+
+    const size = theme.watermark.fontSize;
+    const usedFont = fontBold;
+    const w = usedFont.widthOfTextAtSize(text, size);
+
+    // Centered watermark; rotate for a typical stamp look.
+    page.drawText(text, {
+      x: Math.max(margin, (width - w) / 2),
+      y: height / 2,
+      size,
+      font: usedFont,
+      color: toRgb(theme.watermark.color),
+      rotate: degrees(theme.watermark.rotationDegrees),
+    });
+  };
+
+  const drawFooter = () => {
+    if (!theme.footer.enabled) return;
+    const text = resolveFooterText();
+    if (!text) return;
+
+    const size = theme.footer.fontSize;
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+
+    const lh = Math.max(10, Math.round(size * 1.25));
+    // Place footer inside the reserved bottom band, starting near the bottom.
+    const startY = Math.max(10, Math.min(margin - 6, 10 + Math.max(0, footerReserve - lh * lines.length)));
+
+    let yy = startY;
+    for (const line of lines) {
+      if (theme.footer.align === 'left') {
+        drawText(line, { x: margin, y: yy, size, color: theme.footer.color });
+      } else if (theme.footer.align === 'right') {
+        drawTextRight(line, { rightX: width - margin, y: yy, size, color: theme.footer.color });
+      } else {
+        const usedFont = font;
+        const tw = usedFont.widthOfTextAtSize(line, size);
+        drawText(line, { x: (width - tw) / 2, y: yy, size, color: theme.footer.color });
+      }
+      yy += lh;
+    }
+  };
+
   const newPage = () => {
     page = pdfDoc.addPage([theme.page.width, theme.page.height]);
     y = height - margin;
+    drawWatermark();
+    drawFooter();
   };
+
+  // Render page-level decorations on the first page too.
+  drawWatermark();
+  drawFooter();
 
   const drawDivider = () => {
     page.drawLine({
@@ -288,7 +426,7 @@ export async function generateInvoicePdfBytes(
   };
 
   const drawTitanLogo = (x: number, topY: number) => {
-    const markSize = 18;
+    const markSize = theme.header.titanMarkSize;
     const markY = topY - markSize;
 
     page.drawRectangle({
@@ -299,17 +437,71 @@ export async function generateInvoicePdfBytes(
       color: rgb(0.1, 0.1, 0.1),
     });
 
-    drawText('TITAN', { x: x + markSize + 8, y: topY - 14, size: theme.fontSizes.h1, bold: true });
+    drawText('TITAN', {
+      x: x + markSize + theme.header.titanWordmarkGap,
+      y: topY - 14,
+      size: theme.header.titanWordmarkFontSize,
+      bold: true,
+    });
+  };
+
+  const drawHeaderLogo = (x: number, topY: number) => {
+    const mode = theme.header.logo.mode;
+    const dataUrl = resolveLogoDataUrl();
+
+    const shouldUseImage =
+      mode === 'image' ? !!dataUrl :
+      mode === 'titan' ? false :
+      mode === 'none' ? false :
+      !!dataUrl;
+
+    if (mode === 'none') return;
+
+    if (!shouldUseImage) {
+      drawTitanLogo(x, topY);
+      return;
+    }
+
+    if (!dataUrl) return;
+    const decoded = tryDecodeDataUrl(dataUrl);
+    if (!decoded) {
+      // Fallback to TITAN if the override isn't a supported data URL
+      drawTitanLogo(x, topY);
+      return;
+    }
+
+    const maxW = theme.header.logo.maxWidth;
+    const maxH = theme.header.logo.maxHeight;
+
+    const drawImage = async () => {
+      const img = decoded.mime === 'png'
+        ? await pdfDoc.embedPng(decoded.bytes)
+        : await pdfDoc.embedJpg(decoded.bytes);
+
+      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+      const drawW = img.width * scale;
+      const drawH = img.height * scale;
+      page.drawImage(img, {
+        x,
+        y: topY - drawH,
+        width: drawW,
+        height: drawH,
+      });
+    };
+
+    // Defer actual embed until awaited by header flow.
+    return drawImage();
   };
 
   const drawStatusBadge = (label: string, rightX: number, topY: number) => {
     const text = String(label || '').trim();
     if (!text) return;
 
-    const size = theme.fontSizes.small;
-    const paddingX = 8;
-    const paddingY = 4;
-    const textW = fontBold.widthOfTextAtSize(text.toUpperCase(), size);
+    const size = theme.statusBadge.fontSize;
+    const paddingX = theme.statusBadge.paddingX;
+    const paddingY = theme.statusBadge.paddingY;
+    const displayText = theme.statusBadge.uppercase ? text.toUpperCase() : text;
+    const textW = fontBold.widthOfTextAtSize(displayText, size);
     const badgeW = textW + paddingX * 2;
     const badgeH = size + paddingY * 2;
 
@@ -324,12 +516,12 @@ export async function generateInvoicePdfBytes(
       color: toRgb(statusBadgeBg(text, theme)),
     });
 
-    drawText(text.toUpperCase(), {
+    drawText(displayText, {
       x: x + paddingX,
       y: yBadge + paddingY + 1,
       size,
       bold: true,
-      color: theme.colors.statusBadgeText,
+      color: theme.statusBadge.textColor,
     });
   };
 
@@ -341,30 +533,31 @@ export async function generateInvoicePdfBytes(
   const dueDate = fmtDate(invoice.dueDate);
 
   const headerTopY = y;
-  drawTitanLogo(margin, headerTopY);
+  const maybeLogoPromise = drawHeaderLogo(margin, headerTopY);
+  if (maybeLogoPromise instanceof Promise) await maybeLogoPromise;
 
   const rightX = width - margin;
   const invoiceTitle = invoiceNumber ? `INVOICE #${invoiceNumber}` : 'INVOICE';
-  drawTextRight(invoiceTitle, { rightX, y: headerTopY - 12, size: theme.fontSizes.title, bold: true });
+  drawTextRight(invoiceTitle, { rightX, y: headerTopY - theme.header.titleOffsetY, size: theme.fontSizes.title, bold: true });
 
   const statusLabel = String(params.paymentSummary?.statusLabel || '').trim();
   if (statusLabel) {
-    drawStatusBadge(statusLabel, rightX, headerTopY - 26);
+    drawStatusBadge(statusLabel, rightX, headerTopY - theme.header.statusOffsetY);
   }
 
-  let metaY = headerTopY - 52;
+  let metaY = headerTopY - theme.header.metaStartOffsetY;
   if (issueDate) {
     drawTextRight(`ISSUE: ${issueDate}`, { rightX, y: metaY, size: theme.fontSizes.small, color: theme.colors.mutedText });
-    metaY -= 12;
+    metaY -= theme.header.metaLineHeight;
   }
   if (dueDate) {
     drawTextRight(`DUE: ${dueDate}`, { rightX, y: metaY, size: theme.fontSizes.small, color: theme.colors.mutedText });
-    metaY -= 12;
+    metaY -= theme.header.metaLineHeight;
   }
 
   y = Math.min(headerTopY - 48, metaY) - 10;
   drawDivider();
-  y -= 18;
+  y -= theme.header.dividerGap;
 
   // -----------------
   // FROM / BILL TO / SHIP TO blocks
@@ -505,7 +698,7 @@ export async function generateInvoicePdfBytes(
 
   const lineItems = params.lineItems || [];
   for (const li of lineItems) {
-    ensureSpace(margin + 170);
+    ensureSpace(bottomSafeY + 170);
 
     const qty = Math.max(0, Math.round(Number(li?.quantity ?? 0) || 0));
     const unitCents = li?.unitPriceCents != null ? toSafeCents(li.unitPriceCents) : toCentsFromDecimal(li?.unitPrice);
@@ -626,7 +819,7 @@ export async function generateInvoicePdfBytes(
   const totalsX = width - margin - totalsBoxW;
 
   const totalsNeeded = 110 + (taxCents > 0 ? 14 : 0) + (shippingCents > 0 ? 14 : 0) + (paidCents > 0 ? 14 : 0) + (dueCents > 0 ? 14 : 0);
-  if (y < margin + totalsNeeded) {
+  if (y < bottomSafeY + totalsNeeded) {
     newPage();
   }
 
@@ -655,7 +848,7 @@ export async function generateInvoicePdfBytes(
   const notes = (invoice.notesPublic || '').toString().trim();
   if (notes) {
     const needed = 60;
-    if (y < margin + needed) newPage();
+    if (y < bottomSafeY + needed) newPage();
 
     y -= 10;
     drawText('Notes', { x: margin, y, size: theme.fontSizes.h2, bold: true });
@@ -674,16 +867,20 @@ export async function generateInvoicePdfBytes(
   // -----------------
   // Trade Terms footer (only if present)
   // -----------------
-  const termsText = String(invoice.customTerms || '').trim() || String(theme.termsText || '').trim();
-  if (termsText) {
+  const showTradeTerms = (params.overrides?.showTradeTerms ?? theme.tradeTerms.enabled) === true;
+  const termsText =
+    String(invoice.customTerms || '').trim() ||
+    String(theme.tradeTerms.defaultText ?? theme.termsText ?? '').trim();
+
+  if (showTradeTerms && termsText) {
     const needed = 70;
-    if (y < margin + needed) newPage();
+    if (y < bottomSafeY + needed) newPage();
 
     y -= 12;
     drawDivider();
     y -= 14;
 
-    drawText('Trade Terms', { x: margin, y, size: theme.fontSizes.h2, bold: true });
+    drawText(theme.tradeTerms.title || 'Trade Terms', { x: margin, y, size: theme.fontSizes.h2, bold: true });
     y -= 14;
 
     const r = drawWrapped(termsText, {
@@ -698,5 +895,5 @@ export async function generateInvoicePdfBytes(
     y = r.bottomY;
   }
 
-  return pdfDoc.save();
+  return pdfDoc.save({ useObjectStreams: false });
 }
