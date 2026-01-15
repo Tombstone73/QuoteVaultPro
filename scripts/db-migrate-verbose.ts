@@ -107,7 +107,13 @@ function main() {
       console.log(`[db:migrate:verbose] Applied migrations (DB __drizzle_migrations): ${applied.length}`);
       console.log(`[db:migrate:verbose] Highest applied id (numeric): ${highestId ?? 'unknown'}`);
 
-      if (applied.length > 0 && journalDriftDetected) {
+      const forceDrizzleMigrate = (process.env.FORCE_DRIZZLE_MIGRATE || '').trim() === '1';
+
+      if (applied.length > 0 && journalDriftDetected && forceDrizzleMigrate) {
+        console.warn('[db:migrate:verbose] FORCE_DRIZZLE_MIGRATE=1 set; running migrate despite journal drift.');
+      }
+
+      if (applied.length > 0 && journalDriftDetected && !forceDrizzleMigrate) {
         console.warn('[db:migrate:verbose] Journal drift detected on a non-empty DB; skipping drizzle-kit migrate.');
         console.warn('[db:migrate:verbose] DB is source of truth in this repo due to manual_catchup migrations.');
         process.exit(0);

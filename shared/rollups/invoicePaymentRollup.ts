@@ -1,6 +1,6 @@
 export type InvoicePaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded';
 
-export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'canceled' | 'refunded';
+export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'canceled' | 'refunded' | 'voided';
 
 export type PaymentRollupInput = {
   status: PaymentStatus | string | null | undefined;
@@ -21,6 +21,7 @@ const normalizeStatus = (raw: unknown): PaymentStatus | 'unknown' => {
   if (s === 'failed') return 'failed';
   if (s === 'canceled' || s === 'cancelled') return 'canceled';
   if (s === 'refunded') return 'refunded';
+  if (s === 'voided' || s === 'void') return 'voided';
   return 'unknown';
 };
 

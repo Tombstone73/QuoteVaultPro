@@ -10,9 +10,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useDeletePayment, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice } from "@/hooks/useInvoices";
+import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { Page } from "@/components/titan/Page";
@@ -97,13 +107,24 @@ export default function InvoiceDetailPage() {
   const retryQbSync = useRetryInvoiceQbSync();
   const sendInvoice = useSendInvoice();
   const markSent = useMarkInvoiceSent();
-  const deletePayment = useDeletePayment();
   const refreshStatus = useRefreshInvoiceStatus();
   const deleteInvoice = useDeleteInvoice();
   const updateInvoice = useUpdateInvoice();
+  const invoicePayments = useInvoicePayments(invoiceId);
+  const recordManualPayment = useRecordManualInvoicePayment();
+  const voidInvoicePayment = useVoidInvoicePayment();
 
   const [addPaymentDialogOpen, setAddPaymentDialogOpen] = useState(false);
   const [stripePayOpen, setStripePayOpen] = useState(false);
+  const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
+  const [voidConfirmOpen, setVoidConfirmOpen] = useState(false);
+  const [selectedPaymentToVoid, setSelectedPaymentToVoid] = useState<any | null>(null);
+
+  const [manualAmount, setManualAmount] = useState<string>('');
+  const [manualMethod, setManualMethod] = useState<string>('cash');
+  const [manualAppliedAt, setManualAppliedAt] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
+  const [manualNotes, setManualNotes] = useState<string>('');
+  const [manualReference, setManualReference] = useState<string>('');
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
@@ -114,6 +135,7 @@ export default function InvoiceDetailPage() {
   const invoice = data?.invoice;
   const lineItems = data?.lineItems ?? [];
   const payments = data?.payments ?? [];
+  const paymentsList: any[] = (invoicePayments.data as any[]) ?? payments;
 
   // Orders Detail parity: when invoice is tied to an order, pull customer/contact + metadata from the order.
   const orderId = invoice?.orderId ?? undefined;
@@ -127,6 +149,7 @@ export default function InvoiceDetailPage() {
     : 0;
 
   const canPayNow = !!invoice && isStaffUser && invoiceStatus !== 'void' && balanceDue > 0;
+  const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void' && balanceDue > 0;
 
   const canEditInvoice = !!invoice && isStaffUser && invoiceStatus !== 'paid' && invoiceStatus !== 'void';
   const isBilledUnpaid = !!invoice && invoiceStatus === 'billed' && balanceDue > 0;
@@ -203,6 +226,66 @@ export default function InvoiceDetailPage() {
       return format(new Date(dateString), "MMM d, yyyy");
     } catch {
       return "-";
+    }
+  };
+
+  const openRecordPayment = () => {
+    setManualAmount(balanceDue > 0 ? (balanceDue).toFixed(2) : '');
+    setManualMethod('cash');
+    setManualAppliedAt(format(new Date(), 'yyyy-MM-dd'));
+    setManualNotes('');
+    setManualReference('');
+    setRecordPaymentOpen(true);
+  };
+
+  const parseMoneyToCents = (value: string): number => {
+    const n = Number(String(value || '').replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.round(n * 100));
+  };
+
+  const submitManualPayment = async () => {
+    if (!invoiceId) return;
+    const amountCents = parseMoneyToCents(manualAmount);
+    if (amountCents <= 0) {
+      toast({ title: 'Invalid amount', description: 'Amount must be greater than 0', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      await recordManualPayment.mutateAsync({
+        invoiceId,
+        amountCents,
+        method: manualMethod,
+        appliedAt: manualAppliedAt ? new Date(manualAppliedAt).toISOString() : undefined,
+        notes: manualNotes || undefined,
+        reference: manualReference || undefined,
+      });
+      toast({ title: 'Payment recorded' });
+      setRecordPaymentOpen(false);
+      refetch();
+      invoicePayments.refetch();
+    } catch (e: any) {
+      toast({ title: 'Failed to record payment', description: e?.message || 'Unknown error', variant: 'destructive' });
+    }
+  };
+
+  const requestVoidPayment = (payment: any) => {
+    setSelectedPaymentToVoid(payment);
+    setVoidConfirmOpen(true);
+  };
+
+  const confirmVoidPayment = async () => {
+    if (!invoiceId || !selectedPaymentToVoid?.id) return;
+    try {
+      await voidInvoicePayment.mutateAsync({ invoiceId, paymentId: selectedPaymentToVoid.id });
+      toast({ title: 'Payment voided' });
+      setVoidConfirmOpen(false);
+      setSelectedPaymentToVoid(null);
+      refetch();
+      invoicePayments.refetch();
+    } catch (e: any) {
+      toast({ title: 'Failed to void payment', description: e?.message || 'Unknown error', variant: 'destructive' });
     }
   };
 
@@ -400,17 +483,6 @@ export default function InvoiceDetailPage() {
     }
   };
 
-  const handleDeletePayment = async (paymentId: string) => {
-    if (!invoiceId || !confirm("Delete this payment?")) return;
-    try {
-      await deletePayment.mutateAsync({ id: paymentId, invoiceId });
-      toast({ title: "Success", description: "Payment deleted" });
-      refetch();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    }
-  };
-
   const handleRefreshStatus = async () => {
     if (!invoiceId) return;
     try {
@@ -481,14 +553,6 @@ export default function InvoiceDetailPage() {
       </Page>
     );
   }
-
-  const parseMoneyToCents = (value: string): number => {
-    const cleaned = value.replace(/[^0-9.-]/g, '');
-    if (!cleaned) return 0;
-    const num = Number.parseFloat(cleaned);
-    if (Number.isNaN(num)) return 0;
-    return Math.max(0, Math.round(num * 100));
-  };
 
   const commitTerms = async (next: string) => {
     if (!invoiceId || !invoice || !canEditInvoice) return;
@@ -607,6 +671,100 @@ export default function InvoiceDetailPage() {
   return (
     <Page maxWidth="full">
       <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
+        <Dialog open={recordPaymentOpen} onOpenChange={setRecordPaymentOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Record Payment</DialogTitle>
+            </DialogHeader>
+
+            <div className="grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="manual-payment-amount">Amount</Label>
+                <Input
+                  id="manual-payment-amount"
+                  inputMode="decimal"
+                  value={manualAmount}
+                  onChange={(e) => setManualAmount(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label>Method</Label>
+                <Select value={manualMethod} onValueChange={setManualMethod}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select method" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="check">Check</SelectItem>
+                    <SelectItem value="wire">Wire</SelectItem>
+                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                    <SelectItem value="ach">ACH</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="manual-payment-date">Date Applied</Label>
+                <Input
+                  id="manual-payment-date"
+                  type="date"
+                  value={manualAppliedAt}
+                  onChange={(e) => setManualAppliedAt(e.target.value)}
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="manual-payment-reference">Reference (optional)</Label>
+                <Input
+                  id="manual-payment-reference"
+                  value={manualReference}
+                  onChange={(e) => setManualReference(e.target.value)}
+                  placeholder="Check #, wire ref, etc."
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="manual-payment-notes">Notes (optional)</Label>
+                <Textarea
+                  id="manual-payment-notes"
+                  value={manualNotes}
+                  onChange={(e) => setManualNotes(e.target.value)}
+                  placeholder="Internal notes"
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="outline" disabled={recordManualPayment.isPending}>Cancel</Button>
+              </DialogClose>
+              <Button onClick={submitManualPayment} disabled={recordManualPayment.isPending}>
+                {recordManualPayment.isPending ? 'Recording…' : 'Record Payment'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <AlertDialog open={voidConfirmOpen} onOpenChange={setVoidConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Void payment?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will mark the payment as voided and remove it from invoice totals. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={voidInvoicePayment.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={confirmVoidPayment} disabled={voidInvoicePayment.isPending}>
+                {voidInvoicePayment.isPending ? 'Voiding…' : 'Void Payment'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         {/* Sticky Action Bar */}
         <div className="sticky top-0 z-20 py-3 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -683,27 +841,10 @@ export default function InvoiceDetailPage() {
                   </DialogContent>
                 </Dialog>
 
-                <Dialog open={addPaymentDialogOpen} onOpenChange={setAddPaymentDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button>
-                      <DollarSign className="mr-2 h-4 w-4" />
-                      Add Payment
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Add Payment</DialogTitle>
-                    </DialogHeader>
-                    <div className="text-sm text-muted-foreground">
-                      Payment entry coming soon.
-                    </div>
-                    <DialogFooter>
-                      <DialogClose asChild>
-                        <Button variant="outline">Close</Button>
-                      </DialogClose>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                <Button onClick={openRecordPayment} disabled={!canRecordPayment}>
+                  <DollarSign className="mr-2 h-4 w-4" />
+                  Record Payment
+                </Button>
 
                 {invoiceStatus === 'draft' && (
                   <TooltipProvider>
@@ -1055,29 +1196,37 @@ export default function InvoiceDetailPage() {
                         <div className="text-sm text-muted-foreground">
                           Balance due: <span className="font-medium text-foreground">{formatCurrency(balanceDue)}</span>
                         </div>
-                        {canPayNow && (
-                          <Button onClick={() => setStripePayOpen(true)}>
-                            Pay Now
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {canRecordPayment && (
+                            <Button variant="outline" onClick={openRecordPayment}>
+                              Record Payment
+                            </Button>
+                          )}
+                          {canPayNow && (
+                            <Button onClick={() => setStripePayOpen(true)}>
+                              Pay Now
+                            </Button>
+                          )}
+                        </div>
                       </div>
 
-                      {payments.length === 0 ? (
+                      {paymentsList.length === 0 ? (
                         <div className="text-center py-8 text-muted-foreground">No payments recorded</div>
                       ) : (
                         <Table>
                           <TableHeader>
                             <TableRow>
                               <TableHead>Date</TableHead>
-                              <TableHead>Provider</TableHead>
+                              <TableHead>Method / Provider</TableHead>
                               <TableHead>Status</TableHead>
                               <TableHead>Amount</TableHead>
                               <TableHead>Notes</TableHead>
-                              {isAdminOrOwner && invoice.status !== 'paid' && <TableHead>Actions</TableHead>}
+                              <TableHead>Created By</TableHead>
+                              {isStaffUser && <TableHead>Actions</TableHead>}
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {payments.map((payment: any) => (
+                            {paymentsList.map((payment: any) => (
                               <TableRow key={payment.id}>
                                 <TableCell>{formatDate(payment.appliedAt)}</TableCell>
                                 <TableCell className="capitalize">
@@ -1088,15 +1237,23 @@ export default function InvoiceDetailPage() {
                                 <TableCell className="capitalize">{String(payment.status || 'succeeded').replace('_', ' ')}</TableCell>
                                 <TableCell className="font-medium">{formatCurrency(payment.amount)}</TableCell>
                                 <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
-                                {isAdminOrOwner && invoice.status !== 'paid' && (
+                                <TableCell className="text-sm text-muted-foreground">
+                                  {payment.createdBy?.name || payment.createdBy?.email || '-'}
+                                </TableCell>
+                                {isStaffUser && (
                                   <TableCell>
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => handleDeletePayment(payment.id)}
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </Button>
+                                    {String(payment.provider || 'manual') !== 'stripe' && String(payment.status || '').toLowerCase() !== 'voided' ? (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => requestVoidPayment(payment)}
+                                        disabled={voidInvoicePayment.isPending}
+                                      >
+                                        Void
+                                      </Button>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">-</span>
+                                    )}
                                   </TableCell>
                                 )}
                               </TableRow>
@@ -1112,6 +1269,7 @@ export default function InvoiceDetailPage() {
                           invoiceId={invoiceId}
                           onSettled={() => {
                             refetch();
+                            invoicePayments.refetch();
                             setTimeout(() => refetch(), 1500);
                             setTimeout(() => refetch(), 3500);
                           }}

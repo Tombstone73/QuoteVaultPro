@@ -28,6 +28,8 @@ npm start
 4. Run `npm run db:push` to sync database schema (development only)
 	- To check what migrations are applied, run `npm run db:status`
 	- For a more detailed migration/journal view, run `npm run db:migrate:verbose`
+	  - Note: this repo may have manual catchup migrations causing journal drift; on a non-empty DB `db:migrate:verbose` skips migrate when drift is detected
+	  - To force migrate anyway (controlled use), set `FORCE_DRIZZLE_MIGRATE=1`
 	- To verify PBV2 DB schema (read-only), run `npm run db:pbv2:check`
 5. Run `npm run dev` to start the development server
 

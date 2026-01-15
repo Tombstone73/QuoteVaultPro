@@ -7,6 +7,10 @@ interface InvoiceWithRelations {
   payments: Payment[];
 }
 
+export interface InvoicePaymentWithCreatedBy extends Payment {
+  createdBy?: { id: string; name: string | null; email: string | null } | null;
+}
+
 // List invoices
 export function useInvoices(filters?: { status?: string; customerId?: string; orderId?: string }) {
   return useQuery({
@@ -36,6 +40,80 @@ export function useInvoice(id: string | undefined) {
       return data.data as InvoiceWithRelations;
     },
     enabled: !!id,
+  });
+}
+
+// Invoice-scoped payments list (tenant-scoped server-side)
+export function useInvoicePayments(id: string | undefined) {
+  return useQuery({
+    queryKey: ['invoicePayments', id],
+    queryFn: async () => {
+      if (!id) return [] as InvoicePaymentWithCreatedBy[];
+      const res = await fetch(`/api/invoices/${id}/payments`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch invoice payments');
+      const data = await res.json();
+      return (data.data || []) as InvoicePaymentWithCreatedBy[];
+    },
+    enabled: !!id,
+  });
+}
+
+export function useRecordManualInvoicePayment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      invoiceId: string;
+      amountCents: number;
+      method: string;
+      appliedAt?: string;
+      notes?: string;
+      reference?: string;
+    }) => {
+      const res = await fetch(`/api/invoices/${payload.invoiceId}/payments/manual`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amountCents: payload.amountCents,
+          method: payload.method,
+          appliedAt: payload.appliedAt,
+          notes: payload.notes,
+          reference: payload.reference,
+        }),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to record payment');
+      }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+    },
+  });
+}
+
+export function useVoidInvoicePayment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { invoiceId: string; paymentId: string }) => {
+      const res = await fetch(`/api/invoices/${payload.invoiceId}/payments/${payload.paymentId}/void`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || (err as any).message || 'Failed to void payment');
+      }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+    },
   });
 }
 

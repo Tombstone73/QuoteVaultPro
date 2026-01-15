@@ -219,7 +219,10 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
     const [payment] = await tx.insert(payments).values(paymentInsert as any).returning();
 
     // Recalculate totals
-    const paymentRows = await tx.select().from(payments).where(eq(payments.invoiceId, invoiceId));
+    const paymentRows = await tx
+      .select()
+      .from(payments)
+      .where(and(eq(payments.invoiceId, invoiceId), eq(payments.organizationId, (invoice as any).organizationId)));
     const rollup = computeInvoicePaymentRollup({
       invoiceTotalCents: Number((invoice as any).totalCents || 0),
       payments: paymentRows.map((p: any) => ({ status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
