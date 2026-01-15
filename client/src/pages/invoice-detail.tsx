@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { PdfViewer } from "@/components/media/PdfViewer";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,7 +22,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw } from "lucide-react";
+import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw, CreditCard, HandCoins } from "lucide-react";
+import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
 import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
@@ -118,10 +121,15 @@ export default function InvoiceDetailPage() {
   const [stripePayOpen, setStripePayOpen] = useState(false);
   const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
   const [voidConfirmOpen, setVoidConfirmOpen] = useState(false);
+  const [pdfOpen, setPdfOpen] = useState(false);
   const [selectedPaymentToVoid, setSelectedPaymentToVoid] = useState<any | null>(null);
 
+  const [recordPaymentErrors, setRecordPaymentErrors] = useState<{ amount?: string; method?: string }>({});
+  const [pdfLoadState, setPdfLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
   const [manualAmount, setManualAmount] = useState<string>('');
-  const [manualMethod, setManualMethod] = useState<string>('cash');
+  const [manualMethod, setManualMethod] = useState<string>('');
   const [manualAppliedAt, setManualAppliedAt] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [manualNotes, setManualNotes] = useState<string>('');
   const [manualReference, setManualReference] = useState<string>('');
@@ -144,12 +152,34 @@ export default function InvoiceDetailPage() {
   const linkedOrderContactId: string | null = order?.contact?.id || order?.contactId || null;
 
   const invoiceStatus = String(invoice?.status || '').toLowerCase();
-  const balanceDue = invoice
-    ? Number(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))
-    : 0;
+  const paymentRollup = invoice
+    ? computeInvoicePaymentRollup({
+        invoiceTotalCents: Number((invoice as any).totalCents || 0),
+        payments: paymentsList.map((p: any) => ({
+          id: p.id,
+          status: String(p.status || 'succeeded'),
+          amountCents: Number(p.amountCents || 0),
+        })),
+      })
+    : { amountPaidCents: 0, amountDueCents: 0, paymentStatus: 'unpaid' as const };
 
-  const canPayNow = !!invoice && isStaffUser && invoiceStatus !== 'void' && balanceDue > 0;
-  const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void' && balanceDue > 0;
+  const paidCents = paymentRollup.amountPaidCents;
+  const remainingCents = paymentRollup.amountDueCents;
+  const balanceDue = remainingCents / 100;
+  const paymentStatusLabel = getInvoicePaymentStatusLabel({
+    invoiceStatus: invoice?.status,
+    rollup: paymentRollup as any,
+  });
+
+  const invoicePdfViewUrl = invoiceId ? `/api/invoices/${encodeURIComponent(invoiceId)}/pdf` : '';
+  const invoicePdfDownloadUrl = invoiceId ? `/api/invoices/${encodeURIComponent(invoiceId)}/pdf?download=1` : '';
+  const invoicePdfFilename = (invoice as any)?.invoiceNumber
+    ? `invoice-${String((invoice as any).invoiceNumber)}.pdf`
+    : 'invoice.pdf';
+
+  const canPayNow = !!invoice && isStaffUser && invoiceStatus !== 'void' && remainingCents > 0;
+  // Manual payments may intentionally exceed remaining (rollup clamps). Keep available for staff unless void.
+  const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void';
 
   const canEditInvoice = !!invoice && isStaffUser && invoiceStatus !== 'paid' && invoiceStatus !== 'void';
   const isBilledUnpaid = !!invoice && invoiceStatus === 'billed' && balanceDue > 0;
@@ -220,6 +250,11 @@ export default function InvoiceDetailPage() {
     }).format(Number(amount));
   };
 
+  const formatCurrencyFromCents = (amountCents: number) => {
+    const safe = Number.isFinite(Number(amountCents)) ? Number(amountCents) : 0;
+    return formatCurrency(safe / 100);
+  };
+
   const formatDate = (dateString: string | Date | null) => {
     if (!dateString) return "-";
     try {
@@ -231,10 +266,11 @@ export default function InvoiceDetailPage() {
 
   const openRecordPayment = () => {
     setManualAmount(balanceDue > 0 ? (balanceDue).toFixed(2) : '');
-    setManualMethod('cash');
+    setManualMethod('');
     setManualAppliedAt(format(new Date(), 'yyyy-MM-dd'));
     setManualNotes('');
     setManualReference('');
+    setRecordPaymentErrors({});
     setRecordPaymentOpen(true);
   };
 
@@ -244,13 +280,19 @@ export default function InvoiceDetailPage() {
     return Math.max(0, Math.round(n * 100));
   };
 
+  const manualAmountCentsDraft = parseMoneyToCents(manualAmount);
+  const manualIsOverpaymentDraft = !!invoice && manualAmountCentsDraft > remainingCents;
+
   const submitManualPayment = async () => {
     if (!invoiceId) return;
     const amountCents = parseMoneyToCents(manualAmount);
-    if (amountCents <= 0) {
-      toast({ title: 'Invalid amount', description: 'Amount must be greater than 0', variant: 'destructive' });
-      return;
-    }
+    const nextErrors: { amount?: string; method?: string } = {};
+
+    if (!manualMethod) nextErrors.method = 'Select a payment method.';
+    if (amountCents <= 0) nextErrors.amount = 'Amount must be greater than 0.';
+
+    setRecordPaymentErrors(nextErrors);
+    if (nextErrors.amount || nextErrors.method) return;
 
     try {
       await recordManualPayment.mutateAsync({
@@ -269,6 +311,94 @@ export default function InvoiceDetailPage() {
       toast({ title: 'Failed to record payment', description: e?.message || 'Unknown error', variant: 'destructive' });
     }
   };
+
+  const normalizeProvider = (p: any): 'stripe' | 'manual' => {
+    const raw = String(p?.provider || 'manual').trim().toLowerCase();
+    return raw === 'stripe' ? 'stripe' : 'manual';
+  };
+
+  const normalizePaymentStatus = (p: any): string => {
+    const raw = String(p?.status || 'succeeded').trim().toLowerCase();
+    if (raw === 'void') return 'voided';
+    return raw;
+  };
+
+  const toPaymentMethodLabel = (method: any): string => {
+    const raw = String(method || '').trim().toLowerCase();
+    if (!raw) return 'Manual';
+    if (raw === 'bank_transfer') return 'Bank Transfer';
+    if (raw === 'ach') return 'ACH';
+    return raw.replaceAll('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+
+  useEffect(() => {
+    if (!pdfOpen) {
+      setPdfLoadState('idle');
+      setPdfError(null);
+      return;
+    }
+
+    if (!invoicePdfViewUrl) {
+      setPdfLoadState('error');
+      setPdfError('PDF not available.');
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setPdfLoadState('loading');
+        setPdfError(null);
+
+        const res = await fetch(invoicePdfViewUrl, {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: 'application/pdf',
+          },
+        });
+
+        if (!res.ok) {
+          throw new Error(`PDF request failed (${res.status})`);
+        }
+
+        const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+        if (!contentType.includes('application/pdf')) {
+          throw new Error('PDF response was not application/pdf');
+        }
+
+        // Read only the first chunk to validate the %PDF signature, then cancel to avoid downloading the full file twice.
+        const reader = res.body?.getReader();
+        const first = reader ? await reader.read() : null;
+        if (reader) {
+          try {
+            await reader.cancel();
+          } catch {
+            // ignore
+          }
+        }
+
+        const buf = first?.value ? new Uint8Array(first.value) : new Uint8Array();
+        const isPdf = buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46;
+        if (!isPdf) {
+          throw new Error('PDF signature check failed');
+        }
+
+        if (cancelled) return;
+        setPdfLoadState('ready');
+      } catch (e: any) {
+        if (cancelled) return;
+        setPdfLoadState('error');
+        setPdfError(e?.message || 'Failed to load PDF');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfOpen, invoicePdfViewUrl]);
 
   const requestVoidPayment = (payment: any) => {
     setSelectedPaymentToVoid(payment);
@@ -404,7 +534,6 @@ export default function InvoiceDetailPage() {
   const lastSentVersion = (invoice as any)?.lastSentVersion == null ? null : Number((invoice as any)?.lastSentVersion);
   const lastQbSyncedVersion = (invoice as any)?.lastQbSyncedVersion == null ? null : Number((invoice as any)?.lastQbSyncedVersion);
 
-  const invoiceLifecycleStatus = invoiceStatus === 'paid' ? 'Paid' : (invoiceStatus === 'draft' ? 'Draft' : 'Finalized');
   const customerHasLatest = lastSentVersion === invoiceVersion;
   const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
   const qbSyncLabel = qbFailed ? 'Failed' : (qbUpToDate ? 'Synced' : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Needs resync'));
@@ -684,14 +813,32 @@ export default function InvoiceDetailPage() {
                   id="manual-payment-amount"
                   inputMode="decimal"
                   value={manualAmount}
-                  onChange={(e) => setManualAmount(e.target.value)}
+                  onChange={(e) => {
+                    setManualAmount(e.target.value);
+                    if (recordPaymentErrors.amount) {
+                      setRecordPaymentErrors((prev) => ({ ...prev, amount: undefined }));
+                    }
+                  }}
                   placeholder="0.00"
                 />
+                {recordPaymentErrors.amount ? (
+                  <div className="text-xs text-destructive">{recordPaymentErrors.amount}</div>
+                ) : null}
+                {manualIsOverpaymentDraft && manualAmountCentsDraft > 0 ? (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/20 dark:text-amber-200">
+                    This exceeds Remaining. It will create an overpayment record. Rollup clamps to the invoice total.
+                  </div>
+                ) : null}
               </div>
 
               <div className="grid gap-2">
                 <Label>Method</Label>
-                <Select value={manualMethod} onValueChange={setManualMethod}>
+                <Select value={manualMethod} onValueChange={(v) => {
+                  setManualMethod(v);
+                  if (recordPaymentErrors.method) {
+                    setRecordPaymentErrors((prev) => ({ ...prev, method: undefined }));
+                  }
+                }}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select method" />
                   </SelectTrigger>
@@ -704,6 +851,9 @@ export default function InvoiceDetailPage() {
                     <SelectItem value="other">Other</SelectItem>
                   </SelectContent>
                 </Select>
+                {recordPaymentErrors.method ? (
+                  <div className="text-xs text-destructive">{recordPaymentErrors.method}</div>
+                ) : null}
               </div>
 
               <div className="grid gap-2">
@@ -741,7 +891,10 @@ export default function InvoiceDetailPage() {
               <DialogClose asChild>
                 <Button variant="outline" disabled={recordManualPayment.isPending}>Cancel</Button>
               </DialogClose>
-              <Button onClick={submitManualPayment} disabled={recordManualPayment.isPending}>
+              <Button
+                onClick={submitManualPayment}
+                disabled={recordManualPayment.isPending}
+              >
                 {recordManualPayment.isPending ? 'Recording…' : 'Record Payment'}
               </Button>
             </DialogFooter>
@@ -799,78 +952,173 @@ export default function InvoiceDetailPage() {
               </TooltipProvider>
             ) : null}
 
+            {isStaffUser && (
+              <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
+                {invoiceId ? (
+                  <>
+                    <Button variant="outline" onClick={() => setPdfOpen(true)}>
+                      View PDF
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => void downloadFileFromUrl(invoicePdfDownloadUrl, invoicePdfFilename)}
+                    >
+                      Download PDF
+                    </Button>
+                  </>
+                ) : null}
+
+                {isAdminOrOwner ? (
+                  <>
+                    <Button variant="outline" onClick={handleRefreshStatus}>
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                      Refresh
+                    </Button>
+
+                    <Button variant="outline" onClick={handleMarkSent} disabled={markSent.isPending}>
+                      {markSent.isPending ? 'Marking…' : 'Mark as Sent'}
+                    </Button>
+
+                    <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+                      <DialogTrigger asChild>
+                        <Button variant="outline">
+                          <Mail className="mr-2 h-4 w-4" />
+                          Send Email
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>Send Invoice</DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-4">
+                          <div>
+                            <Label htmlFor="email">Recipient Email (optional)</Label>
+                            <Input
+                              id="email"
+                              type="email"
+                              value={recipientEmail}
+                              onChange={(e) => setRecipientEmail(e.target.value)}
+                              placeholder="Leave blank to use customer email"
+                            />
+                          </div>
+                        </div>
+                        <DialogFooter>
+                          <Button onClick={handleSendEmail} disabled={sendInvoice.isPending}>
+                            {sendInvoice.isPending ? "Sending..." : "Send"}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+
+                    <Button onClick={openRecordPayment} disabled={!canRecordPayment}>
+                      <DollarSign className="mr-2 h-4 w-4" />
+                      Record Payment
+                    </Button>
+
+                    {invoiceStatus === 'draft' && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button onClick={handleBill} disabled={billInvoice.isPending}>
+                              {billInvoice.isPending ? 'Finalizing…' : 'Finalize & Sync'}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Finalizes the invoice and attempts QuickBooks sync. Local billing is not blocked if sync fails.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
+
+                    {invoice.status === 'draft' && payments.length === 0 && (
+                      <Button variant="destructive" onClick={handleDelete}>
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </Button>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            )}
+
             {isAdminOrOwner && (
               <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
-                <Button variant="outline" onClick={handleRefreshStatus}>
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Refresh
-                </Button>
-
-                <Button variant="outline" onClick={handleMarkSent} disabled={markSent.isPending}>
-                  {markSent.isPending ? 'Marking…' : 'Mark as Sent'}
-                </Button>
-
-                <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button variant="outline">
-                      <Mail className="mr-2 h-4 w-4" />
-                      Send Email
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Send Invoice</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      <div>
-                        <Label htmlFor="email">Recipient Email (optional)</Label>
-                        <Input
-                          id="email"
-                          type="email"
-                          value={recipientEmail}
-                          onChange={(e) => setRecipientEmail(e.target.value)}
-                          placeholder="Leave blank to use customer email"
-                        />
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button onClick={handleSendEmail} disabled={sendInvoice.isPending}>
-                        {sendInvoice.isPending ? "Sending..." : "Send"}
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-
-                <Button onClick={openRecordPayment} disabled={!canRecordPayment}>
-                  <DollarSign className="mr-2 h-4 w-4" />
-                  Record Payment
-                </Button>
-
-                {invoiceStatus === 'draft' && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button onClick={handleBill} disabled={billInvoice.isPending}>
-                          {billInvoice.isPending ? 'Finalizing…' : 'Finalize & Sync'}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Finalizes the invoice and attempts QuickBooks sync. Local billing is not blocked if sync fails.
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-
-                {invoice.status === 'draft' && payments.length === 0 && (
-                  <Button variant="destructive" onClick={handleDelete}>
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </Button>
-                )}
               </div>
             )}
           </div>
         </div>
+
+        <Dialog open={pdfOpen} onOpenChange={setPdfOpen}>
+          <DialogContent className="max-w-5xl">
+            <DialogHeader>
+              <DialogTitle>Invoice PDF</DialogTitle>
+            </DialogHeader>
+            {pdfLoadState === 'loading' ? (
+              <div className="text-sm text-muted-foreground">Loading PDF…</div>
+            ) : pdfLoadState === 'error' ? (
+              <div className="space-y-2">
+                <div className="text-sm text-destructive">PDF not available.</div>
+                {pdfError ? <div className="text-xs text-muted-foreground">{pdfError}</div> : null}
+                {invoicePdfDownloadUrl ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => void downloadFileFromUrl(invoicePdfDownloadUrl, invoicePdfFilename)}
+                  >
+                    Try Download
+                  </Button>
+                ) : null}
+              </div>
+            ) : invoicePdfViewUrl ? (
+              <PdfViewer viewerUrl={invoicePdfViewUrl} downloadUrl={invoicePdfDownloadUrl} filename={invoicePdfFilename} />
+            ) : (
+              <div className="text-sm text-muted-foreground">PDF not available.</div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Financial Summary (top, staff-clear) */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Financial Summary</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-md border bg-card/50 p-3">
+                <div className="text-xs font-medium text-muted-foreground">Total</div>
+                <div className="mt-1 text-xl font-semibold">{formatCurrency(invoice.total)}</div>
+              </div>
+
+              <div className="rounded-md border bg-card/50 p-3">
+                <div className="text-xs font-medium text-muted-foreground">Paid</div>
+                <div className={paidCents > 0 ? "mt-1 text-xl font-semibold text-green-600" : "mt-1 text-xl font-semibold"}>
+                  {formatCurrencyFromCents(paidCents)}
+                </div>
+              </div>
+
+              <div className="rounded-md border bg-card/50 p-3">
+                <div className="text-xs font-medium text-muted-foreground">Remaining</div>
+                <div className={remainingCents > 0 ? "mt-1 text-xl font-semibold text-red-600" : "mt-1 text-xl font-semibold text-green-600"}>
+                  {formatCurrencyFromCents(remainingCents)}
+                </div>
+                {remainingCents === 0 && invoiceStatus !== 'void' ? (
+                  <div className="mt-1 text-xs text-muted-foreground">Fully paid</div>
+                ) : null}
+              </div>
+
+              <div className="rounded-md border bg-card/50 p-3">
+                <div className="text-xs font-medium text-muted-foreground">Status</div>
+                <div className="mt-2">
+                  <Badge
+                    variant={remainingCents === 0 && invoiceStatus !== 'void' ? 'default' : 'secondary'}
+                    className={remainingCents === 0 && invoiceStatus !== 'void' ? 'bg-green-600 text-white hover:bg-green-600' : undefined}
+                  >
+                    {paymentStatusLabel}
+                  </Badge>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Status Strip (dense, responsive) */}
         <StatusStrip>
@@ -881,25 +1129,25 @@ export default function InvoiceDetailPage() {
           />
           <StatusTile
             label="Paid"
-            value={formatCurrency(invoice.amountPaid)}
+            value={formatCurrencyFromCents(paidCents)}
             valueClassName={
-              Number(invoice.amountPaid || 0) > 0
+              paidCents > 0
                 ? "mt-1 text-base font-semibold text-green-600"
                 : "mt-1 text-base font-semibold"
             }
           />
           <StatusTile
-            label="Balance Due"
-            value={formatCurrency(balanceDue)}
+            label="Remaining"
+            value={formatCurrencyFromCents(remainingCents)}
             valueClassName={
-              balanceDue > 0
+              remainingCents > 0
                 ? "mt-1 text-base font-semibold text-red-600"
                 : "mt-1 text-base font-semibold"
             }
           />
           <StatusTile
-            label="Invoice Status"
-            value={<Badge variant="secondary">{invoiceLifecycleStatus}</Badge>}
+            label="Status"
+            value={<Badge variant="secondary">{paymentStatusLabel}</Badge>}
           />
           <StatusTile
             label="Customer Status"
@@ -1194,7 +1442,13 @@ export default function InvoiceDetailPage() {
                     <div className="space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm text-muted-foreground">
-                          Balance due: <span className="font-medium text-foreground">{formatCurrency(balanceDue)}</span>
+                          Total: <span className="font-medium text-foreground">{formatCurrency(invoice.total)}</span>
+                          <span className="mx-2 text-muted-foreground/50">•</span>
+                          Paid: <span className="font-medium text-foreground">{formatCurrencyFromCents(paidCents)}</span>
+                          <span className="mx-2 text-muted-foreground/50">•</span>
+                          Remaining: <span className="font-medium text-foreground">{formatCurrencyFromCents(remainingCents)}</span>
+                          <span className="mx-2 text-muted-foreground/50">•</span>
+                          <Badge variant="secondary">{paymentStatusLabel}</Badge>
                         </div>
                         <div className="flex items-center gap-2">
                           {canRecordPayment && (
@@ -1218,31 +1472,66 @@ export default function InvoiceDetailPage() {
                             <TableRow>
                               <TableHead>Date</TableHead>
                               <TableHead>Method / Provider</TableHead>
-                              <TableHead>Status</TableHead>
                               <TableHead>Amount</TableHead>
-                              <TableHead>Notes</TableHead>
+                              <TableHead>Status</TableHead>
                               <TableHead>Created By</TableHead>
+                              <TableHead>Notes</TableHead>
                               {isStaffUser && <TableHead>Actions</TableHead>}
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {paymentsList.map((payment: any) => (
-                              <TableRow key={payment.id}>
+                              (() => {
+                                const provider = normalizeProvider(payment);
+                                const status = normalizePaymentStatus(payment);
+                                const isVoided = status === 'voided';
+                                const isSucceeded = status === 'succeeded';
+                                const canVoid = provider === 'manual' && isSucceeded && !isVoided;
+
+                                return (
+                              <TableRow
+                                key={payment.id}
+                                className={isVoided ? 'opacity-60' : undefined}
+                              >
                                 <TableCell>{formatDate(payment.appliedAt)}</TableCell>
-                                <TableCell className="capitalize">
-                                  {String(payment.provider || 'manual') === 'stripe'
-                                    ? 'Stripe'
-                                    : payment.method?.replace?.('_', ' ') || 'Manual'}
+                                <TableCell>
+                                  <div className="flex items-center gap-2">
+                                    {provider === 'stripe' ? (
+                                      <Badge variant="secondary" className="gap-1">
+                                        <CreditCard className="h-3.5 w-3.5" />
+                                        Stripe
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="gap-1">
+                                        <HandCoins className="h-3.5 w-3.5" />
+                                        Manual
+                                      </Badge>
+                                    )}
+                                    <div className="text-sm text-muted-foreground">
+                                      {provider === 'stripe' ? 'Card (Stripe)' : toPaymentMethodLabel(payment.method)}
+                                    </div>
+                                  </div>
                                 </TableCell>
-                                <TableCell className="capitalize">{String(payment.status || 'succeeded').replace('_', ' ')}</TableCell>
-                                <TableCell className="font-medium">{formatCurrency(payment.amount)}</TableCell>
-                                <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
+                                <TableCell className={isVoided ? 'text-muted-foreground' : 'font-medium'}>
+                                  {formatCurrency(payment.amount)}
+                                </TableCell>
+                                <TableCell>
+                                  <div className="flex items-center gap-2">
+                                    {isVoided ? (
+                                      <Badge variant="secondary">VOIDED</Badge>
+                                    ) : null}
+                                    <span className="capitalize text-sm">
+                                      {String(payment.status || 'succeeded').replaceAll('_', ' ')}
+                                    </span>
+                                  </div>
+                                </TableCell>
                                 <TableCell className="text-sm text-muted-foreground">
                                   {payment.createdBy?.name || payment.createdBy?.email || '-'}
                                 </TableCell>
+                                <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
                                 {isStaffUser && (
                                   <TableCell>
-                                    {String(payment.provider || 'manual') !== 'stripe' && String(payment.status || '').toLowerCase() !== 'voided' ? (
+                                    {canVoid ? (
                                       <Button
                                         variant="outline"
                                         size="sm"
@@ -1251,12 +1540,18 @@ export default function InvoiceDetailPage() {
                                       >
                                         Void
                                       </Button>
+                                    ) : provider === 'stripe' ? (
+                                      <span className="text-xs text-muted-foreground">Stripe (no void)</span>
+                                    ) : isVoided ? (
+                                      <span className="text-xs text-muted-foreground">Voided</span>
                                     ) : (
                                       <span className="text-xs text-muted-foreground">-</span>
                                     )}
                                   </TableCell>
                                 )}
                               </TableRow>
+                                );
+                              })()
                             ))}
                           </TableBody>
                         </Table>
@@ -1408,11 +1703,11 @@ export default function InvoiceDetailPage() {
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <span className="text-sm text-muted-foreground">Paid</span>
-                    <span className="text-sm font-medium">{formatCurrency(invoice.amountPaid)}</span>
+                    <span className="text-sm font-medium">{formatCurrencyFromCents(paidCents)}</span>
                   </div>
                   <div className="flex items-center justify-between gap-4">
-                    <span className="text-sm text-muted-foreground">Balance Due</span>
-                    <span className="text-sm font-medium">{formatCurrency(balanceDue)}</span>
+                    <span className="text-sm text-muted-foreground">Remaining</span>
+                    <span className="text-sm font-medium">{formatCurrencyFromCents(remainingCents)}</span>
                   </div>
                 </div>
 

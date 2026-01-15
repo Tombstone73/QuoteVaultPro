@@ -1,12 +1,13 @@
 import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, invoices, orders, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { syncSingleInvoiceToQuickBooks } from "../quickbooksService";
-import { computeInvoicePaymentRollup } from "../../shared/rollups/invoicePaymentRollup";
+import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
 import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
+import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
 
 // Minimal helper (matches server/routes.ts behavior)
@@ -55,7 +56,7 @@ export async function registerMvpInvoicingRoutes(
 
       const rollup = computeInvoicePaymentRollup({
         invoiceTotalCents: Number(inv.totalCents || 0),
-        payments: paymentRows.map((p: any) => ({ status: String(p.status || 'succeeded'), amountCents: Number(p.amountCents || 0) })),
+        payments: paymentRows.map((p: any) => ({ id: p.id, status: String(p.status || 'succeeded'), amountCents: Number(p.amountCents || 0) })),
       });
 
       if (rollup.amountDueCents <= 0) return res.status(400).json({ error: "Invoice is already paid" });
@@ -163,6 +164,111 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
+  // Invoice PDF v1 (tenant-scoped)
+  // ------------------------------------------------------------
+  app.get('/api/invoices/:id/pdf', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+      const invoiceId = String(req.params.id || '').trim();
+      if (!invoiceId) return res.status(400).json({ error: 'Missing invoice id' });
+
+      const [inv] = await db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
+        .limit(1);
+
+      if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+
+      let job: { poNumber?: string | null; jobNumber?: string | null } | null = null;
+      if ((inv as any).orderId) {
+        const [ord] = await db
+          .select({
+            orderNumber: orders.orderNumber,
+            poNumber: orders.poNumber,
+          })
+          .from(orders)
+          .where(and(eq(orders.id, String((inv as any).orderId)), eq(orders.organizationId, organizationId)))
+          .limit(1);
+
+        if (ord) {
+          job = {
+            poNumber: ord.poNumber ?? null,
+            jobNumber: ord.orderNumber ?? null,
+          };
+        }
+      }
+
+      const [cust] = await db
+        .select()
+        .from(customers)
+        .where(and(eq(customers.id, (inv as any).customerId), eq(customers.organizationId, organizationId)))
+        .limit(1);
+
+      // Company settings are optional; only include branding fields if present.
+      const [orgCompany] = await db
+        .select()
+        .from(companySettings)
+        .where(eq(companySettings.organizationId, organizationId))
+        .limit(1);
+
+      const lineItems = await db
+        .select()
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.invoiceId, inv.id))
+        .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
+
+      const paymentRows = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
+        .orderBy(desc(payments.createdAt));
+
+      const rollup = computeInvoicePaymentRollup({
+        invoiceTotalCents: Number((inv as any).totalCents || 0),
+        payments: paymentRows.map((p: any) => ({
+          id: p.id,
+          status: String(p.status || 'succeeded'),
+          amountCents: Number(p.amountCents || 0),
+        })),
+      });
+
+      const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: (inv as any).status, rollup });
+
+      const pdfBytes = await generateInvoicePdfBytes({
+        invoice: inv as any,
+        customer: (cust as any) || null,
+        companySettings: (orgCompany as any) || null,
+        paymentSummary: {
+          amountPaidCents: rollup.amountPaidCents,
+          amountDueCents: rollup.amountDueCents,
+          statusLabel,
+        },
+        lineItems: lineItems as any,
+        job,
+      });
+
+      const invoiceNumber = (inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id;
+      const filename = `invoice-${invoiceNumber}.pdf`;
+      const wantsDownload = String(req.query.download || '') === '1';
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader(
+        'Content-Disposition',
+        `${wantsDownload ? 'attachment' : 'inline'}; filename="${filename}"`
+      );
+
+      return res.status(200).send(Buffer.from(pdfBytes));
+    } catch (error: any) {
+      console.error('Error generating invoice PDF:', error);
+      return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
+    }
+  });
+
+  // ------------------------------------------------------------
   // Manual payments v1: Record a non-Stripe payment
   // ------------------------------------------------------------
   app.post('/api/invoices/:id/payments/manual', isAuthenticated, tenantContext, async (req: any, res) => {
@@ -201,23 +307,6 @@ export async function registerMvpInvoicingRoutes(
       const currency = String(inv.currency || 'USD');
       const now = new Date();
 
-      const paymentRows = await db
-        .select()
-        .from(payments)
-        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
-
-      const rollupBefore = computeInvoicePaymentRollup({
-        invoiceTotalCents: Number(inv.totalCents || 0),
-        payments: paymentRows.map((p: any) => ({
-          status: String(p.status || 'succeeded'),
-          amountCents: Number(p.amountCents || 0),
-        })),
-      });
-
-      if (rollupBefore.amountDueCents <= 0) {
-        return res.status(400).json({ error: 'Invoice is already paid' });
-      }
-
       const [payment] = await db
         .insert(payments)
         .values({
@@ -254,6 +343,7 @@ export async function registerMvpInvoicingRoutes(
       const rollup = computeInvoicePaymentRollup({
         invoiceTotalCents: Number(inv.totalCents || 0),
         payments: paymentRowsAfter.map((p: any) => ({
+          id: p.id,
           status: String(p.status || 'succeeded'),
           amountCents: Number(p.amountCents || 0),
         })),
@@ -339,6 +429,7 @@ export async function registerMvpInvoicingRoutes(
         const rollup = computeInvoicePaymentRollup({
           invoiceTotalCents: Number(inv.totalCents || 0),
           payments: paymentRowsAfter.map((p: any) => ({
+            id: p.id,
             status: String(p.status || 'succeeded'),
             amountCents: Number(p.amountCents || 0),
           })),
@@ -362,7 +453,7 @@ export async function registerMvpInvoicingRoutes(
           metadata: nextMetadata as any,
           updatedAt: now,
         } as any)
-        .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
+        .where(and(eq(payments.id, paymentId), eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
         .returning();
 
       const updatedInvoice = await refreshInvoiceStatus(inv.id);
@@ -375,6 +466,7 @@ export async function registerMvpInvoicingRoutes(
       const rollup = computeInvoicePaymentRollup({
         invoiceTotalCents: Number(inv.totalCents || 0),
         payments: paymentRowsAfter.map((p: any) => ({
+          id: p.id,
           status: String(p.status || 'succeeded'),
           amountCents: Number(p.amountCents || 0),
         })),

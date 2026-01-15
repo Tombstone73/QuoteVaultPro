@@ -18,6 +18,7 @@
     "db:sync-users": "tsx sync-users-customers.ts",
     "pbv2:smoke": "tsx scripts/pbv2-smoke.ts",
     "pbv2:http:smoke": "tsx scripts/pbv2-http-smoke.ts",
+    "pdf:smoke": "tsx scripts/pdf-smoke.ts",
     "fix-user": "tsx fix-user-role.ts",
     "migrate:file-storage": "powershell ./scripts/run_file_storage_migration.ps1",
     "test": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest",

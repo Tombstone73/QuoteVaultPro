@@ -225,7 +225,7 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
       .where(and(eq(payments.invoiceId, invoiceId), eq(payments.organizationId, (invoice as any).organizationId)));
     const rollup = computeInvoicePaymentRollup({
       invoiceTotalCents: Number((invoice as any).totalCents || 0),
-      payments: paymentRows.map((p: any) => ({ status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
+      payments: paymentRows.map((p: any) => ({ id: p.id, status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
     });
 
     const amountPaid = centsToDecimalString(rollup.amountPaidCents);
@@ -263,7 +263,7 @@ export async function refreshInvoiceStatus(id: string) {
   const { invoice, payments: paymentRows } = rel;
   const rollup = computeInvoicePaymentRollup({
     invoiceTotalCents: Number((invoice as any).totalCents || 0),
-    payments: paymentRows.map((p: any) => ({ status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
+    payments: paymentRows.map((p: any) => ({ id: p.id, status: normalizePaymentStatus(p.status), amountCents: Number(p.amountCents || 0) })),
   });
 
   const amountPaid = centsToDecimalString(rollup.amountPaidCents);
