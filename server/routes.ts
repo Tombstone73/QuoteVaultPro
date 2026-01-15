@@ -1991,6 +1991,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/products/:productId/duplicate", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const duplicated = await storage.duplicateProduct(organizationId, req.params.productId, userId ?? null);
+      return res.json(duplicated);
+    } catch (error) {
+      console.error("Error duplicating product:", error);
+      return res.status(500).json({ message: "Failed to duplicate product" });
+    }
+  });
+
   // Product Options routes
   app.get("/api/products/:id/options", isAuthenticated, async (req, res) => {
     try {

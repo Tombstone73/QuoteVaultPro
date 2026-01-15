@@ -15,11 +15,22 @@ import ProductSimulator from "@/components/ProductSimulator";
 import { useProductTypes } from '../hooks/useProductTypes';
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { type FlatGoodsConfig } from "@shared/pricingProfiles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ChevronRight, RotateCcw, Save } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSection from "@/components/PBV2ProductBuilderSection";
 
@@ -34,9 +45,11 @@ const ProductEditorPage = () => {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const auth = useAuth();
   const isNewProduct = !productId;
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const lastLoadedRef = useRef<ProductFormData | null>(null);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
@@ -148,6 +161,28 @@ const ProductEditorPage = () => {
     },
   });
 
+  const canDuplicate = !isNewProduct && (auth.isAdmin || auth.user?.role === "owner" || auth.user?.role === "admin");
+
+  const duplicateMutation = useMutation({
+    mutationFn: async () => {
+      if (!productId) throw new Error("Missing productId");
+      const res = await apiRequest("POST", `/api/products/${productId}/duplicate`);
+      return (await res.json()) as Product;
+    },
+    onSuccess: (newProduct) => {
+      setDuplicateOpen(false);
+      toast({
+        title: "Product Duplicated",
+        description: "A draft copy was created successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      navigate(`/products/${newProduct.id}/edit`);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const handleSave = (data: ProductFormData) => {
     saveMutation.mutate(data as InsertProduct);
   };
@@ -230,6 +265,36 @@ const ProductEditorPage = () => {
           >
             Cancel
           </Button>
+          {canDuplicate ? (
+            <AlertDialog open={duplicateOpen} onOpenChange={setDuplicateOpen}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDuplicateOpen(true)}
+                disabled={saveMutation.isPending || duplicateMutation.isPending}
+              >
+                <Copy className="h-4 w-4 mr-2" />
+                Duplicate
+              </Button>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Duplicate Product</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will create a new draft copy of this product (including options/config). Continue?
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={duplicateMutation.isPending}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => duplicateMutation.mutate()}
+                    disabled={duplicateMutation.isPending}
+                  >
+                    {duplicateMutation.isPending ? "Duplicating…" : "Duplicate"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : null}
           <Button
             type="button"
             variant="outline"

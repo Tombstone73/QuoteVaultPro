@@ -1,10 +1,13 @@
 import { db } from "../db";
+import { buildDuplicatedProductInsert } from "../lib/duplicateProductTransform";
+import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "../lib/pbv2OverrideConfig";
 import {
     users,
     products,
     productTypes,
     productOptions,
     productVariants,
+    pbv2TreeVersions,
     globalVariables,
     pricingFormulas,
     pricingRules,
@@ -48,6 +51,12 @@ import {
     type UpdateCompanySettings,
 } from "@shared/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
+
+function cloneJson<T>(value: T): T {
+    const sc = (globalThis as any).structuredClone as ((v: any) => any) | undefined;
+    if (typeof sc === 'function') return sc(value);
+    return JSON.parse(JSON.stringify(value)) as T;
+}
 
 export class SharedRepository {
     constructor(private readonly dbInstance = db) { }
@@ -335,6 +344,225 @@ export class SharedRepository {
         }
 
         return newProduct;
+    }
+
+    async duplicateProduct(organizationId: string, id: string, userId: string | null): Promise<Product> {
+        return await this.dbInstance.transaction(async (tx) => {
+            const [originalProduct] = await tx
+                .select()
+                .from(products)
+                .where(and(eq(products.id, id), eq(products.organizationId, organizationId)))
+                .limit(1);
+
+            if (!originalProduct) {
+                throw new Error('Product not found');
+            }
+
+            const newProductData = buildDuplicatedProductInsert(originalProduct);
+
+            const [newProduct] = await tx
+                .insert(products)
+                .values({
+                    organizationId,
+                    ...(newProductData as any),
+                })
+                .returning();
+
+            // Clone legacy variants
+            const originalVariants = await tx
+                .select()
+                .from(productVariants)
+                .where(eq(productVariants.productId, id))
+                .orderBy(productVariants.displayOrder);
+
+            for (const variant of originalVariants) {
+                await tx.insert(productVariants).values({
+                    productId: newProduct.id,
+                    name: variant.name,
+                    description: variant.description,
+                    basePricePerSqft: variant.basePricePerSqft,
+                    wholesaleBaseRate: variant.wholesaleBaseRate,
+                    wholesaleMinCharge: variant.wholesaleMinCharge,
+                    retailBaseRate: variant.retailBaseRate,
+                    retailMinCharge: variant.retailMinCharge,
+                    volumePricing: cloneJson(variant.volumePricing as any),
+                    isTaxable: variant.isTaxable,
+                    taxCategoryId: variant.taxCategoryId,
+                    isDefault: variant.isDefault,
+                    displayOrder: variant.displayOrder,
+                    isActive: variant.isActive,
+                } as any);
+            }
+
+            // Clone legacy options (preserve parent/child relationships)
+            const originalOptions = await tx
+                .select()
+                .from(productOptions)
+                .where(eq(productOptions.productId, id))
+                .orderBy(productOptions.displayOrder);
+
+            const optionIdMap: Record<string, string> = {};
+
+            const parentOptions = originalOptions.filter(opt => !opt.parentOptionId);
+            for (const option of parentOptions) {
+                const [newOption] = await tx
+                    .insert(productOptions)
+                    .values({
+                        productId: newProduct.id,
+                        name: option.name,
+                        description: option.description,
+                        type: option.type,
+                        defaultValue: option.defaultValue,
+                        defaultSelection: option.defaultSelection,
+                        isDefaultEnabled: option.isDefaultEnabled,
+                        setupCost: option.setupCost,
+                        priceFormula: option.priceFormula,
+                        parentOptionId: null,
+                        displayOrder: option.displayOrder,
+                        isActive: option.isActive,
+                    } as any)
+                    .returning();
+
+                optionIdMap[option.id] = newOption.id;
+            }
+
+            const childOptions = originalOptions.filter(opt => !!opt.parentOptionId);
+            for (const option of childOptions) {
+                const newParentId = option.parentOptionId ? optionIdMap[option.parentOptionId] : null;
+                const [newOption] = await tx
+                    .insert(productOptions)
+                    .values({
+                        productId: newProduct.id,
+                        name: option.name,
+                        description: option.description,
+                        type: option.type,
+                        defaultValue: option.defaultValue,
+                        defaultSelection: option.defaultSelection,
+                        isDefaultEnabled: option.isDefaultEnabled,
+                        setupCost: option.setupCost,
+                        priceFormula: option.priceFormula,
+                        parentOptionId: newParentId,
+                        displayOrder: option.displayOrder,
+                        isActive: option.isActive,
+                    } as any)
+                    .returning();
+
+                optionIdMap[option.id] = newOption.id;
+            }
+
+            // Clone PBV2 tree versions (draft + active pointer)
+            const [originalDraft] = await tx
+                .select()
+                .from(pbv2TreeVersions)
+                .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.productId, id), eq(pbv2TreeVersions.status, 'DRAFT')))
+                .orderBy(desc(pbv2TreeVersions.updatedAt))
+                .limit(1);
+
+            if (originalDraft) {
+                await tx.insert(pbv2TreeVersions).values({
+                    organizationId,
+                    productId: newProduct.id,
+                    status: 'DRAFT',
+                    schemaVersion: originalDraft.schemaVersion,
+                    treeJson: cloneJson(originalDraft.treeJson as any),
+                    publishedAt: null,
+                    createdByUserId: userId,
+                    updatedByUserId: userId,
+                } as any);
+            }
+
+            if (originalProduct.pbv2ActiveTreeVersionId) {
+                const [originalActive] = await tx
+                    .select()
+                    .from(pbv2TreeVersions)
+                    .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, originalProduct.pbv2ActiveTreeVersionId)))
+                    .limit(1);
+
+                if (originalActive) {
+                    const [newActive] = await tx
+                        .insert(pbv2TreeVersions)
+                        .values({
+                            organizationId,
+                            productId: newProduct.id,
+                            status: 'ACTIVE',
+                            schemaVersion: originalActive.schemaVersion,
+                            treeJson: cloneJson(originalActive.treeJson as any),
+                            publishedAt: originalActive.publishedAt,
+                            createdByUserId: userId,
+                            updatedByUserId: userId,
+                        } as any)
+                        .returning();
+
+                    await tx
+                        .update(products)
+                        .set({
+                            pbv2ActiveTreeVersionId: newActive.id,
+                            updatedAt: new Date(),
+                        } as any)
+                        .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
+                }
+            }
+
+            // Clone PBV2 override tree version (ARCHIVED) if configured
+            const override = readPbv2OverrideConfig(originalProduct.pricingProfileConfig as any);
+            if (override.enabled && override.treeVersionId) {
+                const [originalOverride] = await tx
+                    .select()
+                    .from(pbv2TreeVersions)
+                    .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, override.treeVersionId)))
+                    .limit(1);
+
+                if (originalOverride) {
+                    const [newOverride] = await tx
+                        .insert(pbv2TreeVersions)
+                        .values({
+                            organizationId,
+                            productId: newProduct.id,
+                            status: 'ARCHIVED',
+                            schemaVersion: originalOverride.schemaVersion,
+                            treeJson: cloneJson(originalOverride.treeJson as any),
+                            publishedAt: originalOverride.publishedAt,
+                            createdByUserId: userId,
+                            updatedByUserId: userId,
+                        } as any)
+                        .returning();
+
+                    const updatedPricingProfileConfig = writePbv2OverrideConfig(newProduct.pricingProfileConfig as any, {
+                        enabled: true,
+                        treeVersionId: newOverride.id,
+                    });
+
+                    await tx
+                        .update(products)
+                        .set({
+                            pricingProfileConfig: updatedPricingProfileConfig as any,
+                            updatedAt: new Date(),
+                        } as any)
+                        .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
+                } else {
+                    const updatedPricingProfileConfig = writePbv2OverrideConfig(newProduct.pricingProfileConfig as any, {
+                        enabled: false,
+                        treeVersionId: null,
+                    });
+
+                    await tx
+                        .update(products)
+                        .set({
+                            pricingProfileConfig: updatedPricingProfileConfig as any,
+                            updatedAt: new Date(),
+                        } as any)
+                        .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
+                }
+            }
+
+            const [finalProduct] = await tx
+                .select()
+                .from(products)
+                .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)))
+                .limit(1);
+
+            return finalProduct ?? newProduct;
+        });
     }
 
     // Product options operations
