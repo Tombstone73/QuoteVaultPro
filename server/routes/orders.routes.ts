@@ -48,6 +48,7 @@ import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
 import { computePbv2InputSignature } from "@shared/pbv2/pbv2InputSignature";
 import { pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
+import { selectPbv2TreeVersionIdForEvaluation } from "../lib/pbv2OverrideConfig";
 import { assignEffectIndexFallback, buildOrderLineItemComponentUpsertValues } from "../lib/pbv2ComponentUpsert";
 import { assertPbv2TreeVersionNotDraft } from "../lib/pbv2TreeVersionGuards";
 import { normalizePbv2DiffComponent, pbv2DiffComponents } from "@shared/pbv2/pbv2ComponentDiff";
@@ -163,20 +164,26 @@ async function evaluatePbv2SnapshotForProduct(args: {
     const context = args.context ?? 'persist';
 
     const [product] = await db
-        .select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+        .select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, pricingProfileConfig: products.pricingProfileConfig })
         .from(products)
         .where(and(eq(products.organizationId, organizationId), eq(products.id, productId)))
         .limit(1);
 
     if (!product?.pbv2ActiveTreeVersionId) return null;
 
+    const treeVersionIdToUse = selectPbv2TreeVersionIdForEvaluation({
+        activeTreeVersionId: product.pbv2ActiveTreeVersionId,
+        pricingProfileConfig: (product as any).pricingProfileConfig,
+    });
+    if (!treeVersionIdToUse) return null;
+
     const [treeVersion] = await db
         .select({ id: pbv2TreeVersions.id, status: pbv2TreeVersions.status, treeJson: pbv2TreeVersions.treeJson })
         .from(pbv2TreeVersions)
-        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId)))
+        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, treeVersionIdToUse)))
         .limit(1);
 
-    if (!treeVersion) throw new Error("PBV2 active tree version not found");
+    if (!treeVersion) throw new Error("PBV2 tree version not found");
     assertPbv2TreeVersionNotDraft(treeVersion.status, context);
 
     const evaluatedAt = new Date().toISOString();

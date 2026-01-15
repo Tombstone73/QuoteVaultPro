@@ -26,6 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish, validateTreeForRestore } from "@shared/pbv2/validator";
 import { createPbv2BannerGrommetsTreeJson, createPbv2StarterTreeJson, stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
@@ -70,6 +71,12 @@ type Envelope<T> = {
   message?: string;
   findings?: Finding[];
   requiresWarningsConfirm?: boolean;
+};
+
+type Pbv2OverrideState = {
+  enabled: boolean;
+  treeVersionId: string | null;
+  treeJsonText: string;
 };
 
 async function readJsonSafe(res: Response): Promise<any> {
@@ -156,6 +163,7 @@ function makeId(prefix: string, taken: Set<string>): string {
 
 export default function PBV2ProductBuilderSection({ productId }: { productId: string }) {
   const { toast } = useToast();
+  const { isAdmin: isAdminUser } = useAuth();
   const [draftText, setDraftText] = useState<string>("");
   const [findings, setFindings] = useState<Finding[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -225,6 +233,12 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
   const [childValidationByKey, setChildValidationByKey] = useState<Record<string, { findings: InlineFinding[] }>>({});
   const [childRowExpandedByKey, setChildRowExpandedByKey] = useState<Record<string, boolean>>({});
 
+  const [overrideEnabled, setOverrideEnabled] = useState<boolean>(false);
+  const [overrideTreeVersionId, setOverrideTreeVersionId] = useState<string | null>(null);
+  const [overrideText, setOverrideText] = useState<string>("");
+  const [overrideFindings, setOverrideFindings] = useState<Finding[]>([]);
+  const [overrideLastMessage, setOverrideLastMessage] = useState<string>("");
+
   const treeQuery = useQuery<TreeResponse>({
     queryKey: ["/api/products", productId, "pbv2", "tree"],
     queryFn: async () => {
@@ -239,6 +253,78 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
 
   const draft = treeQuery.data?.data?.draft ?? null;
   const active = treeQuery.data?.data?.active ?? null;
+
+  const overrideQuery = useQuery<Pbv2OverrideState>({
+    queryKey: ["/api/products", productId, "pbv2", "override"],
+    enabled: Boolean(isAdminUser),
+    queryFn: async () => {
+      const { status, ok, json } = await apiJson<Pbv2OverrideState>("GET", `/api/products/${productId}/pbv2/override`);
+      if (!ok || json?.success === false) {
+        throw new Error(envelopeMessage(status, json, "Failed to load PBV2 override"));
+      }
+      return (json?.data ?? { enabled: false, treeVersionId: null, treeJsonText: "" }) as Pbv2OverrideState;
+    },
+  });
+
+  useEffect(() => {
+    if (!overrideQuery.data) return;
+    setOverrideEnabled(Boolean(overrideQuery.data.enabled));
+    setOverrideTreeVersionId(overrideQuery.data.treeVersionId ?? null);
+    setOverrideText(String(overrideQuery.data.treeJsonText ?? ""));
+    // Keep findings local to current validate/save actions.
+  }, [overrideQuery.data?.enabled, overrideQuery.data?.treeVersionId, overrideQuery.data?.treeJsonText]);
+
+  const validateOverrideMutation = useMutation({
+    mutationFn: async () => {
+      const { status, ok, json } = await apiJson<null>("POST", `/api/products/${productId}/pbv2/override/validate`, {
+        treeJsonText: overrideText,
+      });
+      if (!ok) throw new Error(envelopeMessage(status, json, "Failed to validate override"));
+      return json;
+    },
+    onSuccess: (json: any) => {
+      setOverrideLastMessage(String(json?.message ?? "Validated"));
+      setOverrideFindings(Array.isArray(json?.findings) ? (json.findings as Finding[]) : []);
+      toast({ title: json?.success ? "Override valid" : "Override blocked", description: String(json?.message ?? "") });
+    },
+    onError: (error: Error) => toast({ title: "Override validation failed", description: error.message, variant: "destructive" }),
+  });
+
+  const saveOverrideMutation = useMutation({
+    mutationFn: async () => {
+      const { status, ok, json } = await apiJson<{ treeVersionId: string | null; enabled: boolean }>(
+        "POST",
+        `/api/products/${productId}/pbv2/override/save`,
+        {
+          treeJsonText: overrideText,
+          enable: overrideEnabled,
+        }
+      );
+      if (!ok) throw new Error(envelopeMessage(status, json, "Failed to save override"));
+      return json;
+    },
+    onSuccess: (json: any) => {
+      setOverrideLastMessage(String(json?.message ?? "Saved"));
+      setOverrideFindings(Array.isArray(json?.findings) ? (json.findings as Finding[]) : []);
+      toast({ title: "Override saved", description: String(json?.message ?? "") });
+      overrideQuery.refetch();
+    },
+    onError: (error: Error) => toast({ title: "Override save failed", description: error.message, variant: "destructive" }),
+  });
+
+  const disableOverrideMutation = useMutation({
+    mutationFn: async () => {
+      const { status, ok, json } = await apiJson<{ enabled: boolean }>("POST", `/api/products/${productId}/pbv2/override/disable`);
+      if (!ok) throw new Error(envelopeMessage(status, json, "Failed to disable override"));
+      return json;
+    },
+    onSuccess: (json: any) => {
+      setOverrideLastMessage(String(json?.message ?? "Disabled"));
+      toast({ title: "Override disabled", description: String(json?.message ?? "") });
+      overrideQuery.refetch();
+    },
+    onError: (error: Error) => toast({ title: "Disable failed", description: error.message, variant: "destructive" }),
+  });
 
   useEffect(() => {
     if (!draft) {
@@ -1053,6 +1139,107 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
           <div className="text-sm text-destructive">{treeQuery.data.message || "Failed to load PBV2"}</div>
         ) : null}
         {lastError ? <div className="text-sm text-destructive">{lastError}</div> : null}
+
+        {isAdminUser ? (
+          <div className="rounded-md border border-border bg-muted/20 p-4 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">Advanced PBV2 Override (Admin-only)</div>
+                <div className="text-xs text-muted-foreground">
+                  When enabled, order/quote PBV2 evaluations for this product use this override tree version instead of the normal active PBV2 version.
+                </div>
+                {overrideTreeVersionId ? (
+                  <div className="text-xs text-muted-foreground">
+                    Stored treeVersionId: <span className="font-mono">{overrideTreeVersionId}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    checked={overrideEnabled}
+                    onCheckedChange={(v) => setOverrideEnabled(Boolean(v))}
+                    disabled={saveOverrideMutation.isPending || disableOverrideMutation.isPending}
+                  />
+                  <Label className="text-sm">Enabled</Label>
+                </div>
+                <Badge variant={overrideEnabled ? "secondary" : "outline"}>{overrideEnabled ? "ON" : "OFF"}</Badge>
+              </div>
+            </div>
+
+            <Textarea
+              value={overrideText}
+              onChange={(e) => setOverrideText(e.target.value)}
+              className="min-h-[200px] font-mono text-xs"
+              placeholder="Paste publish-valid PBV2 tree JSON here"
+              disabled={overrideQuery.isLoading || saveOverrideMutation.isPending}
+            />
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => validateOverrideMutation.mutate()}
+                disabled={validateOverrideMutation.isPending || saveOverrideMutation.isPending}
+              >
+                Validate Override
+              </Button>
+              <Button
+                type="button"
+                onClick={() => saveOverrideMutation.mutate()}
+                disabled={saveOverrideMutation.isPending}
+              >
+                Save{overrideEnabled ? " & Enable" : ""}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => disableOverrideMutation.mutate()}
+                disabled={disableOverrideMutation.isPending}
+              >
+                Disable (keep JSON)
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => overrideQuery.refetch()}
+                disabled={overrideQuery.isLoading || saveOverrideMutation.isPending}
+              >
+                Reload
+              </Button>
+
+              {overrideLastMessage ? <div className="text-xs text-muted-foreground">{overrideLastMessage}</div> : null}
+            </div>
+
+            {overrideFindings.length ? (
+              <div className="rounded-md border border-border">
+                <ScrollArea className="h-[180px]">
+                  <div className="p-3 space-y-2">
+                    {overrideFindings.map((f, idx) => (
+                      <div key={`${f.code}-ov-${idx}`} className="text-sm">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={
+                              f.severity === "ERROR" ? "destructive" : f.severity === "WARNING" ? "secondary" : "outline"
+                            }
+                          >
+                            {f.severity}
+                          </Badge>
+                          <span className="font-mono text-xs">{f.code}</span>
+                        </div>
+                        <div className="mt-1">{f.message}</div>
+                        <div className="mt-1 text-xs text-muted-foreground font-mono">{f.path}</div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <Separator />
 
         <div className="grid grid-cols-1 gap-3">
           <div className="flex flex-wrap items-center gap-2">
