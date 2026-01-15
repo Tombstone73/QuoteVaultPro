@@ -20,7 +20,7 @@ async function tableExists(client: Client, tableName: string): Promise<boolean> 
      LIMIT 1`,
     [tableName]
   );
-  return res.rowCount > 0;
+  return (res.rowCount ?? 0) > 0;
 }
 
 async function columnExists(client: Client, tableName: string, columnName: string): Promise<boolean> {
@@ -33,7 +33,7 @@ async function columnExists(client: Client, tableName: string, columnName: strin
      LIMIT 1`,
     [tableName, columnName]
   );
-  return res.rowCount > 0;
+  return (res.rowCount ?? 0) > 0;
 }
 
 async function getDrizzleMigrationsTableRef(client: Client): Promise<string | null> {

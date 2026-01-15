@@ -3,6 +3,7 @@ export type InvoicePaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded';
 export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'canceled' | 'refunded' | 'voided';
 
 export type PaymentRollupInput = {
+  id?: string | number | null | undefined;
   status: PaymentStatus | string | null | undefined;
   amountCents: number | null | undefined;
 };
@@ -12,6 +13,24 @@ export type InvoicePaymentRollup = {
   amountDueCents: number;
   paymentStatus: InvoicePaymentStatus;
 };
+
+export type InvoicePaymentStatusLabel = 'Draft' | 'Voided' | 'Unpaid' | 'Partially Paid' | 'Paid';
+
+export function getInvoicePaymentStatusLabel(params: {
+  invoiceStatus: string | null | undefined;
+  rollup: InvoicePaymentRollup;
+}): InvoicePaymentStatusLabel {
+  const base = String(params.invoiceStatus || '').trim().toLowerCase();
+  if (base === 'void' || base === 'voided') return 'Voided';
+  if (base === 'draft') return 'Draft';
+
+  const paid = toSafeCents(params.rollup?.amountPaidCents);
+  const due = toSafeCents(params.rollup?.amountDueCents);
+
+  if (paid <= 0) return 'Unpaid';
+  if (due <= 0) return 'Paid';
+  return 'Partially Paid';
+}
 
 const normalizeStatus = (raw: unknown): PaymentStatus | 'unknown' => {
   if (!raw) return 'unknown';
@@ -41,7 +60,16 @@ export function computeInvoicePaymentRollup(params: {
   let hadSucceeded = false;
   let hadRefund = false;
 
+  const seenPaymentIds = new Set<string>();
+
   for (const p of params.payments || []) {
+    const rawId = (p as any)?.id;
+    if (rawId !== null && rawId !== undefined && String(rawId).trim()) {
+      const id = String(rawId);
+      if (seenPaymentIds.has(id)) continue;
+      seenPaymentIds.add(id);
+    }
+
     const status = normalizeStatus(p.status);
     const amountCents = toSafeCents(p.amountCents);
 
