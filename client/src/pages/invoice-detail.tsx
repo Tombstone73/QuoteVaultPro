@@ -20,6 +20,7 @@ import { format } from "date-fns";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useQuery } from "@tanstack/react-query";
 import { TimelinePanel } from "@/components/TimelinePanel";
+import StripePayDialog from "@/components/payments/StripePayDialog";
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -102,6 +103,7 @@ export default function InvoiceDetailPage() {
   const updateInvoice = useUpdateInvoice();
 
   const [addPaymentDialogOpen, setAddPaymentDialogOpen] = useState(false);
+  const [stripePayOpen, setStripePayOpen] = useState(false);
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
@@ -123,6 +125,8 @@ export default function InvoiceDetailPage() {
   const balanceDue = invoice
     ? Number(invoice.balanceDue || Number(invoice.total) - Number(invoice.amountPaid))
     : 0;
+
+  const canPayNow = !!invoice && isStaffUser && invoiceStatus !== 'void' && balanceDue > 0;
 
   const canEditInvoice = !!invoice && isStaffUser && invoiceStatus !== 'paid' && invoiceStatus !== 'void';
   const isBilledUnpaid = !!invoice && invoiceStatus === 'billed' && balanceDue > 0;
@@ -1046,42 +1050,74 @@ export default function InvoiceDetailPage() {
                   )}
 
                   {bottomPanel === "payments" && (
-                    payments.length === 0 ? (
-                      <div className="text-center py-8 text-muted-foreground">No payments recorded</div>
-                    ) : (
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Date</TableHead>
-                            <TableHead>Method</TableHead>
-                            <TableHead>Amount</TableHead>
-                            <TableHead>Notes</TableHead>
-                            {isAdminOrOwner && invoice.status !== 'paid' && <TableHead>Actions</TableHead>}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {payments.map((payment) => (
-                            <TableRow key={payment.id}>
-                              <TableCell>{formatDate(payment.appliedAt)}</TableCell>
-                              <TableCell className="capitalize">{payment.method.replace('_', ' ')}</TableCell>
-                              <TableCell className="font-medium">{formatCurrency(payment.amount)}</TableCell>
-                              <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
-                              {isAdminOrOwner && invoice.status !== 'paid' && (
-                                <TableCell>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => handleDeletePayment(payment.id)}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </TableCell>
-                              )}
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-sm text-muted-foreground">
+                          Balance due: <span className="font-medium text-foreground">{formatCurrency(balanceDue)}</span>
+                        </div>
+                        {canPayNow && (
+                          <Button onClick={() => setStripePayOpen(true)}>
+                            Pay Now
+                          </Button>
+                        )}
+                      </div>
+
+                      {payments.length === 0 ? (
+                        <div className="text-center py-8 text-muted-foreground">No payments recorded</div>
+                      ) : (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Date</TableHead>
+                              <TableHead>Provider</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead>Amount</TableHead>
+                              <TableHead>Notes</TableHead>
+                              {isAdminOrOwner && invoice.status !== 'paid' && <TableHead>Actions</TableHead>}
                             </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    )
+                          </TableHeader>
+                          <TableBody>
+                            {payments.map((payment: any) => (
+                              <TableRow key={payment.id}>
+                                <TableCell>{formatDate(payment.appliedAt)}</TableCell>
+                                <TableCell className="capitalize">
+                                  {String(payment.provider || 'manual') === 'stripe'
+                                    ? 'Stripe'
+                                    : payment.method?.replace?.('_', ' ') || 'Manual'}
+                                </TableCell>
+                                <TableCell className="capitalize">{String(payment.status || 'succeeded').replace('_', ' ')}</TableCell>
+                                <TableCell className="font-medium">{formatCurrency(payment.amount)}</TableCell>
+                                <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
+                                {isAdminOrOwner && invoice.status !== 'paid' && (
+                                  <TableCell>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleDeletePayment(payment.id)}
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  </TableCell>
+                                )}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
+
+                      {invoiceId && (
+                        <StripePayDialog
+                          open={stripePayOpen}
+                          onOpenChange={setStripePayOpen}
+                          invoiceId={invoiceId}
+                          onSettled={() => {
+                            refetch();
+                            setTimeout(() => refetch(), 1500);
+                            setTimeout(() => refetch(), 3500);
+                          }}
+                        />
+                      )}
+                    </div>
                   )}
 
                   {bottomPanel === "material" && (
