@@ -40,6 +40,7 @@ import { registerOrderRoutes } from "./routes/orders.routes";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
+import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 
 // Use local auth for development, Replit auth for production
 const nodeEnv = (process.env.NODE_ENV || '').trim();
@@ -1361,6 +1362,283 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("Error publishing PBV2 tree version:", error);
       return res.status(500).json({ success: false, message: "Failed to publish PBV2 tree version" });
+    }
+  });
+
+  // ============================================================================
+  // PBV2 Advanced Override (Admin-only, temporary)
+  // - Stores pointer in products.pricingProfileConfig.pbv2Override
+  // - Stores override tree JSON in pbv2_tree_versions (status=ARCHIVED)
+  // - Evaluation uses override when enabled (see orders.routes.ts)
+  // ============================================================================
+
+  app.get("/api/products/:productId/pbv2/override", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { productId } = req.params;
+
+      const [product] = await db
+        .select({ id: products.id, pricingProfileConfig: products.pricingProfileConfig })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+        .limit(1);
+
+      if (!product) return res.status(404).json({ success: false, message: "Product not found" });
+
+      const cfg = readPbv2OverrideConfig((product as any).pricingProfileConfig);
+
+      let treeJson: any = null;
+      if (cfg.treeVersionId) {
+        const [tv] = await db
+          .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+          .from(pbv2TreeVersions)
+          .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, cfg.treeVersionId)))
+          .limit(1);
+        treeJson = tv?.treeJson ?? null;
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          enabled: cfg.enabled,
+          treeVersionId: cfg.treeVersionId,
+          treeJsonText: treeJson ? JSON.stringify(treeJson, null, 2) : "",
+        },
+      });
+    } catch (error: any) {
+      console.error("Error fetching PBV2 override:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch PBV2 override" });
+    }
+  });
+
+  app.post("/api/products/:productId/pbv2/override/validate", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const treeJsonText = String((req.body as any)?.treeJsonText ?? "");
+      let parsed: any;
+      try {
+        parsed = JSON.parse(treeJsonText);
+      } catch (e: any) {
+        return res.status(400).json({
+          success: false,
+          message: `Override JSON invalid: ${e?.message ?? "Invalid JSON"}`,
+          findings: [
+            {
+              severity: "ERROR",
+              code: "PBV2_E_OVERRIDE_JSON_PARSE",
+              message: `Invalid JSON: ${e?.message ?? "parse error"}`,
+              path: "override.treeJsonText",
+            },
+          ],
+        });
+      }
+
+      const validation = validateTreeForPublish(parsed as any, DEFAULT_VALIDATE_OPTS);
+      const ok = validation.errors.length === 0;
+
+      return res.json({
+        success: ok,
+        message: ok ? "Override JSON is publish-valid" : "Override JSON blocked by validation errors",
+        findings: validation.findings,
+      });
+    } catch (error: any) {
+      console.error("Error validating PBV2 override:", error);
+      return res.status(500).json({ success: false, message: "Failed to validate PBV2 override" });
+    }
+  });
+
+  app.post("/api/products/:productId/pbv2/override/save", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { productId } = req.params;
+      const userId = getUserId(req.user);
+
+      const treeJsonText = String((req.body as any)?.treeJsonText ?? "");
+      const enable = Boolean((req.body as any)?.enable);
+
+      const [product] = await db
+        .select({ id: products.id, pricingProfileConfig: products.pricingProfileConfig })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+        .limit(1);
+
+      if (!product) return res.status(404).json({ success: false, message: "Product not found" });
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(treeJsonText);
+      } catch (e: any) {
+        return res.status(400).json({
+          success: false,
+          message: `Override JSON invalid: ${e?.message ?? "Invalid JSON"}`,
+          findings: [
+            {
+              severity: "ERROR",
+              code: "PBV2_E_OVERRIDE_JSON_PARSE",
+              message: `Invalid JSON: ${e?.message ?? "parse error"}`,
+              path: "override.treeJsonText",
+            },
+          ],
+        });
+      }
+
+      const validation = validateTreeForPublish(parsed as any, DEFAULT_VALIDATE_OPTS);
+      if (validation.errors.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Override JSON blocked by validation errors",
+          findings: validation.findings,
+        });
+      }
+
+      const cfg = readPbv2OverrideConfig((product as any).pricingProfileConfig);
+
+      const saved = await db.transaction(async (tx) => {
+        let treeVersionId = cfg.treeVersionId;
+
+        if (treeVersionId) {
+          const [existingTv] = await tx
+            .select({ id: pbv2TreeVersions.id })
+            .from(pbv2TreeVersions)
+            .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, treeVersionId)))
+            .limit(1);
+          if (!existingTv) treeVersionId = null;
+        }
+
+        if (treeVersionId) {
+          await tx
+            .update(pbv2TreeVersions)
+            .set({
+              status: "ARCHIVED",
+              treeJson: parsed,
+              updatedAt: new Date(),
+              updatedByUserId: userId ?? null,
+            })
+            .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, treeVersionId)));
+        } else {
+          const [inserted] = await tx
+            .insert(pbv2TreeVersions)
+            .values({
+              organizationId,
+              productId,
+              status: "ARCHIVED",
+              schemaVersion: 1,
+              treeJson: parsed,
+              createdByUserId: userId ?? null,
+              updatedByUserId: userId ?? null,
+            })
+            .returning({ id: pbv2TreeVersions.id });
+          treeVersionId = inserted?.id ? String(inserted.id) : null;
+        }
+
+        const nextConfig = writePbv2OverrideConfig((product as any).pricingProfileConfig, {
+          treeVersionId,
+          enabled: enable,
+        });
+
+        await tx
+          .update(products)
+          .set({ pricingProfileConfig: nextConfig, updatedAt: new Date() })
+          .where(and(eq(products.organizationId, organizationId), eq(products.id, productId)));
+
+        return { treeVersionId, enabled: enable };
+      });
+
+      return res.json({
+        success: true,
+        message: saved.enabled ? "PBV2 override saved and enabled" : "PBV2 override saved",
+        data: saved,
+        findings: validation.findings,
+      });
+    } catch (error: any) {
+      console.error("Error saving PBV2 override:", error);
+      return res.status(500).json({ success: false, message: "Failed to save PBV2 override" });
+    }
+  });
+
+  app.post("/api/products/:productId/pbv2/override/toggle", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { productId } = req.params;
+      const enabled = Boolean((req.body as any)?.enabled);
+
+      const [product] = await db
+        .select({ id: products.id, pricingProfileConfig: products.pricingProfileConfig })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+        .limit(1);
+
+      if (!product) return res.status(404).json({ success: false, message: "Product not found" });
+
+      const cfg = readPbv2OverrideConfig((product as any).pricingProfileConfig);
+      if (enabled) {
+        if (!cfg.treeVersionId) {
+          return res.status(409).json({ success: false, message: "Cannot enable override: no override JSON has been saved yet" });
+        }
+
+        const [tv] = await db
+          .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+          .from(pbv2TreeVersions)
+          .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, cfg.treeVersionId)))
+          .limit(1);
+
+        if (!tv) {
+          return res.status(409).json({ success: false, message: "Cannot enable override: override tree version not found" });
+        }
+
+        const validation = validateTreeForPublish((tv as any).treeJson as any, DEFAULT_VALIDATE_OPTS);
+        if (validation.errors.length > 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Cannot enable override: stored override JSON is not publish-valid",
+            findings: validation.findings,
+          });
+        }
+      }
+
+      const nextConfig = writePbv2OverrideConfig((product as any).pricingProfileConfig, { enabled });
+      await db
+        .update(products)
+        .set({ pricingProfileConfig: nextConfig, updatedAt: new Date() })
+        .where(and(eq(products.organizationId, organizationId), eq(products.id, productId)));
+
+      return res.json({ success: true, message: enabled ? "PBV2 override enabled" : "PBV2 override disabled", data: { enabled } });
+    } catch (error: any) {
+      console.error("Error toggling PBV2 override:", error);
+      return res.status(500).json({ success: false, message: "Failed to toggle PBV2 override" });
+    }
+  });
+
+  app.post("/api/products/:productId/pbv2/override/disable", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+
+      const { productId } = req.params;
+
+      const [product] = await db
+        .select({ id: products.id, pricingProfileConfig: products.pricingProfileConfig })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+        .limit(1);
+
+      if (!product) return res.status(404).json({ success: false, message: "Product not found" });
+
+      const nextConfig = writePbv2OverrideConfig((product as any).pricingProfileConfig, { enabled: false });
+      await db
+        .update(products)
+        .set({ pricingProfileConfig: nextConfig, updatedAt: new Date() })
+        .where(and(eq(products.organizationId, organizationId), eq(products.id, productId)));
+
+      return res.json({ success: true, message: "PBV2 override disabled (JSON kept)", data: { enabled: false } });
+    } catch (error: any) {
+      console.error("Error disabling PBV2 override:", error);
+      return res.status(500).json({ success: false, message: "Failed to disable PBV2 override" });
     }
   });
 
