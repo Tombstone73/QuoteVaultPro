@@ -40,13 +40,11 @@ export function getAllowedInputUomsForMaterial(material: UomConversionMaterial):
   const baseUom = getMaterialBaseUom(material);
   if (!baseUom) return [];
 
-  // Enterprise default: only allow sqft <-> linear_ft conversions when width is present.
+  // Allow selecting convertible units even if width is missing.
+  // Width-dependent conversions are blocked by convertReservationInputToBaseQty().
   // For sheet/ml/ea there are no conversions.
-  const widthIn = typeof material.width === "number" ? material.width : Number(String(material.width ?? ""));
-  const hasWidth = Number.isFinite(widthIn) && widthIn > 0;
-
-  if (baseUom === "sqft") return hasWidth ? ["sqft", "linear_ft"] : ["sqft"];
-  if (baseUom === "linear_ft") return hasWidth ? ["linear_ft", "sqft"] : ["linear_ft"];
+  if (baseUom === "sqft") return ["sqft", "linear_ft"];
+  if (baseUom === "linear_ft") return ["linear_ft", "sqft"];
 
   return [baseUom];
 }
