@@ -10,7 +10,6 @@ export function getStripeClient(): Stripe {
 
   if (!stripeSingleton) {
     stripeSingleton = new Stripe(secretKey, {
-      apiVersion: '2024-06-20',
       typescript: true,
     });
   }

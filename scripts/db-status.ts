@@ -1,3 +1,4 @@
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -10,6 +11,25 @@ type AppliedRow = {
   hash?: string;
   created_at?: string;
 };
+
+function requireDatabaseUrl(): string {
+  const url = (process.env.DATABASE_URL || '').trim();
+  if (!url) {
+    console.error('[db:status] DATABASE_URL is missing. Ensure .env contains DATABASE_URL or set it in the shell.');
+    process.exit(1);
+  }
+  return url;
+}
+
+function parseNumericMigrationId(id: string | undefined): number | null {
+  if (!id) return null;
+  const s = String(id);
+  // Supports "27", "0026_stripe_payments_v1", "0018_mvp_invoicing_billing_ready"
+  const m = s.match(/^(\d+)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
 
 function redactDatabaseUrl(url: string) {
   try {
@@ -73,8 +93,15 @@ async function main() {
   console.log("[db:status] Migrations dir:", migrationsDir);
   console.log("[db:status] Journal:", journalPath);
 
-  console.log(`[db:status] SQL files: ${sqlFiles.length}`);
-  console.log(`[db:status] Journal entries: ${(journal?.entries ?? []).length}`);
+  const sqlFileCount = sqlFiles.length;
+  const journalEntryCount = (journal?.entries ?? []).length;
+
+  console.log(`[db:status] SQL files count: ${sqlFileCount}`);
+  console.log(`[db:status] Journal entries count: ${journalEntryCount}`);
+
+  if (sqlFileCount !== journalEntryCount) {
+    console.warn('[db:status] Journal drift detected; DB is source of truth in this repo due to manual_catchup migrations. This does not block runtime.');
+  }
 
   const notInJournal = sqlFiles
     .map((f) => path.basename(f, ".sql"))
@@ -85,13 +112,8 @@ async function main() {
     for (const tag of notInJournal) console.log(`  - ${tag}`);
   }
 
-  if (!process.env.DATABASE_URL) {
-    console.warn("[db:status] DATABASE_URL is not set; cannot query __drizzle_migrations.");
-    console.warn("[db:status] Set DATABASE_URL (or .env) and re-run.");
-    process.exit(0);
-  }
-
-  console.log("[db:status] DATABASE_URL:", redactDatabaseUrl(process.env.DATABASE_URL));
+  const databaseUrl = requireDatabaseUrl();
+  console.log("[db:status] DATABASE_URL:", redactDatabaseUrl(databaseUrl));
 
   let applied: AppliedRow[] = [];
   try {
@@ -101,21 +123,22 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`[db:status] Applied migrations: ${applied.length}`);
+  const appliedCount = applied.length;
+  let highestId: number | null = null;
+  for (const row of applied) {
+    const n = parseNumericMigrationId(row.id);
+    if (n == null) continue;
+    highestId = highestId == null ? n : Math.max(highestId, n);
+  }
+
+  console.log(`[db:status] Applied migrations (DB __drizzle_migrations): ${appliedCount}`);
+  console.log(`[db:status] Highest applied id (numeric): ${highestId ?? 'unknown'}`);
 
   // Print a compact list. (The id/tag convention is: <tag> from the journal.)
   for (const row of applied) {
     const id = row.id ?? "<no id>";
     const createdAt = row.created_at ?? "";
     console.log(`  - ${id}${createdAt ? ` (${createdAt})` : ""}`);
-  }
-
-  // Compare applied ids against journal tags where possible.
-  const appliedIds = new Set(applied.map((r) => r.id).filter(Boolean) as string[]);
-  const missingApplied = Array.from(journalTags).filter((tag) => !appliedIds.has(tag));
-  if (missingApplied.length) {
-    console.log("[db:status] Journal entries NOT present in DB (may need db:migrate):");
-    for (const tag of missingApplied) console.log(`  - ${tag}`);
   }
 }
 

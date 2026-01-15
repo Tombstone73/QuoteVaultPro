@@ -1,6 +1,21 @@
+import "dotenv/config";
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
+
+type AppliedRow = {
+  id?: string;
+  created_at?: string;
+};
+
+function parseNumericMigrationId(id: string | undefined): number | null {
+  if (!id) return null;
+  const s = String(id);
+  const m = s.match(/^(\d+)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
 
 function redactDatabaseUrl(url: string) {
   try {
@@ -27,10 +42,16 @@ function main() {
   console.log('[db:migrate:verbose] Journal:', journalPath);
 
   if (!process.env.DATABASE_URL) {
-    console.warn('[db:migrate:verbose] DATABASE_URL is not set. Drizzle-kit migrate will fail.');
+    console.error('[db:migrate:verbose] DATABASE_URL is missing. Ensure .env contains DATABASE_URL or set it in the shell.');
+    process.exit(1);
   } else {
     console.log('[db:migrate:verbose] DATABASE_URL:', redactDatabaseUrl(process.env.DATABASE_URL));
   }
+
+  let journalEntryCount = 0;
+  let sqlFileCount = 0;
+  let notInJournalCount = 0;
+  let journalDriftDetected = false;
 
   try {
     const journalRaw = fs.readFileSync(journalPath, 'utf8');
@@ -46,8 +67,13 @@ function main() {
       .map((f) => path.basename(f, '.sql'))
       .filter((tag) => !tags.has(tag));
 
-    console.log(`[db:migrate:verbose] Journal entries: ${(journal.entries || []).length}`);
-    console.log(`[db:migrate:verbose] SQL files: ${sqlFiles.length}`);
+    journalEntryCount = (journal.entries || []).length;
+    sqlFileCount = sqlFiles.length;
+    notInJournalCount = notInJournal.length;
+    journalDriftDetected = sqlFileCount !== journalEntryCount || notInJournalCount > 0;
+
+    console.log(`[db:migrate:verbose] Journal entries: ${journalEntryCount}`);
+    console.log(`[db:migrate:verbose] SQL files: ${sqlFileCount}`);
 
     if (notInJournal.length) {
       console.log('[db:migrate:verbose] SQL files NOT in journal (will NOT be applied by drizzle-kit):');
@@ -57,14 +83,52 @@ function main() {
     console.warn('[db:migrate:verbose] Failed to read/parse journal:', e?.message || e);
   }
 
-  console.log('[db:migrate:verbose] Running: drizzle-kit migrate --config drizzle.config.ts');
+  // If the DB is already migrated via manual catchup, drizzle-kit migrate is usually unsafe/noisy.
+  // We still allow it for an empty DB.
+  (async () => {
+    try {
+      const { sql } = await import('drizzle-orm');
+      const { db } = await import('../server/db');
 
-  const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const result = spawnSync(npxCmd, ['drizzle-kit', 'migrate', '--config', 'drizzle.config.ts'], {
-    stdio: 'inherit',
+      const result = await db.execute(sql`
+        SELECT *
+        FROM __drizzle_migrations
+        ORDER BY created_at ASC
+      `);
+
+      const applied = result.rows as AppliedRow[];
+      let highestId: number | null = null;
+      for (const row of applied) {
+        const n = parseNumericMigrationId(row.id);
+        if (n == null) continue;
+        highestId = highestId == null ? n : Math.max(highestId, n);
+      }
+
+      console.log(`[db:migrate:verbose] Applied migrations (DB __drizzle_migrations): ${applied.length}`);
+      console.log(`[db:migrate:verbose] Highest applied id (numeric): ${highestId ?? 'unknown'}`);
+
+      if (applied.length > 0 && journalDriftDetected) {
+        console.warn('[db:migrate:verbose] Journal drift detected on a non-empty DB; skipping drizzle-kit migrate.');
+        console.warn('[db:migrate:verbose] DB is source of truth in this repo due to manual_catchup migrations.');
+        process.exit(0);
+      }
+    } catch (e: any) {
+      console.warn('[db:migrate:verbose] Failed to query __drizzle_migrations:', e?.message || e);
+      // Continue to attempt drizzle-kit migrate; it will surface its own errors.
+    }
+
+    console.log('[db:migrate:verbose] Running: drizzle-kit migrate --config drizzle.config.ts');
+
+    const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    const result = spawnSync(npxCmd, ['drizzle-kit', 'migrate', '--config', 'drizzle.config.ts'], {
+      stdio: 'inherit',
+    });
+
+    process.exit(result.status ?? 1);
+  })().catch((e) => {
+    console.error('[db:migrate:verbose] Fatal:', e);
+    process.exit(1);
   });
-
-  process.exit(result.status ?? 1);
 }
 
 main();
