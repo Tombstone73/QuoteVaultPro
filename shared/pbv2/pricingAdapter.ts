@@ -1,4 +1,9 @@
 import type { ConditionRule, ExpressionLiteral, ExpressionSpec } from "./expressionSpec";
+import {
+  applyDiscountToPbv2ComponentAmounts,
+  type Pbv2ComponentDiscountConfig,
+  type PricingTier,
+} from "./componentDiscounts";
 import { buildSymbolTable } from "./symbolTable";
 import { typeCheckCondition, typeCheckExpression } from "./typeChecker";
 
@@ -22,11 +27,22 @@ export type Pbv2PricingBreakdownLine = {
   amountCents: number;
   quantity?: number;
   unitPriceCents?: number;
+  discount?: Pbv2ComponentDiscountConfig;
+  discountDebug?: {
+    amountCentsBeforeDiscount: number;
+    amountCentsAfterDiscount: number;
+    unitPriceCentsBeforeDiscount?: number;
+    unitPriceCentsAfterDiscount?: number;
+  };
 };
 
 export type Pbv2PricingAddonsResult = {
   addOnCents: number;
   breakdown: Pbv2PricingBreakdownLine[];
+};
+
+export type Pbv2PricingContext = {
+  customerTier?: PricingTier;
 };
 
 export type MaterialEffect = {
@@ -256,6 +272,7 @@ function extractChildItemEffects(node: AnyRecord): unknown[] {
 type EvalCtx = {
   selections: Record<string, unknown>;
   inputDefaultsBySelectionKey: Record<string, unknown>;
+  inputEnumOptionsBySelectionKey: Record<string, unknown[]>;
   computeOutputsByNodeId: Record<string, Record<string, unknown>>;
   env: Record<string, unknown>;
   pricebook?: Record<string, number>;
@@ -268,6 +285,42 @@ function isNumber(value: unknown): value is number {
 function toNumberOrThrow(value: unknown, message: string): number {
   if (!isNumber(value)) throw new Error(message);
   return value;
+}
+
+function getEnumOptionParamNumber(options: unknown[], selectedValue: string, paramPath: string): number | undefined {
+  const matched = options
+    .map(asRecord)
+    .find((o) => o && typeof (o as any).value === "string" && (o as any).value === selectedValue) as AnyRecord | null;
+  if (!matched) return undefined;
+
+  const parts = paramPath.split(".").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return undefined;
+
+  let cursor: any = matched;
+  for (const part of parts) {
+    if (!cursor || typeof cursor !== "object") return undefined;
+    cursor = cursor[part];
+  }
+
+  return typeof cursor === "number" && Number.isFinite(cursor) ? cursor : undefined;
+}
+
+function getEnumOptionParamValue(options: unknown[], selectedValue: string, paramPath: string): unknown {
+  const matched = options
+    .map(asRecord)
+    .find((o) => o && typeof (o as any).value === "string" && (o as any).value === selectedValue) as AnyRecord | null;
+  if (!matched) return undefined;
+
+  const parts = paramPath.split(".").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return undefined;
+
+  let cursor: any = matched;
+  for (const part of parts) {
+    if (!cursor || typeof cursor !== "object") return undefined;
+    cursor = cursor[part];
+  }
+
+  return cursor;
 }
 
 function evalRef(ref: any, ctx: EvalCtx): unknown {
@@ -287,6 +340,48 @@ function evalRef(ref: any, ctx: EvalCtx): unknown {
       if (Object.prototype.hasOwnProperty.call(ctx.selections, ref.selectionKey)) return ctx.selections[ref.selectionKey];
       if (Object.prototype.hasOwnProperty.call(ctx.inputDefaultsBySelectionKey, ref.selectionKey)) return ctx.inputDefaultsBySelectionKey[ref.selectionKey];
       return null;
+    }
+
+    case "optionValueParamRef": {
+      const selectionKey = ref.selectionKey;
+      const paramPath = ref.paramPath;
+      const defaultValue = ref.defaultValue;
+      if (!isNonEmptyString(selectionKey) || !isNonEmptyString(paramPath)) return defaultValue ?? null;
+
+      const selectedRaw = Object.prototype.hasOwnProperty.call(ctx.selections, selectionKey)
+        ? ctx.selections[selectionKey]
+        : Object.prototype.hasOwnProperty.call(ctx.inputDefaultsBySelectionKey, selectionKey)
+          ? ctx.inputDefaultsBySelectionKey[selectionKey]
+          : null;
+
+      if (typeof selectedRaw !== "string") return defaultValue ?? null;
+
+      const options = ctx.inputEnumOptionsBySelectionKey[selectionKey];
+      if (!Array.isArray(options)) return defaultValue ?? null;
+
+      const resolved = getEnumOptionParamNumber(options, selectedRaw, paramPath);
+      return resolved ?? defaultValue ?? null;
+    }
+
+    case "optionValueParamJsonRef": {
+      const selectionKey = ref.selectionKey;
+      const paramPath = ref.paramPath;
+      const defaultValue = ref.defaultValue;
+      if (!isNonEmptyString(selectionKey) || !isNonEmptyString(paramPath)) return defaultValue ?? null;
+
+      const selectedRaw = Object.prototype.hasOwnProperty.call(ctx.selections, selectionKey)
+        ? ctx.selections[selectionKey]
+        : Object.prototype.hasOwnProperty.call(ctx.inputDefaultsBySelectionKey, selectionKey)
+          ? ctx.inputDefaultsBySelectionKey[selectionKey]
+          : null;
+
+      if (typeof selectedRaw !== "string") return defaultValue ?? null;
+
+      const options = ctx.inputEnumOptionsBySelectionKey[selectionKey];
+      if (!Array.isArray(options)) return defaultValue ?? null;
+
+      const resolved = getEnumOptionParamValue(options, selectedRaw, paramPath);
+      return resolved ?? defaultValue ?? null;
     }
 
     case "nodeOutputRef": {
@@ -477,6 +572,27 @@ function evalCondition(rule: ConditionRule, ctx: EvalCtx): boolean {
   }
 }
 
+function resolveDiscountConfigRefs(discount: Pbv2ComponentDiscountConfig, ctx: EvalCtx): Pbv2ComponentDiscountConfig {
+  const resolved: Pbv2ComponentDiscountConfig = { ...discount };
+
+  if (!resolved.volumePercentTiers && resolved.volumePercentTiersRef) {
+    const v = evalRef(resolved.volumePercentTiersRef as any, ctx);
+    if (Array.isArray(v)) resolved.volumePercentTiers = v as any;
+  }
+
+  if (!resolved.volumeCentsOffPerUnitTiers && resolved.volumeCentsOffPerUnitTiersRef) {
+    const v = evalRef(resolved.volumeCentsOffPerUnitTiersRef as any, ctx);
+    if (Array.isArray(v)) resolved.volumeCentsOffPerUnitTiers = v as any;
+  }
+
+  if (!resolved.volumeUnitPriceCentsTiers && resolved.volumeUnitPriceCentsTiersRef) {
+    const v = evalRef(resolved.volumeUnitPriceCentsTiersRef as any, ctx);
+    if (Array.isArray(v)) resolved.volumeUnitPriceCentsTiers = v as any;
+  }
+
+  return resolved;
+}
+
 function resolveActiveNodeIds(tree: AnyRecord, nodesById: Record<string, NodeRec>, edges: EdgeRec[], ctx: EvalCtx): Set<string> {
   const active = new Set<string>();
   const roots = extractRootNodeIds(tree);
@@ -654,7 +770,7 @@ export function pbv2ToPricingAddons(
   treeJson: unknown,
   selections: Pbv2Selections | Record<string, unknown> | undefined,
   env: Pbv2Env | undefined,
-  opts?: { pricebook?: Record<string, number> }
+  opts?: { pricebook?: Record<string, number>; pricingContext?: Pbv2PricingContext }
 ): Pbv2PricingAddonsResult {
   const tree = asRecord(treeJson);
   if (!tree) throw new Error("Invalid PBV2 treeJson");
@@ -676,6 +792,7 @@ export function pbv2ToPricingAddons(
   const envMap: Record<string, unknown> = { ...(env ?? {}) };
 
   const inputDefaultsBySelectionKey: Record<string, unknown> = {};
+  const inputEnumOptionsBySelectionKey: Record<string, unknown[]> = {};
   for (const n of nodes) {
     if (n.status !== "ENABLED") continue;
     if (n.type !== "INPUT") continue;
@@ -684,11 +801,20 @@ export function pbv2ToPricingAddons(
     if (!selectionKey) continue;
     const def = extractInputDefault(n.raw);
     if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
+
+    const valueType = payload ? (payload as any).valueType ?? (payload as any).type ?? (payload as any).inputKind : undefined;
+    if (typeof valueType === "string" && valueType.toUpperCase() === "ENUM") {
+      const constraints = payload ? asRecord((payload as any).constraints) : null;
+      const enumRec = constraints ? asRecord((constraints as any).enum) : null;
+      const options = enumRec ? (enumRec as any).options : undefined;
+      if (Array.isArray(options)) inputEnumOptionsBySelectionKey[selectionKey] = options;
+    }
   }
 
   const evalCtx: EvalCtx = {
     selections: explicitSelections,
     inputDefaultsBySelectionKey,
+    inputEnumOptionsBySelectionKey,
     computeOutputsByNodeId: {},
     env: envMap,
     pricebook: opts?.pricebook,
@@ -700,8 +826,7 @@ export function pbv2ToPricingAddons(
   evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
 
   // Evaluate PRICE nodes/components
-  const breakdown: Pbv2PricingBreakdownLine[] = [];
-  let addOnCents = 0;
+  const breakdownRaw: Pbv2PricingBreakdownLine[] = [];
 
   const activePriceNodes = nodes.filter((n) => n.status === "ENABLED" && n.type === "PRICE" && activeNodeIds.has(n.id));
 
@@ -720,6 +845,9 @@ export function pbv2ToPricingAddons(
 
       const kind = typeof (c as any).kind === "string" ? (c as any).kind.toUpperCase() : "";
       if (!kind) continue;
+
+      const discountRec = asRecord((c as any).discount);
+      const discount = discountRec ? (discountRec as unknown as Pbv2ComponentDiscountConfig) : undefined;
 
       const unitPriceExpr = (c as any).unitPriceRef as ExpressionSpec | undefined;
       const quantityExpr = (c as any).quantityRef as ExpressionSpec | undefined;
@@ -750,22 +878,63 @@ export function pbv2ToPricingAddons(
       if (!Number.isFinite(rounded)) throw new Error(`PBV2 PRICE '${n.id}' produced invalid amount`);
 
       if (rounded !== 0) {
-        breakdown.push({
+        breakdownRaw.push({
           nodeId: n.id,
           componentIndex: i,
           kind,
           amountCents: rounded,
           quantity,
           unitPriceCents: unitPriceCents ? Math.round(unitPriceCents) : undefined,
+          discount,
         });
       }
-
-      addOnCents += rounded;
     }
   }
 
-  addOnCents = Math.round(addOnCents);
+  const customerTier = opts?.pricingContext?.customerTier;
+  const productQty = Number.isFinite(Number((env as any)?.quantity)) ? Number((env as any).quantity) : 0;
 
+  const breakdown: Pbv2PricingBreakdownLine[] = [];
+  let addOnCents = 0;
+
+  for (const line of breakdownRaw) {
+    if (!line.discount || line.unitPriceCents == null) {
+      breakdown.push(line);
+      addOnCents += line.amountCents;
+      continue;
+    }
+
+    const resolvedDiscount = resolveDiscountConfigRefs(line.discount, evalCtx);
+
+    const qty = Number.isFinite(Number(line.quantity)) ? Number(line.quantity) : 1;
+    const discounted = applyDiscountToPbv2ComponentAmounts({
+      quantity: qty,
+      unitPriceCents: line.unitPriceCents,
+      discountConfig: resolvedDiscount,
+      ctx: { customerTier, productQty },
+    });
+
+    const updated: Pbv2PricingBreakdownLine = {
+      ...line,
+      unitPriceCents: discounted.unitPriceCents,
+      amountCents: discounted.amountCents,
+      discountDebug: discounted.debug
+        ? {
+            amountCentsBeforeDiscount: discounted.debug.amountCentsBeforeDiscount,
+            amountCentsAfterDiscount: discounted.debug.amountCentsAfterDiscount,
+            unitPriceCentsBeforeDiscount: discounted.debug.unitPriceCentsBeforeDiscount,
+            unitPriceCentsAfterDiscount: discounted.debug.unitPriceCentsAfterDiscount,
+          }
+        : undefined,
+    };
+
+    if (updated.amountCents !== 0) {
+      breakdown.push(updated);
+    }
+    addOnCents += updated.amountCents;
+  }
+
+  addOnCents = Math.round(addOnCents);
   return { addOnCents, breakdown };
 }
 
@@ -797,6 +966,7 @@ export function pbv2ToMaterialEffects(
   const envMap: Record<string, unknown> = { ...(env ?? {}) };
 
   const inputDefaultsBySelectionKey: Record<string, unknown> = {};
+  const inputEnumOptionsBySelectionKey: Record<string, unknown[]> = {};
   for (const n of nodes) {
     if (n.status !== "ENABLED") continue;
     if (n.type !== "INPUT") continue;
@@ -805,11 +975,20 @@ export function pbv2ToMaterialEffects(
     if (!selectionKey) continue;
     const def = extractInputDefault(n.raw);
     if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
+
+    const valueType = payload ? (payload as any).valueType ?? (payload as any).type ?? (payload as any).inputKind : undefined;
+    if (typeof valueType === "string" && valueType.toUpperCase() === "ENUM") {
+      const constraints = payload ? asRecord((payload as any).constraints) : null;
+      const enumRec = constraints ? asRecord((constraints as any).enum) : null;
+      const options = enumRec ? (enumRec as any).options : undefined;
+      if (Array.isArray(options)) inputEnumOptionsBySelectionKey[selectionKey] = options;
+    }
   }
 
   const evalCtx: EvalCtx = {
     selections: explicitSelections,
     inputDefaultsBySelectionKey,
+    inputEnumOptionsBySelectionKey,
     computeOutputsByNodeId: {},
     env: envMap,
     pricebook: opts?.pricebook,
@@ -901,6 +1080,7 @@ export function pbv2ToChildItemProposals(
   const envMap: Record<string, unknown> = { ...(env ?? {}) };
 
   const inputDefaultsBySelectionKey: Record<string, unknown> = {};
+  const inputEnumOptionsBySelectionKey: Record<string, unknown[]> = {};
   for (const n of nodes) {
     if (n.status !== "ENABLED") continue;
     if (n.type !== "INPUT") continue;
@@ -909,11 +1089,20 @@ export function pbv2ToChildItemProposals(
     if (!selectionKey) continue;
     const def = extractInputDefault(n.raw);
     if (def !== undefined) inputDefaultsBySelectionKey[selectionKey] = def;
+
+    const valueType = payload ? (payload as any).valueType ?? (payload as any).type ?? (payload as any).inputKind : undefined;
+    if (typeof valueType === "string" && valueType.toUpperCase() === "ENUM") {
+      const constraints = payload ? asRecord((payload as any).constraints) : null;
+      const enumRec = constraints ? asRecord((constraints as any).enum) : null;
+      const options = enumRec ? (enumRec as any).options : undefined;
+      if (Array.isArray(options)) inputEnumOptionsBySelectionKey[selectionKey] = options;
+    }
   }
 
   const evalCtx: EvalCtx = {
     selections: explicitSelections,
     inputDefaultsBySelectionKey,
+    inputEnumOptionsBySelectionKey,
     computeOutputsByNodeId: {},
     env: envMap,
     pricebook: opts?.pricebook,

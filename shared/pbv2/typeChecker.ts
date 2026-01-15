@@ -83,6 +83,17 @@ function refTypeInfo(ref: Ref, ctx: RefContext, table: SymbolTable): TypeInfo {
       return ti(symbol.inputKind === "NULL" ? null : (symbol.inputKind as any), !symbol.hasDefault);
     }
 
+    case "optionValueParamRef": {
+      // By contract, optionValueParamRef resolves a numeric param from the selected ENUM option.
+      // It is nullable unless the ref provides a defaultValue.
+      return ti("NUMBER", ref.defaultValue === undefined);
+    }
+
+    case "optionValueParamJsonRef": {
+      // optionValueParamJsonRef can return arbitrary option metadata (arrays/objects) as JSON.
+      return ti("JSON", ref.defaultValue === undefined);
+    }
+
     case "nodeOutputRef": {
       const compute = table.computeByNodeId[ref.nodeId];
       const output = compute?.outputs?.[ref.outputKey];

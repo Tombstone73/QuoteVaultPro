@@ -62,6 +62,7 @@ import {
     getInventoryReservationsGate,
     resolveInventoryPolicyFromOrgPreferences,
 } from "@shared/inventoryPolicy";
+import { convertReservationInputToBaseQty } from "@shared/uomConversions";
 import {
     createRequestLogOnce,
     enrichAttachmentWithUrls,
@@ -70,7 +71,16 @@ import {
     tryExtractSupabaseObjectKeyFromUrl
 } from "../lib/supabaseObjectHelpers";
 import type { FileRole, FileSide } from "../lib/supabaseObjectHelpers";
+<<<<<<< HEAD
 import { InventoryReservationsRepository } from "../storage/inventoryReservations.repo";
+=======
+import {
+    createManualReservation,
+    deleteManualReservation,
+    getManualReservationById,
+    listManualReservationsForOrder,
+} from "../lib/manualInventoryReservationsRepo";
+>>>>>>> 5c1f15294a8e588ff9863f3527c1888ad823276b
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -152,6 +162,7 @@ async function evaluatePbv2SnapshotForProduct(args: {
     productId: string;
     explicitSelections: Record<string, unknown>;
     env: Record<string, unknown>;
+    pricingContext?: { customerTier?: 'default' | 'wholesale' | 'retail' };
     context?: 'persist' | 'recompute';
 }): Promise<{ treeVersionId: string; snapshotJson: Pbv2OrderLineItemSnapshot } | null> {
     const { organizationId, productId, explicitSelections, env } = args;
@@ -180,7 +191,9 @@ async function evaluatePbv2SnapshotForProduct(args: {
     let materials;
     let childItems;
     try {
-        const pricingRes = pbv2ToPricingAddons(treeVersion.treeJson as any, explicitSelections, env as any);
+        const pricingRes = pbv2ToPricingAddons(treeVersion.treeJson as any, explicitSelections, env as any, {
+            pricingContext: args.pricingContext,
+        });
         const materialsRes = pbv2ToMaterialEffects(treeVersion.treeJson as any, explicitSelections, env as any);
         const childItemsRes = pbv2ToChildItemProposals(treeVersion.treeJson as any, explicitSelections, env as any);
         pricing = { addOnCents: pricingRes.addOnCents, breakdown: pricingRes.breakdown };
@@ -3651,11 +3664,22 @@ export async function registerOrderRoutes(
             const providedEnv = (pbv2Env && typeof pbv2Env === 'object') ? pbv2Env : {};
 
             const [order] = await db
-                .select({ id: orders.id })
+                .select({ id: orders.id, customerId: orders.customerId })
                 .from(orders)
                 .where(and(eq(orders.id, String(lineItemData.orderId)), eq(orders.organizationId, organizationId)))
                 .limit(1);
             if (!order) return res.status(404).json({ message: "Order not found" });
+
+            let customerTier: 'default' | 'wholesale' | 'retail' | undefined;
+            if ((order as any).customerId) {
+                const [customer] = await db
+                    .select({ pricingTier: customers.pricingTier })
+                    .from(customers)
+                    .where(and(eq(customers.organizationId, organizationId), eq(customers.id, String((order as any).customerId))))
+                    .limit(1);
+                const tier = (customer as any)?.pricingTier;
+                if (tier === 'default' || tier === 'wholesale' || tier === 'retail') customerTier = tier;
+            }
 
             const created = await storage.createOrderLineItem(lineItemData);
 
@@ -3678,6 +3702,7 @@ export async function registerOrderRoutes(
                 productId: String(created.productId),
                 explicitSelections,
                 env,
+                pricingContext: { customerTier },
                 context: 'persist',
             }).catch((e: any) => {
                 if (e?.statusCode) throw e;
@@ -3965,6 +3990,7 @@ export async function registerOrderRoutes(
                     width: orderLineItems.width,
                     height: orderLineItems.height,
                     quantity: orderLineItems.quantity,
+                    customerId: orders.customerId,
                 })
                 .from(orderLineItems)
                 .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
@@ -3985,12 +4011,24 @@ export async function registerOrderRoutes(
             };
             const env = { ...computedEnv, ...providedEnv };
 
+            let customerTier: 'default' | 'wholesale' | 'retail' | undefined;
+            if ((li as any).customerId) {
+                const [customer] = await db
+                    .select({ pricingTier: customers.pricingTier })
+                    .from(customers)
+                    .where(and(eq(customers.organizationId, organizationId), eq(customers.id, String((li as any).customerId))))
+                    .limit(1);
+                const tier = (customer as any)?.pricingTier;
+                if (tier === 'default' || tier === 'wholesale' || tier === 'retail') customerTier = tier;
+            }
+
             // Evaluate using the PRODUCT ACTIVE tree version (must not be DRAFT).
             const pbv2 = await evaluatePbv2SnapshotForProduct({
                 organizationId,
                 productId: String((li as any).productId),
                 explicitSelections: explicitSelections as any,
                 env,
+                pricingContext: { customerTier },
                 context: 'recompute',
             }).catch((e: any) => {
                 if (e?.statusCode) throw e;
@@ -5065,6 +5103,148 @@ export async function registerOrderRoutes(
         } catch (error) {
             const err: any = error;
             res.status(500).json({ message: err?.message ?? "Failed to release inventory" });
+        }
+    });
+
+    // Manual inventory reservations (no PBV2 dependency)
+    app.get("/api/orders/:orderId/manual-reservations", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const rows = await listManualReservationsForOrder(db as any, { organizationId, orderId });
+            res.json({ success: true, data: rows });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to load manual reservations" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/manual-reservations", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+
+            const parsed = z
+                .object({
+                    materialId: z.string().min(1),
+                    quantity: z.coerce.number().positive(),
+                    inputUom: z.enum(["sheet", "sqft", "linear_ft", "ml", "ea"]).optional(),
+                })
+                .safeParse(req.body);
+
+            if (!parsed.success) {
+                return res.status(400).json({ message: fromZodError(parsed.error).message });
+            }
+
+            const [order] = await db
+                .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const isCanceled = String((order as any).state || "") === "canceled" || String((order as any).status || "") === "canceled" || Boolean((order as any).canceledAt);
+            if (isCanceled) {
+                return res.status(409).json({ message: "Cannot reserve inventory for a canceled order." });
+            }
+
+            const [material] = await db
+                .select({
+                    id: materials.id,
+                    sku: materials.sku,
+                    type: materials.type,
+                    unitOfMeasure: materials.unitOfMeasure,
+                    width: materials.width,
+                })
+                .from(materials)
+                .where(and(eq(materials.organizationId, organizationId), eq(materials.id, parsed.data.materialId)))
+                .limit(1);
+
+            if (!material) return res.status(404).json({ message: "Material not found" });
+
+            const conversion = convertReservationInputToBaseQty({
+                material: {
+                    type: String((material as any).type),
+                    unitOfMeasure: String((material as any).unitOfMeasure),
+                    width: (material as any).width,
+                },
+                inputUom: parsed.data.inputUom ?? String((material as any).unitOfMeasure),
+                inputQuantity: parsed.data.quantity,
+            });
+
+            if (!conversion.ok) {
+                return res.status(400).json({ message: conversion.message });
+            }
+
+            const createdByUserId = getUserId(req.user) ?? null;
+            const created = await createManualReservation(db as any, {
+                organizationId,
+                orderId,
+                sourceKey: String((material as any).sku),
+                uom: String(conversion.baseUom),
+                qty: conversion.convertedQty,
+                createdByUserId,
+            });
+
+            const hydrated = await getManualReservationById(db as any, {
+                organizationId,
+                orderId,
+                reservationId: String((created as any).id),
+            });
+
+            res.json({ success: true, data: hydrated ?? created });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to create manual reservation" });
+        }
+    });
+
+    app.delete("/api/orders/:orderId/manual-reservations/:reservationId", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const policy = await requireInventoryReservationsNotOff(req, res);
+            if (!policy) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+            const reservationId = String(req.params.reservationId);
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+                .limit(1);
+
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const deletedCount = await deleteManualReservation(db as any, { organizationId, orderId, reservationId });
+            if (deletedCount === 0) return res.status(404).json({ message: "Manual reservation not found" });
+
+            res.json({ success: true, deletedCount });
+        } catch (error) {
+            const err: any = error;
+            res.status(500).json({ message: err?.message ?? "Failed to delete manual reservation" });
         }
     });
 
