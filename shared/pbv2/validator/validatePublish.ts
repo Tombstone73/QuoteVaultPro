@@ -160,7 +160,15 @@ function collectSelectionKeysFromCondition(rule: unknown): Set<string> {
     if (!e || typeof e !== "object") return;
     if (e.op === "ref" && e.ref && typeof e.ref === "object") {
       const r = e.ref as any;
-      if ((r.kind === "selectionRef" || r.kind === "effectiveRef") && isNonEmptyString(r.selectionKey)) {
+      if (
+        (
+          r.kind === "selectionRef" ||
+          r.kind === "effectiveRef" ||
+          r.kind === "optionValueParamRef" ||
+          r.kind === "optionValueParamJsonRef"
+        ) &&
+        isNonEmptyString(r.selectionKey)
+      ) {
         out.add(r.selectionKey);
       }
     }
@@ -1025,6 +1033,298 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
                 entityId: n.id,
               })
             );
+          }
+        }
+
+        // Optional per-component discount config (additive, default-safe)
+        const discountRaw = (c as any).discount;
+        if (discountRaw != null) {
+          const d = asRecord(discountRaw);
+          const dPath = `${cPath}.discount`;
+          if (!d) {
+            findings.push(
+              errorFinding({
+                code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                message: "discount must be an object when present",
+                path: dPath,
+                entityId: n.id,
+              })
+            );
+          } else {
+            const discountEligible = (d as any).discountEligible;
+            if (discountEligible != null && typeof discountEligible !== "boolean") {
+              findings.push(
+                errorFinding({
+                  code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                  message: "discount.discountEligible must be boolean when present",
+                  path: `${dPath}.discountEligible`,
+                  entityId: n.id,
+                })
+              );
+            }
+
+            const scope = (d as any).discountScope;
+            if (scope != null && !["none", "customerTier", "volume", "customerTier+volume"].includes(String(scope))) {
+              findings.push(
+                errorFinding({
+                  code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                  message: "discount.discountScope must be one of none|customerTier|volume|customerTier+volume",
+                  path: `${dPath}.discountScope`,
+                  entityId: n.id,
+                  context: { value: scope },
+                })
+              );
+            }
+
+            const trigger = (d as any).volumeTrigger;
+            if (trigger != null && !["componentQty", "productQty"].includes(String(trigger))) {
+              findings.push(
+                errorFinding({
+                  code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                  message: "discount.volumeTrigger must be one of componentQty|productQty",
+                  path: `${dPath}.volumeTrigger`,
+                  entityId: n.id,
+                  context: { value: trigger },
+                })
+              );
+            }
+
+            const method = (d as any).discountMethod;
+            const methodStr = method == null ? null : String(method);
+            if (methodStr != null && !["percentage", "fixedPerUnit", "tierTable"].includes(methodStr)) {
+              findings.push(
+                errorFinding({
+                  code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                  message: "discount.discountMethod must be one of percentage|fixedPerUnit|tierTable",
+                  path: `${dPath}.discountMethod`,
+                  entityId: n.id,
+                  context: { value: method },
+                })
+              );
+            }
+
+            const checkPercent = (value: any, path: string) => {
+              const num = typeof value === "number" ? value : Number(String(value));
+              if (!Number.isFinite(num) || num < 0 || num > 100) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: "percentOff must be a number between 0 and 100",
+                    path,
+                    entityId: n.id,
+                    context: { value },
+                  })
+                );
+              }
+            };
+
+            const checkNonNegativeNumber = (value: any, path: string, label: string) => {
+              const num = typeof value === "number" ? value : Number(String(value));
+              if (!Number.isFinite(num) || num < 0) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: `${label} must be a non-negative number`,
+                    path,
+                    entityId: n.id,
+                    context: { value },
+                  })
+                );
+              }
+            };
+
+            // Validate optional per-method fields when present.
+            const customerTierPercentByTier = (d as any).customerTierPercentByTier;
+            if (customerTierPercentByTier != null) {
+              const rec = asRecord(customerTierPercentByTier);
+              if (!rec) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: "discount.customerTierPercentByTier must be an object",
+                    path: `${dPath}.customerTierPercentByTier`,
+                    entityId: n.id,
+                  })
+                );
+              } else {
+                for (const [k, v] of Object.entries(rec)) {
+                  if (!["default", "wholesale", "retail"].includes(k)) continue;
+                  if (v == null) continue;
+                  checkPercent(v, `${dPath}.customerTierPercentByTier.${k}`);
+                }
+              }
+            }
+
+            const volumePercentTiers = (d as any).volumePercentTiers;
+            if (volumePercentTiers != null) {
+              if (!Array.isArray(volumePercentTiers)) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: "discount.volumePercentTiers must be an array",
+                    path: `${dPath}.volumePercentTiers`,
+                    entityId: n.id,
+                  })
+                );
+              } else {
+                for (let ti = 0; ti < volumePercentTiers.length; ti++) {
+                  const tr = asRecord(volumePercentTiers[ti]);
+                  if (!tr) {
+                    findings.push(
+                      errorFinding({
+                        code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                        message: "volumePercentTiers entries must be objects",
+                        path: `${dPath}.volumePercentTiers[${ti}]`,
+                        entityId: n.id,
+                      })
+                    );
+                    continue;
+                  }
+                  checkNonNegativeNumber((tr as any).minQty, `${dPath}.volumePercentTiers[${ti}].minQty`, "minQty");
+                  checkPercent((tr as any).percentOff, `${dPath}.volumePercentTiers[${ti}].percentOff`);
+                  const ct = (tr as any).customerTier;
+                  if (ct != null && !["default", "wholesale", "retail"].includes(String(ct))) {
+                    findings.push(
+                      errorFinding({
+                        code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                        message: "volumePercentTiers.customerTier must be default|wholesale|retail when present",
+                        path: `${dPath}.volumePercentTiers[${ti}].customerTier`,
+                        entityId: n.id,
+                        context: { value: ct },
+                      })
+                    );
+                  }
+                }
+              }
+            }
+
+            const customerTierCentsOffPerUnitByTier = (d as any).customerTierCentsOffPerUnitByTier;
+            if (customerTierCentsOffPerUnitByTier != null) {
+              const rec = asRecord(customerTierCentsOffPerUnitByTier);
+              if (!rec) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: "discount.customerTierCentsOffPerUnitByTier must be an object",
+                    path: `${dPath}.customerTierCentsOffPerUnitByTier`,
+                    entityId: n.id,
+                  })
+                );
+              } else {
+                for (const [k, v] of Object.entries(rec)) {
+                  if (!["default", "wholesale", "retail"].includes(k)) continue;
+                  if (v == null) continue;
+                  checkNonNegativeNumber(v, `${dPath}.customerTierCentsOffPerUnitByTier.${k}`, "centsOffPerUnit");
+                }
+              }
+            }
+
+            const volumeCentsOffPerUnitTiers = (d as any).volumeCentsOffPerUnitTiers;
+            if (volumeCentsOffPerUnitTiers != null) {
+              if (!Array.isArray(volumeCentsOffPerUnitTiers)) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: "discount.volumeCentsOffPerUnitTiers must be an array",
+                    path: `${dPath}.volumeCentsOffPerUnitTiers`,
+                    entityId: n.id,
+                  })
+                );
+              } else {
+                for (let ti = 0; ti < volumeCentsOffPerUnitTiers.length; ti++) {
+                  const tr = asRecord(volumeCentsOffPerUnitTiers[ti]);
+                  if (!tr) {
+                    findings.push(
+                      errorFinding({
+                        code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                        message: "volumeCentsOffPerUnitTiers entries must be objects",
+                        path: `${dPath}.volumeCentsOffPerUnitTiers[${ti}]`,
+                        entityId: n.id,
+                      })
+                    );
+                    continue;
+                  }
+                  checkNonNegativeNumber((tr as any).minQty, `${dPath}.volumeCentsOffPerUnitTiers[${ti}].minQty`, "minQty");
+                  checkNonNegativeNumber((tr as any).centsOffPerUnit, `${dPath}.volumeCentsOffPerUnitTiers[${ti}].centsOffPerUnit`, "centsOffPerUnit");
+                  const ct = (tr as any).customerTier;
+                  if (ct != null && !["default", "wholesale", "retail"].includes(String(ct))) {
+                    findings.push(
+                      errorFinding({
+                        code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                        message: "volumeCentsOffPerUnitTiers.customerTier must be default|wholesale|retail when present",
+                        path: `${dPath}.volumeCentsOffPerUnitTiers[${ti}].customerTier`,
+                        entityId: n.id,
+                        context: { value: ct },
+                      })
+                    );
+                  }
+                }
+              }
+            }
+
+            const customerTierUnitPriceCentsByTier = (d as any).customerTierUnitPriceCentsByTier;
+            if (customerTierUnitPriceCentsByTier != null) {
+              const rec = asRecord(customerTierUnitPriceCentsByTier);
+              if (!rec) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: "discount.customerTierUnitPriceCentsByTier must be an object",
+                    path: `${dPath}.customerTierUnitPriceCentsByTier`,
+                    entityId: n.id,
+                  })
+                );
+              } else {
+                for (const [k, v] of Object.entries(rec)) {
+                  if (!["default", "wholesale", "retail"].includes(k)) continue;
+                  if (v == null) continue;
+                  checkNonNegativeNumber(v, `${dPath}.customerTierUnitPriceCentsByTier.${k}`, "unitPriceCents");
+                }
+              }
+            }
+
+            const volumeUnitPriceCentsTiers = (d as any).volumeUnitPriceCentsTiers;
+            if (volumeUnitPriceCentsTiers != null) {
+              if (!Array.isArray(volumeUnitPriceCentsTiers)) {
+                findings.push(
+                  errorFinding({
+                    code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                    message: "discount.volumeUnitPriceCentsTiers must be an array",
+                    path: `${dPath}.volumeUnitPriceCentsTiers`,
+                    entityId: n.id,
+                  })
+                );
+              } else {
+                for (let ti = 0; ti < volumeUnitPriceCentsTiers.length; ti++) {
+                  const tr = asRecord(volumeUnitPriceCentsTiers[ti]);
+                  if (!tr) {
+                    findings.push(
+                      errorFinding({
+                        code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                        message: "volumeUnitPriceCentsTiers entries must be objects",
+                        path: `${dPath}.volumeUnitPriceCentsTiers[${ti}]`,
+                        entityId: n.id,
+                      })
+                    );
+                    continue;
+                  }
+                  checkNonNegativeNumber((tr as any).minQty, `${dPath}.volumeUnitPriceCentsTiers[${ti}].minQty`, "minQty");
+                  checkNonNegativeNumber((tr as any).unitPriceCents, `${dPath}.volumeUnitPriceCentsTiers[${ti}].unitPriceCents`, "unitPriceCents");
+                  const ct = (tr as any).customerTier;
+                  if (ct != null && !["default", "wholesale", "retail"].includes(String(ct))) {
+                    findings.push(
+                      errorFinding({
+                        code: "PBV2_E_PRICE_COMPONENT_INVALID",
+                        message: "volumeUnitPriceCentsTiers.customerTier must be default|wholesale|retail when present",
+                        path: `${dPath}.volumeUnitPriceCentsTiers[${ti}].customerTier`,
+                        entityId: n.id,
+                        context: { value: ct },
+                      })
+                    );
+                  }
+                }
+              }
+            }
           }
         }
 

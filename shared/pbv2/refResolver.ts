@@ -80,6 +80,40 @@ function resolveRef(ref: Ref, ctx: RefContext, table: SymbolTable, path: string,
       return findings;
     }
 
+    case "optionValueParamRef":
+    case "optionValueParamJsonRef": {
+      if (!isNonEmptyString(ref.selectionKey) || !isNonEmptyString(ref.paramPath)) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_EXPR_REF_UNRESOLVED",
+            message: `Invalid ${ref.kind} address`,
+            path,
+            entityId,
+            context: { refKind: ref.kind },
+          })
+        );
+        return findings;
+      }
+
+      const symbol = table.inputBySelectionKey[ref.selectionKey];
+      if (!symbol) {
+        findings.push(
+          errorFinding({
+            code: "PBV2_E_EXPR_REF_UNRESOLVED",
+            message: `Unresolved selectionKey '${ref.selectionKey}'`,
+            path,
+            entityId,
+            context: { refKind: ref.kind, selectionKey: ref.selectionKey },
+          })
+        );
+        return findings;
+      }
+
+      // optionValueParamRef is intended for ENUM inputs (represented as TEXT in typing).
+      // We validate only the target selectionKey exists; option metadata shape is validated elsewhere.
+      return findings;
+    }
+
     case "nodeOutputRef": {
       if (!isNonEmptyString(ref.nodeId) || !isNonEmptyString(ref.outputKey)) {
         findings.push(
