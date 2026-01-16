@@ -40,6 +40,7 @@ type StripeIntegrationStatusEnvelope = {
   data?: {
     connected?: boolean;
     chargesEnabled?: boolean;
+    stripeAccountId?: string | null;
   };
 };
 
@@ -691,47 +692,16 @@ export default function InvoiceDetailPage() {
     }
   };
 
-  if (isLoading) {
-    return (
-      <Page maxWidth="full">
-        <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
-          <StripePayDialog
-            open={stripePayOpen}
-            onOpenChange={setStripePayOpen}
-            invoiceId={invoiceId ?? ''}
-            onSettled={() => {
-              refetch();
-              invoicePayments.refetch();
-              setTimeout(() => refetch(), 1500);
-              setTimeout(() => refetch(), 3500);
-            }}
-          />
-          <div className="text-center py-12">Loading invoice...</div>
-        </div>
-      </Page>
-    );
-  }
+  const showLoading = isLoading;
+  const showNotFound = !isLoading && (!data || !invoice);
+  const isReady = !showLoading && !showNotFound && !!invoice;
 
-  if (!data || !invoice) {
-    return (
-      <Page maxWidth="full">
-        <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
-          <StripePayDialog
-            open={stripePayOpen}
-            onOpenChange={setStripePayOpen}
-            invoiceId={invoiceId ?? ''}
-            onSettled={() => {
-              refetch();
-              invoicePayments.refetch();
-              setTimeout(() => refetch(), 1500);
-              setTimeout(() => refetch(), 3500);
-            }}
-          />
-          <div className="text-center py-12">Invoice not found</div>
-        </div>
-      </Page>
-    );
-  }
+  useEffect(() => {
+    // DEV-only sanity check: prove the dialog stays mounted across refetch/loading transitions.
+    if (!(import.meta as any).env?.DEV) return;
+    if (!stripePayOpen) return;
+    console.debug('[InvoiceDetail] stripe pay dialog state', { stripePayOpen, isLoading, invoiceId });
+  }, [stripePayOpen, isLoading, invoiceId]);
 
   const commitTerms = async (next: string) => {
     if (!invoiceId || !invoice || !canEditInvoice) return;
@@ -854,6 +824,7 @@ export default function InvoiceDetailPage() {
           open={stripePayOpen}
           onOpenChange={setStripePayOpen}
           invoiceId={invoiceId ?? ''}
+          stripeAccountId={stripeIntegrationStatus?.data?.stripeAccountId ?? undefined}
           onSettled={() => {
             refetch();
             invoicePayments.refetch();
@@ -862,6 +833,16 @@ export default function InvoiceDetailPage() {
           }}
         />
 
+        {showLoading ? (
+          <div className="text-center py-12">Loading invoice...</div>
+        ) : showNotFound ? (
+          <div className="text-center py-12">Invoice not found</div>
+        ) : isReady ? (
+          (() => {
+            const inv = invoice as NonNullable<typeof invoice>;
+
+            return (
+              <>
         <Dialog open={recordPaymentOpen} onOpenChange={setRecordPaymentOpen}>
           <DialogContent>
             <DialogHeader>
@@ -1777,6 +1758,12 @@ export default function InvoiceDetailPage() {
 
           </div>
         </div>
+              </>
+            );
+          })()
+        ) : (
+          <div className="text-center py-12">Invoice not found</div>
+        )}
       </div>
     </Page>
   );
