@@ -6,6 +6,7 @@ import { syncUsersToCustomers } from "./db/syncUsersToCustomers";
 import { startSyncWorker } from "./workers/syncProcessor";
 import { startThumbnailWorker } from "./workers/thumbnailWorker";
 import { assetPreviewWorker } from "./workers/assetPreviewWorker";
+import { assertStripeServerConfig } from "./lib/stripe";
 
 const app = express();
 
@@ -63,6 +64,9 @@ process.on('uncaughtException', (error) => {
 // Register routes and start server
 (async () => {
   try {
+    // Stripe configuration preflight (safe, logs once, never prints secrets)
+    assertStripeServerConfig({ logOnce: true });
+
     // Probe database schema before starting server
     const { probeDatabaseSchema } = await import('./db');
     await probeDatabaseSchema();
