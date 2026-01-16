@@ -1209,7 +1209,24 @@ export default function InvoiceDetailPage() {
           />
           <StatusTile
             label="QB Sync"
-            value={<Badge variant={qbFailed ? 'destructive' : 'secondary'}>{qbSyncLabel}</Badge>}
+            value={
+              qbFailed && qbWarningMessage ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="destructive" className="cursor-help">
+                        {qbSyncLabel}
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-md">
+                      <div className="whitespace-pre-wrap text-xs">{qbWarningMessage}</div>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                <Badge variant={qbFailed ? 'destructive' : 'secondary'}>{qbSyncLabel}</Badge>
+              )
+            }
             right={
               showRetrySync ? (
                 <Button

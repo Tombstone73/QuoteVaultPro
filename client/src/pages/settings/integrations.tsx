@@ -103,6 +103,8 @@ export default function SettingsIntegrations() {
   if (qbConnected === 'true' && !sessionStorage.getItem('qb_toast_shown')) {
     sessionStorage.setItem('qb_toast_shown', 'true');
     toast({ title: "Success", description: "QuickBooks connected successfully!" });
+    // Invalidate status query to refetch connection status
+    queryClient.invalidateQueries({ queryKey: ["/api/integrations/quickbooks/status"] });
     // Clean URL
     window.history.replaceState({}, '', '/settings/integrations');
   } else if (qbError && !sessionStorage.getItem('qb_error_shown')) {

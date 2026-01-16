@@ -9417,6 +9417,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/integrations/quickbooks/auth-url', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
+      
+      // Debug logging for auth URL generation config (gated by DEBUG_QB_OAUTH)
+      if (process.env.DEBUG_QB_OAUTH === 'true') {
+        const redirectUriUsed = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI;
+        const environmentUsed = process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox';
+        console.log('[QB Auth URL] Generating authorization URL', {
+          redirectUriUsed,
+          environmentUsed,
+          hasSessionSecret: !!process.env.SESSION_SECRET,
+          organizationId,
+        });
+      }
+      
       const authUrl = await quickbooksService.getAuthorizationUrlForOrganization(organizationId);
       res.json({ authUrl });
     } catch (error: any) {
@@ -9435,13 +9448,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { code, realmId, state, error: authError } = req.query;
 
+      // Debug logging for OAuth callback (gated by DEBUG_QB_OAUTH)
+      if (process.env.DEBUG_QB_OAUTH === 'true') {
+        const realmIdStr = typeof realmId === 'string' ? realmId : '';
+        console.log('[QB Callback] Received callback', {
+          path: req.path,
+          queryKeys: Object.keys(req.query),
+          hasCode: typeof code === 'string' && code.length > 0,
+          codeLength: typeof code === 'string' ? code.length : 0,
+          hasRealmId: typeof realmId === 'string' && realmId.length > 0,
+          realmIdPreview: realmIdStr.length > 4 ? realmIdStr.substring(0, 4) + '...' : '',
+          realmIdLength: realmIdStr.length,
+          hasState: typeof state === 'string' && state.length > 0,
+          hasError: !!authError,
+        });
+      }
+
       if (authError) {
         console.error('[QB Callback] OAuth error:', authError);
         return res.redirect('/settings?qb_error=' + encodeURIComponent(authError));
       }
 
-      if (!code || !realmId) {
-        return res.status(400).json({ error: 'Missing authorization code or realmId' });
+      if (!code) {
+        console.error('[QB Callback] Missing authorization code');
+        return res.redirect('/settings?qb_error=' + encodeURIComponent('missing_code'));
+      }
+
+      if (!realmId) {
+        console.error('[QB Callback] Missing realmId');
+        return res.redirect('/settings?qb_error=' + encodeURIComponent('missing_realmId'));
       }
 
       const parsed = quickbooksService.parseOAuthState(state as any);
@@ -9449,7 +9484,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.redirect('/settings?qb_error=' + encodeURIComponent('Invalid OAuth state'));
       }
 
-      await quickbooksService.exchangeCodeForTokens(code as string, realmId as string, parsed.organizationId);
+      // Build full callback URL with query params for token exchange
+      const proto = req.headers['x-forwarded-proto'] ?? req.protocol;
+      const host = req.headers['x-forwarded-host'] ?? req.get('host');
+      const fullCallbackUrl = `${proto}://${host}${req.originalUrl}`;
+
+      if (process.env.DEBUG_QB_OAUTH === 'true') {
+        console.log('[QB Callback] Constructed full callback URL', {
+          hasFullUrl: !!fullCallbackUrl,
+          protocol: proto,
+          host,
+          pathOnly: req.path,
+        });
+      }
+
+      await quickbooksService.exchangeCodeForTokens(fullCallbackUrl, realmId as string, parsed.organizationId);
 
       // Redirect to settings page with success
       res.redirect('/settings?qb_connected=true');
