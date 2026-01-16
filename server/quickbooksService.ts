@@ -1,6 +1,7 @@
 import OAuthClient from 'intuit-oauth';
+import crypto from 'crypto';
 import { db } from './db';
-import { oauthConnections, accountingSyncJobs, customers, invoices, orders } from '../shared/schema';
+import { oauthConnections, accountingSyncJobs, customers, invoices, orders, payments, invoiceLineItems } from '../shared/schema';
 import { eq, and, desc, or, isNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
@@ -25,14 +26,53 @@ const getOAuthClient = (): any => {
   });
 };
 
+function qbLogsEnabled(): boolean {
+  return String(process.env.QB_DEBUG_LOGS || '').trim() === '1';
+}
+
+function buildOAuthState(organizationId: string): string {
+  const secret = String(process.env.SESSION_SECRET || '').trim();
+  if (!secret) throw new Error('SESSION_SECRET is not configured');
+  const ts = Date.now();
+  const data = `${organizationId}:${ts}`;
+  const sig = crypto.createHmac('sha256', secret).update(data).digest('hex').slice(0, 32);
+  return `qvp:${organizationId}:${ts}:${sig}`;
+}
+
+export function parseOAuthState(state: string | undefined | null): { organizationId: string } | null {
+  if (!state || typeof state !== 'string') return null;
+  const parts = state.split(':');
+  if (parts.length !== 4) return null;
+  const [prefix, organizationId, tsRaw, sig] = parts;
+  if (prefix !== 'qvp') return null;
+  if (!organizationId) return null;
+
+  const ts = Number(tsRaw);
+  if (!Number.isFinite(ts) || ts <= 0) return null;
+
+  // 30 minute window for OAuth redirect round-trip.
+  const ageMs = Date.now() - ts;
+  if (ageMs < 0 || ageMs > 30 * 60 * 1000) return null;
+
+  const secret = String(process.env.SESSION_SECRET || '').trim();
+  if (!secret) return null;
+
+  const data = `${organizationId}:${ts}`;
+  const expected = crypto.createHmac('sha256', secret).update(data).digest('hex').slice(0, 32);
+  if (expected !== sig) return null;
+
+  return { organizationId };
+}
+
 /**
  * Get the active QuickBooks OAuth connection for the company
  */
-export async function getActiveConnection() {
+export async function getActiveConnection(organizationId?: string) {
+  const orgId = organizationId || DEFAULT_ORGANIZATION_ID;
   const [connection] = await db
     .select()
     .from(oauthConnections)
-    .where(eq(oauthConnections.provider, 'quickbooks'))
+    .where(and(eq(oauthConnections.provider, 'quickbooks'), eq(oauthConnections.organizationId, orgId)))
     .orderBy(desc(oauthConnections.createdAt))
     .limit(1);
 
@@ -48,9 +88,27 @@ export async function getAuthorizationUrl(): Promise<string> {
     throw new Error('QuickBooks OAuth not configured');
   }
 
+  const state = buildOAuthState(DEFAULT_ORGANIZATION_ID);
+
   const authUrl = oauthClient.authorizeUri({
     scope: [OAuthClient.scopes.Accounting, OAuthClient.scopes.OpenId],
-    state: 'qvp-' + Date.now(), // CSRF protection
+    state,
+  });
+
+  return authUrl;
+}
+
+export async function getAuthorizationUrlForOrganization(organizationId: string): Promise<string> {
+  const oauthClient = getOAuthClient();
+  if (!oauthClient) {
+    throw new Error('QuickBooks OAuth not configured');
+  }
+
+  const state = buildOAuthState(organizationId);
+
+  const authUrl = oauthClient.authorizeUri({
+    scope: [OAuthClient.scopes.Accounting, OAuthClient.scopes.OpenId],
+    state,
   });
 
   return authUrl;
@@ -61,21 +119,24 @@ export async function getAuthorizationUrl(): Promise<string> {
  */
 export async function exchangeCodeForTokens(
   authorizationCode: string,
-  realmId: string
+  realmId: string,
+  organizationId?: string
 ): Promise<void> {
   const oauthClient = getOAuthClient();
   if (!oauthClient) {
     throw new Error('QuickBooks OAuth not configured');
   }
 
+  const orgId = organizationId || DEFAULT_ORGANIZATION_ID;
+
   // Exchange code for tokens
   const authResponse = await oauthClient.createToken(authorizationCode);
   const token = authResponse.token;
 
-  // Delete existing connection (only one active QB connection allowed)
+  // Delete existing connection for this organization/provider.
   await db
     .delete(oauthConnections)
-    .where(eq(oauthConnections.provider, 'quickbooks'));
+    .where(and(eq(oauthConnections.provider, 'quickbooks'), eq(oauthConnections.organizationId, orgId)));
 
   // Store new connection
   await db.insert(oauthConnections).values({
@@ -84,7 +145,7 @@ export async function exchangeCodeForTokens(
     refreshToken: token.refresh_token,
     expiresAt: new Date(Date.now() + (token.expires_in || 3600) * 1000),
     companyId: realmId,
-    organizationId: DEFAULT_ORGANIZATION_ID, // Default org for now - can be made dynamic later
+    organizationId: orgId,
     metadata: {
       realmId,
       tokenType: token.token_type,
@@ -97,7 +158,7 @@ export async function exchangeCodeForTokens(
  * Refresh access token using refresh token
  */
 export async function refreshAccessToken(): Promise<boolean> {
-  const connection = await getActiveConnection();
+  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
   if (!connection || !connection.refreshToken) {
     return false;
   }
@@ -135,11 +196,47 @@ export async function refreshAccessToken(): Promise<boolean> {
   }
 }
 
+export async function refreshAccessTokenForOrganization(organizationId: string): Promise<boolean> {
+  const connection = await getActiveConnection(organizationId);
+  if (!connection || !connection.refreshToken) {
+    return false;
+  }
+
+  const oauthClient = getOAuthClient();
+  if (!oauthClient) {
+    throw new Error('QuickBooks OAuth not configured');
+  }
+
+  try {
+    oauthClient.setToken({
+      refresh_token: connection.refreshToken,
+    } as any);
+
+    const authResponse = await oauthClient.refresh();
+    const token = authResponse.token;
+
+    await db
+      .update(oauthConnections)
+      .set({
+        accessToken: token.access_token,
+        refreshToken: token.refresh_token,
+        expiresAt: new Date(Date.now() + (token.expires_in || 3600) * 1000),
+        updatedAt: new Date(),
+      })
+      .where(eq(oauthConnections.id, connection.id));
+
+    return true;
+  } catch (error) {
+    console.error('[QuickBooks] Token refresh failed:', { organizationId, message: (error as any)?.message || String(error) });
+    return false;
+  }
+}
+
 /**
  * Get valid access token (refresh if needed)
  */
 export async function getValidAccessToken(): Promise<string | null> {
-  const connection = await getActiveConnection();
+  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
   if (!connection) {
     return null;
   }
@@ -151,12 +248,37 @@ export async function getValidAccessToken(): Promise<string | null> {
 
   if (!expiresAt || expiresAt <= fiveMinutesFromNow) {
     console.log('[QuickBooks] Token expired or expiring soon, refreshing...');
-    const refreshed = await refreshAccessToken();
+    const refreshed = await refreshAccessTokenForOrganization(connection.organizationId || DEFAULT_ORGANIZATION_ID);
     if (!refreshed) {
       return null;
     }
     // Re-fetch connection after refresh
-    const updatedConnection = await getActiveConnection();
+    const updatedConnection = await getActiveConnection(connection.organizationId || DEFAULT_ORGANIZATION_ID);
+    return updatedConnection?.accessToken || null;
+  }
+
+  return connection.accessToken;
+}
+
+export async function getValidAccessTokenForOrganization(organizationId: string): Promise<string | null> {
+  const connection = await getActiveConnection(organizationId);
+  if (!connection) {
+    return null;
+  }
+
+  const now = new Date();
+  const expiresAt = connection.expiresAt ? new Date(connection.expiresAt) : null;
+  const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
+
+  if (!expiresAt || expiresAt <= fiveMinutesFromNow) {
+    if (qbLogsEnabled()) {
+      console.log('[QuickBooks] Token expired or expiring soon, refreshing...', { organizationId });
+    }
+    const refreshed = await refreshAccessTokenForOrganization(organizationId);
+    if (!refreshed) {
+      return null;
+    }
+    const updatedConnection = await getActiveConnection(organizationId);
     return updatedConnection?.accessToken || null;
   }
 
@@ -167,7 +289,7 @@ export async function getValidAccessToken(): Promise<string | null> {
  * Disconnect QuickBooks integration
  */
 export async function disconnectConnection(): Promise<void> {
-  const connection = await getActiveConnection();
+  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
   if (!connection) {
     return;
   }
@@ -192,6 +314,28 @@ export async function disconnectConnection(): Promise<void> {
     .where(eq(oauthConnections.id, connection.id));
 }
 
+export async function disconnectConnectionForOrganization(organizationId: string): Promise<void> {
+  const connection = await getActiveConnection(organizationId);
+  if (!connection) return;
+
+  const oauthClient = getOAuthClient();
+  if (oauthClient && connection.accessToken) {
+    try {
+      oauthClient.setToken({
+        access_token: connection.accessToken,
+        refresh_token: connection.refreshToken,
+      } as any);
+      await oauthClient.revoke();
+    } catch (error) {
+      console.error('[QuickBooks] Token revocation failed:', { organizationId, message: (error as any)?.message || String(error) });
+    }
+  }
+
+  await db
+    .delete(oauthConnections)
+    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+}
+
 /**
  * Queue sync jobs for push or pull operations
  */
@@ -199,7 +343,7 @@ export async function queueSyncJobs(
   direction: 'push' | 'pull',
   resources: Array<'customers' | 'invoices' | 'orders'>
 ): Promise<void> {
-  const connection = await getActiveConnection();
+  const connection = await getActiveConnection(DEFAULT_ORGANIZATION_ID);
   if (!connection) {
     throw new Error('QuickBooks not connected');
   }
@@ -210,6 +354,27 @@ export async function queueSyncJobs(
     resourceType: resource as 'customers' | 'invoices' | 'orders',
     status: 'pending' as const,
     organizationId: connection.organizationId || DEFAULT_ORGANIZATION_ID,
+  }));
+
+  await db.insert(accountingSyncJobs).values(jobs);
+}
+
+export async function queueSyncJobsForOrganization(
+  organizationId: string,
+  direction: 'push' | 'pull',
+  resources: Array<'customers' | 'invoices' | 'orders'>
+): Promise<void> {
+  const connection = await getActiveConnection(organizationId);
+  if (!connection) {
+    throw new Error('QuickBooks not connected');
+  }
+
+  const jobs = resources.map((resource) => ({
+    provider: 'quickbooks' as const,
+    direction: direction as 'push' | 'pull',
+    resourceType: resource as 'customers' | 'invoices' | 'orders',
+    status: 'pending' as const,
+    organizationId,
   }));
 
   await db.insert(accountingSyncJobs).values(jobs);
@@ -307,14 +472,16 @@ function parseLocalAddress(address: string): any {
 async function makeQBRequest(
   method: 'GET' | 'POST' | 'PUT',
   endpoint: string,
-  body?: any
+  body?: any,
+  organizationId?: string
 ): Promise<any> {
-  const connection = await getActiveConnection();
+  const orgId = organizationId || DEFAULT_ORGANIZATION_ID;
+  const connection = await getActiveConnection(orgId);
   if (!connection) {
     throw new Error('QuickBooks not connected');
   }
 
-  const accessToken = await getValidAccessToken();
+  const accessToken = await getValidAccessTokenForOrganization(orgId);
   if (!accessToken) {
     throw new Error('Failed to get valid access token');
   }
@@ -342,10 +509,84 @@ async function makeQBRequest(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`QuickBooks API error: ${response.status} ${errorText}`);
+    console.error('[QuickBooks] API error', {
+      organizationId: orgId,
+      endpoint,
+      status: response.status,
+      message: errorText ? String(errorText).slice(0, 800) : null,
+    });
+
+    // Prefer an actionable fault message if the response is JSON.
+    let faultMessage: string | null = null;
+    try {
+      const parsed = JSON.parse(errorText);
+      const qbError = parsed?.Fault?.Error?.[0];
+      const messagePart = qbError?.Message ? String(qbError.Message) : '';
+      const detailPart = qbError?.Detail ? String(qbError.Detail) : '';
+      const combined = [messagePart, detailPart].filter(Boolean).join(' - ');
+      if (combined) faultMessage = combined;
+    } catch {
+      // ignore JSON parse errors
+    }
+
+    const msg = faultMessage
+      ? `QuickBooks API error: ${response.status} ${faultMessage}`
+      : `QuickBooks API error: ${response.status} ${String(errorText || '').slice(0, 500)}`;
+    const err: any = new Error(msg);
+    err.statusCode = response.status;
+    throw err;
   }
 
   return await response.json();
+}
+
+function escapeQBQueryString(value: string): string {
+  return String(value || '').replace(/'/g, "\\'");
+}
+
+async function ensureQBCustomerIdForLocalCustomer(organizationId: string, customer: Customer): Promise<string> {
+  if ((customer as any).externalAccountingId) return String((customer as any).externalAccountingId);
+
+  const displayName = String((customer as any).companyName || '').trim();
+  if (!displayName) throw new Error('Customer has no companyName for QuickBooks sync');
+
+  // First, try to find an existing QB Customer by DisplayName.
+  const query = `SELECT Id, DisplayName FROM Customer WHERE DisplayName = '${escapeQBQueryString(displayName)}' MAXRESULTS 1`;
+  const lookup = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+  const found = lookup?.QueryResponse?.Customer?.[0];
+  if (found?.Id) {
+    await db
+      .update(customers)
+      .set({ externalAccountingId: String(found.Id), syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any)
+      .where(and(eq(customers.id, (customer as any).id), eq(customers.organizationId, organizationId)));
+    return String(found.Id);
+  }
+
+  // Create new QB Customer.
+  const qbCustomerData = mapLocalCustomerToQB(customer);
+  try {
+    const created = await makeQBRequest('POST', '/customer', qbCustomerData, organizationId);
+    const qb = created?.Customer;
+    if (!qb?.Id) throw new Error('QuickBooks customer create returned no Id');
+    await db
+      .update(customers)
+      .set({ externalAccountingId: String(qb.Id), syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any)
+      .where(and(eq(customers.id, (customer as any).id), eq(customers.organizationId, organizationId)));
+    return String(qb.Id);
+  } catch (err: any) {
+    // Fallback: if already exists, re-query.
+    console.error('[QuickBooks] customer ensure failed', { organizationId, customerId: (customer as any).id, message: String(err?.message || err) });
+    const retry = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
+    const retryFound = retry?.QueryResponse?.Customer?.[0];
+    if (retryFound?.Id) {
+      await db
+        .update(customers)
+        .set({ externalAccountingId: String(retryFound.Id), syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any)
+        .where(and(eq(customers.id, (customer as any).id), eq(customers.organizationId, organizationId)));
+      return String(retryFound.Id);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -353,30 +594,57 @@ async function makeQBRequest(
  * Callers should catch errors and persist qb_last_error/qb_sync_status without blocking local transitions.
  */
 export async function syncSingleInvoiceToQuickBooks(invoiceId: string): Promise<{ qbInvoiceId: string }>{
-  const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  return syncSingleInvoiceToQuickBooksForOrganization(DEFAULT_ORGANIZATION_ID, invoiceId);
+}
+
+export async function syncSingleInvoiceToQuickBooksForOrganization(organizationId: string, invoiceId: string): Promise<{ qbInvoiceId: string }>{
+  const [invoice] = await db
+    .select()
+    .from(invoices)
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
+    .limit(1);
   if (!invoice) throw new Error('Invoice not found');
 
-  const [customer] = await db.select().from(customers).where(eq(customers.id, invoice.customerId)).limit(1);
-  if (!customer?.externalAccountingId) {
-    throw new Error('Customer not synced to QuickBooks');
-  }
+  const status = String((invoice as any).status || '').toLowerCase();
+  if (status === 'void') throw new Error('Cannot sync a void invoice');
+
+  const [customer] = await db
+    .select()
+    .from(customers)
+    .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, organizationId)))
+    .limit(1);
+  if (!customer) throw new Error('Customer not found');
+
+  const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
 
   const lineItems = await db
-    .execute(sql`SELECT id, description, quantity, unit_price, total_price FROM invoice_line_items WHERE invoice_id = ${invoiceId} ORDER BY sort_order ASC, created_at ASC`);
+    .select({
+      id: invoiceLineItems.id,
+      description: invoiceLineItems.description,
+      lineTotalCents: invoiceLineItems.lineTotalCents,
+      totalPrice: invoiceLineItems.totalPrice,
+    })
+    .from(invoiceLineItems)
+    .where(eq(invoiceLineItems.invoiceId, invoiceId))
+    .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
 
   const txnDate = (invoice.issuedAt || invoice.issueDate || new Date()) as any;
 
   const qbInvoiceData: any = {
-    CustomerRef: { value: customer.externalAccountingId },
+    CustomerRef: { value: qbCustomerId },
     DocNumber: String(invoice.invoiceNumber),
     TxnDate: new Date(txnDate).toISOString().split('T')[0],
     DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
-    Line: (lineItems.rows || []).map((r: any) => ({
-      Amount: Number(r.total_price || 0),
-      Description: String(r.description || ''),
-      DetailType: 'DescriptionOnly',
-      DescriptionOnlyLineDetail: {},
-    })),
+    Line: (lineItems || []).map((r: any) => {
+      const cents = Number(r.lineTotalCents ?? 0);
+      const amount = Number.isFinite(cents) && cents > 0 ? cents / 100 : Number(r.totalPrice || 0);
+      return {
+        Amount: Number(amount || 0),
+        Description: String(r.description || ''),
+        DetailType: 'DescriptionOnly',
+        DescriptionOnlyLineDetail: {},
+      };
+    }),
   };
 
   // Remove undefined properties for QB API
@@ -384,19 +652,125 @@ export async function syncSingleInvoiceToQuickBooks(invoiceId: string): Promise<
 
   const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId) as string | null;
   if (existingId) {
-    const existing = await makeQBRequest('GET', `/invoice/${existingId}`);
+    const existing = await makeQBRequest('GET', `/invoice/${existingId}`, undefined, organizationId);
     qbInvoiceData.Id = existingId;
     qbInvoiceData.SyncToken = existing?.Invoice?.SyncToken;
-    const response = await makeQBRequest('POST', '/invoice', qbInvoiceData);
+    const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
     const qb = response?.Invoice;
     if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
     return { qbInvoiceId: qb.Id };
   }
 
-  const response = await makeQBRequest('POST', '/invoice', qbInvoiceData);
+  // Idempotency fallback: look up by DocNumber + CustomerRef if local link missing.
+  const docNumber = String((invoice as any).invoiceNumber);
+  const findQuery = `SELECT Id, DocNumber FROM Invoice WHERE DocNumber = '${escapeQBQueryString(docNumber)}' MAXRESULTS 1`;
+  const findResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
+  const found = findResp?.QueryResponse?.Invoice?.[0];
+  if (found?.Id) {
+    const existing = await makeQBRequest('GET', `/invoice/${String(found.Id)}`, undefined, organizationId);
+    qbInvoiceData.Id = String(found.Id);
+    qbInvoiceData.SyncToken = existing?.Invoice?.SyncToken;
+    const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
+    const qb = response?.Invoice;
+    if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
+    return { qbInvoiceId: qb.Id };
+  }
+
+  const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
   const qb = response?.Invoice;
   if (!qb?.Id) throw new Error('QuickBooks invoice create returned no Id');
   return { qbInvoiceId: qb.Id };
+}
+
+export async function syncSinglePaymentToQuickBooksForOrganization(organizationId: string, paymentId: string): Promise<{ qbPaymentId: string }>{
+  const [payment] = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
+    .limit(1);
+  if (!payment) throw new Error('Payment not found');
+
+  const status = String((payment as any).status || '').toLowerCase();
+  if (status !== 'succeeded') throw new Error('Only succeeded payments can be synced to QuickBooks');
+
+  const [invoice] = await db
+    .select()
+    .from(invoices)
+    .where(and(eq(invoices.id, (payment as any).invoiceId), eq(invoices.organizationId, organizationId)))
+    .limit(1);
+  if (!invoice) throw new Error('Invoice not found for payment');
+
+  const invoiceStatus = String((invoice as any).status || '').toLowerCase();
+  if (invoiceStatus === 'void') throw new Error('Cannot sync payments for void invoices');
+
+  const qbInvoiceId = String((invoice as any).qbInvoiceId || '').trim();
+  if (!qbInvoiceId) {
+    const err: any = new Error('Invoice must be synced to QuickBooks before syncing payments');
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const [customer] = await db
+    .select()
+    .from(customers)
+    .where(and(eq(customers.id, (invoice as any).customerId), eq(customers.organizationId, organizationId)))
+    .limit(1);
+  if (!customer) throw new Error('Customer not found for invoice');
+
+  const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
+
+  const amountCents = Math.max(0, Math.round(Number((payment as any).amountCents || 0)));
+  if (amountCents <= 0) throw new Error('Payment amount must be > 0');
+  const amount = Number((amountCents / 100).toFixed(2));
+
+  const paidAtRaw = (payment as any).paidAt || (payment as any).succeededAt || (payment as any).appliedAt || new Date();
+  const txnDate = new Date(paidAtRaw as any);
+  const txnDateStr = Number.isNaN(txnDate.getTime()) ? new Date().toISOString().split('T')[0] : txnDate.toISOString().split('T')[0];
+
+  const privateNote = `QVP payment ${String((payment as any).id)}`;
+
+  const qbPaymentData: any = {
+    CustomerRef: { value: qbCustomerId },
+    TotalAmt: amount,
+    TxnDate: txnDateStr,
+    PrivateNote: privateNote,
+    Line: [
+      {
+        Amount: amount,
+        LinkedTxn: [{ TxnId: qbInvoiceId, TxnType: 'Invoice' }],
+      },
+    ],
+  };
+
+  const existingQbPaymentId = String((payment as any).externalAccountingId || '').trim();
+  if (existingQbPaymentId) {
+    const existing = await makeQBRequest('GET', `/payment/${existingQbPaymentId}`, undefined, organizationId);
+    qbPaymentData.Id = existingQbPaymentId;
+    qbPaymentData.SyncToken = existing?.Payment?.SyncToken;
+    const updated = await makeQBRequest('POST', '/payment', qbPaymentData, organizationId);
+    const qb = updated?.Payment;
+    if (!qb?.Id) throw new Error('QuickBooks payment update returned no Id');
+    return { qbPaymentId: String(qb.Id) };
+  }
+
+  // Idempotency fallback: query by PrivateNote if link missing.
+  const findQuery = `SELECT Id FROM Payment WHERE PrivateNote = '${escapeQBQueryString(privateNote)}' MAXRESULTS 1`;
+  const findResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
+  const found = findResp?.QueryResponse?.Payment?.[0];
+  if (found?.Id) {
+    const existing = await makeQBRequest('GET', `/payment/${String(found.Id)}`, undefined, organizationId);
+    qbPaymentData.Id = String(found.Id);
+    qbPaymentData.SyncToken = existing?.Payment?.SyncToken;
+    const updated = await makeQBRequest('POST', '/payment', qbPaymentData, organizationId);
+    const qb = updated?.Payment;
+    if (!qb?.Id) throw new Error('QuickBooks payment update returned no Id');
+    return { qbPaymentId: String(qb.Id) };
+  }
+
+  const created = await makeQBRequest('POST', '/payment', qbPaymentData, organizationId);
+  const qb = created?.Payment;
+  if (!qb?.Id) throw new Error('QuickBooks payment create returned no Id');
+  return { qbPaymentId: String(qb.Id) };
 }
 
 // ==================== Customer Sync Processors ====================

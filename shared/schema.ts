@@ -3577,6 +3577,30 @@ export type InsertOAuthConnection = typeof oauthConnections.$inferInsert;
 export type AccountingSyncJob = typeof accountingSyncJobs.$inferSelect;
 export type InsertAccountingSyncJob = typeof accountingSyncJobs.$inferInsert;
 
+// ==================== Generic Integration Connections ====================
+// Non-secret per-organization integration identifiers (e.g., Stripe Connect account ids).
+// NOTE: Do NOT store tenant secret keys here.
+
+export const integrationConnections = pgTable('integration_connections', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  provider: varchar('provider', { length: 32 }).notNull(), // e.g. 'stripe'
+  externalAccountId: varchar('external_account_id', { length: 128 }), // e.g. stripeAccountId (acct_...)
+  status: varchar('status', { length: 20 }).notNull().default('disconnected'), // connected | disconnected | error
+  mode: varchar('mode', { length: 10 }).notNull().default('test'), // test | live
+  lastError: text('last_error'),
+  connectedAt: timestamp('connected_at', { withTimezone: true }),
+  disconnectedAt: timestamp('disconnected_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('integration_connections_org_provider_uidx').on(table.organizationId, table.provider),
+  index('integration_connections_provider_external_account_id_idx').on(table.provider, table.externalAccountId),
+]);
+
+export type IntegrationConnection = typeof integrationConnections.$inferSelect;
+export type InsertIntegrationConnection = typeof integrationConnections.$inferInsert;
+
 // Quote List Notes (list-only annotations, always editable regardless of quote lock)
 export const quoteListNotes = pgTable('quote_list_notes', {
   id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),

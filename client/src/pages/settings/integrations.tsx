@@ -19,6 +19,7 @@ import {
   Clock,
   AlertCircle,
   ExternalLink,
+  CreditCard,
   Loader2,
 } from "lucide-react";
 import {
@@ -55,6 +56,22 @@ type SyncJob = {
   updatedAt: string;
 };
 
+type StripeStatusData = {
+  connected: boolean;
+  stripeAccountId: string | null;
+  mode?: 'test' | 'live' | string;
+  status?: string;
+  lastError?: string | null;
+  chargesEnabled?: boolean;
+  detailsSubmitted?: boolean;
+};
+
+type StripeStatusEnvelope = {
+  success: boolean;
+  data: StripeStatusData;
+  error?: string;
+};
+
 export default function SettingsIntegrations() {
   const { user, isAdmin } = useAuth();
   const { toast } = useToast();
@@ -79,6 +96,8 @@ export default function SettingsIntegrations() {
   const urlParams = new URLSearchParams(window.location.search);
   const qbConnected = urlParams.get('qb_connected');
   const qbError = urlParams.get('qb_error');
+  const stripeConnected = urlParams.get('stripe_connected');
+  const stripeRefresh = urlParams.get('stripe_refresh');
 
   // Show toast for OAuth results
   if (qbConnected === 'true' && !sessionStorage.getItem('qb_toast_shown')) {
@@ -92,9 +111,25 @@ export default function SettingsIntegrations() {
     window.history.replaceState({}, '', '/settings/integrations');
   }
 
+  if (stripeConnected === 'true' && !sessionStorage.getItem('stripe_toast_shown')) {
+    sessionStorage.setItem('stripe_toast_shown', 'true');
+    toast({ title: 'Stripe', description: 'Stripe Connect setup completed. Checking status…' });
+    queryClient.invalidateQueries({ queryKey: ['/api/integrations/stripe/status'] });
+    window.history.replaceState({}, '', '/settings/integrations');
+  } else if (stripeRefresh === 'true' && !sessionStorage.getItem('stripe_refresh_shown')) {
+    sessionStorage.setItem('stripe_refresh_shown', 'true');
+    toast({ title: 'Stripe', description: 'Continue Stripe onboarding to enable charges.' });
+    queryClient.invalidateQueries({ queryKey: ['/api/integrations/stripe/status'] });
+    window.history.replaceState({}, '', '/settings/integrations');
+  }
+
   // Fetch QB connection status
   const { data: qbStatus, isLoading: isLoadingStatus } = useQuery<QBConnectionStatus>({
     queryKey: ["/api/integrations/quickbooks/status"],
+  });
+
+  const { data: stripeStatus, isLoading: isLoadingStripeStatus } = useQuery<StripeStatusEnvelope>({
+    queryKey: ["/api/integrations/stripe/status"],
   });
 
   // Fetch sync jobs
@@ -145,6 +180,50 @@ export default function SettingsIntegrations() {
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const stripeConnectMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/integrations/stripe/connect', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error || 'Failed to start Stripe onboarding');
+      return data as StripeStatusEnvelope & { data: { onboardingUrl: string } };
+    },
+    onSuccess: (data: any) => {
+      const onboardingUrl = data?.data?.onboardingUrl;
+      if (onboardingUrl) {
+        sessionStorage.removeItem('stripe_toast_shown');
+        sessionStorage.removeItem('stripe_refresh_shown');
+        window.location.href = onboardingUrl;
+        return;
+      }
+      toast({ title: 'Stripe', description: 'Onboarding link missing', variant: 'destructive' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Stripe', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const stripeDisconnectMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/integrations/stripe/disconnect', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error || 'Failed to disconnect Stripe');
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/integrations/stripe/status'] });
+      toast({ title: 'Stripe', description: 'Stripe disconnected' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Stripe', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -408,6 +487,114 @@ export default function SettingsIntegrations() {
               </p>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Stripe Integration */}
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <CreditCard className="w-5 h-5" />
+                Stripe (Connect)
+              </CardTitle>
+              <CardDescription>
+                Accept card payments on behalf of each connected organization
+              </CardDescription>
+            </div>
+            {isLoadingStripeStatus ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : stripeStatus?.data?.connected ? (
+              <Badge className="bg-green-500">
+                <CheckCircle2 className="w-3 h-3 mr-1" />
+                Connected
+              </Badge>
+            ) : stripeStatus?.data?.stripeAccountId ? (
+              <Badge variant="secondary">
+                <AlertCircle className="w-3 h-3 mr-1" />
+                Setup Required
+              </Badge>
+            ) : (
+              <Badge variant="outline">
+                <XCircle className="w-3 h-3 mr-1" />
+                Not Connected
+              </Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {stripeStatus?.data?.lastError ? (
+              <div className="bg-destructive/10 border border-destructive/20 text-destructive rounded-lg p-3 text-sm">
+                <div className="font-semibold mb-1">Last error</div>
+                <div className="break-words">{stripeStatus.data.lastError}</div>
+              </div>
+            ) : null}
+
+            {stripeStatus?.data?.stripeAccountId ? (
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Stripe Account</p>
+                  <p className="font-medium">{stripeStatus.data.stripeAccountId}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Mode</p>
+                  <p className="font-medium">{String(stripeStatus.data.mode || 'test')}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Charges Enabled</p>
+                  <p className="font-medium">{stripeStatus.data.chargesEnabled ? 'Yes' : 'No'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Details Submitted</p>
+                  <p className="font-medium">{stripeStatus.data.detailsSubmitted ? 'Yes' : 'No'}</p>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-muted p-4 rounded-lg">
+                <h4 className="font-semibold mb-2">What this enables</h4>
+                <ul className="text-sm space-y-1 text-muted-foreground">
+                  <li>• Take card payments for invoices</li>
+                  <li>• Each organization connects their own Stripe account</li>
+                  <li>• No tenant secret keys stored in QuoteVaultPro</li>
+                </ul>
+              </div>
+            )}
+
+            <Separator />
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => stripeConnectMutation.mutate()}
+                disabled={stripeConnectMutation.isPending}
+                className="min-w-[220px]"
+              >
+                <ExternalLink className="w-4 h-4 mr-2" />
+                {stripeStatus?.data?.stripeAccountId ? 'Continue Stripe Setup' : 'Connect Stripe'}
+              </Button>
+
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => queryClient.invalidateQueries({ queryKey: ['/api/integrations/stripe/status'] })}
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Refresh Status
+              </Button>
+
+              <Button
+                onClick={() => stripeDisconnectMutation.mutate()}
+                disabled={stripeDisconnectMutation.isPending}
+                variant="destructive"
+              >
+                Disconnect
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              You’ll be redirected to Stripe to complete onboarding.
+            </p>
+          </div>
         </CardContent>
       </Card>
 

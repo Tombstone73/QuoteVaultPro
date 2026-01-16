@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 
@@ -15,6 +15,27 @@ function StripePayInner(props: {
   const elements = useElements();
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const schedulePostSubmitRefresh = () => {
+    // 3–5 attempts over ~10–15s to catch fast webhooks without lying if delayed.
+    const delaysMs = [0, 1500, 3500, 7000, 12000];
+    delaysMs.forEach((delay) => {
+      window.setTimeout(() => {
+        try {
+          props.onSettled();
+        } catch {
+          // no-op
+        }
+      }, delay);
+    });
+  };
 
   const handleConfirm = async () => {
     if (!stripe || !elements) return;
@@ -42,10 +63,10 @@ function StripePayInner(props: {
         description: 'We’ll update the invoice once Stripe confirms the payment.',
       });
 
+      schedulePostSubmitRefresh();
       props.onClose();
-      props.onSettled();
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current) setSubmitting(false);
     }
   };
 
