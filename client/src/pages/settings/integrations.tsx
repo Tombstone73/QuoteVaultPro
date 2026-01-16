@@ -190,7 +190,14 @@ export default function SettingsIntegrations() {
         credentials: 'include',
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data?.error || 'Failed to start Stripe onboarding');
+
+      if (!response.ok) {
+        const code = data?.code ? String(data.code) : undefined;
+        const message = data?.message || data?.error || 'Failed to start Stripe onboarding';
+        const err = new Error(String(message));
+        (err as any).code = code;
+        throw err;
+      }
       return data as StripeStatusEnvelope & { data: { onboardingUrl: string } };
     },
     onSuccess: (data: any) => {
@@ -204,6 +211,16 @@ export default function SettingsIntegrations() {
       toast({ title: 'Stripe', description: 'Onboarding link missing', variant: 'destructive' });
     },
     onError: (error: Error) => {
+      const code = (error as any)?.code;
+      if (code === 'STRIPE_NOT_CONFIGURED') {
+        toast({
+          title: 'Stripe',
+          description: "Stripe isn’t configured on the server yet. Add STRIPE_SECRET_KEY (sk_test_...) and restart the server.",
+          variant: 'destructive',
+        });
+        return;
+      }
+
       toast({ title: 'Stripe', description: error.message, variant: 'destructive' });
     },
   });

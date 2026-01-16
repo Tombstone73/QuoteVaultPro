@@ -35,6 +35,14 @@ import { useQuery } from "@tanstack/react-query";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import StripePayDialog from "@/components/payments/StripePayDialog";
 
+type StripeIntegrationStatusEnvelope = {
+  success: boolean;
+  data?: {
+    connected?: boolean;
+    chargesEnabled?: boolean;
+  };
+};
+
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 function SaveIndicator({ state }: { state: SaveState }) {
@@ -177,7 +185,6 @@ export default function InvoiceDetailPage() {
     ? `invoice-${String((invoice as any).invoiceNumber)}.pdf`
     : 'invoice.pdf';
 
-  const canPayNow = !!invoice && isStaffUser && invoiceStatus !== 'void' && remainingCents > 0;
   // Manual payments may intentionally exceed remaining (rollup clamps). Keep available for staff unless void.
   const canRecordPayment = !!invoice && isStaffUser && invoiceStatus !== 'void';
 
@@ -465,6 +472,11 @@ export default function InvoiceDetailPage() {
     staleTime: 30000,
   });
 
+  const { data: stripeIntegrationStatus } = useQuery<StripeIntegrationStatusEnvelope>({
+    queryKey: ['/api/integrations/stripe/status'],
+    staleTime: 30000,
+  });
+
   const effectiveCustomer: CustomerWithContacts | undefined =
     selectedCustomer || customerDetail || ((order?.customer as any) as CustomerWithContacts | undefined);
 
@@ -548,6 +560,18 @@ export default function InvoiceDetailPage() {
     if (!qbUpToDate && invoiceStatus !== 'draft') return 'QuickBooks out of date';
     return '';
   })();
+
+  const stripeConnected = stripeIntegrationStatus?.success === true && stripeIntegrationStatus?.data?.connected === true;
+  const stripeChargesEnabled = stripeIntegrationStatus?.data?.chargesEnabled === true;
+  const canPayInvoice =
+    !!invoice &&
+    isStaffUser &&
+    invoiceStatus !== 'void' &&
+    invoiceStatus !== 'draft' &&
+    paymentRollup.paymentStatus === 'unpaid' &&
+    remainingCents > 0 &&
+    stripeConnected &&
+    stripeChargesEnabled;
 
   const orderCustomerName: string | null = order?.customer?.companyName || order?.customer?.name || order?.billToCompany || null;
   const orderCustomerId: string | null = order?.customer?.id || order?.customerId || null;
@@ -669,16 +693,42 @@ export default function InvoiceDetailPage() {
 
   if (isLoading) {
     return (
-      <Page>
-        <div className="text-center py-12">Loading invoice...</div>
+      <Page maxWidth="full">
+        <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
+          <StripePayDialog
+            open={stripePayOpen}
+            onOpenChange={setStripePayOpen}
+            invoiceId={invoiceId ?? ''}
+            onSettled={() => {
+              refetch();
+              invoicePayments.refetch();
+              setTimeout(() => refetch(), 1500);
+              setTimeout(() => refetch(), 3500);
+            }}
+          />
+          <div className="text-center py-12">Loading invoice...</div>
+        </div>
       </Page>
     );
   }
 
   if (!data || !invoice) {
     return (
-      <Page>
-        <div className="text-center py-12">Invoice not found</div>
+      <Page maxWidth="full">
+        <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
+          <StripePayDialog
+            open={stripePayOpen}
+            onOpenChange={setStripePayOpen}
+            invoiceId={invoiceId ?? ''}
+            onSettled={() => {
+              refetch();
+              invoicePayments.refetch();
+              setTimeout(() => refetch(), 1500);
+              setTimeout(() => refetch(), 3500);
+            }}
+          />
+          <div className="text-center py-12">Invoice not found</div>
+        </div>
       </Page>
     );
   }
@@ -800,6 +850,18 @@ export default function InvoiceDetailPage() {
   return (
     <Page maxWidth="full">
       <div className="mx-auto w-full max-w-[1600px] space-y-4 min-w-0">
+        <StripePayDialog
+          open={stripePayOpen}
+          onOpenChange={setStripePayOpen}
+          invoiceId={invoiceId ?? ''}
+          onSettled={() => {
+            refetch();
+            invoicePayments.refetch();
+            setTimeout(() => refetch(), 1500);
+            setTimeout(() => refetch(), 3500);
+          }}
+        />
+
         <Dialog open={recordPaymentOpen} onOpenChange={setRecordPaymentOpen}>
           <DialogContent>
             <DialogHeader>
@@ -1009,6 +1071,13 @@ export default function InvoiceDetailPage() {
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
+
+                    {canPayInvoice ? (
+                      <Button onClick={() => setStripePayOpen(true)}>
+                        <CreditCard className="mr-2 h-4 w-4" />
+                        Pay Invoice
+                      </Button>
+                    ) : null}
 
                     <Button onClick={openRecordPayment} disabled={!canRecordPayment}>
                       <DollarSign className="mr-2 h-4 w-4" />
@@ -1456,9 +1525,9 @@ export default function InvoiceDetailPage() {
                               Record Payment
                             </Button>
                           )}
-                          {canPayNow && (
+                          {canPayInvoice && (
                             <Button onClick={() => setStripePayOpen(true)}>
-                              Pay Now
+                              Pay Invoice
                             </Button>
                           )}
                         </div>
@@ -1557,19 +1626,6 @@ export default function InvoiceDetailPage() {
                         </Table>
                       )}
 
-                      {invoiceId && (
-                        <StripePayDialog
-                          open={stripePayOpen}
-                          onOpenChange={setStripePayOpen}
-                          invoiceId={invoiceId}
-                          onSettled={() => {
-                            refetch();
-                            invoicePayments.refetch();
-                            setTimeout(() => refetch(), 1500);
-                            setTimeout(() => refetch(), 3500);
-                          }}
-                        />
-                      )}
                     </div>
                   )}
 

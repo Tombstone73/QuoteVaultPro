@@ -1,5 +1,15 @@
 # Stripe Payments v1 — Local dev (QuoteVaultPro)
 
+## Set env vars (and restart server)
+
+Set these in your server environment (e.g. `.env`) and restart the server after changes:
+
+```bash
+STRIPE_SECRET_KEY=sk_test_...
+VITE_STRIPE_PUBLISHABLE_KEY=pk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_... # from `stripe listen`
+```
+
 ## Webhook forwarding (Stripe CLI)
 
 1) Install and authenticate Stripe CLI.

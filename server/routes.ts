@@ -16,7 +16,7 @@ import NestingCalculator from "./NestingCalculator.js";
 import { emailService } from "./emailService";
 import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
 import * as quickbooksService from "./quickbooksService";
-import { getStripeClient } from "./lib/stripe";
+import { assertStripeServerConfig, getStripeClient } from "./lib/stripe";
 import * as syncWorker from "./workers/syncProcessor";
 import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
 import { getProfile, profileRequiresDimensions, type FlatGoodsConfig, type RollMaterialConfig, flatGoodsCalculator, buildFlatGoodsInput } from "@shared/pricingProfiles";
@@ -9493,6 +9493,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/integrations/stripe/status', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
+
+      const stripeCfg = assertStripeServerConfig();
+      if (!stripeCfg.ok) {
+        return res.json({
+          success: true,
+          data: {
+            connected: false,
+            stripeAccountId: null,
+            mode: 'test',
+            status: 'not_configured',
+            lastError: 'Stripe is not configured. Set STRIPE_SECRET_KEY (sk_...) in server env and restart the server.',
+            chargesEnabled: false,
+            detailsSubmitted: false,
+          },
+        });
+      }
+
       const [conn] = await db
         .select()
         .from(integrationConnections)
@@ -9544,6 +9561,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const now = new Date();
 
     try {
+      const stripeCfg = assertStripeServerConfig();
+      if (!stripeCfg.ok) {
+        console.error('[Stripe Connect] STRIPE_NOT_CONFIGURED', { organizationId });
+        return res.status(400).json({
+          success: false,
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured. Set STRIPE_SECRET_KEY (sk_...) in server env and restart the server.',
+        });
+      }
+
       const stripe = getStripeClient();
 
       const [existing] = await db
