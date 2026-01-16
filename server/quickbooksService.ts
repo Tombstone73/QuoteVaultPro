@@ -588,24 +588,41 @@ async function makeQBRequest(
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('[QuickBooks] API error', {
-      organizationId: orgId,
-      endpoint,
-      status: response.status,
-      message: errorText ? String(errorText).slice(0, 800) : null,
-    });
-
-    // Prefer an actionable fault message if the response is JSON.
+    
+    // Parse error details
+    let qbError: any = null;
     let faultMessage: string | null = null;
+    let errorCode: string | null = null;
     try {
       const parsed = JSON.parse(errorText);
-      const qbError = parsed?.Fault?.Error?.[0];
+      qbError = parsed?.Fault?.Error?.[0];
+      errorCode = qbError?.code;
       const messagePart = qbError?.Message ? String(qbError.Message) : '';
       const detailPart = qbError?.Detail ? String(qbError.Detail) : '';
       const combined = [messagePart, detailPart].filter(Boolean).join(' - ');
       if (combined) faultMessage = combined;
     } catch {
       // ignore JSON parse errors
+    }
+
+    // Log ValidationFault (2010) with full payload for debugging
+    if (errorCode === '2010' && body && endpoint.includes('/invoice')) {
+      console.error('[QuickBooks] ValidationFault 2010 - Invalid/unsupported property in Invoice payload', {
+        organizationId: orgId,
+        endpoint,
+        status: response.status,
+        errorCode,
+        errorMessage: faultMessage,
+        sanitizedPayload: JSON.stringify(body, null, 2),
+      });
+    } else {
+      console.error('[QuickBooks] API error', {
+        organizationId: orgId,
+        endpoint,
+        status: response.status,
+        errorCode: errorCode || undefined,
+        message: errorText ? String(errorText).slice(0, 800) : null,
+      });
     }
 
     const msg = faultMessage
@@ -714,14 +731,18 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     DocNumber: String(invoice.invoiceNumber),
     TxnDate: new Date(txnDate).toISOString().split('T')[0],
     DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
-    Line: (lineItems || []).map((r: any) => {
+    Line: (lineItems || []).map((r: any, index: number) => {
       const cents = Number(r.lineTotalCents ?? 0);
       const amount = Number.isFinite(cents) && cents > 0 ? cents / 100 : Number(r.totalPrice || 0);
       return {
+        LineNum: index + 1,
         Amount: Number(amount || 0),
+        DetailType: 'SalesItemLineDetail',
+        SalesItemLineDetail: {
+          Qty: 1,
+          UnitPrice: Number(amount || 0),
+        },
         Description: String(r.description || ''),
-        DetailType: 'DescriptionOnly',
-        DescriptionOnlyLineDetail: {},
       };
     }),
   };
