@@ -29,6 +29,7 @@ export async function createInvoicePaymentIntent(params: {
   organizationId: string;
   invoiceId: string;
   description?: string;
+  idempotencyKey?: string;
 }): Promise<{ paymentIntentId: string; clientSecret: string }> {
   const stripe = getStripeClient();
 
@@ -37,16 +38,19 @@ export async function createInvoicePaymentIntent(params: {
 
   const currency = (params.currency || 'USD').toLowerCase();
 
-  const pi = await stripe.paymentIntents.create({
-    amount: amountCents,
-    currency,
-    description: params.description,
-    automatic_payment_methods: { enabled: true },
-    metadata: {
-      organizationId: params.organizationId,
-      invoiceId: params.invoiceId,
+  const pi = await stripe.paymentIntents.create(
+    {
+      amount: amountCents,
+      currency,
+      description: params.description,
+      automatic_payment_methods: { enabled: true },
+      metadata: {
+        organizationId: params.organizationId,
+        invoiceId: params.invoiceId,
+      },
     },
-  });
+    params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : undefined
+  );
 
   if (!pi.client_secret) throw new Error('Stripe did not return client_secret');
 

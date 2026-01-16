@@ -123,10 +123,10 @@ function main() {
       // Continue to attempt drizzle-kit migrate; it will surface its own errors.
     }
 
-    console.log('[db:migrate:verbose] Running: drizzle-kit migrate --config drizzle.config.ts');
+    console.log('[db:migrate:verbose] Running: drizzle-kit --config drizzle.config.ts migrate');
 
     const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    const result = spawnSync(npxCmd, ['drizzle-kit', 'migrate', '--config', 'drizzle.config.ts'], {
+    const result = spawnSync(npxCmd, ['drizzle-kit', '--config', 'drizzle.config.ts', 'migrate'], {
       stdio: 'inherit',
     });
 

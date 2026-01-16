@@ -7,7 +7,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -16,6 +16,7 @@ import NestingCalculator from "./NestingCalculator.js";
 import { emailService } from "./emailService";
 import { ensureCustomerForUser } from "./db/syncUsersToCustomers";
 import * as quickbooksService from "./quickbooksService";
+import { getStripeClient } from "./lib/stripe";
 import * as syncWorker from "./workers/syncProcessor";
 import { tenantContext, getUserOrganizations, setDefaultOrganization, getRequestOrganizationId, optionalTenantContext, ensureUserOrganization, DEFAULT_ORGANIZATION_ID, portalContext, getPortalCustomer } from "./tenantContext";
 import { getProfile, profileRequiresDimensions, type FlatGoodsConfig, type RollMaterialConfig, flatGoodsCalculator, buildFlatGoodsInput } from "@shared/pricingProfiles";
@@ -9377,8 +9378,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/integrations/quickbooks/status', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      // TODO: Pass organizationId to getActiveConnection once multi-tenant QB is fully implemented
-      const connection = await quickbooksService.getActiveConnection();
+      const connection = await quickbooksService.getActiveConnection(organizationId);
 
       if (!connection) {
         return res.json({
@@ -9396,7 +9396,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Check if token is still valid
-      const validToken = await quickbooksService.getValidAccessToken();
+      const validToken = await quickbooksService.getValidAccessTokenForOrganization(organizationId);
 
       res.json({
         connected: !!validToken,
@@ -9417,8 +9417,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/integrations/quickbooks/auth-url', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      // TODO: Include organizationId in OAuth state for callback handling
-      const authUrl = await quickbooksService.getAuthorizationUrl();
+      const authUrl = await quickbooksService.getAuthorizationUrlForOrganization(organizationId);
       res.json({ authUrl });
     } catch (error: any) {
       console.error('[QB Auth URL] Error:', error);
@@ -9445,9 +9444,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: 'Missing authorization code or realmId' });
       }
 
-      // TODO: Extract organizationId from OAuth state param and pass to exchangeCodeForTokens
-      // For now, uses DEFAULT_ORGANIZATION_ID inside the service
-      await quickbooksService.exchangeCodeForTokens(code as string, realmId as string);
+      const parsed = quickbooksService.parseOAuthState(state as any);
+      if (!parsed?.organizationId) {
+        return res.redirect('/settings?qb_error=' + encodeURIComponent('Invalid OAuth state'));
+      }
+
+      await quickbooksService.exchangeCodeForTokens(code as string, realmId as string, parsed.organizationId);
 
       // Redirect to settings page with success
       res.redirect('/settings?qb_connected=true');
@@ -9464,12 +9466,256 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/integrations/quickbooks/disconnect', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      // TODO: Pass organizationId to disconnectConnection once multi-tenant QB is fully implemented
-      await quickbooksService.disconnectConnection();
+      await quickbooksService.disconnectConnectionForOrganization(organizationId);
       res.json({ success: true, message: 'QuickBooks disconnected' });
     } catch (error: any) {
       console.error('[QB Disconnect] Error:', error);
       res.status(500).json({ error: 'Failed to disconnect QuickBooks' });
+    }
+  });
+
+  // ==================== Stripe (Connect) Integration Routes ====================
+  // Per-organization Stripe Connect accounts (no tenant secret keys).
+
+  function getStripeModeFromEnv(): 'test' | 'live' {
+    const key = String(process.env.STRIPE_SECRET_KEY || '').trim();
+    return key.startsWith('sk_live_') ? 'live' : 'test';
+  }
+
+  function getBaseOrigin(req: any): string {
+    const origin = req?.headers?.origin;
+    if (origin && typeof origin === 'string') return origin;
+    const proto = req.protocol || 'http';
+    const host = req.get('host');
+    return `${proto}://${host}`;
+  }
+
+  app.get('/api/integrations/stripe/status', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const [conn] = await db
+        .select()
+        .from(integrationConnections)
+        .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
+        .limit(1);
+
+      const stripeAccountId = conn?.externalAccountId ? String(conn.externalAccountId) : null;
+      if (!stripeAccountId) {
+        return res.json({
+          success: true,
+          data: {
+            connected: false,
+            stripeAccountId: null,
+            mode: conn?.mode || getStripeModeFromEnv(),
+            status: conn?.status || 'disconnected',
+            lastError: conn?.lastError || null,
+          },
+        });
+      }
+
+      const stripe = getStripeClient();
+      const acct = await stripe.accounts.retrieve(stripeAccountId);
+
+      const chargesEnabled = Boolean((acct as any).charges_enabled);
+      const detailsSubmitted = Boolean((acct as any).details_submitted);
+
+      return res.json({
+        success: true,
+        data: {
+          connected: chargesEnabled,
+          stripeAccountId,
+          mode: conn?.mode || getStripeModeFromEnv(),
+          status: conn?.status || 'connected',
+          lastError: conn?.lastError || null,
+          chargesEnabled,
+          detailsSubmitted,
+        },
+      });
+    } catch (error: any) {
+      console.error('[Stripe Status] Error:', { message: String(error?.message || error) });
+      res.status(500).json({ success: false, error: 'Failed to check Stripe status' });
+    }
+  });
+
+  app.post('/api/integrations/stripe/connect', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const userId = req.user?.claims?.sub || req.user?.id;
+    const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email;
+    const now = new Date();
+
+    try {
+      const stripe = getStripeClient();
+
+      const [existing] = await db
+        .select()
+        .from(integrationConnections)
+        .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
+        .limit(1);
+
+      const mode = getStripeModeFromEnv();
+      let stripeAccountId = existing?.externalAccountId ? String(existing.externalAccountId) : null;
+
+      if (!stripeAccountId) {
+        const account = await stripe.accounts.create({
+          type: 'express',
+          capabilities: {
+            card_payments: { requested: true },
+            transfers: { requested: true },
+          },
+          metadata: {
+            organizationId,
+          },
+        });
+
+        stripeAccountId = String(account.id);
+
+        await db
+          .insert(integrationConnections)
+          .values({
+            organizationId,
+            provider: 'stripe',
+            externalAccountId: stripeAccountId,
+            status: 'connected',
+            mode,
+            lastError: null,
+            connectedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          } as any)
+          .onConflictDoUpdate({
+            target: [integrationConnections.organizationId, integrationConnections.provider],
+            set: {
+              externalAccountId: stripeAccountId,
+              status: 'connected',
+              mode,
+              lastError: null,
+              connectedAt: now,
+              disconnectedAt: null,
+              updatedAt: now,
+            } as any,
+          });
+      }
+
+      const origin = getBaseOrigin(req);
+      const returnUrl = `${origin}/settings/integrations?stripe_connected=true`;
+      const refreshUrl = `${origin}/settings/integrations?stripe_refresh=true`;
+
+      const link = await stripe.accountLinks.create({
+        account: stripeAccountId,
+        type: 'account_onboarding',
+        return_url: returnUrl,
+        refresh_url: refreshUrl,
+      });
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: 'stripe.connect.started',
+          entityType: 'organization',
+          entityId: organizationId,
+          entityName: String(organizationId),
+          description: 'Stripe Connect onboarding started',
+          newValues: { stripeAccountId, mode } as any,
+          createdAt: now,
+        } as any);
+      } catch (logErr: any) {
+        console.error('[Stripe Connect] audit log failed:', { organizationId, message: String(logErr?.message || logErr) });
+      }
+
+      return res.json({ success: true, data: { onboardingUrl: link.url, stripeAccountId, mode } });
+    } catch (error: any) {
+      const message = String(error?.message || error);
+      console.error('[Stripe Connect] Error:', { organizationId, message });
+
+      try {
+        await db
+          .insert(integrationConnections)
+          .values({
+            organizationId,
+            provider: 'stripe',
+            status: 'error',
+            mode: getStripeModeFromEnv(),
+            lastError: message.slice(0, 800),
+            updatedAt: now,
+            createdAt: now,
+          } as any)
+          .onConflictDoUpdate({
+            target: [integrationConnections.organizationId, integrationConnections.provider],
+            set: { status: 'error', lastError: message.slice(0, 800), updatedAt: now } as any,
+          });
+      } catch {}
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: 'stripe.connect.failed',
+          entityType: 'organization',
+          entityId: organizationId,
+          entityName: String(organizationId),
+          description: 'Stripe Connect onboarding failed',
+          newValues: { error: message.slice(0, 800) } as any,
+          createdAt: now,
+        } as any);
+      } catch {}
+
+      return res.status(500).json({ success: false, error: 'Failed to start Stripe Connect onboarding' });
+    }
+  });
+
+  app.post('/api/integrations/stripe/disconnect', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const userId = req.user?.claims?.sub || req.user?.id;
+    const userName = `${req.user?.firstName || ''} ${req.user?.lastName || ''}`.trim() || req.user?.email;
+    const now = new Date();
+
+    try {
+      await db
+        .insert(integrationConnections)
+        .values({
+          organizationId,
+          provider: 'stripe',
+          status: 'disconnected',
+          mode: getStripeModeFromEnv(),
+          lastError: null,
+          disconnectedAt: now,
+          updatedAt: now,
+          createdAt: now,
+        } as any)
+        .onConflictDoUpdate({
+          target: [integrationConnections.organizationId, integrationConnections.provider],
+          set: {
+            externalAccountId: null,
+            status: 'disconnected',
+            lastError: null,
+            disconnectedAt: now,
+            updatedAt: now,
+          } as any,
+        });
+
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: 'stripe.disconnect',
+          entityType: 'organization',
+          entityId: organizationId,
+          entityName: String(organizationId),
+          description: 'Stripe disconnected for organization',
+          createdAt: now,
+        } as any);
+      } catch (logErr: any) {
+        console.error('[Stripe Disconnect] audit log failed:', { organizationId, message: String(logErr?.message || logErr) });
+      }
+
+      return res.json({ success: true });
+    } catch (error: any) {
+      console.error('[Stripe Disconnect] Error:', { organizationId, message: String(error?.message || error) });
+      return res.status(500).json({ success: false, error: 'Failed to disconnect Stripe' });
     }
   });
 
@@ -9497,8 +9743,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // TODO: Pass organizationId to queueSyncJobs once multi-tenant QB is fully implemented
-      await quickbooksService.queueSyncJobs('pull', resources);
+      await quickbooksService.queueSyncJobsForOrganization(organizationId, 'pull', resources);
 
       res.json({
         success: true,
@@ -9535,8 +9780,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // TODO: Pass organizationId to queueSyncJobs once multi-tenant QB is fully implemented
-      await quickbooksService.queueSyncJobs('push', resources);
+      await quickbooksService.queueSyncJobsForOrganization(organizationId, 'push', resources);
 
       res.json({
         success: true,

@@ -4,11 +4,12 @@ import { db } from "../db";
 import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
-import { syncSingleInvoiceToQuickBooks } from "../quickbooksService";
+import { syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
 import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
 import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
+import { integrationConnections } from "../../shared/schema";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -17,6 +18,52 @@ function getUserId(user: any): string | undefined {
 
 function getRequestOrganizationId(req: any): string | undefined {
   return req.organizationId || (req.headers["x-organization-id"] as string);
+}
+
+function paymentsDebugLogsEnabled(): boolean {
+  return String(process.env.PAYMENTS_DEBUG_LOGS || '').trim() === '1';
+}
+
+function logStripeCreateIntentDebug(params: {
+  event:
+    | 'stripe.create_intent.reuse_pending'
+    | 'stripe.create_intent.reconcile_pending_succeeded'
+    | 'stripe.create_intent.create_new';
+  orgId: string;
+  invoiceId: string;
+  paymentId: string;
+  stripePaymentIntentId: string;
+  amountCents: number;
+}) {
+  if (!paymentsDebugLogsEnabled()) return;
+  console.log(
+    `event=${params.event} orgId=${params.orgId} invoiceId=${params.invoiceId} paymentId=${params.paymentId} stripePaymentIntentId=${params.stripePaymentIntentId} amountCents=${params.amountCents}`
+  );
+}
+
+function extractQuickBooksErrorMessage(err: any): { message: string; statusCode: number } {
+  const statusCode = Number(err?.statusCode || 500);
+
+  const raw = String(err?.message || err || '').trim();
+  if (!raw) return { message: 'QuickBooks sync failed', statusCode };
+
+  // If the message contains embedded JSON (legacy "QuickBooks API error: <status> { ... }") attempt to extract Fault.Error[0].
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart >= 0) {
+    const maybeJson = raw.slice(jsonStart);
+    try {
+      const parsed = JSON.parse(maybeJson);
+      const qbError = parsed?.Fault?.Error?.[0];
+      const messagePart = qbError?.Message ? String(qbError.Message) : '';
+      const detailPart = qbError?.Detail ? String(qbError.Detail) : '';
+      const combined = [messagePart, detailPart].filter(Boolean).join(' - ');
+      if (combined) return { message: combined, statusCode };
+    } catch {
+      // ignore
+    }
+  }
+
+  return { message: raw.slice(0, 800), statusCode };
 }
 
 export async function registerMvpInvoicingRoutes(
@@ -34,19 +81,34 @@ export async function registerMvpInvoicingRoutes(
   app.post("/api/invoices/:id/payments/stripe/create-intent", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const [stripeConn] = await db
+        .select()
+        .from(integrationConnections)
+        .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
+        .limit(1);
+
+      const stripeAccountId = stripeConn?.externalAccountId ? String(stripeConn.externalAccountId) : null;
+      if (!stripeAccountId) {
+        return res.status(409).json({
+          success: false,
+          error: 'Stripe is not connected for this organization.',
+          code: 'STRIPE_NOT_CONNECTED',
+        });
+      }
 
       const userId = getUserId(req.user);
       const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
-      if (!userId) return res.status(401).json({ error: "Missing user" });
+      if (!userId) return res.status(401).json({ success: false, error: "Missing user" });
 
       const rel = await getInvoiceWithRelations(req.params.id);
-      if (!rel) return res.status(404).json({ error: "Invoice not found" });
+      if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
       const inv: any = rel.invoice;
-      if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
+      if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
 
       const status = String(inv.status || '').toLowerCase();
-      if (status === 'void') return res.status(400).json({ error: "Cannot pay a void invoice" });
+      if (status === 'void') return res.status(400).json({ success: false, error: "Cannot pay a void invoice" });
 
       const paymentRows = await db
         .select()
@@ -59,20 +121,152 @@ export async function registerMvpInvoicingRoutes(
         payments: paymentRows.map((p: any) => ({ id: p.id, status: String(p.status || 'succeeded'), amountCents: Number(p.amountCents || 0) })),
       });
 
-      if (rollup.amountDueCents <= 0) return res.status(400).json({ error: "Invoice is already paid" });
+      if (rollup.amountDueCents <= 0) return res.status(400).json({ success: false, error: "Invoice is already paid" });
 
       const currency = String(inv.currency || 'USD');
 
-      const { paymentIntentId, clientSecret } = await createInvoicePaymentIntent({
-        amountCents: rollup.amountDueCents,
-        currency,
-        organizationId,
-        invoiceId: inv.id,
-        description: `Invoice #${inv.invoiceNumber}`,
-      });
+      // Idempotency: reuse existing pending Stripe payment for the same invoice + amountDue.
+      const [existingPending] = await db
+        .select()
+        .from(payments)
+        .where(
+          and(
+            eq(payments.organizationId, organizationId),
+            eq(payments.invoiceId, inv.id),
+            eq(payments.provider, 'stripe'),
+            eq(payments.status, 'pending'),
+            eq(payments.amountCents, rollup.amountDueCents)
+          )
+        )
+        .orderBy(desc(payments.createdAt))
+        .limit(1);
+
+      if (existingPending) {
+        const existingIntentId = (existingPending as any).stripePaymentIntentId ? String((existingPending as any).stripePaymentIntentId) : '';
+        if (existingIntentId) {
+          try {
+            const stripe = getStripeClient();
+            const pi = await stripe.paymentIntents.retrieve(existingIntentId, { stripeAccount: stripeAccountId } as any);
+            const piStatus = String((pi as any).status || '').toLowerCase();
+
+            // If Stripe already succeeded, reconcile to avoid any double-charge path.
+            if (piStatus === 'succeeded') {
+              logStripeCreateIntentDebug({
+                event: 'stripe.create_intent.reconcile_pending_succeeded',
+                orgId: organizationId,
+                invoiceId: inv.id,
+                paymentId: String((existingPending as any).id),
+                stripePaymentIntentId: existingIntentId,
+                amountCents: rollup.amountDueCents,
+              });
+
+              const now = new Date();
+              await db
+                .update(payments)
+                .set({ status: 'succeeded', paidAt: now, succeededAt: now, updatedAt: now } as any)
+                .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
+
+              await refreshInvoiceStatus(inv.id);
+              return res.status(400).json({ success: false, error: 'Invoice is already paid' });
+            }
+
+            if (piStatus !== 'canceled' && (pi as any).client_secret) {
+              logStripeCreateIntentDebug({
+                event: 'stripe.create_intent.reuse_pending',
+                orgId: organizationId,
+                invoiceId: inv.id,
+                paymentId: String((existingPending as any).id),
+                stripePaymentIntentId: existingIntentId,
+                amountCents: rollup.amountDueCents,
+              });
+
+              return res.json({
+                success: true,
+                data: {
+                  clientSecret: String((pi as any).client_secret),
+                  paymentId: (existingPending as any).id,
+                },
+              });
+            }
+
+            // Not usable: transition existing row out of pending, then continue to create a new PI.
+            const now = new Date();
+            await db
+              .update(payments)
+              .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
+              .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
+          } catch (err: any) {
+            console.error('[StripeCreateIntent] failed to retrieve existing intent', {
+              organizationId,
+              invoiceId: inv.id,
+              paymentId: (existingPending as any).id,
+              stripePaymentIntentId: existingIntentId,
+              message: String(err?.message || err),
+            });
+
+            const now = new Date();
+            await db
+              .update(payments)
+              .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
+              .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
+          }
+        } else {
+          // Pending row without intent id should not block payment attempts.
+          const now = new Date();
+          await db
+            .update(payments)
+            .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
+            .where(and(eq(payments.id, (existingPending as any).id), eq(payments.organizationId, organizationId)));
+        }
+      }
+
+      const idempotencyKey = `${organizationId}:${inv.id}:${rollup.amountDueCents}`;
+
+      const stripe = getStripeClient();
+      const pi = await stripe.paymentIntents.create(
+        {
+          amount: rollup.amountDueCents,
+          currency: currency.toLowerCase(),
+          description: `Invoice #${inv.invoiceNumber}`,
+          automatic_payment_methods: { enabled: true },
+          metadata: {
+            organizationId,
+            invoiceId: inv.id,
+            stripeAccountId,
+          },
+        },
+        {
+          idempotencyKey,
+          stripeAccount: stripeAccountId,
+        } as any
+      );
+
+      if (!pi.client_secret) throw new Error('Stripe did not return client_secret');
+
+      const paymentIntentId = pi.id;
+      const clientSecret = pi.client_secret;
+
+      // If another request already inserted the payment row (Stripe idempotency can cause this), reuse it.
+      const [existingByIntent] = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
+        .limit(1);
+
+      if (existingByIntent && String((existingByIntent as any).status || '').toLowerCase() === 'pending') {
+        logStripeCreateIntentDebug({
+          event: 'stripe.create_intent.reuse_pending',
+          orgId: organizationId,
+          invoiceId: inv.id,
+          paymentId: String((existingByIntent as any).id),
+          stripePaymentIntentId: paymentIntentId,
+          amountCents: rollup.amountDueCents,
+        });
+        return res.json({ success: true, data: { clientSecret, paymentId: (existingByIntent as any).id } });
+      }
 
       const now = new Date();
-      const [payment] = await db
+      const insertedRows = await db
         .insert(payments)
         .values({
           organizationId,
@@ -86,6 +280,7 @@ export async function registerMvpInvoicingRoutes(
           metadata: {
             invoiceId: inv.id,
             organizationId,
+            stripeAccountId,
           },
           method: 'credit_card',
           appliedAt: now,
@@ -94,7 +289,43 @@ export async function registerMvpInvoicingRoutes(
           createdAt: now,
           updatedAt: now,
         } as any)
+        // Backed by 0026_stripe_payments_v1.sql unique index:
+        // payments_org_stripe_payment_intent_id_uidx (organization_id, stripe_payment_intent_id)
+        .onConflictDoNothing({ target: [payments.organizationId, payments.stripePaymentIntentId] })
         .returning();
+
+      const payment: any | undefined = insertedRows[0] as any;
+
+      if (!payment) {
+        const [existingAfterConflict] = await db
+          .select()
+          .from(payments)
+          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, paymentIntentId)))
+          .limit(1);
+
+        if (existingAfterConflict && String((existingAfterConflict as any).status || '').toLowerCase() === 'pending') {
+          logStripeCreateIntentDebug({
+            event: 'stripe.create_intent.reuse_pending',
+            orgId: organizationId,
+            invoiceId: inv.id,
+            paymentId: String((existingAfterConflict as any).id),
+            stripePaymentIntentId: paymentIntentId,
+            amountCents: rollup.amountDueCents,
+          });
+          return res.json({ success: true, data: { clientSecret, paymentId: (existingAfterConflict as any).id } });
+        }
+
+        throw new Error('Failed to create payment row');
+      }
+
+      logStripeCreateIntentDebug({
+        event: 'stripe.create_intent.create_new',
+        orgId: organizationId,
+        invoiceId: inv.id,
+        paymentId: String(payment.id),
+        stripePaymentIntentId: paymentIntentId,
+        amountCents: rollup.amountDueCents,
+      });
 
       try {
         await db.insert(auditLogs).values({
@@ -113,8 +344,12 @@ export async function registerMvpInvoicingRoutes(
 
       return res.json({ success: true, data: { clientSecret, paymentId: payment?.id } });
     } catch (error: any) {
-      console.error('Error creating Stripe PaymentIntent:', error);
-      return res.status(500).json({ error: error.message || 'Failed to create payment intent' });
+      console.error('[StripeCreateIntent] failed', {
+        invoiceId: String(req?.params?.id || ''),
+        organizationId: getRequestOrganizationId(req) || null,
+        message: String(error?.message || error),
+      });
+      return res.status(500).json({ success: false, error: error.message || 'Failed to create payment intent' });
     }
   });
 
@@ -534,9 +769,21 @@ export async function registerMvpInvoicingRoutes(
     const type = String(event.type);
     const receivedAt = new Date();
 
+    const stripeAccountIdFromEvent = event?.account ? String(event.account) : null;
+
     // Attempt to extract orgId from metadata (if available)
     const obj: any = event?.data?.object;
     const orgFromMetadata = obj?.metadata?.organizationId ? String(obj.metadata.organizationId) : null;
+
+    let resolvedOrganizationId: string | null = orgFromMetadata;
+    if (!resolvedOrganizationId && stripeAccountIdFromEvent) {
+      const [conn] = await db
+        .select()
+        .from(integrationConnections)
+        .where(and(eq(integrationConnections.provider, 'stripe'), eq(integrationConnections.externalAccountId, stripeAccountIdFromEvent)))
+        .limit(1);
+      resolvedOrganizationId = conn?.organizationId ? String(conn.organizationId) : null;
+    }
 
     try {
       await db
@@ -545,7 +792,7 @@ export async function registerMvpInvoicingRoutes(
           provider,
           eventId,
           type,
-          organizationId: orgFromMetadata,
+          organizationId: resolvedOrganizationId,
           status: 'received',
           receivedAt,
           payload: event as any,
@@ -567,10 +814,38 @@ export async function registerMvpInvoicingRoutes(
         const pi: any = obj;
         const intentId = String(pi.id);
         const invoiceId = pi?.metadata?.invoiceId ? String(pi.metadata.invoiceId) : null;
-        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : null;
+        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : resolvedOrganizationId;
+        const stripeAccountId = stripeAccountIdFromEvent || (pi?.metadata?.stripeAccountId ? String(pi.metadata.stripeAccountId) : null);
 
         if (!invoiceId || !organizationId) {
+          console.error('[StripeWebhook] missing metadata', {
+            eventId,
+            type,
+            stripePaymentIntentId: intentId,
+            hasInvoiceId: !!invoiceId,
+            hasOrganizationId: !!organizationId,
+            hasStripeAccountId: !!stripeAccountId,
+          });
           throw new Error('Missing invoiceId/organizationId in PaymentIntent metadata');
+        }
+
+        if (stripeAccountId) {
+          const [conn] = await db
+            .select()
+            .from(integrationConnections)
+            .where(and(eq(integrationConnections.provider, 'stripe'), eq(integrationConnections.externalAccountId, stripeAccountId)))
+            .limit(1);
+
+          if (!conn || String(conn.organizationId) !== String(organizationId)) {
+            console.error('[StripeWebhook] stripeAccountId org mismatch', {
+              eventId,
+              type,
+              stripeAccountId,
+              organizationId,
+              resolvedOrganizationId,
+            });
+            throw new Error('Stripe account does not match organization');
+          }
         }
 
         const amountCents = Math.max(0, Math.round(Number(pi.amount_received ?? pi.amount ?? 0)));
@@ -588,26 +863,47 @@ export async function registerMvpInvoicingRoutes(
         if (!paymentRow) {
           // Recovery path: insert succeeded payment row if missing
           const [inv] = await db.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId))).limit(1);
-          if (!inv) throw new Error('Invoice not found for webhook metadata');
+          if (!inv) {
+            console.error('[StripeWebhook] invoice not found for succeeded intent', {
+              eventId,
+              type,
+              organizationId,
+              invoiceId,
+              stripePaymentIntentId: intentId,
+            });
+            throw new Error('Invoice not found for webhook metadata');
+          }
 
-          await db.insert(payments).values({
-            organizationId,
-            invoiceId,
-            provider: 'stripe',
-            status: 'succeeded',
-            amount: (amountCents / 100).toFixed(2),
-            amountCents,
-            currency,
-            stripePaymentIntentId: intentId,
-            method: 'credit_card',
-            paidAt: now,
-            succeededAt: now,
-            metadata: { paymentIntent: { id: intentId } },
-            createdByUserId: null,
-            syncStatus: 'pending',
-            createdAt: now,
-            updatedAt: now,
-          } as any);
+          try {
+            await db.insert(payments).values({
+              organizationId,
+              invoiceId,
+              provider: 'stripe',
+              status: 'succeeded',
+              amount: (amountCents / 100).toFixed(2),
+              amountCents,
+              currency,
+              stripePaymentIntentId: intentId,
+              method: 'credit_card',
+              paidAt: now,
+              succeededAt: now,
+              metadata: { paymentIntent: { id: intentId }, stripeAccountId },
+              createdByUserId: null,
+              syncStatus: 'pending',
+              createdAt: now,
+              updatedAt: now,
+            } as any);
+          } catch (insertErr: any) {
+            console.error('[StripeWebhook] recovery insert failed', {
+              eventId,
+              type,
+              organizationId,
+              invoiceId,
+              stripePaymentIntentId: intentId,
+              message: String(insertErr?.message || insertErr),
+            });
+            throw insertErr;
+          }
         } else {
           // Idempotent transition
           const currentStatus = String(paymentRow.status || '').toLowerCase();
@@ -640,27 +936,43 @@ export async function registerMvpInvoicingRoutes(
       } else if (type === 'payment_intent.payment_failed') {
         const pi: any = obj;
         const intentId = String(pi.id);
-        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : null;
+        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : resolvedOrganizationId;
         const now = new Date();
 
-        if (organizationId) {
-          await db
-            .update(payments)
-            .set({ status: 'failed', failedAt: now, updatedAt: now } as any)
-            .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
+        if (!organizationId) {
+          console.error('[StripeWebhook] payment_failed missing organizationId', {
+            eventId,
+            type,
+            stripePaymentIntentId: intentId,
+            stripeAccountId: stripeAccountIdFromEvent,
+          });
+          throw new Error('Missing organizationId for payment_failed');
         }
+
+        await db
+          .update(payments)
+          .set({ status: 'failed', failedAt: now, updatedAt: now } as any)
+          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
       } else if (type === 'payment_intent.canceled') {
         const pi: any = obj;
         const intentId = String(pi.id);
-        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : null;
+        const organizationId = pi?.metadata?.organizationId ? String(pi.metadata.organizationId) : resolvedOrganizationId;
         const now = new Date();
 
-        if (organizationId) {
-          await db
-            .update(payments)
-            .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
-            .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
+        if (!organizationId) {
+          console.error('[StripeWebhook] canceled missing organizationId', {
+            eventId,
+            type,
+            stripePaymentIntentId: intentId,
+            stripeAccountId: stripeAccountIdFromEvent,
+          });
+          throw new Error('Missing organizationId for canceled');
         }
+
+        await db
+          .update(payments)
+          .set({ status: 'canceled', canceledAt: now, updatedAt: now } as any)
+          .where(and(eq(payments.organizationId, organizationId), eq(payments.stripePaymentIntentId, intentId)));
       } else {
         // ignore safely
       }
@@ -672,7 +984,12 @@ export async function registerMvpInvoicingRoutes(
 
       return res.json({ received: true });
     } catch (err: any) {
-      console.error('[StripeWebhook] processing failed:', err);
+      console.error('[StripeWebhook] processing failed', {
+        eventId,
+        type,
+        stripeAccountId: stripeAccountIdFromEvent,
+        message: String(err?.message || err),
+      });
       try {
         await db
           .update(paymentWebhookEvents)
@@ -807,7 +1124,7 @@ export async function registerMvpInvoicingRoutes(
       } catch {}
 
       try {
-        const qb = await syncSingleInvoiceToQuickBooks(inv.id);
+        const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
         await db
           .update(invoices)
           .set({
@@ -871,7 +1188,7 @@ export async function registerMvpInvoicingRoutes(
       await db.update(invoices).set({ qbSyncStatus: "pending", updatedAt: new Date() } as any).where(eq(invoices.id, inv.id));
 
       try {
-        const qb = await syncSingleInvoiceToQuickBooks(inv.id);
+        const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
         await db
           .update(invoices)
           .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: Number(inv.invoiceVersion || 1), updatedAt: new Date() } as any)
@@ -917,6 +1234,192 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       console.error("Error retrying QB sync:", error);
       res.status(500).json({ error: error.message || "Failed to retry QB sync" });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // QuickBooks: explicit sync endpoints (tenant-scoped)
+  // ------------------------------------------------------------
+  app.post("/api/invoices/:id/qb/sync", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+
+      await db.update(invoices).set({ qbSyncStatus: "pending", updatedAt: new Date() } as any).where(eq(invoices.id, inv.id));
+
+      try {
+        const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
+        await db
+          .update(invoices)
+          .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: Number(inv.invoiceVersion || 1), updatedAt: new Date() } as any)
+          .where(eq(invoices.id, inv.id));
+
+        try {
+          await db.insert(auditLogs).values({
+            organizationId,
+            userId: userId || null,
+            userName,
+            actionType: "invoice_qb_sync_manual",
+            entityType: "invoice",
+            entityId: inv.id,
+            entityName: String(inv.invoiceNumber),
+            description: "QuickBooks invoice sync (manual)",
+            createdAt: new Date(),
+          } as any);
+        } catch (logErr: any) {
+          console.error('Failed to write audit log for QB invoice sync success:', {
+            organizationId,
+            invoiceId: inv.id,
+            message: String(logErr?.message || logErr),
+          });
+        }
+      } catch (e: any) {
+        const extracted = extractQuickBooksErrorMessage(e);
+        await db
+          .update(invoices)
+          .set({ qbSyncStatus: "failed", qbLastError: extracted.message, syncStatus: "error", syncError: extracted.message, updatedAt: new Date() } as any)
+          .where(eq(invoices.id, inv.id));
+
+        try {
+          await db.insert(auditLogs).values({
+            organizationId,
+            userId: userId || null,
+            userName,
+            actionType: "invoice_qb_sync_failed",
+            entityType: "invoice",
+            entityId: inv.id,
+            entityName: String(inv.invoiceNumber),
+            description: "QuickBooks invoice sync failed (manual)",
+            newValues: { error: extracted.message } as any,
+            createdAt: new Date(),
+          } as any);
+        } catch (logErr: any) {
+          console.error('Failed to write audit log for QB invoice sync failure:', {
+            organizationId,
+            invoiceId: inv.id,
+            message: String(logErr?.message || logErr),
+          });
+        }
+
+        return res.status(extracted.statusCode).json({ success: false, error: extracted.message, code: 'QB_INVOICE_SYNC_FAILED' });
+      }
+
+      const refreshed = await getInvoiceWithRelations(inv.id);
+      res.json({ success: true, data: refreshed });
+    } catch (error: any) {
+      console.error("Error syncing invoice to QB:", error);
+      res.status(500).json({ success: false, error: error.message || "Failed to sync invoice to QuickBooks" });
+    }
+  });
+
+  app.post("/api/payments/:id/qb/sync", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
+
+      const paymentId = String(req.params.id);
+      const existing = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
+        .limit(1);
+
+      const p: any = existing[0];
+      if (!p) return res.status(404).json({ success: false, error: "Payment not found" });
+
+      const paymentStatus = String(p.status || '').toLowerCase();
+      if (paymentStatus !== 'succeeded') {
+        return res.status(400).json({ success: false, error: "Only succeeded payments can be synced to QuickBooks" });
+      }
+
+      try {
+        const qb = await syncSinglePaymentToQuickBooksForOrganization(organizationId, paymentId);
+
+        // MVP canonical storage note:
+        // QuickBooks is currently the only external accounting provider, so payments.externalAccountingId holds qbPaymentId.
+
+        await db
+          .update(payments)
+          .set({
+            externalAccountingId: qb.qbPaymentId,
+            syncStatus: 'synced',
+            syncError: null,
+            syncedAt: new Date(),
+            updatedAt: new Date(),
+          } as any)
+          .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
+
+        try {
+          await db.insert(auditLogs).values({
+            organizationId,
+            userId: userId || null,
+            userName,
+            actionType: "quickbooks.payment.sync.succeeded",
+            entityType: "payment",
+            entityId: paymentId,
+            entityName: String(p.referenceNumber || paymentId),
+            description: "QuickBooks payment sync succeeded (manual)",
+            newValues: { qbPaymentId: qb.qbPaymentId } as any,
+            createdAt: new Date(),
+          } as any);
+        } catch (logErr: any) {
+          console.error('Failed to write audit log for QB payment sync success:', {
+            organizationId,
+            paymentId,
+            message: String(logErr?.message || logErr),
+          });
+        }
+
+        return res.json({ success: true, data: { qbPaymentId: qb.qbPaymentId } });
+      } catch (e: any) {
+        const extracted = extractQuickBooksErrorMessage(e);
+
+        await db
+          .update(payments)
+          .set({
+            syncStatus: 'failed',
+            syncError: extracted.message,
+            updatedAt: new Date(),
+          } as any)
+          .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
+
+        try {
+          await db.insert(auditLogs).values({
+            organizationId,
+            userId: userId || null,
+            userName,
+            actionType: "quickbooks.payment.sync.failed",
+            entityType: "payment",
+            entityId: paymentId,
+            entityName: String(p.referenceNumber || paymentId),
+            description: "QuickBooks payment sync failed (manual)",
+            newValues: { error: extracted.message } as any,
+            createdAt: new Date(),
+          } as any);
+        } catch (logErr: any) {
+          console.error('Failed to write audit log for QB payment sync failure:', {
+            organizationId,
+            paymentId,
+            message: String(logErr?.message || logErr),
+          });
+        }
+
+        return res.status(extracted.statusCode).json({ success: false, error: extracted.message, code: 'QB_PAYMENT_SYNC_FAILED' });
+      }
+    } catch (error: any) {
+      console.error("Error syncing payment to QB:", error);
+      res.status(500).json({ success: false, error: error.message || "Failed to sync payment to QuickBooks" });
     }
   });
 
@@ -1086,7 +1589,7 @@ export async function registerMvpInvoicingRoutes(
       // Auto-attempt QB sync on billed+unpaid financial edits (fail-soft)
       if (hasFinancialBody && isBilledUnpaid) {
         try {
-          const qb = await syncSingleInvoiceToQuickBooks(id);
+          const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, id);
           await db
             .update(invoices)
             .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: nextInvoiceVersion, updatedAt: new Date() } as any)
