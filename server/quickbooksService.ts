@@ -8,13 +8,18 @@ import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
-  const clientId = process.env.QUICKBOOKS_CLIENT_ID;
-  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET;
-  const redirectUri = process.env.QUICKBOOKS_REDIRECT_URI;
-  const environment = process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox';
+  // Support both QUICKBOOKS_* and QB_* environment variable naming schemes
+  const clientId = process.env.QUICKBOOKS_CLIENT_ID || process.env.QB_CLIENT_ID;
+  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET || process.env.QB_CLIENT_SECRET;
+  const redirectUri = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI;
+  const environment = process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox';
 
   if (!clientId || !clientSecret || !redirectUri) {
-    console.warn('[QuickBooks] OAuth credentials not configured');
+    const missing: string[] = [];
+    if (!clientId) missing.push('QUICKBOOKS_CLIENT_ID/QB_CLIENT_ID');
+    if (!clientSecret) missing.push('QUICKBOOKS_CLIENT_SECRET/QB_CLIENT_SECRET');
+    if (!redirectUri) missing.push('QUICKBOOKS_REDIRECT_URI/QB_REDIRECT_URI');
+    console.warn('[QuickBooks] OAuth credentials not configured. Missing:', missing.join(', '));
     return null;
   }
 
@@ -40,26 +45,54 @@ function buildOAuthState(organizationId: string): string {
 }
 
 export function parseOAuthState(state: string | undefined | null): { organizationId: string } | null {
-  if (!state || typeof state !== 'string') return null;
+  if (!state || typeof state !== 'string') {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: missing or invalid state parameter');
+    return null;
+  }
   const parts = state.split(':');
-  if (parts.length !== 4) return null;
+  if (parts.length !== 4) {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: state format invalid (expected 4 parts)', { parts: parts.length });
+    return null;
+  }
   const [prefix, organizationId, tsRaw, sig] = parts;
-  if (prefix !== 'qvp') return null;
-  if (!organizationId) return null;
+  if (prefix !== 'qvp') {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: invalid prefix', { prefix });
+    return null;
+  }
+  if (!organizationId) {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: missing organizationId');
+    return null;
+  }
 
   const ts = Number(tsRaw);
-  if (!Number.isFinite(ts) || ts <= 0) return null;
+  if (!Number.isFinite(ts) || ts <= 0) {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: invalid timestamp', { tsRaw });
+    return null;
+  }
 
   // 30 minute window for OAuth redirect round-trip.
   const ageMs = Date.now() - ts;
-  if (ageMs < 0 || ageMs > 30 * 60 * 1000) return null;
+  if (ageMs < 0 || ageMs > 30 * 60 * 1000) {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: state expired', { ageMs: Math.round(ageMs / 1000), maxAgeSeconds: 1800 });
+    return null;
+  }
 
   const secret = String(process.env.SESSION_SECRET || '').trim();
-  if (!secret) return null;
+  if (!secret) {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: SESSION_SECRET not configured');
+    return null;
+  }
 
   const data = `${organizationId}:${ts}`;
   const expected = crypto.createHmac('sha256', secret).update(data).digest('hex').slice(0, 32);
-  if (expected !== sig) return null;
+  if (expected !== sig) {
+    if (qbLogsEnabled()) console.log('[QB OAuth] parseOAuthState: signature mismatch');
+    return null;
+  }
+
+  if (qbLogsEnabled()) {
+    console.log('[QB OAuth] parseOAuthState: valid state', { organizationId, ageSeconds: Math.round(ageMs / 1000) });
+  }
 
   return { organizationId };
 }
@@ -111,6 +144,14 @@ export async function getAuthorizationUrlForOrganization(organizationId: string)
     state,
   });
 
+  if (qbLogsEnabled()) {
+    console.log('[QB OAuth] Authorization URL generated', {
+      organizationId,
+      state: state.slice(0, 20) + '...',
+      environment: process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox',
+    });
+  }
+
   return authUrl;
 }
 
@@ -118,7 +159,7 @@ export async function getAuthorizationUrlForOrganization(organizationId: string)
  * Exchange authorization code for access/refresh tokens
  */
 export async function exchangeCodeForTokens(
-  authorizationCode: string,
+  parseRedirectUrl: string,
   realmId: string,
   organizationId?: string
 ): Promise<void> {
@@ -129,9 +170,43 @@ export async function exchangeCodeForTokens(
 
   const orgId = organizationId || DEFAULT_ORGANIZATION_ID;
 
-  // Exchange code for tokens
-  const authResponse = await oauthClient.createToken(authorizationCode);
+  // Debug logging for token exchange configuration (gated by DEBUG_QB_OAUTH)
+  if (process.env.DEBUG_QB_OAUTH === 'true') {
+    const resolvedRedirectUri = process.env.QUICKBOOKS_REDIRECT_URI || process.env.QB_REDIRECT_URI;
+    const resolvedEnvironment = process.env.QUICKBOOKS_ENVIRONMENT || process.env.QB_ENV || 'sandbox';
+    const resolvedClientId = process.env.QUICKBOOKS_CLIENT_ID || process.env.QB_CLIENT_ID;
+    const resolvedClientSecret = process.env.QUICKBOOKS_CLIENT_SECRET || process.env.QB_CLIENT_SECRET;
+    console.log('[QB OAuth] Token exchange configuration', {
+      redirectUriUsed: resolvedRedirectUri,
+      environmentUsed: resolvedEnvironment,
+      hasClientId: !!resolvedClientId,
+      hasClientSecret: !!resolvedClientSecret,
+      clientIdLength: resolvedClientId?.length || 0,
+      organizationId: orgId,
+      hasFullCallbackUrl: !!parseRedirectUrl,
+    });
+  }
+
+  if (qbLogsEnabled()) {
+    console.log('[QB OAuth] Exchanging authorization code', {
+      organizationId: orgId,
+      realmId,
+    });
+  }
+
+  // Exchange code for tokens - pass full callback URL with query params
+  const authResponse = await oauthClient.createToken(parseRedirectUrl);
   const token = authResponse.token;
+
+  if (qbLogsEnabled()) {
+    console.log('[QB OAuth] Tokens received', {
+      organizationId: orgId,
+      realmId,
+      hasAccessToken: !!token.access_token,
+      hasRefreshToken: !!token.refresh_token,
+      expiresIn: token.expires_in,
+    });
+  }
 
   // Delete existing connection for this organization/provider.
   await db
@@ -152,6 +227,10 @@ export async function exchangeCodeForTokens(
       createdAt: new Date().toISOString(),
     },
   });
+
+  if (qbLogsEnabled()) {
+    console.log('[QB OAuth] Connection stored successfully', { organizationId: orgId, realmId });
+  }
 }
 
 /**
