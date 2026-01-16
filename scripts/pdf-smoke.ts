@@ -7,7 +7,7 @@ function argValue(flag: string): string | undefined {
   return process.argv[idx + 1];
 }
 
-function usageAndExit(msg?: string): never {
+function usageAndExit(msg?: string, code: number = 0): never {
   if (msg) console.error(`[pdf:smoke] ${msg}`);
   console.error('Usage:');
   console.error('  tsx scripts/pdf-smoke.ts --invoiceId <id> --orgId <org> [--baseUrl http://localhost:5000] [--cookie "connect.sid=..."] [--cookieFile cookie.txt]');
@@ -17,7 +17,7 @@ function usageAndExit(msg?: string): never {
   console.error('  ORG_ID=<org>');
   console.error('  COOKIE="connect.sid=..."');
   console.error('  COOKIE_FILE=cookie.txt');
-  process.exit(2);
+  process.exit(code);
 }
 
 function ensure(condition: any, msg: string): asserts condition {
@@ -64,17 +64,58 @@ function readCookieFile(cookieFilePath: string): string {
   return raw;
 }
 
+function looksLikeMissingProtocol(baseUrl: string): boolean {
+  const raw = String(baseUrl || '').trim();
+  if (!raw) return false;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return false;
+  // common: localhost:5000, 127.0.0.1:5000
+  return raw.includes('localhost') || raw.includes('127.0.0.1') || /^\w+\.[^/]+(:\d+)?$/.test(raw) || raw.includes(':');
+}
+
+function printFetchFailureHelp(params: {
+  baseUrl: string;
+  invoiceId: string;
+  orgId: string;
+  cookie: string;
+}) {
+  const { baseUrl, invoiceId, orgId, cookie } = params;
+
+  console.error('[pdf:smoke] Checklist:');
+  console.error(`  1) Confirm server is running at BASE_URL (default http://localhost:5000)`);
+  console.error(`  2) Confirm you are logged in + COOKIE is valid (connect.sid=...)`);
+  console.error(`  3) Confirm INVOICE_ID and ORG_ID are correct`);
+
+  if (looksLikeMissingProtocol(baseUrl)) {
+    console.error(`[pdf:smoke] Hint: BASE_URL looks like it is missing a protocol. Try: http://${baseUrl.replace(/^\/+/, '')}`);
+  }
+
+  if (!cookie.includes('connect.sid')) {
+    console.error('[pdf:smoke] Hint: COOKIE does not contain "connect.sid" (did you paste the right cookie string/file?)');
+  }
+
+  if (!invoiceId || invoiceId === 'undefined') {
+    console.error('[pdf:smoke] Hint: invoiceId is missing/invalid');
+  }
+  if (!orgId || orgId === 'undefined') {
+    console.error('[pdf:smoke] Hint: orgId is missing/invalid');
+  }
+}
+
 async function main() {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    usageAndExit(undefined, 0);
+  }
+
   const invoiceId =
     argValue('--invoiceId') ??
     argValue('--invoice') ??
     argValue('-i') ??
     process.env.INVOICE_ID;
 
-  if (!invoiceId) usageAndExit('Missing --invoiceId (or INVOICE_ID)');
+  if (!invoiceId) usageAndExit('Missing --invoiceId (or INVOICE_ID)', 2);
 
   const orgId = argValue('--orgId') ?? argValue('--org') ?? process.env.ORG_ID;
-  if (!orgId) usageAndExit('Missing --orgId (or ORG_ID)');
+  if (!orgId) usageAndExit('Missing --orgId (or ORG_ID)', 2);
 
   const baseUrl = argValue('--baseUrl') ?? process.env.BASE_URL ?? 'http://localhost:5000';
 
@@ -82,7 +123,7 @@ async function main() {
   const cookieFile = argValue('--cookieFile') ?? process.env.COOKIE_FILE;
 
   const cookie = directCookie?.trim() ? directCookie.trim() : (cookieFile ? readCookieFile(cookieFile) : '');
-  if (!cookie) usageAndExit('Missing auth cookie. Provide --cookie "connect.sid=..." or COOKIE_FILE=...');
+  if (!cookie) usageAndExit('Missing auth cookie. Provide --cookie "connect.sid=..." or COOKIE_FILE=...', 2);
 
   const url = `${baseUrl.replace(/\/$/, '')}/api/invoices/${encodeURIComponent(invoiceId)}/pdf`;
 
@@ -90,13 +131,21 @@ async function main() {
   console.log(`[pdf:smoke] invoiceId=${invoiceId}`);
   console.log(`[pdf:smoke] orgId=${orgId}`);
 
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Cookie: cookie,
-      'x-organization-id': orgId,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Cookie: cookie,
+        'x-organization-id': orgId,
+      },
+    });
+  } catch (e: any) {
+    console.error('[pdf:smoke] FAIL: fetch failed');
+    if (e?.message) console.error(`[pdf:smoke] ${e.message}`);
+    printFetchFailureHelp({ baseUrl, invoiceId, orgId, cookie });
+    process.exit(1);
+  }
 
   if (res.status === 401) {
     console.error('[pdf:smoke] FAIL: Unauthorized (401). Provide a valid session cookie.');

@@ -121,6 +121,8 @@ npm test
 npm run build
 ```
 
+Dev DX helpers: `npm run pdf:gen:local` writes `tmp/invoice-local.pdf`; `npm run pdf:smoke -- --invoiceId ...` hits the running server (needs `connect.sid=...`); if Jest OOMs use `npm run test:client:mem`. Don’t paste `package.json` JSON into PowerShell.
+
 ## 📦 Project Structure
 
 ```

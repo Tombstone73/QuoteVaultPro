@@ -19,12 +19,16 @@
     "pbv2:smoke": "tsx scripts/pbv2-smoke.ts",
     "pbv2:http:smoke": "tsx scripts/pbv2-http-smoke.ts",
     "pdf:smoke": "tsx scripts/pdf-smoke.ts",
+    "pdf:smoke:help": "tsx scripts/pdf-smoke.ts --help",
+    "pdf:gen:local": "tsx scripts/pdf-gen-local.ts",
     "fix-user": "tsx fix-user-role.ts",
     "migrate:file-storage": "powershell ./scripts/run_file_storage_migration.ps1",
     "test": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest",
     "test:client": "jest --config client/jest.config.js",
+    "test:client:mem": "cross-env-shell \"NODE_OPTIONS=--max_old_space_size=4096\" jest --config client/jest.config.js",
     "test:smoke": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --testPathPattern=smoke",
-    "test:watch": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --watch"
+    "test:watch": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --watch",
+    "test:watch:mem": "cross-env-shell \"NODE_OPTIONS=--max_old_space_size=4096 --experimental-vm-modules\" jest --watch"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

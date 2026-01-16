@@ -18,3 +18,6 @@ storage/tmp/
 # Runtime uploads (never commit)
 uploads/**
 !uploads/.gitkeep
+
+# Local tooling output (never commit)
+tmp/
