@@ -354,6 +354,132 @@ export async function registerMvpInvoicingRoutes(
   });
 
   // ------------------------------------------------------------
+  // Confirm Stripe payment (called after client confirmPayment succeeds)
+  // Checks PaymentIntent status and updates payment record immediately
+  // ------------------------------------------------------------
+  app.post("/api/invoices/:id/payments/stripe/confirm", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ success: false, error: "Missing user" });
+
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel) return res.status(404).json({ success: false, error: "Invoice not found" });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
+
+      const { paymentIntentId } = req.body;
+      if (!paymentIntentId || typeof paymentIntentId !== 'string') {
+        return res.status(400).json({ success: false, error: "Missing paymentIntentId" });
+      }
+
+      const [stripeConn] = await db
+        .select()
+        .from(integrationConnections)
+        .where(and(eq(integrationConnections.organizationId, organizationId), eq(integrationConnections.provider, 'stripe')))
+        .limit(1);
+
+      const stripeAccountId = stripeConn?.externalAccountId ? String(stripeConn.externalAccountId) : null;
+      if (!stripeAccountId) {
+        return res.status(409).json({ success: false, error: 'Stripe not connected', code: 'STRIPE_NOT_CONNECTED' });
+      }
+
+      // Retrieve PaymentIntent from Stripe
+      const stripe = getStripeClient();
+      const pi = await stripe.paymentIntents.retrieve(paymentIntentId, { stripeAccount: stripeAccountId } as any);
+      const piStatus = String((pi as any).status || '').toLowerCase();
+
+      const DEV = process.env.NODE_ENV === 'development';
+      if (DEV) {
+        console.log('[StripeConfirm] PaymentIntent status check', {
+          invoiceId: inv.id,
+          paymentIntentId,
+          piStatus,
+          organizationId,
+        });
+      }
+
+      // Find the payment record
+      const [payment] = await db
+        .select()
+        .from(payments)
+        .where(and(
+          eq(payments.organizationId, organizationId),
+          eq(payments.invoiceId, inv.id),
+          eq(payments.stripePaymentIntentId, paymentIntentId)
+        ))
+        .limit(1);
+
+      if (!payment) {
+        return res.status(404).json({ success: false, error: 'Payment record not found' });
+      }
+
+      const currentStatus = String((payment as any).status || '').toLowerCase();
+
+      // If PaymentIntent succeeded, update payment record immediately
+      if (piStatus === 'succeeded' && currentStatus !== 'succeeded') {
+        const now = new Date();
+        await db
+          .update(payments)
+          .set({ 
+            status: 'succeeded', 
+            paidAt: now, 
+            succeededAt: now, 
+            updatedAt: now 
+          } as any)
+          .where(eq(payments.id, (payment as any).id));
+
+        // Refresh invoice status to update paid/remaining totals
+        await refreshInvoiceStatus(inv.id);
+
+        if (DEV) {
+          console.log('[StripeConfirm] Payment marked as succeeded', {
+            invoiceId: inv.id,
+            paymentId: (payment as any).id,
+            paymentIntentId,
+          });
+        }
+      }
+
+      // Fetch updated invoice with payments for rollup
+      const updatedInvoice = await getInvoiceWithRelations(inv.id);
+      const paymentRows = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
+        .orderBy(desc(payments.createdAt));
+
+      const rollup = computeInvoicePaymentRollup({
+        invoiceTotalCents: Number(inv.totalCents || 0),
+        payments: paymentRows.map((p: any) => ({
+          id: p.id,
+          status: String(p.status || 'succeeded'),
+          amountCents: Number(p.amountCents || 0),
+        })),
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          paymentStatus: piStatus,
+          updated: piStatus === 'succeeded' && currentStatus !== 'succeeded',
+          invoice: updatedInvoice?.invoice,
+          rollup,
+        },
+      });
+    } catch (error: any) {
+      console.error('[StripeConfirm] failed', {
+        invoiceId: String(req?.params?.id || ''),
+        organizationId: getRequestOrganizationId(req) || null,
+        message: String(error?.message || error),
+      });
+      return res.status(500).json({ success: false, error: error.message || 'Failed to confirm payment' });
+    }
+  });
+
+  // ------------------------------------------------------------
   // Payments list (invoice-scoped, tenant-scoped)
   // ------------------------------------------------------------
   app.get('/api/invoices/:id/payments', isAuthenticated, tenantContext, async (req: any, res) => {
