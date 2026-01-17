@@ -5,6 +5,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "./use-toast";
+import type { QuickBooksSyncPolicy } from "@shared/quickBooksPreferences";
 
 export interface OrgPreferences {
   quotes?: {
@@ -26,6 +27,10 @@ export interface OrgPreferences {
     autoReserveOnOrderConfirm?: boolean;
     enforcementMode?: "off" | "warn_only" | "block_on_shortage";
     allowNegative?: boolean;
+  };
+
+  quickBooks?: {
+    syncPolicy?: QuickBooksSyncPolicy;
   };
 }
 

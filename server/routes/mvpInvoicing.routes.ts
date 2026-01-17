@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
@@ -10,6 +10,7 @@ import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } f
 import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
+import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -22,6 +23,18 @@ function getRequestOrganizationId(req: any): string | undefined {
 
 function paymentsDebugLogsEnabled(): boolean {
   return String(process.env.PAYMENTS_DEBUG_LOGS || '').trim() === '1';
+}
+
+async function getQuickBooksSyncPolicyForOrganization(organizationId: string): Promise<QuickBooksSyncPolicy> {
+  const [org] = await db
+    .select({ settings: organizations.settings })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+
+  const rawPreferences = (org?.settings as any)?.preferences;
+  const preferences = rawPreferences && typeof rawPreferences === "object" ? rawPreferences : {};
+  return resolveQuickBooksPreferencesFromOrgPreferences(preferences).syncPolicy;
 }
 
 function logStripeCreateIntentDebug(params: {
@@ -1256,42 +1269,47 @@ export async function registerMvpInvoicingRoutes(
         } as any);
       } catch {}
 
-      try {
-        const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
-        await db
-          .update(invoices)
-          .set({
-            qbInvoiceId: qb.qbInvoiceId,
-            externalAccountingId: qb.qbInvoiceId,
-            qbSyncStatus: "synced",
-            qbLastError: null,
-            syncStatus: "synced",
-            syncError: null,
-            syncedAt: new Date(),
-            lastQbSyncedVersion: Number(inv.invoiceVersion || 1),
-            updatedAt: new Date(),
-          } as any)
-          .where(eq(invoices.id, inv.id));
-      } catch (e: any) {
-        await db
-          .update(invoices)
-          .set({ qbSyncStatus: "failed", qbLastError: String(e?.message || e), syncStatus: "error", syncError: String(e?.message || e), updatedAt: new Date() } as any)
-          .where(eq(invoices.id, inv.id));
+      const qbSyncPolicy = await getQuickBooksSyncPolicyForOrganization(organizationId);
 
+      // Queue-only policy: never auto-push to QuickBooks on finalize/bill.
+      if (qbSyncPolicy !== "queue_only") {
         try {
-          await db.insert(auditLogs).values({
-            organizationId,
-            userId: userId || null,
-            userName,
-            actionType: "invoice_qb_sync_failed",
-            entityType: "invoice",
-            entityId: inv.id,
-            entityName: String(inv.invoiceNumber),
-            description: "QuickBooks invoice sync failed",
-            newValues: { error: String(e?.message || e) } as any,
-            createdAt: new Date(),
-          } as any);
-        } catch {}
+          const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, inv.id);
+          await db
+            .update(invoices)
+            .set({
+              qbInvoiceId: qb.qbInvoiceId,
+              externalAccountingId: qb.qbInvoiceId,
+              qbSyncStatus: "synced",
+              qbLastError: null,
+              syncStatus: "synced",
+              syncError: null,
+              syncedAt: new Date(),
+              lastQbSyncedVersion: Number(inv.invoiceVersion || 1),
+              updatedAt: new Date(),
+            } as any)
+            .where(eq(invoices.id, inv.id));
+        } catch (e: any) {
+          await db
+            .update(invoices)
+            .set({ qbSyncStatus: "failed", qbLastError: String(e?.message || e), syncStatus: "error", syncError: String(e?.message || e), updatedAt: new Date() } as any)
+            .where(eq(invoices.id, inv.id));
+
+          try {
+            await db.insert(auditLogs).values({
+              organizationId,
+              userId: userId || null,
+              userName,
+              actionType: "invoice_qb_sync_failed",
+              entityType: "invoice",
+              entityId: inv.id,
+              entityName: String(inv.invoiceNumber),
+              description: "QuickBooks invoice sync failed",
+              newValues: { error: String(e?.message || e) } as any,
+              createdAt: new Date(),
+            } as any);
+          } catch {}
+        }
       }
 
       const refreshed = await getInvoiceWithRelations(inv.id);
@@ -1773,19 +1791,22 @@ export async function registerMvpInvoicingRoutes(
 
       await db.update(invoices).set({ ...updates, ...financialUpdates, updatedAt: new Date() } as any).where(eq(invoices.id, id));
 
-      // Auto-attempt QB sync on billed+unpaid financial edits (fail-soft)
+      // Queue-only policy: never auto-push to QuickBooks on post-billing edits.
       if (hasFinancialBody && isBilledUnpaid) {
-        try {
-          const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, id);
-          await db
-            .update(invoices)
-            .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: nextInvoiceVersion, updatedAt: new Date() } as any)
-            .where(eq(invoices.id, id));
-        } catch (e: any) {
-          await db
-            .update(invoices)
-            .set({ qbSyncStatus: "failed", qbLastError: String(e?.message || e), syncStatus: "error", syncError: String(e?.message || e), updatedAt: new Date() } as any)
-            .where(eq(invoices.id, id));
+        const qbSyncPolicy = await getQuickBooksSyncPolicyForOrganization(organizationId);
+        if (qbSyncPolicy !== "queue_only") {
+          try {
+            const qb = await syncSingleInvoiceToQuickBooksForOrganization(organizationId, id);
+            await db
+              .update(invoices)
+              .set({ qbInvoiceId: qb.qbInvoiceId, externalAccountingId: qb.qbInvoiceId, qbSyncStatus: "synced", qbLastError: null, syncStatus: "synced", syncError: null, syncedAt: new Date(), lastQbSyncedVersion: nextInvoiceVersion, updatedAt: new Date() } as any)
+              .where(eq(invoices.id, id));
+          } catch (e: any) {
+            await db
+              .update(invoices)
+              .set({ qbSyncStatus: "failed", qbLastError: String(e?.message || e), syncStatus: "error", syncError: String(e?.message || e), updatedAt: new Date() } as any)
+              .where(eq(invoices.id, id));
+          }
         }
       }
 

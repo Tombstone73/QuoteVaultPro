@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -100,6 +101,14 @@ export default function SettingsIntegrations() {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const [isSyncing, setIsSyncing] = useState(false);
+
+  const { preferences: orgPreferences } = useOrgPreferences();
+  const qbSyncPolicy = orgPreferences?.quickBooks?.syncPolicy ?? 'queue_only';
+  const qbPushDisabled = qbSyncPolicy === 'queue_only';
+
+  const qbSyncPolicyLabel = qbSyncPolicy === 'queue_only'
+    ? 'Queue Only'
+    : (qbSyncPolicy === 'immediate' ? 'Immediate' : String(qbSyncPolicy || 'unknown'));
 
   const [importResource, setImportResource] = useState<'customers' | 'materials'>('customers');
   const [importApplyMode, setImportApplyMode] = useState<'MERGE_RESPECT_OVERRIDES' | 'MERGE_AND_SET_OVERRIDES'>('MERGE_RESPECT_OVERRIDES');
@@ -514,19 +523,31 @@ export default function SettingsIntegrations() {
                 Sync customers, invoices, and orders with QuickBooks
               </CardDescription>
             </div>
-            {isLoadingStatus ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : qbStatus?.connected ? (
-              <Badge className="bg-green-500">
-                <CheckCircle2 className="w-3 h-3 mr-1" />
-                Connected
-              </Badge>
-            ) : (
+            <div className="flex flex-col items-end gap-2">
+              {isLoadingStatus ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : qbStatus?.connected ? (
+                <Badge className="bg-green-500">
+                  <CheckCircle2 className="w-3 h-3 mr-1" />
+                  Connected
+                </Badge>
+              ) : (
+                <Badge variant="outline">
+                  <XCircle className="w-3 h-3 mr-1" />
+                  Not Connected
+                </Badge>
+              )}
+
               <Badge variant="outline">
-                <XCircle className="w-3 h-3 mr-1" />
-                Not Connected
+                Sync Policy: {qbSyncPolicyLabel}
               </Badge>
-            )}
+
+              <div className="text-xs text-muted-foreground">
+                {qbSyncPolicy === 'queue_only'
+                  ? 'Changes queue; worker/Sync now pushes later.'
+                  : 'May push immediately depending on actions.'}
+              </div>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -561,8 +582,9 @@ export default function SettingsIntegrations() {
                   </Button>
                   <Button
                     onClick={() => handleSync('push', ['customers'])}
-                    disabled={syncMutation.isPending || isSyncing}
+                    disabled={syncMutation.isPending || isSyncing || qbPushDisabled}
                     variant="outline"
+                    title={qbPushDisabled ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue instead).' : undefined}
                   >
                     <Upload className="w-4 h-4 mr-2" />
                     Push to QuickBooks
@@ -570,7 +592,7 @@ export default function SettingsIntegrations() {
                 </div>
                 <p className="text-xs text-muted-foreground mt-2">
                   Pull: Import customers, invoices, and orders from QuickBooks<br />
-                  Push: Send local customers to QuickBooks
+                  Push: {qbPushDisabled ? 'Disabled by org syncPolicy=queue_only (use QuickBooks Sync Queue / Sync now).' : 'Send local customers to QuickBooks'}
                 </p>
               </div>
 
