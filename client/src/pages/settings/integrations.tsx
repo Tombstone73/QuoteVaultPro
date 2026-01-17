@@ -10,6 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
+import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -35,6 +36,10 @@ import { format } from "date-fns";
 
 type QBConnectionStatus = {
   connected: boolean;
+  authState?: 'connected' | 'not_connected' | 'needs_reauth' | string;
+  healthState?: 'ok' | 'transient_error' | string;
+  healthMessage?: string;
+  lastErrorAt?: string;
   companyId?: string;
   connectedAt?: string;
   expiresAt?: string;
@@ -160,6 +165,9 @@ export default function SettingsIntegrations() {
   const { data: qbStatus, isLoading: isLoadingStatus } = useQuery<QBConnectionStatus>({
     queryKey: ["/api/integrations/quickbooks/status"],
   });
+
+  const qbAuthState = qbStatus?.authState ?? (qbStatus?.connected ? 'connected' : 'not_connected');
+  const qbNeedsReauth = qbAuthState === 'needs_reauth';
 
   const { data: qbQueue } = useQuery<QBSyncQueueEnvelope>({
     queryKey: ["/api/integrations/quickbooks/queue"],
@@ -526,6 +534,11 @@ export default function SettingsIntegrations() {
             <div className="flex flex-col items-end gap-2">
               {isLoadingStatus ? (
                 <Loader2 className="h-5 w-5 animate-spin" />
+              ) : qbNeedsReauth ? (
+                <Badge variant="destructive">
+                  <AlertCircle className="w-3 h-3 mr-1" />
+                  Reauth Required
+                </Badge>
               ) : qbStatus?.connected ? (
                 <Badge className="bg-green-500">
                   <CheckCircle2 className="w-3 h-3 mr-1" />
@@ -551,6 +564,8 @@ export default function SettingsIntegrations() {
           </div>
         </CardHeader>
         <CardContent>
+          <QBTransientDisconnectBanner qbStatus={qbStatus} className="mb-4" />
+
           {qbStatus?.connected ? (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4 text-sm">
@@ -620,6 +635,20 @@ export default function SettingsIntegrations() {
             </div>
           ) : (
             <div className="space-y-4">
+              {qbNeedsReauth ? (
+                <div className="bg-destructive/10 border border-destructive/30 p-4 rounded-lg">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-destructive mt-0.5" />
+                    <div>
+                      <h4 className="font-semibold">Reconnect required</h4>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {qbStatus?.message || 'QuickBooks authorization expired. Reconnect to resume sync.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="bg-muted p-4 rounded-lg">
                 <h4 className="font-semibold mb-2">What gets synced?</h4>
                 <ul className="text-sm space-y-1 text-muted-foreground">
@@ -628,10 +657,22 @@ export default function SettingsIntegrations() {
                   <li>• <strong>Orders:</strong> Sync completed orders as Sales Receipts</li>
                 </ul>
               </div>
-              <Button onClick={handleConnect} className="w-full">
-                <ExternalLink className="w-4 h-4 mr-2" />
-                Connect to QuickBooks
-              </Button>
+              <div className="grid grid-cols-1 gap-2">
+                <Button onClick={handleConnect} className="w-full">
+                  <ExternalLink className="w-4 h-4 mr-2" />
+                  {qbNeedsReauth ? 'Reconnect to QuickBooks' : 'Connect to QuickBooks'}
+                </Button>
+                {qbNeedsReauth ? (
+                  <Button
+                    onClick={() => disconnectMutation.mutate()}
+                    disabled={disconnectMutation.isPending}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    Disconnect
+                  </Button>
+                ) : null}
+              </div>
               <p className="text-xs text-muted-foreground">
                 You'll be redirected to QuickBooks to authorize the connection
               </p>

@@ -319,6 +319,10 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
   const role = user?.role ?? null;
   const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences);
 
+  const roleLower = String(role || '').toLowerCase();
+  const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(roleLower);
+  const requireApproval = preferences?.quotes?.requireApproval === true;
+
   // Fetch badge counts for items with badge=true
   const badgeQueries = filteredSections.flatMap(section => 
     section.items.filter(item => item.badge && item.badgeQuery)
@@ -334,8 +338,12 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       const data = await res.json();
       return data;
     },
-    enabled: badgeQueries.length > 0,
-    refetchInterval: 30000, // Refetch every 30 seconds
+    enabled: badgeQueries.length > 0 && isApprover && requireApproval,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    // Sidebar stays mounted across the app; avoid background polling noise.
+    // Counts will refresh on explicit invalidation (e.g. after approve actions) or on remount.
+    refetchInterval: false,
   });
 
   const badgeCounts: Record<string, number> = {

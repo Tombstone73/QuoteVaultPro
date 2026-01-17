@@ -1,7 +1,7 @@
 import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
-import { oauthConnections, accountingSyncJobs, customers, invoices, orders, payments, invoiceLineItems } from '../shared/schema';
+import { oauthConnections, accountingSyncJobs, customers, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
 import { eq, and, desc, or, isNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
@@ -33,6 +33,191 @@ const getOAuthClient = (): any => {
 
 function qbLogsEnabled(): boolean {
   return String(process.env.QB_DEBUG_LOGS || '').trim() === '1';
+}
+
+export type QuickBooksAuthState = 'connected' | 'not_connected' | 'needs_reauth';
+
+export type QuickBooksHealthState = 'ok' | 'transient_error';
+
+type QuickBooksAuthMetadata = {
+  state?: QuickBooksAuthState;
+  latchedAt?: string;
+  reason?: string;
+  message?: string;
+};
+
+type QuickBooksHealthMetadata = {
+  state?: QuickBooksHealthState;
+  lastErrorAt?: string;
+  message?: string;
+};
+
+function toOneLineTruncatedMessage(input: unknown, maxLen = 220): string {
+  const text = String(input || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\u0000/g, '')
+    .trim();
+  if (!text) return 'QuickBooks error';
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+function getQuickBooksAuthMetadata(connection: OAuthConnection | null): QuickBooksAuthMetadata | null {
+  if (!connection) return null;
+  const meta = (connection.metadata as any) || null;
+  const qbAuth = meta?.qbAuth || null;
+  if (!qbAuth || typeof qbAuth !== 'object') return null;
+  return qbAuth as QuickBooksAuthMetadata;
+}
+
+function getQuickBooksHealthMetadata(connection: OAuthConnection | null): QuickBooksHealthMetadata | null {
+  if (!connection) return null;
+  const meta = (connection.metadata as any) || null;
+  const qbHealth = meta?.qbHealth || null;
+  if (!qbHealth || typeof qbHealth !== 'object') return null;
+  return qbHealth as QuickBooksHealthMetadata;
+}
+
+function isTransientQuickBooksHttpStatus(status: number): boolean {
+  if (status === 429) return true;
+  if (status >= 500) return true;
+  return false;
+}
+
+function isTransientNetworkError(error: unknown): boolean {
+  const code = String((error as any)?.code || (error as any)?.cause?.code || '').toUpperCase();
+  const message = String((error as any)?.message || error || '').toLowerCase();
+
+  // undici / fetch timeout-ish
+  if (message.includes('timeout') || message.includes('timed out')) return true;
+  if (code.includes('TIMEOUT')) return true;
+
+  // common network failures
+  if (['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(code)) return true;
+  if (code.startsWith('UND_ERR_')) return true;
+
+  return false;
+}
+
+async function setQuickBooksTransientHealthError(params: {
+  organizationId: string;
+  connection: OAuthConnection;
+  message: string;
+}): Promise<void> {
+  const { organizationId, connection, message } = params;
+  const qbAuth = getQuickBooksAuthMetadata(connection);
+  if (qbAuth?.state === 'needs_reauth') return;
+
+  const nowIso = new Date().toISOString();
+  const nextMessage = toOneLineTruncatedMessage(message);
+  const existingMeta = (connection.metadata as any) || {};
+  const existingHealth = (existingMeta?.qbHealth as any) || null;
+  const existingAt = existingHealth?.lastErrorAt ? Date.parse(String(existingHealth.lastErrorAt)) : NaN;
+
+  // Avoid hammering DB if it's the same message repeatedly within ~60s.
+  if (
+    existingHealth?.state === 'transient_error' &&
+    String(existingHealth?.message || '') === nextMessage &&
+    Number.isFinite(existingAt) &&
+    Date.now() - existingAt < 60_000
+  ) {
+    return;
+  }
+
+  const nextMetadata = {
+    ...existingMeta,
+    qbHealth: {
+      state: 'transient_error',
+      lastErrorAt: nowIso,
+      message: nextMessage,
+    } satisfies QuickBooksHealthMetadata,
+  };
+
+  await db
+    .update(oauthConnections)
+    .set({
+      metadata: nextMetadata as any,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+}
+
+async function clearQuickBooksTransientHealth(params: { organizationId: string; connection: OAuthConnection }): Promise<void> {
+  const { organizationId, connection } = params;
+  const existingMeta = (connection.metadata as any) || {};
+  if (!existingMeta?.qbHealth) return;
+
+  const { qbHealth: _qbHealth, ...rest } = existingMeta;
+  await db
+    .update(oauthConnections)
+    .set({
+      metadata: rest as any,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
+}
+
+export async function getQuickBooksAuthStateForOrganization(organizationId: string): Promise<{
+  authState: QuickBooksAuthState;
+  message?: string;
+  connection: OAuthConnection | null;
+}> {
+  const connection = await getActiveConnection(organizationId);
+  if (!connection) return { authState: 'not_connected', message: 'QuickBooks not connected', connection: null };
+
+  const qbAuth = getQuickBooksAuthMetadata(connection);
+  if (qbAuth?.state === 'needs_reauth') {
+    return {
+      authState: 'needs_reauth',
+      message: qbAuth.message || 'QuickBooks connection needs reauthorization',
+      connection,
+    };
+  }
+
+  return { authState: 'connected', connection };
+}
+
+export async function isQuickBooksReauthRequiredForOrganization(organizationId: string): Promise<{ needsReauth: boolean; message?: string }> {
+  const connection = await getActiveConnection(organizationId);
+  const qbAuth = getQuickBooksAuthMetadata(connection);
+  if (qbAuth?.state === 'needs_reauth') return { needsReauth: true, message: qbAuth.message };
+  return { needsReauth: false };
+}
+
+function shouldLatchQuickBooksReauth(error: unknown): boolean {
+  const message = String((error as any)?.message || error || '').toLowerCase();
+  if (message.includes('invalid_grant') || message.includes('invalid grant')) return true;
+
+  try {
+    const raw = JSON.stringify(error);
+    const haystack = `${message} ${raw}`.toLowerCase();
+    if (haystack.includes('invalid_grant') || haystack.includes('invalid grant')) return true;
+  } catch {}
+
+  return false;
+}
+
+async function latchQuickBooksNeedsReauth(params: { organizationId: string; connection: OAuthConnection; error: unknown }): Promise<void> {
+  const { organizationId, connection, error } = params;
+  const message = String((error as any)?.message || error || 'QuickBooks refresh token is invalid').replace(/\s+/g, ' ').trim();
+  const existing = (connection.metadata as any) || {};
+  const nextMetadata = {
+    ...existing,
+    qbAuth: {
+      state: 'needs_reauth',
+      latchedAt: new Date().toISOString(),
+      reason: 'invalid_grant',
+      message: message || 'QuickBooks refresh token is invalid. Reconnect required.',
+    } satisfies QuickBooksAuthMetadata,
+  };
+
+  await db
+    .update(oauthConnections)
+    .set({
+      metadata: nextMetadata as any,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(oauthConnections.id, connection.id), eq(oauthConnections.organizationId, organizationId)));
 }
 
 function buildOAuthState(organizationId: string): string {
@@ -281,6 +466,12 @@ export async function refreshAccessTokenForOrganization(organizationId: string):
     return false;
   }
 
+  const qbAuth = getQuickBooksAuthMetadata(connection);
+  if (qbAuth?.state === 'needs_reauth') {
+    // Latch is set: do not attempt refresh and do not spam logs.
+    return false;
+  }
+
   const oauthClient = getOAuthClient();
   if (!oauthClient) {
     throw new Error('QuickBooks OAuth not configured');
@@ -306,6 +497,18 @@ export async function refreshAccessTokenForOrganization(organizationId: string):
 
     return true;
   } catch (error) {
+    if (shouldLatchQuickBooksReauth(error)) {
+      try {
+        await latchQuickBooksNeedsReauth({ organizationId, connection, error });
+      } catch (latchError) {
+        console.error('[QuickBooks] Failed to latch needs_reauth:', {
+          organizationId,
+          message: (latchError as any)?.message || String(latchError),
+        });
+      }
+      return false;
+    }
+
     console.error('[QuickBooks] Token refresh failed:', { organizationId, message: (error as any)?.message || String(error) });
     return false;
   }
@@ -342,6 +545,11 @@ export async function getValidAccessToken(): Promise<string | null> {
 export async function getValidAccessTokenForOrganization(organizationId: string): Promise<string | null> {
   const connection = await getActiveConnection(organizationId);
   if (!connection) {
+    return null;
+  }
+
+  const qbAuth = getQuickBooksAuthMetadata(connection);
+  if (qbAuth?.state === 'needs_reauth') {
     return null;
   }
 
@@ -584,7 +792,22 @@ async function makeQBRequest(
     options.body = JSON.stringify(body);
   }
 
-  const response = await fetch(url, options);
+  let response: Response;
+  try {
+    response = await fetch(url, options);
+  } catch (error: any) {
+    if (isTransientNetworkError(error)) {
+      try {
+        await setQuickBooksTransientHealthError({ organizationId: orgId, connection, message: String(error?.message || error) });
+      } catch (healthError) {
+        console.error('[QuickBooks] Failed to record transient health error:', {
+          organizationId: orgId,
+          message: (healthError as any)?.message || String(healthError),
+        });
+      }
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -630,10 +853,34 @@ async function makeQBRequest(
       : `QuickBooks API error: ${response.status} ${String(errorText || '').slice(0, 500)}`;
     const err: any = new Error(msg);
     err.statusCode = response.status;
+
+    if (isTransientQuickBooksHttpStatus(response.status)) {
+      try {
+        await setQuickBooksTransientHealthError({ organizationId: orgId, connection, message: msg });
+      } catch (healthError) {
+        console.error('[QuickBooks] Failed to record transient health error:', {
+          organizationId: orgId,
+          message: (healthError as any)?.message || String(healthError),
+        });
+      }
+    }
+
     throw err;
   }
 
-  return await response.json();
+  const data = await response.json();
+
+  // Successful QB call: clear transient health banner state if present.
+  try {
+    await clearQuickBooksTransientHealth({ organizationId: orgId, connection });
+  } catch (healthError) {
+    console.error('[QuickBooks] Failed to clear transient health state:', {
+      organizationId: orgId,
+      message: (healthError as any)?.message || String(healthError),
+    });
+  }
+
+  return data;
 }
 
 function escapeQBQueryString(value: string): string {

@@ -3,6 +3,7 @@ import { db } from "../db";
 import { auditLogs, invoices, oauthConnections, payments } from "../../shared/schema";
 import {
   getValidAccessTokenForOrganization,
+  isQuickBooksReauthRequiredForOrganization,
   syncSingleInvoiceToQuickBooksForOrganization,
   syncSinglePaymentToQuickBooksForOrganization,
 } from "../quickbooksService";
@@ -167,9 +168,25 @@ export async function runQuickBooksSyncWorkerForOrg(params: {
     payments: { attempted: 0, succeeded: 0, failed: 0 },
   };
 
+  const reauth = await isQuickBooksReauthRequiredForOrganization(organizationId);
+  if (reauth.needsReauth) {
+    if (log) {
+      console.log(`[QB Queue] skip org=${organizationId} needs_reauth`);
+    }
+    return result;
+  }
+
   // Ensure QB connected only once we have work to do.
   const token = await getValidAccessTokenForOrganization(organizationId);
   if (!token) {
+    const reauthAfter = await isQuickBooksReauthRequiredForOrganization(organizationId);
+    if (reauthAfter.needsReauth) {
+      if (log) {
+        console.log(`[QB Queue] skip org=${organizationId} needs_reauth`);
+      }
+      return result;
+    }
+
     const message = "QuickBooks is not connected for this organization";
 
     if (eligibleInvoices.length > 0) {
