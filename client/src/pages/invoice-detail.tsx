@@ -31,7 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Page } from "@/components/titan/Page";
 import { format } from "date-fns";
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import StripePayDialog from "@/components/payments/StripePayDialog";
 
@@ -42,6 +42,15 @@ type StripeIntegrationStatusEnvelope = {
     chargesEnabled?: boolean;
     stripeAccountId?: string | null;
   };
+};
+
+type QuickBooksIntegrationStatus = {
+  connected?: boolean;
+  message?: string;
+  companyId?: string;
+  connectedAt?: string;
+  expiresAt?: string;
+  error?: string;
 };
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -113,6 +122,7 @@ export default function InvoiceDetailPage() {
   const invoiceId = (params as any)?.id as string | undefined;
   const { user } = useAuth();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   const { data, isLoading, refetch } = useInvoice(invoiceId);
   const billInvoice = useBillInvoice();
@@ -478,6 +488,18 @@ export default function InvoiceDetailPage() {
     staleTime: 30000,
   });
 
+  const { data: quickbooksIntegrationStatus } = useQuery<QuickBooksIntegrationStatus>({
+    queryKey: ['/api/integrations/quickbooks/status'],
+    staleTime: 30000,
+  });
+
+  const truncate = (value: unknown, max = 160) => {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    if (text.length <= max) return text;
+    return `${text.slice(0, Math.max(0, max - 1))}…`;
+  };
+
   const effectiveCustomer: CustomerWithContacts | undefined =
     selectedCustomer || customerDetail || ((order?.customer as any) as CustomerWithContacts | undefined);
 
@@ -564,6 +586,39 @@ export default function InvoiceDetailPage() {
 
   const stripeConnected = stripeIntegrationStatus?.success === true && stripeIntegrationStatus?.data?.connected === true;
   const stripeChargesEnabled = stripeIntegrationStatus?.data?.chargesEnabled === true;
+
+  const qbConnected = quickbooksIntegrationStatus?.connected === true;
+  const invoiceHasQbInvoiceId = !!(invoice as any)?.qbInvoiceId;
+
+  const qbPaymentSyncMutation = useMutation({
+    mutationFn: async (paymentId: string) => {
+      const res = await fetch(`/api/payments/${encodeURIComponent(paymentId)}/qb/sync`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error((payload as any)?.error || (payload as any)?.message || 'Failed to sync payment to QuickBooks');
+      }
+
+      if ((payload as any)?.success === false) {
+        throw new Error((payload as any)?.error || 'Failed to sync payment to QuickBooks');
+      }
+
+      return payload;
+    },
+    onSuccess: async () => {
+      if (invoiceId) {
+        await queryClient.invalidateQueries({ queryKey: ['invoices', invoiceId] });
+        await queryClient.invalidateQueries({ queryKey: ['invoicePayments', invoiceId] });
+      }
+      toast({ title: 'Synced to QuickBooks' });
+    },
+    onError: (e: any) => {
+      toast({ title: 'QuickBooks sync failed', description: e?.message || 'Unknown error', variant: 'destructive' });
+    },
+  });
   const canPayInvoice =
     !!invoice &&
     isStaffUser &&
@@ -1543,6 +1598,7 @@ export default function InvoiceDetailPage() {
                               <TableHead>Status</TableHead>
                               <TableHead>Created By</TableHead>
                               <TableHead>Notes</TableHead>
+                              {isStaffUser && <TableHead>QB Sync</TableHead>}
                               {isStaffUser && <TableHead>Actions</TableHead>}
                             </TableRow>
                           </TableHeader>
@@ -1554,6 +1610,26 @@ export default function InvoiceDetailPage() {
                                 const isVoided = status === 'voided';
                                 const isSucceeded = status === 'succeeded';
                                 const canVoid = provider === 'manual' && isSucceeded && !isVoided;
+
+                                const syncStatusRaw = String(payment?.syncStatus || '').trim().toLowerCase();
+                                const syncErrorRaw = String(payment?.syncError || '').trim();
+                                const externalAccountingId = payment?.externalAccountingId ? String(payment.externalAccountingId) : '';
+                                const syncedAtRaw = payment?.syncedAt || null;
+
+                                const isSyncedToQb = !!externalAccountingId && syncStatusRaw === 'synced';
+                                const isQbSyncFailed = syncStatusRaw === 'failed';
+                                const qbSyncLabel = isSyncedToQb
+                                  ? 'Synced'
+                                  : (syncStatusRaw ? syncStatusRaw.replaceAll('_', ' ') : 'pending');
+
+                                const qbSyncDisabledReason = (() => {
+                                  if (!qbConnected) return 'QuickBooks is not connected for this organization.';
+                                  if (!invoiceHasQbInvoiceId) return 'Sync the invoice to QuickBooks first (needs QB Invoice ID).';
+                                  return '';
+                                })();
+
+                                const canAttemptQbSync = isSucceeded && !isVoided && qbConnected && invoiceHasQbInvoiceId;
+                                const isRowSyncing = qbPaymentSyncMutation.isPending && String(qbPaymentSyncMutation.variables || '') === String(payment.id);
 
                                 return (
                               <TableRow
@@ -1596,6 +1672,85 @@ export default function InvoiceDetailPage() {
                                   {payment.createdBy?.name || payment.createdBy?.email || '-'}
                                 </TableCell>
                                 <TableCell className="text-sm text-muted-foreground">{payment.notes || "-"}</TableCell>
+                                {isStaffUser && (
+                                  <TableCell>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      {isSyncedToQb ? (
+                                        <TooltipProvider>
+                                          <Tooltip>
+                                            <TooltipTrigger asChild>
+                                              <Badge variant="secondary" className="cursor-help">Synced</Badge>
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                              <div className="max-w-[280px] space-y-1">
+                                                <div className="text-xs">QB Payment ID: <span className="font-medium">{externalAccountingId}</span></div>
+                                                <div className="text-xs">Synced: <span className="font-medium">{formatDate(syncedAtRaw)}</span></div>
+                                              </div>
+                                            </TooltipContent>
+                                          </Tooltip>
+                                        </TooltipProvider>
+                                      ) : (
+                                        <TooltipProvider>
+                                          <Tooltip>
+                                            <TooltipTrigger asChild>
+                                              <Badge
+                                                variant={isQbSyncFailed ? 'destructive' : 'outline'}
+                                                className={syncErrorRaw ? 'cursor-help' : undefined}
+                                              >
+                                                {qbSyncLabel}
+                                              </Badge>
+                                            </TooltipTrigger>
+                                            {syncErrorRaw ? (
+                                              <TooltipContent>
+                                                <div className="max-w-[320px] text-xs">
+                                                  {truncate(syncErrorRaw, 220)}
+                                                </div>
+                                              </TooltipContent>
+                                            ) : (
+                                              <TooltipContent>
+                                                <div className="text-xs text-muted-foreground">Not synced to QuickBooks yet.</div>
+                                              </TooltipContent>
+                                            )}
+                                          </Tooltip>
+                                        </TooltipProvider>
+                                      )}
+
+                                      {!isSyncedToQb && isSucceeded && !isVoided ? (
+                                        qbSyncDisabledReason ? (
+                                          <TooltipProvider>
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <span>
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    disabled
+                                                  >
+                                                    {isQbSyncFailed ? 'Retry Sync' : 'Sync to QuickBooks'}
+                                                  </Button>
+                                                </span>
+                                              </TooltipTrigger>
+                                              <TooltipContent>
+                                                <div className="max-w-[320px] text-xs">{qbSyncDisabledReason}</div>
+                                              </TooltipContent>
+                                            </Tooltip>
+                                          </TooltipProvider>
+                                        ) : (
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => qbPaymentSyncMutation.mutate(String(payment.id))}
+                                            disabled={!canAttemptQbSync || isRowSyncing}
+                                          >
+                                            {isRowSyncing ? 'Syncing…' : (isQbSyncFailed ? 'Retry Sync' : 'Sync to QuickBooks')}
+                                          </Button>
+                                        )
+                                      ) : (
+                                        <span className="text-xs text-muted-foreground">-</span>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                )}
                                 {isStaffUser && (
                                   <TableCell>
                                     {canVoid ? (

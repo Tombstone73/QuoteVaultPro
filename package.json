@@ -118,7 +118,7 @@
     "react-router-dom": "^7.9.6",
     "recharts": "^2.15.2",
     "sharp": "^0.33.5",
-    "stripe": "^20.1.2",
+    "stripe": "^20.2.0",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "tw-animate-css": "^1.2.5",
