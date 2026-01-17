@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PdfViewer } from "@/components/media/PdfViewer";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import {
@@ -22,7 +23,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw, CreditCard, HandCoins } from "lucide-react";
+import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
 import { useInvoice, useBillInvoice, useRetryInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment } from "@/hooks/useInvoices";
@@ -34,6 +35,7 @@ import { CustomerSelect, type CustomerWithContacts } from "@/components/Customer
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { TimelinePanel } from "@/components/TimelinePanel";
 import StripePayDialog from "@/components/payments/StripePayDialog";
+import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransientDisconnectBanner";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -46,6 +48,10 @@ type StripeIntegrationStatusEnvelope = {
 
 type QuickBooksIntegrationStatus = {
   connected?: boolean;
+  authState?: 'connected' | 'not_connected' | 'needs_reauth' | string;
+  healthState?: 'ok' | 'transient_error' | string;
+  healthMessage?: string;
+  lastErrorAt?: string;
   message?: string;
   companyId?: string;
   connectedAt?: string;
@@ -493,6 +499,8 @@ export default function InvoiceDetailPage() {
     staleTime: 30000,
   });
 
+  const qbAuthState = quickbooksIntegrationStatus?.authState ?? (quickbooksIntegrationStatus?.connected ? 'connected' : 'not_connected');
+
   const truncate = (value: unknown, max = 160) => {
     const text = String(value || '').trim();
     if (!text) return '';
@@ -594,6 +602,10 @@ export default function InvoiceDetailPage() {
   const stripeChargesEnabled = stripeIntegrationStatus?.data?.chargesEnabled === true;
 
   const qbConnected = quickbooksIntegrationStatus?.connected === true;
+
+  // Transient QB outage banner (dismissible). Needs-reauth remains non-dismissible and is handled elsewhere.
+  const showTransientQbBanner = qbAuthState === 'connected';
+  const showQbNeedsReauthBanner = qbAuthState === 'needs_reauth';
   const invoiceHasQbInvoiceId = !!(invoice as any)?.qbInvoiceId;
 
   const qbPaymentSyncMutation = useMutation({
@@ -893,6 +905,13 @@ export default function InvoiceDetailPage() {
             setTimeout(() => refetch(), 3500);
           }}
         />
+
+        {showTransientQbBanner ? (
+          <QBTransientDisconnectBanner
+            qbStatus={quickbooksIntegrationStatus}
+            showOpenIntegrations
+          />
+        ) : null}
 
         {showLoading ? (
           <div className="text-center py-12">Loading invoice...</div>
@@ -1591,6 +1610,30 @@ export default function InvoiceDetailPage() {
                           )}
                         </div>
                       </div>
+
+                      {showQbNeedsReauthBanner ? (
+                        <Alert variant="destructive">
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertTitle>QuickBooks authorization expired</AlertTitle>
+                          <AlertDescription>
+                            <div className="flex flex-col gap-2">
+                              <div>Reconnect to resume syncing.</div>
+                              <div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8"
+                                  onClick={() => navigate('/settings/integrations')}
+                                >
+                                  <ExternalLink className="mr-2 h-4 w-4" />
+                                  Open Integrations
+                                </Button>
+                              </div>
+                            </div>
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
 
                       {isStaffUser && qbConnected ? (
                         <div className="text-xs text-muted-foreground">

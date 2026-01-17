@@ -55,7 +55,9 @@ export default function Home() {
       return data;
     },
     enabled: showApprovalsCard,
-    refetchInterval: 30000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 120_000,
   });
 
   const pendingApprovalsCount = approvalsData?.count || 0;

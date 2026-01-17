@@ -70,6 +70,9 @@ export default function ApprovalsPage() {
       }>;
     },
     enabled: isApprover && requireApproval,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchInterval: 120_000,
   });
 
   const approveMutation = useMutation({

@@ -112,6 +112,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
             queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
             queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes/pending-approvals"] });
             toast({ title: "Quote Approved", description: "Quote has been approved and locked" });
         },
         onError: (error: Error) => {
@@ -151,6 +152,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
             queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
             queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes/pending-approvals"] });
             toast({ title: "Quote Approved & Sent", description: "Quote has been approved and marked as sent" });
         },
         onError: (error: Error) => {
@@ -176,6 +178,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
             queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
             queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/quotes/pending-approvals"] });
             toast({ title: "Approval Requested", description: "Quote submitted for approval" });
         },
         onError: (error: Error) => {
