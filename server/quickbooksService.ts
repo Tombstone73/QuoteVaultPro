@@ -867,10 +867,26 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     return { qbPaymentId: String(qb.Id) };
   }
 
-  const created = await makeQBRequest('POST', '/payment', qbPaymentData, organizationId);
-  const qb = created?.Payment;
-  if (!qb?.Id) throw new Error('QuickBooks payment create returned no Id');
-  return { qbPaymentId: String(qb.Id) };
+  try {
+    const created = await makeQBRequest('POST', '/payment', qbPaymentData, organizationId);
+    const qb = created?.Payment;
+    if (!qb?.Id) throw new Error('QuickBooks payment create returned no Id');
+    return { qbPaymentId: String(qb.Id) };
+  } catch (err: any) {
+    // If QB reports a duplicate/already-exists condition, attempt a last-chance resolve by PrivateNote.
+    // This keeps the operation idempotent even under race conditions.
+    const msg = String(err?.message || '').toLowerCase();
+    const isDuplicate = msg.includes('duplicate') || msg.includes('already exists') || msg.includes('already-exists');
+    if (!isDuplicate) throw err;
+
+    const retryFindResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
+    const retryFound = retryFindResp?.QueryResponse?.Payment?.[0];
+    if (retryFound?.Id) {
+      return { qbPaymentId: String(retryFound.Id) };
+    }
+
+    throw err;
+  }
 }
 
 // ==================== Customer Sync Processors ====================

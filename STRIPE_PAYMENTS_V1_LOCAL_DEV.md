@@ -88,3 +88,32 @@ To exercise `payment_failed` via the UI, use a Stripe test card that declines (t
 - The webhook handler expects `PaymentIntent.metadata.organizationId` and `PaymentIntent.metadata.invoiceId`.
 - The `/api/invoices/:id/payments/stripe/create-intent` route sets metadata automatically.
 - To enable server-side Stripe create-intent debug logs, set `PAYMENTS_DEBUG_LOGS=1`.
+
+## QuickBooks Payment Sync (MVP)
+
+### Preconditions
+
+- QuickBooks integration is connected for the current organization.
+- The invoice is already synced to QuickBooks (invoice has `qbInvoiceId`).
+- Payment is a single, succeeded payment tied to a single invoice.
+
+Important: Partial payments and multi-invoice payments are not supported in MVP.
+
+### Steps
+
+1) Pay an invoice via Stripe (see **End-to-end UI flow** above).
+2) On the invoice detail page → **Payment History**:
+	- Find the payment row
+	- Click **Sync to QuickBooks**
+3) Expected results:
+	- Payment row shows **Synced**
+	- Re-clicking sync is idempotent (no duplicate QB payments)
+
+### DB verification
+
+```sql
+select id, status, provider, invoice_id, sync_status, external_accounting_id, synced_at, sync_error, updated_at
+from payments
+where invoice_id = '<INVOICE_ID>'
+order by created_at desc;
+```

@@ -4,7 +4,7 @@ import { db } from "../db";
 import { auditLogs, companySettings, customers, invoiceLineItems, invoices, orders, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceFromOrder, getInvoiceWithRelations, refreshInvoiceStatus } from "../invoicesService";
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
-import { syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
+import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
 import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
 import { generateInvoicePdfBytes } from "../services/invoicePdf";
@@ -64,6 +64,13 @@ function extractQuickBooksErrorMessage(err: any): { message: string; statusCode:
   }
 
   return { message: raw.slice(0, 800), statusCode };
+}
+
+function toOneLineHumanMessage(input: unknown, maxLen = 220): string {
+  const text = String(input || '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'QuickBooks sync failed';
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
 }
 
 export async function registerMvpInvoicingRoutes(
@@ -1464,9 +1471,62 @@ export async function registerMvpInvoicingRoutes(
       const p: any = existing[0];
       if (!p) return res.status(404).json({ success: false, error: "Payment not found" });
 
+      // Future-compatibility guard:
+      // This route intentionally assumes one payment applies to one invoice.
+      // Multi-invoice and partial payment support will be implemented via
+      // a PaymentReceipt + PaymentApplication model in a future milestone.
+      const invoiceId = p?.invoiceId ? String(p.invoiceId).trim() : '';
+      if (!invoiceId) {
+        return res.status(400).json({ success: false, error: 'Payment is missing invoiceId', code: 'PAYMENT_MISSING_INVOICE' });
+      }
+
       const paymentStatus = String(p.status || '').toLowerCase();
       if (paymentStatus !== 'succeeded') {
         return res.status(400).json({ success: false, error: "Only succeeded payments can be synced to QuickBooks" });
+      }
+
+      const existingExternalId = p?.externalAccountingId ? String(p.externalAccountingId).trim() : '';
+      const existingSyncStatus = String(p?.syncStatus || '').toLowerCase();
+
+      // Idempotency: if already synced (or has external id), do NOT call QuickBooks again.
+      if (existingExternalId || existingSyncStatus === 'synced') {
+        const now = new Date();
+        if (existingExternalId && existingSyncStatus !== 'synced') {
+          // Normalize local state to reflect the known external accounting link.
+          await db
+            .update(payments)
+            .set({
+              syncStatus: 'synced',
+              syncError: null,
+              syncedAt: p?.syncedAt || now,
+              updatedAt: now,
+            } as any)
+            .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
+        }
+
+        return res.json({
+          success: true,
+          message: 'Payment already synced',
+          data: { qbPaymentId: existingExternalId || null },
+        });
+      }
+
+      // Preconditions: QB must be connected and invoice must already be synced (qbInvoiceId).
+      const token = await getValidAccessTokenForOrganization(organizationId);
+      if (!token) {
+        return res.status(409).json({ success: false, error: 'QuickBooks is not connected for this organization', code: 'QB_NOT_CONNECTED' });
+      }
+
+      const [inv] = await db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)))
+        .limit(1);
+      if (!inv) return res.status(404).json({ success: false, error: 'Invoice not found for payment' });
+
+      const qbInvoiceId = String((inv as any).qbInvoiceId || '').trim();
+      if (!qbInvoiceId) {
+        return res.status(409).json({ success: false, error: 'Invoice must be synced to QuickBooks before syncing payments', code: 'QB_INVOICE_NOT_SYNCED' });
       }
 
       try {
@@ -1510,12 +1570,13 @@ export async function registerMvpInvoicingRoutes(
         return res.json({ success: true, data: { qbPaymentId: qb.qbPaymentId } });
       } catch (e: any) {
         const extracted = extractQuickBooksErrorMessage(e);
+        const oneLine = toOneLineHumanMessage(extracted.message);
 
         await db
           .update(payments)
           .set({
             syncStatus: 'failed',
-            syncError: extracted.message,
+            syncError: oneLine,
             updatedAt: new Date(),
           } as any)
           .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)));
@@ -1541,7 +1602,7 @@ export async function registerMvpInvoicingRoutes(
           });
         }
 
-        return res.status(extracted.statusCode).json({ success: false, error: extracted.message, code: 'QB_PAYMENT_SYNC_FAILED' });
+        return res.status(extracted.statusCode).json({ success: false, error: oneLine, code: 'QB_PAYMENT_SYNC_FAILED' });
       }
     } catch (error: any) {
       console.error("Error syncing payment to QB:", error);
