@@ -140,9 +140,16 @@ process.on('uncaughtException', (error) => {
 
         // QB queue worker (outbox-like): sync pending/failed invoices & payments on an interval.
         // Fail-soft by design; avoids any QB calls when there is nothing eligible.
-        const intervalMs = Math.max(60_000, Number(process.env.QB_SYNC_QUEUE_INTERVAL_MS || String(5 * 60_000)));
+        const intervalMs = Number(process.env.QB_SYNC_QUEUE_INTERVAL_MS || String(5 * 60_000));
         const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
         const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
+
+        console.log('[Server] QuickBooks queue worker enabled', {
+          intervalMs,
+          settleWindowMinutes,
+          limitPerRun,
+          policy: 'interval=pending-only, flush=pending+failed',
+        });
 
         setInterval(async () => {
           try {

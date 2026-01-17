@@ -827,12 +827,15 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
   const txnDate = new Date(paidAtRaw as any);
   const txnDateStr = Number.isNaN(txnDate.getTime()) ? new Date().toISOString().split('T')[0] : txnDate.toISOString().split('T')[0];
 
-  const privateNote = `QVP payment ${String((payment as any).id)}`;
+  const localPaymentId = String((payment as any).id);
+  const paymentRefNum = `QVP-${localPaymentId}`;
+  const privateNote = `QVP payment ${localPaymentId}`;
 
   const qbPaymentData: any = {
     CustomerRef: { value: qbCustomerId },
     TotalAmt: amount,
     TxnDate: txnDateStr,
+    PaymentRefNum: paymentRefNum,
     PrivateNote: privateNote,
     Line: [
       {
@@ -853,8 +856,8 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     return { qbPaymentId: String(qb.Id) };
   }
 
-  // Idempotency fallback: query by PrivateNote if link missing.
-  const findQuery = `SELECT Id FROM Payment WHERE PrivateNote = '${escapeQBQueryString(privateNote)}' MAXRESULTS 1`;
+  // Idempotency fallback: query by PaymentRefNum (PrivateNote is not queryable in QB).
+  const findQuery = `SELECT Id FROM Payment WHERE PaymentRefNum = '${escapeQBQueryString(paymentRefNum)}' MAXRESULTS 1`;
   const findResp = await makeQBRequest('GET', `/query?query=${encodeURIComponent(findQuery)}`, undefined, organizationId);
   const found = findResp?.QueryResponse?.Payment?.[0];
   if (found?.Id) {
@@ -873,7 +876,7 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
     if (!qb?.Id) throw new Error('QuickBooks payment create returned no Id');
     return { qbPaymentId: String(qb.Id) };
   } catch (err: any) {
-    // If QB reports a duplicate/already-exists condition, attempt a last-chance resolve by PrivateNote.
+    // If QB reports a duplicate/already-exists condition, attempt a last-chance resolve by PaymentRefNum.
     // This keeps the operation idempotent even under race conditions.
     const msg = String(err?.message || '').toLowerCase();
     const isDuplicate = msg.includes('duplicate') || msg.includes('already exists') || msg.includes('already-exists');

@@ -41,6 +41,7 @@ import { registerOrderRoutes } from "./routes/orders.routes";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
+import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 
 // Use local auth for development, Replit auth for production
@@ -675,9 +676,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Ensure stable defaults for inventory policy toggles
       const inventoryPolicy = resolveInventoryPolicyFromOrgPreferences(preferences);
 
+      // Ensure stable defaults for QuickBooks preferences
+      const quickBooks = resolveQuickBooksPreferencesFromOrgPreferences(preferences);
+
       res.json({
         ...(preferences as any),
         inventoryPolicy,
+        quickBooks,
       });
     } catch (error) {
       console.error("Error fetching organization preferences:", error);
@@ -820,6 +825,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const canonicalPreferences = {
         ...(updatedPreferences as any),
         inventoryPolicy: resolveInventoryPolicyFromOrgPreferences(updatedPreferences),
+        quickBooks: resolveQuickBooksPreferencesFromOrgPreferences(updatedPreferences),
       };
 
       return res.json({
@@ -9891,6 +9897,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       const { resources } = req.body;
 
+      // Enforce queue-only policy by default: disable legacy "push" job queuing.
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      const rawPreferences = (org?.settings as any)?.preferences;
+      const preferences = rawPreferences && typeof rawPreferences === 'object' ? rawPreferences : {};
+      const qbSyncPolicy = resolveQuickBooksPreferencesFromOrgPreferences(preferences).syncPolicy;
+      if (qbSyncPolicy === 'queue_only') {
+        return res.status(409).json({
+          success: false,
+          error: 'QuickBooks push is disabled by syncPolicy=queue_only. Use the QuickBooks Sync Queue (scheduled worker / Sync now) or per-item Sync buttons.',
+          syncPolicy: qbSyncPolicy,
+        });
+      }
+
       if (!Array.isArray(resources) || resources.length === 0) {
         return res.status(400).json({ error: 'Resources array required' });
       }
@@ -9980,14 +10003,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
    */
   app.post('/api/integrations/quickbooks/jobs/trigger', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      // Trigger worker processing (non-blocking)
+      const organizationId = getRequestOrganizationId(req);
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      const rawPreferences = (org?.settings as any)?.preferences;
+      const preferences = rawPreferences && typeof rawPreferences === 'object' ? rawPreferences : {};
+      const qbSyncPolicy = resolveQuickBooksPreferencesFromOrgPreferences(preferences).syncPolicy;
+
+      // Under queue-only, treat the legacy trigger as a flush of the derived queue.
+      if (qbSyncPolicy === 'queue_only') {
+        const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+        const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
+
+        const result = await runQuickBooksSyncWorkerForOrg({
+          organizationId,
+          settleWindowMinutes,
+          limitPerRun,
+          ignoreSettleWindow: true,
+          includeFailed: true,
+          log: true,
+        });
+
+        return res.json({
+          success: true,
+          message: 'QuickBooks queue flush completed',
+          data: result,
+          syncPolicy: qbSyncPolicy,
+        });
+      }
+
+      // Otherwise, trigger the legacy job processor (non-blocking)
       syncWorker.triggerJobProcessing().catch((error) => {
         console.error('[QB Manual Trigger] Error:', error);
       });
 
-      res.json({
+      return res.json({
         success: true,
-        message: 'Sync job processing triggered'
+        message: 'Sync job processing triggered',
+        syncPolicy: qbSyncPolicy,
       });
     } catch (error: any) {
       console.error('[QB Manual Trigger] Error:', error);

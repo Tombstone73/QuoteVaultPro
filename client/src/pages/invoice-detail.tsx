@@ -571,7 +571,13 @@ export default function InvoiceDetailPage() {
 
   const customerHasLatest = lastSentVersion === invoiceVersion;
   const qbUpToDate = lastQbSyncedVersion === invoiceVersion;
-  const qbSyncLabel = qbFailed ? 'Failed' : (qbUpToDate ? 'Synced' : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Needs resync'));
+  const qbSyncLabel = qbFailed
+    ? 'Failed'
+    : (qbUpToDate
+      ? 'Synced'
+      : (qbSyncStatusRaw === 'pending'
+        ? 'Queued for QB'
+        : (qbSyncStatusRaw ? qbSyncStatusRaw.replaceAll('_', ' ') : 'Needs resync')));
   const showRetrySync = isAdminOrOwner && (qbFailed || !qbUpToDate);
 
   const qbWarningMessage = (() => {
@@ -1125,11 +1131,11 @@ export default function InvoiceDetailPage() {
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button onClick={handleBill} disabled={billInvoice.isPending}>
-                              {billInvoice.isPending ? 'Finalizing…' : 'Finalize & Sync'}
+                              {billInvoice.isPending ? 'Finalizing…' : 'Finalize'}
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>
-                            Finalizes the invoice and attempts QuickBooks sync. Local billing is not blocked if sync fails.
+                            Finalizes the invoice and queues it for QuickBooks. Use “Process Pending Jobs / Sync now” to push.
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
@@ -1585,6 +1591,12 @@ export default function InvoiceDetailPage() {
                           )}
                         </div>
                       </div>
+
+                      {isStaffUser && qbConnected ? (
+                        <div className="text-xs text-muted-foreground">
+                          Queued for QuickBooks — run “Process Pending Jobs / Sync now” to push now.
+                        </div>
+                      ) : null}
 
                       {paymentsList.length === 0 ? (
                         <div className="text-center py-8 text-muted-foreground">No payments recorded</div>
