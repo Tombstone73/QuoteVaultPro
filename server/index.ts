@@ -7,6 +7,7 @@ import { startSyncWorker } from "./workers/syncProcessor";
 import { startThumbnailWorker } from "./workers/thumbnailWorker";
 import { assetPreviewWorker } from "./workers/assetPreviewWorker";
 import { assertStripeServerConfig } from "./lib/stripe";
+import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 
 const app = express();
 
@@ -136,6 +137,40 @@ process.on('uncaughtException', (error) => {
       if (process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET) {
         console.log('[Server] Starting QuickBooks sync worker...');
         startSyncWorker();
+
+        // QB queue worker (outbox-like): sync pending/failed invoices & payments on an interval.
+        // Fail-soft by design; avoids any QB calls when there is nothing eligible.
+        const intervalMs = Math.max(60_000, Number(process.env.QB_SYNC_QUEUE_INTERVAL_MS || String(5 * 60_000)));
+        const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+        const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
+
+        setInterval(async () => {
+          try {
+            const orgIds = await listQuickBooksConnectedOrganizationIds();
+            if (orgIds.length === 0) return;
+
+            for (const organizationId of orgIds) {
+              // Only log when there is actual work to do.
+              const run = await runQuickBooksSyncWorkerForOrg({
+                organizationId,
+                settleWindowMinutes,
+                limitPerRun,
+                ignoreSettleWindow: false,
+                includeFailed: false,
+                log: false,
+              });
+
+              const attempted = run.invoices.attempted + run.payments.attempted;
+              if (attempted > 0) {
+                console.log(
+                  `[QB QueueTick] org=${organizationId} inv=${run.invoices.succeeded}/${run.invoices.failed} pay=${run.payments.succeeded}/${run.payments.failed}`
+                );
+              }
+            }
+          } catch (e) {
+            console.error('[QB QueueTick] failed:', e);
+          }
+        }, intervalMs);
       } else {
         console.log('[Server] QuickBooks not configured, sync worker disabled');
       }

@@ -40,6 +40,28 @@ type QBConnectionStatus = {
   message?: string;
 };
 
+type QBSyncQueueEnvelope = {
+  success: boolean;
+  data?: {
+    settleWindowMinutes: number;
+    invoices: { pending: number; failed: number };
+    payments: { pending: number; failed: number };
+    nextEligibleCounts: { invoices: number; payments: number };
+  };
+  error?: string;
+};
+
+type QBFlushEnvelope = {
+  success: boolean;
+  data?: {
+    settleWindowMinutes: number;
+    ignoreSettleWindow: boolean;
+    invoices: { attempted: number; succeeded: number; failed: number };
+    payments: { attempted: number; succeeded: number; failed: number };
+  };
+  error?: string;
+};
+
 type SyncJob = {
   id: string;
   provider: string;
@@ -128,6 +150,38 @@ export default function SettingsIntegrations() {
   // Fetch QB connection status
   const { data: qbStatus, isLoading: isLoadingStatus } = useQuery<QBConnectionStatus>({
     queryKey: ["/api/integrations/quickbooks/status"],
+  });
+
+  const { data: qbQueue } = useQuery<QBSyncQueueEnvelope>({
+    queryKey: ["/api/integrations/quickbooks/queue"],
+    enabled: qbStatus?.connected === true,
+    refetchInterval: 30000,
+  });
+
+  const qbFlushMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/integrations/quickbooks/flush', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = (await response.json().catch(() => ({}))) as QBFlushEnvelope;
+      if (!response.ok || (data as any)?.success === false) {
+        throw new Error((data as any)?.error || 'Failed to flush QuickBooks queue');
+      }
+      return data;
+    },
+    onSuccess: async (data) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/integrations/quickbooks/queue"] });
+      const inv = data?.data?.invoices;
+      const pay = data?.data?.payments;
+      toast({
+        title: 'QuickBooks sync queued',
+        description: `Invoices: ${inv?.succeeded || 0} ok, ${inv?.failed || 0} failed. Payments: ${pay?.succeeded || 0} ok, ${pay?.failed || 0} failed.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'QuickBooks sync failed', description: error.message, variant: 'destructive' });
+    },
   });
 
   const { data: stripeStatus, isLoading: isLoadingStripeStatus } = useQuery<StripeStatusEnvelope>({
@@ -356,6 +410,61 @@ export default function SettingsIntegrations() {
       </div>
     );
   }
+
+              {/* QuickBooks Sync Queue (derived outbox) */}
+              <div>
+                <h3 className="font-semibold mb-3">QuickBooks Sync Queue</h3>
+                <div className="grid gap-3 rounded-lg border bg-card p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-muted-foreground">
+                      Settle window:{" "}
+                      <span className="font-medium text-foreground">{qbQueue?.data?.settleWindowMinutes ?? 10} min</span>
+                      <span className="mx-2 text-muted-foreground/50">•</span>
+                      Eligible now:{" "}
+                      <span className="font-medium text-foreground">
+                        {qbQueue?.data?.nextEligibleCounts?.invoices ?? 0} invoices, {qbQueue?.data?.nextEligibleCounts?.payments ?? 0} payments
+                      </span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => qbFlushMutation.mutate()}
+                      disabled={qbFlushMutation.isPending}
+                    >
+                      <RefreshCw className={`w-4 h-4 mr-2 ${qbFlushMutation.isPending ? 'animate-spin' : ''}`} />
+                      Sync now
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                    <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
+                      <div>
+                        <div className="font-medium">Invoices</div>
+                        <div className="text-xs text-muted-foreground">pending + failed</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">Pending: {qbQueue?.data?.invoices?.pending ?? 0}</Badge>
+                        <Badge variant="destructive">Failed: {qbQueue?.data?.invoices?.failed ?? 0}</Badge>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
+                      <div>
+                        <div className="font-medium">Payments</div>
+                        <div className="text-xs text-muted-foreground">pending + failed</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">Pending: {qbQueue?.data?.payments?.pending ?? 0}</Badge>
+                        <Badge variant="destructive">Failed: {qbQueue?.data?.payments?.failed ?? 0}</Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-muted-foreground">
+                    Sync now ignores the settle window (operator override). Partial or multi-invoice payments are not supported in MVP.
+                  </div>
+                </div>
+              </div>
 
   const getStatusBadge = (status: string) => {
     switch (status) {

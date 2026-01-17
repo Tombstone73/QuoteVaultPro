@@ -205,6 +205,7 @@ import type { FileRole, FileSide } from "./lib/supabaseObjectHelpers";
 import { getInvoiceWithRelations, applyPayment, refreshInvoiceStatus } from './invoicesService';
 import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
 import { registerMvpInvoicingRoutes } from './routes/mvpInvoicing.routes';
+import { getQuickBooksSyncQueueCountsForOrg, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from './services/quickbooksSyncQueueWorker';
 
 // Helper function to get userId from request user object
 // Handles both Replit auth (claims.sub) and local auth (id) formats
@@ -9407,6 +9408,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error('[QB Status] Error:', error);
       res.status(500).json({ error: 'Failed to check QuickBooks status' });
+    }
+  });
+
+  /**
+   * GET /api/integrations/quickbooks/queue
+   * Derived outbox-like queue (no QuickBooks API calls)
+   */
+  app.get('/api/integrations/quickbooks/queue', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
+
+      const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+      const data = await getQuickBooksSyncQueueCountsForOrg({ organizationId, settleWindowMinutes });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      console.error('[QB Queue] Error:', error);
+      return res.status(500).json({ success: false, error: 'Failed to fetch QuickBooks sync queue' });
+    }
+  });
+
+  /**
+   * POST /api/integrations/quickbooks/flush
+   * Operator override: runs queue worker immediately for current org.
+   * NOTE: This flush ignores the settle window by design.
+   */
+  app.post('/api/integrations/quickbooks/flush', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: 'Missing organization context' });
+
+      const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+      const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
+
+      const result = await runQuickBooksSyncWorkerForOrg({
+        organizationId,
+        settleWindowMinutes,
+        limitPerRun,
+        ignoreSettleWindow: true,
+        includeFailed: true,
+        log: true,
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      console.error('[QB Flush] Error:', error);
+      // Fail-soft: never crash; return envelope.
+      return res.status(500).json({ success: false, error: error.message || 'Failed to flush QuickBooks sync queue' });
     }
   });
 
