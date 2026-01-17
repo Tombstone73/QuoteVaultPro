@@ -21,6 +21,49 @@ stripe listen --forward-to localhost:5000/api/payments/stripe/webhook
 
 3) Copy the printed `whsec_...` value into `STRIPE_WEBHOOK_SECRET` (see `.env.example`).
 
+## End-to-end UI flow (recommended)
+
+1) Start the app normally:
+
+```bash
+npm run dev
+```
+
+2) In a second terminal, start webhook forwarding:
+
+```bash
+stripe listen --forward-to localhost:5000/api/payments/stripe/webhook
+```
+
+3) In the UI:
+
+- Create an invoice with a non-zero balance due.
+- Open the invoice detail page.
+- In **Payment History**, click **Pay Invoice** (Stripe).
+- Use a Stripe test card to complete the payment.
+
+4) Verify results (UI):
+
+- Invoice status updates to **Paid**.
+- A payment row appears with provider **Card (Stripe)** and status **succeeded**.
+
+5) Verify results (DB):
+
+Replace `<INVOICE_ID>` with the invoice id.
+
+```sql
+-- Payments created/updated by Stripe webhook
+select id, provider, status, amount_cents, currency, stripe_payment_intent_id, sync_status, external_accounting_id, synced_at, sync_error, created_at
+from payments
+where invoice_id = '<INVOICE_ID>'
+order by created_at desc;
+
+-- Invoice rollup fields updated by refreshInvoiceStatus()
+select id, status, amount_paid, balance_due, total, updated_at
+from invoices
+where id = '<INVOICE_ID>';
+```
+
 ## Trigger a test event
 
 In another terminal:
@@ -29,12 +72,16 @@ In another terminal:
 stripe trigger payment_intent.succeeded
 ```
 
+Note: `stripe trigger ...` creates a PaymentIntent without your app's `metadata.invoiceId` + `metadata.organizationId`, so it is primarily a connectivity check for the webhook endpoint. To test real status transitions on local DB rows, prefer the UI flow above.
+
 Optional additional events:
 
 ```bash
 stripe trigger payment_intent.payment_failed
 stripe trigger payment_intent.canceled
 ```
+
+To exercise `payment_failed` via the UI, use a Stripe test card that declines (the webhook handler will update the existing local payment row for that intent).
 
 ## Notes
 
