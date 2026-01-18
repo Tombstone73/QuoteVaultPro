@@ -7,7 +7,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -8202,6 +8202,783 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // =============================
   // Production Jobs Endpoints
   // =============================
+
+  const productionStatusSchema = z.enum(["queued", "in_progress", "done"]);
+  const productionViewKeySchema = z.string().min(1);
+  const productionEventTypeSchema = z.enum([
+    "timer_started",
+    "timer_stopped",
+    "note",
+    "reprint_incremented",
+    "media_used_set",
+  ]);
+
+  const getProductionConfigForOrganization = async (organizationId: string) => {
+    const rows = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+    const settings = rows[0]?.settings as any;
+    const enabledViews =
+      (settings?.preferences?.production?.enabledViews as string[] | undefined) ?? ["flatbed"];
+    const defaultView =
+      (settings?.preferences?.production?.defaultView as string | undefined) ?? "flatbed";
+    return {
+      enabledViews: Array.isArray(enabledViews) && enabledViews.length > 0 ? enabledViews : ["flatbed"],
+      defaultView: typeof defaultView === "string" && defaultView.trim() ? defaultView : "flatbed",
+    };
+  };
+
+  const assertInternalUser = (req: any, res: any) => {
+    const role = req.user?.role || "";
+    if (role === "customer") {
+      res.status(403).json({ error: "Access denied" });
+      return false;
+    }
+    return true;
+  };
+
+  const toSeconds = (ms: number) => Math.max(0, Math.floor(ms / 1000));
+
+  const getTimerStateForJob = async (
+    organizationId: string,
+    productionJobId: string,
+    tx: any = db,
+  ) => {
+    const rows = await tx
+      .select({
+        type: productionEvents.type,
+        createdAt: productionEvents.createdAt,
+      })
+      .from(productionEvents)
+      .where(
+        and(
+          eq(productionEvents.organizationId, organizationId),
+          eq(productionEvents.productionJobId, productionJobId),
+          inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+        ),
+      )
+      .orderBy(desc(productionEvents.createdAt))
+      .limit(1);
+
+    const last = rows[0];
+    const isRunning = last?.type === "timer_started";
+    return {
+      isRunning,
+      runningSince: isRunning ? (last!.createdAt as any) : null,
+    };
+  };
+
+  const appendEvent = async (args: {
+    tx: any;
+    organizationId: string;
+    productionJobId: string;
+    type: z.infer<typeof productionEventTypeSchema>;
+    payload?: any;
+  }) => {
+    const payload = args.payload ?? {};
+    await args.tx.insert(productionEvents).values({
+      organizationId: args.organizationId,
+      productionJobId: args.productionJobId,
+      type: args.type,
+      payload,
+    });
+  };
+
+  // 9) GET /api/production/config
+  app.get("/api/production/config", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const config = await getProductionConfigForOrganization(organizationId);
+      res.json({ success: true, data: config });
+    } catch (error) {
+      console.error("Error fetching production config:", error);
+      res.status(500).json({ error: "Failed to fetch production config" });
+    }
+  });
+
+  // 1) GET /api/production/jobs?status=&view=
+  app.get("/api/production/jobs", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const statusRaw = req.query.status as string | undefined;
+      const viewRaw = req.query.view as string | undefined;
+      const statusParsed = statusRaw ? productionStatusSchema.safeParse(statusRaw) : null;
+      const viewParsed = viewRaw ? productionViewKeySchema.safeParse(viewRaw) : null;
+      if (statusParsed && !statusParsed.success) {
+        return res.status(400).json({ error: "Invalid status" });
+      }
+      if (viewParsed && !viewParsed.success) {
+        return res.status(400).json({ error: "Invalid view" });
+      }
+      const status = statusParsed?.success ? statusParsed.data : undefined;
+      const view = viewParsed?.success ? viewParsed.data : undefined;
+
+      const config = await getProductionConfigForOrganization(organizationId);
+      if (view && !config.enabledViews.includes(view)) {
+        return res.json({ success: true, data: [] });
+      }
+
+      const whereClause = and(
+        eq(productionJobs.organizationId, organizationId),
+        status ? eq(productionJobs.status, status) : undefined,
+      );
+
+      const baseRows = await db
+        .select({
+          id: productionJobs.id,
+          orderId: productionJobs.orderId,
+          status: productionJobs.status,
+          startedAt: productionJobs.startedAt,
+          completedAt: productionJobs.completedAt,
+          totalSeconds: productionJobs.totalSeconds,
+          createdAt: productionJobs.createdAt,
+          updatedAt: productionJobs.updatedAt,
+          orderNumber: orders.orderNumber,
+          dueDate: orders.dueDate,
+          priority: orders.priority,
+          customerName: customers.companyName,
+        })
+        .from(productionJobs)
+        .innerJoin(orders, eq(productionJobs.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .where(whereClause)
+        .orderBy(desc(productionJobs.updatedAt));
+
+      if (baseRows.length === 0) {
+        return res.json({ success: true, data: [] });
+      }
+
+      const jobIds = baseRows.map((r) => r.id);
+
+      const timerEventRows = await db
+        .select({
+          productionJobId: productionEvents.productionJobId,
+          type: productionEvents.type,
+          createdAt: productionEvents.createdAt,
+        })
+        .from(productionEvents)
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            inArray(productionEvents.productionJobId, jobIds),
+            inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+          ),
+        )
+        .orderBy(desc(productionEvents.createdAt));
+
+      const latestTimerEventByJobId = new Map<string, { type: string; createdAt: any }>();
+      for (const row of timerEventRows) {
+        if (!latestTimerEventByJobId.has(row.productionJobId)) {
+          latestTimerEventByJobId.set(row.productionJobId, { type: row.type, createdAt: row.createdAt });
+        }
+      }
+
+      const reprintCountsRows = await db
+        .select({
+          productionJobId: productionEvents.productionJobId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(productionEvents)
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            inArray(productionEvents.productionJobId, jobIds),
+            eq(productionEvents.type, "reprint_incremented"),
+          ),
+        )
+        .groupBy(productionEvents.productionJobId);
+
+      const reprintCountByJobId = new Map<string, number>();
+      for (const r of reprintCountsRows) {
+        reprintCountByJobId.set(r.productionJobId, Number(r.count) || 0);
+      }
+
+      const now = Date.now();
+      const data = baseRows.map((row) => {
+        const lastTimer = latestTimerEventByJobId.get(row.id);
+        const isRunning = lastTimer?.type === "timer_started";
+        const runningSince = isRunning ? new Date(lastTimer!.createdAt as any).toISOString() : null;
+        const currentSeconds =
+          Number(row.totalSeconds) +
+          (isRunning ? toSeconds(now - new Date(lastTimer!.createdAt as any).getTime()) : 0);
+        return {
+          id: row.id,
+          view: view ?? config.defaultView,
+          status: row.status,
+          startedAt: row.startedAt,
+          completedAt: row.completedAt,
+          totalSeconds: Number(row.totalSeconds) || 0,
+          timer: {
+            isRunning,
+            runningSince,
+            currentSeconds,
+          },
+          reprintCount: reprintCountByJobId.get(row.id) ?? 0,
+          order: {
+            id: row.orderId,
+            orderNumber: row.orderNumber,
+            customerName: row.customerName,
+            dueDate: row.dueDate,
+            priority: row.priority,
+          },
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        };
+      });
+
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error("Error fetching production jobs:", error);
+      res.status(500).json({ error: "Failed to fetch production jobs" });
+    }
+  });
+
+  // Extra (needed for detail UI): GET /api/production/jobs/:jobId
+  app.get("/api/production/jobs/:jobId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const jobId = req.params.jobId;
+      const rows = await db
+        .select({
+          id: productionJobs.id,
+          orderId: productionJobs.orderId,
+          status: productionJobs.status,
+          startedAt: productionJobs.startedAt,
+          completedAt: productionJobs.completedAt,
+          totalSeconds: productionJobs.totalSeconds,
+          createdAt: productionJobs.createdAt,
+          updatedAt: productionJobs.updatedAt,
+          orderNumber: orders.orderNumber,
+          dueDate: orders.dueDate,
+          priority: orders.priority,
+          customerName: customers.companyName,
+        })
+        .from(productionJobs)
+        .innerJoin(orders, eq(productionJobs.orderId, orders.id))
+        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+        .limit(1);
+
+      const job = rows[0];
+      if (!job) return res.status(404).json({ error: "Production job not found" });
+
+      const events = await db
+        .select({
+          id: productionEvents.id,
+          type: productionEvents.type,
+          payload: productionEvents.payload,
+          createdAt: productionEvents.createdAt,
+        })
+        .from(productionEvents)
+        .where(and(eq(productionEvents.organizationId, organizationId), eq(productionEvents.productionJobId, jobId)))
+        .orderBy(desc(productionEvents.createdAt))
+        .limit(250);
+
+      const timerState = await getTimerStateForJob(organizationId, jobId);
+      const now = Date.now();
+      const currentSeconds =
+        Number(job.totalSeconds) +
+        (timerState.isRunning && timerState.runningSince
+          ? toSeconds(now - new Date(timerState.runningSince as any).getTime())
+          : 0);
+
+      const reprintCountRows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(productionEvents)
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            eq(productionEvents.productionJobId, jobId),
+            eq(productionEvents.type, "reprint_incremented"),
+          ),
+        );
+
+      res.json({
+        success: true,
+        data: {
+          id: job.id,
+          status: job.status,
+          startedAt: job.startedAt,
+          completedAt: job.completedAt,
+          totalSeconds: Number(job.totalSeconds) || 0,
+          timer: {
+            isRunning: timerState.isRunning,
+            runningSince: timerState.runningSince ? new Date(timerState.runningSince as any).toISOString() : null,
+            currentSeconds,
+          },
+          reprintCount: Number(reprintCountRows[0]?.count) || 0,
+          order: {
+            id: job.orderId,
+            orderNumber: job.orderNumber,
+            customerName: job.customerName,
+            dueDate: job.dueDate,
+            priority: job.priority,
+          },
+          events,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching production job:", error);
+      res.status(500).json({ error: "Failed to fetch production job" });
+    }
+  });
+
+  // 2) POST /api/production/jobs/from-order/:orderId (idempotent)
+  app.post("/api/production/jobs/from-order/:orderId", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const orderId = req.params.orderId;
+      const orderRows = await db
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
+        .limit(1);
+      if (!orderRows[0]) return res.status(404).json({ error: "Order not found" });
+
+      await db
+        .insert(productionJobs)
+        .values({
+          organizationId,
+          orderId,
+          status: "queued",
+          totalSeconds: 0,
+        })
+        .onConflictDoNothing({ target: [productionJobs.organizationId, productionJobs.orderId] });
+
+      const jobRows = await db
+        .select({
+          id: productionJobs.id,
+          orderId: productionJobs.orderId,
+          status: productionJobs.status,
+          startedAt: productionJobs.startedAt,
+          completedAt: productionJobs.completedAt,
+          totalSeconds: productionJobs.totalSeconds,
+          createdAt: productionJobs.createdAt,
+          updatedAt: productionJobs.updatedAt,
+        })
+        .from(productionJobs)
+        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId)))
+        .limit(1);
+
+      res.json({ success: true, data: jobRows[0] });
+    } catch (error) {
+      console.error("Error creating production job:", error);
+      res.status(500).json({ error: "Failed to create production job" });
+    }
+  });
+
+  // 3) POST /api/production/jobs/:jobId/start
+  app.post("/api/production/jobs/:jobId/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const jobId = req.params.jobId;
+      const now = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        const job = jobRows[0];
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        if (job.status === "done") throw Object.assign(new Error("Job is done; reopen first"), { statusCode: 400 });
+
+        const timerState = await getTimerStateForJob(organizationId, jobId, tx);
+        if (timerState.isRunning) {
+          return job;
+        }
+
+        await appendEvent({ tx, organizationId, productionJobId: jobId, type: "timer_started" });
+
+        await tx
+          .update(productionJobs)
+          .set({
+            status: job.status === "queued" ? "in_progress" : job.status,
+            startedAt: job.startedAt ?? now,
+            updatedAt: now,
+          })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        const updatedRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        return updatedRows[0];
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error starting production timer:", error);
+      res.status(status).json({ error: error?.message || "Failed to start timer" });
+    }
+  });
+
+  // 4) POST /api/production/jobs/:jobId/stop
+  app.post("/api/production/jobs/:jobId/stop", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const jobId = req.params.jobId;
+      const now = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        const job = jobRows[0];
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+
+        const lastStartRows = await tx
+          .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
+          .from(productionEvents)
+          .where(
+            and(
+              eq(productionEvents.organizationId, organizationId),
+              eq(productionEvents.productionJobId, jobId),
+              inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+            ),
+          )
+          .orderBy(desc(productionEvents.createdAt))
+          .limit(1);
+
+        const last = lastStartRows[0];
+        if (!last || last.type !== "timer_started") {
+          return job;
+        }
+
+        const startedAtMs = new Date(last.createdAt as any).getTime();
+        const deltaSeconds = toSeconds(now.getTime() - startedAtMs);
+
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "timer_stopped",
+          payload: { seconds: deltaSeconds },
+        });
+
+        await tx
+          .update(productionJobs)
+          .set({
+            totalSeconds: (Number(job.totalSeconds) || 0) + deltaSeconds,
+            updatedAt: now,
+          })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        const updatedRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        return updatedRows[0];
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error stopping production timer:", error);
+      res.status(status).json({ error: error?.message || "Failed to stop timer" });
+    }
+  });
+
+  // 5) POST /api/production/jobs/:jobId/complete
+  app.post("/api/production/jobs/:jobId/complete", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const jobId = req.params.jobId;
+      const now = new Date();
+      const skipProduction = req.body?.skipProduction === true;
+
+      const result = await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        const job = jobRows[0];
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        if (job.status === "done") return job;
+
+        // queued -> done requires explicit skipProduction
+        if (job.status === "queued" && !skipProduction) {
+          throw Object.assign(new Error("Cannot complete from queued without skipProduction"), { statusCode: 400 });
+        }
+
+        // If timer is running, stop it first.
+        const lastTimer = await tx
+          .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
+          .from(productionEvents)
+          .where(
+            and(
+              eq(productionEvents.organizationId, organizationId),
+              eq(productionEvents.productionJobId, jobId),
+              inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+            ),
+          )
+          .orderBy(desc(productionEvents.createdAt))
+          .limit(1);
+        const last = lastTimer[0];
+        if (last?.type === "timer_started") {
+          const startedAtMs = new Date(last.createdAt as any).getTime();
+          const deltaSeconds = toSeconds(now.getTime() - startedAtMs);
+          await appendEvent({
+            tx,
+            organizationId,
+            productionJobId: jobId,
+            type: "timer_stopped",
+            payload: { seconds: deltaSeconds },
+          });
+          await tx
+            .update(productionJobs)
+            .set({ totalSeconds: (Number(job.totalSeconds) || 0) + deltaSeconds })
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+        }
+
+        await tx
+          .update(productionJobs)
+          .set({ status: "done", completedAt: now, updatedAt: now })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId: userId ?? null,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "production_job",
+          entityId: jobId,
+          entityName: jobId,
+          description: skipProduction ? "Production job completed (skip production)" : "Production job completed",
+          oldValues: { status: job.status },
+          newValues: { status: "done" },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const updatedRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        return updatedRows[0];
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error completing production job:", error);
+      res.status(status).json({ error: error?.message || "Failed to complete job" });
+    }
+  });
+
+  // 6) POST /api/production/jobs/:jobId/reopen
+  app.post("/api/production/jobs/:jobId/reopen", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const jobId = req.params.jobId;
+      const now = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        const job = jobRows[0];
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        if (job.status !== "done") {
+          throw Object.assign(new Error("Only done jobs can be reopened"), { statusCode: 400 });
+        }
+
+        await tx
+          .update(productionJobs)
+          .set({ status: "in_progress", completedAt: null, updatedAt: now })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "note",
+          payload: { system: true, text: "Job reopened" },
+        });
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId: userId ?? null,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "production_job",
+          entityId: jobId,
+          entityName: jobId,
+          description: "Production job reopened",
+          oldValues: { status: job.status },
+          newValues: { status: "in_progress" },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const updatedRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        return updatedRows[0];
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error reopening production job:", error);
+      res.status(status).json({ error: error?.message || "Failed to reopen job" });
+    }
+  });
+
+  // 7) POST /api/production/jobs/:jobId/reprint
+  app.post("/api/production/jobs/:jobId/reprint", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const jobId = req.params.jobId;
+
+      await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select({ id: productionJobs.id })
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        if (!jobRows[0]) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        await appendEvent({ tx, organizationId, productionJobId: jobId, type: "reprint_incremented" });
+        await tx
+          .update(productionJobs)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+      });
+
+      res.json({ success: true, data: { success: true } });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error recording reprint:", error);
+      res.status(status).json({ error: error?.message || "Failed to record reprint" });
+    }
+  });
+
+  // 8) PUT /api/production/jobs/:jobId/media-used
+  app.put("/api/production/jobs/:jobId/media-used", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const jobId = req.params.jobId;
+      const mediaSchema = z.object({
+        text: z.string().trim().min(1).max(500),
+        qty: z.coerce.number().optional(),
+        unit: z.string().trim().max(32).optional(),
+      });
+      const parsed = mediaSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+      await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select({ id: productionJobs.id })
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        if (!jobRows[0]) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "media_used_set",
+          payload: parsed.data,
+        });
+        await tx
+          .update(productionJobs)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+      });
+
+      res.json({ success: true, data: { success: true } });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error setting media used:", error);
+      res.status(status).json({ error: error?.message || "Failed to set media used" });
+    }
+  });
+
+  // Extra (timeline): POST /api/production/jobs/:jobId/note
+  app.post("/api/production/jobs/:jobId/note", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const jobId = req.params.jobId;
+      const noteSchema = z.object({ text: z.string().trim().min(1).max(1000) });
+      const parsed = noteSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+      await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select({ id: productionJobs.id })
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        if (!jobRows[0]) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        await appendEvent({
+          tx,
+          organizationId,
+          productionJobId: jobId,
+          type: "note",
+          payload: { text: parsed.data.text },
+        });
+        await tx
+          .update(productionJobs)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+      });
+
+      res.json({ success: true, data: { success: true } });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error adding production note:", error);
+      res.status(status).json({ error: error?.message || "Failed to add note" });
+    }
+  });
 
   // ============================================================
   // JOB STATUS CONFIGURATION (Admin Only)

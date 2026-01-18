@@ -163,6 +163,7 @@ export const ROUTES = {
   // Production
   production: {
     board: "/production",
+    jobDetail: (jobId: string) => `/production/jobs/${jobId}`,
   },
   
   jobs: {
