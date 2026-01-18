@@ -1,147 +1,95 @@
-import { useJobs, useJobStatuses, useUpdateAnyJob } from "@/hooks/useJobs";
-import { useAuth } from "@/hooks/useAuth";
-import { useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { Page, PageHeader, ContentLayout } from "@/components/titan";
+import { Card, CardContent } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { ArrowLeft } from "lucide-react";
-import { Page, PageHeader, ContentLayout, StatusPill } from "@/components/titan";
+import { useProductionConfig } from "@/hooks/useProduction";
+import ProductionViewRenderer from "@/features/production/ProductionViewRenderer";
 
-// Minimal Kanban style using HTML5 drag & drop
+type ProductionStatus = "queued" | "in_progress" | "done";
+
 export default function ProductionBoard() {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const [activeDragId, setActiveDragId] = useState<string | null>(null);
-  const { data: jobs, isLoading: jobsLoading } = useJobs();
-  const { data: statuses, isLoading: statusesLoading } = useJobStatuses();
-  const updateJobMutation = useUpdateAnyJob();
+  const { data: config, isLoading, error } = useProductionConfig();
+  const [status, setStatus] = useState<ProductionStatus>("queued");
+  const [viewKey, setViewKey] = useState<string>("flatbed");
 
-  const isLoading = jobsLoading || statusesLoading;
-  const internalUser = user && user.role !== 'customer';
+  useEffect(() => {
+    if (!config) return;
+    const enabled = config.enabledViews || [];
+    const next = enabled.includes(config.defaultView) ? config.defaultView : enabled[0];
+    if (next) setViewKey(next);
+  }, [config]);
 
-  const grouped = (statuses || []).reduce<Record<string, any[]>>((acc, status) => {
-    acc[status.key] = jobs ? jobs.filter(j => j.statusKey === status.key) : [];
-    return acc;
-  }, {});
+  const enabledViews = useMemo(() => config?.enabledViews ?? ["flatbed"], [config]);
+  const showViewSelector = enabledViews.length > 1;
 
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-    e.dataTransfer.setData('text/plain', id);
-    setActiveDragId(id);
-  };
-  const handleDragEnd = () => setActiveDragId(null);
-  const handleDrop = (e: React.DragEvent, newStatusKey: string) => {
-    e.preventDefault();
-    const id = e.dataTransfer.getData('text/plain');
-    if (!id) return;
-    if (!internalUser) return;
-    updateJobMutation.mutate({ id, data: { statusKey: newStatusKey } });
-    setActiveDragId(null);
-  };
-  const allowDrop = (e: React.DragEvent) => e.preventDefault();
+  const hasImplementedEnabledView = enabledViews.includes("flatbed");
 
   return (
     <Page maxWidth="full">
-      <PageHeader
-        title="Production Board"
-        subtitle="Track and manage job production workflow"
-        backButton={
-          <Button variant="ghost" size="icon" onClick={() => navigate(ROUTES.orders.list)}>
-            <ArrowLeft className="w-5 h-5" />
-          </Button>
-        }
-        actions={
-          <Badge variant="outline" className="text-titan-text-secondary">Jobs: {jobs?.length || 0}</Badge>
-        }
-      />
+      <PageHeader title="Production" subtitle="Flatbed production workflow (MVP)" />
 
       <ContentLayout>
         {isLoading && (
-          <div className="grid grid-cols-7 gap-2">
-            {[1, 2, 3, 4, 5, 6, 7].map((s) => (
-              <Skeleton key={s} className="h-64" />
-            ))}
-          </div>
+          <Card className="bg-titan-bg-card border-titan-border-subtle">
+            <CardContent className="p-4 text-sm text-titan-text-muted">Loading production…</CardContent>
+          </Card>
         )}
 
-        {!isLoading && statuses && (
-          <div className="flex gap-3 overflow-x-auto pb-4 h-[calc(100vh-200px)]">
-            {statuses.map((status) => (
-              <div
-                key={status.key}
-                onDragOver={allowDrop}
-                onDrop={(e) => handleDrop(e, status.key)}
-                className="border border-titan-border-subtle rounded-titan-xl bg-titan-bg-card/30 flex flex-col min-w-[280px] w-full h-full"
-              >
-                <div className="p-3 border-b border-titan-border-subtle bg-titan-bg-card-elevated sticky top-0 z-10 rounded-t-titan-xl">
-                  <div className="flex items-center justify-between">
-                    <span className="text-titan-xs font-semibold uppercase tracking-wide text-titan-text-primary">
-                      {status.label}
-                    </span>
-                    <Badge variant={(status.badgeVariant as any) || "secondary"}>
-                      {grouped[status.key]?.length || 0}
-                    </Badge>
-                  </div>
-                </div>
-                <div className="p-2 space-y-2 flex-1 overflow-y-auto">
-                  {grouped[status.key]?.map((job) => (
-                    <div
-                      key={job.id}
-                      draggable={internalUser}
-                      onDragStart={(e) => handleDragStart(e, job.id)}
-                      onDragEnd={handleDragEnd}
-                      className={`
-                        cursor-pointer transition-all p-3 rounded-titan-lg
-                        bg-titan-bg-card border border-titan-border-subtle
-                        hover:shadow-titan-md hover:border-titan-border
-                        ${activeDragId === job.id ? 'opacity-50' : ''}
-                      `}
-                      onClick={() => navigate(ROUTES.jobs.detail(job.id))}
-                    >
-                      <div className="flex flex-col gap-1">
-                        <div className="flex justify-between items-start">
-                          <span className="font-semibold text-titan-sm text-titan-text-primary truncate" title={job.customerName}>
-                            {job.customerName}
-                          </span>
-                          {job.priority === 'rush' && (
-                            <StatusPill variant="error">RUSH</StatusPill>
-                          )}
-                        </div>
-                        {job.orderNumber && (
-                          <span className="text-titan-xs text-titan-text-muted">{job.orderNumber}</span>
-                        )}
-                        <div className="text-titan-xs font-medium text-titan-text-secondary">
-                          {job.mediaType}
-                          {job.quantity > 0 && (
-                            <span className="text-titan-text-muted"> × {job.quantity}</span>
-                          )}
-                        </div>
-                        {job.dueDate && (
-                          <span className="text-titan-xs text-titan-text-muted">
-                            Due: {new Date(job.dueDate).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}
-                          </span>
-                        )}
-                        {job.assignedToUserId && (
-                          <StatusPill variant="info" className="w-fit">Assigned</StatusPill>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  {grouped[status.key]?.length === 0 && (
-                    <div className="text-titan-xs text-titan-text-muted italic text-center py-4">
-                      No jobs
-                    </div>
-                  )}
-                </div>
+        {!isLoading && error && (
+          <Card className="bg-titan-bg-card border-titan-border-subtle">
+            <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production config.</CardContent>
+          </Card>
+        )}
+
+        {!isLoading && !error && !hasImplementedEnabledView && (
+          <Card className="bg-titan-bg-card border-titan-border-subtle">
+            <CardContent className="p-4">
+              <div className="text-sm font-medium text-titan-text-primary">No production views enabled</div>
+              <div className="text-sm text-titan-text-muted mt-1">
+                Enable the Flatbed module (or another implemented view) in settings.
               </div>
-            ))}
-          </div>
+              <div className="mt-3">
+                <Link className="text-sm underline" to={ROUTES.settings.production}>
+                  Go to Production Settings
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
-        {!internalUser && (
-          <div className="text-titan-sm text-titan-text-muted">
-            Read-only view for portal users.
+        {!isLoading && !error && hasImplementedEnabledView && (
+          <div className="space-y-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
+                <TabsList>
+                  <TabsTrigger value="queued">Queued</TabsTrigger>
+                  <TabsTrigger value="in_progress">In Progress</TabsTrigger>
+                  <TabsTrigger value="done">Done</TabsTrigger>
+                </TabsList>
+              </Tabs>
+
+              {showViewSelector && (
+                <div className="w-full md:w-[240px]">
+                  <Select value={viewKey} onValueChange={setViewKey}>
+                    <SelectTrigger className="bg-titan-bg-card border-titan-border-subtle">
+                      <SelectValue placeholder="Select view" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {enabledViews.map((v) => (
+                        <SelectItem key={v} value={v}>
+                          {v}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+
+            <ProductionViewRenderer viewKey={viewKey} status={status} />
           </div>
         )}
       </ContentLayout>

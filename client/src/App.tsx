@@ -32,6 +32,7 @@ import MyQuotes from "@/pages/portal/my-quotes";
 import MyOrders from "@/pages/portal/my-orders";
 import QuoteCheckout from "@/pages/portal/quote-checkout";
 import ProductionBoard from "@/pages/production";
+import ProductionJobDetailPage from "@/pages/production-job-detail";
 import JobDetail from "@/pages/job-detail";
 import ProductTypesSettings from "@/pages/settings/product-types";
 import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
@@ -121,6 +122,7 @@ function Router() {
 
         {/* Production workflow routes */}
         <Route path="/production" element={<ProductionBoard />} />
+        <Route path="/production/jobs/:jobId" element={<ProductionJobDetailPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
 
         {/* Product Catalog (standalone) */}

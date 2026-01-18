@@ -53,6 +53,7 @@ import { TimelinePanel } from "@/components/TimelinePanel";
 import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
+import { useCreateProductionJobFromOrder } from "@/hooks/useProduction";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -131,6 +132,7 @@ export default function OrderDetail() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const createProductionJob = useCreateProductionJobFromOrder();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isCustomerPickerOpen, setIsCustomerPickerOpen] = useState(false);
   const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
@@ -1252,6 +1254,28 @@ export default function OrderDetail() {
 
             {isAdminOrOwner && order.state === 'open' && (
               <CompleteProductionButton orderId={order.id} />
+            )}
+
+            {user?.role !== 'customer' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    const job = await createProductionJob.mutateAsync(order.id);
+                    navigate(`/production/jobs/${job.id}`);
+                  } catch (e: any) {
+                    toast({
+                      title: "Production job failed",
+                      description: e?.message || "Failed to create production job",
+                      variant: "destructive",
+                    });
+                  }
+                }}
+                disabled={createProductionJob.isPending}
+              >
+                Production Job
+              </Button>
             )}
           </div>
         </div>

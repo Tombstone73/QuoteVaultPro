@@ -2329,6 +2329,51 @@ export type InsertJob = z.infer<typeof insertJobSchema>;
 export type UpdateJob = z.infer<typeof updateJobSchema>;
 export type Job = typeof jobs.$inferSelect;
 
+// ============================================================
+// Production MVP (Modular Production Views) - Flatbed first
+// ============================================================
+
+export type ProductionJobStatus = "queued" | "in_progress" | "done";
+export type ProductionEventType =
+  | "timer_started"
+  | "timer_stopped"
+  | "note"
+  | "reprint_incremented"
+  | "media_used_set";
+
+export const productionJobs = pgTable("production_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  status: varchar("status", { length: 20 }).notNull().default("queued"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  totalSeconds: integer("total_seconds").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("production_jobs_org_order_uidx").on(table.organizationId, table.orderId),
+  index("production_jobs_org_status_idx").on(table.organizationId, table.status),
+  index("production_jobs_order_id_idx").on(table.orderId),
+]);
+
+export const productionEvents = pgTable("production_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  productionJobId: varchar("production_job_id").notNull().references(() => productionJobs.id, { onDelete: 'cascade' }),
+  type: varchar("type", { length: 40 }).notNull(),
+  payload: jsonb("payload").$type<Record<string, any>>().default(sql`'{}'::jsonb`).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("production_events_org_job_created_idx").on(table.organizationId, table.productionJobId, table.createdAt),
+  index("production_events_org_type_created_idx").on(table.organizationId, table.type, table.createdAt),
+]);
+
+export type ProductionJob = typeof productionJobs.$inferSelect;
+export type InsertProductionJob = typeof productionJobs.$inferInsert;
+export type ProductionEvent = typeof productionEvents.$inferSelect;
+export type InsertProductionEvent = typeof productionEvents.$inferInsert;
+
 // -------------------- Invoicing & Payments (Future QuickBooks Sync Ready) --------------------
 
 // Invoices table

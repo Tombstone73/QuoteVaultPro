@@ -85,7 +85,7 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "PRODUCTION",
     sectionKey: "production",
     items: [
-      { id: "production", name: "Production Board", icon: Factory, path: ROUTES.production.board },
+      { id: "production", name: "Production (MVP)", icon: Factory, path: ROUTES.production.board },
     ],
   },
   {

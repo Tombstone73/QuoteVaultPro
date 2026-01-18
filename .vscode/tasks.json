@@ -38,6 +38,50 @@
 			],
 			"isBackground": false,
 			"group": "test"
+		},
+		{
+			"label": "Smoke test /api/production/config",
+			"type": "shell",
+			"command": "curl",
+			"args": [
+				"-i",
+				"http://localhost:5000/api/production/config"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Apply migration 0028 production MVP",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"tsx",
+				"apply-manual-migration.ts",
+				"server/db/migrations/0028_production_mvp.sql"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Smoke test /api/production/config (curl.exe)",
+			"type": "shell",
+			"command": "curl.exe",
+			"args": [
+				"http://localhost:5000/api/production/config"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Smoke test /api/production/config (curl.exe)",
+			"type": "shell",
+			"command": "curl.exe",
+			"args": [
+				"http://localhost:5000/api/production/config"
+			],
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

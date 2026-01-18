@@ -222,6 +222,7 @@ import { Router } from 'express';
 - Drizzle returns empty arrays for no results, not null
 - TanStack Query keys should be consistent: `['resource', id]` or `['resource', 'list']`
 - shadcn/ui Dialog components need controlled `open` state for programmatic close
+- Windows PowerShell: `curl` is an alias for `Invoke-WebRequest`; use `curl.exe http://localhost:5000/api/...` (or `iwr http://localhost:5000/api/... | % Content`) for smoke tests
 - Foreign key constraints: Use `ON DELETE CASCADE` for child records, `RESTRICT` for parent dependencies, `SET NULL` for optional references
 - Decimal fields: Use `decimal(10, 2)` for currency, `decimal(10, 4)` for rates/percentages
 - **Multi-tenancy**: Always filter by `organizationId` - forgetting this will leak data across tenants
