@@ -8,6 +8,7 @@ import { WORKFLOW_LABELS, WORKFLOW_BADGE_VARIANTS } from "@shared/quoteWorkflow"
 type QuoteHeaderProps = {
     quoteNumber?: string;
     quoteId: string | null;
+    newTitle?: string;
     canDuplicateQuote?: boolean;
     isDuplicatingQuote?: boolean;
     status?: "draft" | "active" | "canceled" | string;
@@ -27,6 +28,7 @@ type QuoteHeaderProps = {
 export function QuoteHeader({
     quoteNumber,
     quoteId,
+    newTitle,
     canDuplicateQuote = false,
     isDuplicatingQuote = false,
     status = "active",
@@ -79,7 +81,7 @@ export function QuoteHeader({
             {/* Center: Quote # + Status */}
             <div className="flex items-center gap-3">
                 <h1 className="text-lg font-semibold">
-                    {quoteNumber ? `Quote #${quoteNumber}` : "New Quote"}
+                    {quoteNumber ? `Quote #${quoteNumber}` : (newTitle || "New Quote")}
                 </h1>
                 {statusUi && (
                     <Badge variant={statusUi.variant} className="text-xs">

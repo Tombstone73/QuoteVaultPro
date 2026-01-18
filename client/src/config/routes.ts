@@ -25,7 +25,7 @@
  * 
  * ORDERS:
  * - /orders → Orders (list)
- * - /orders/new → CreateOrder (create)
+ * - /orders/new → OrderNewRoute (create via quote editor + convert)
  * - /orders/:id → OrderDetail (view)
  * - /orders/:id/edit → [TODO: NOT IMPLEMENTED - referenced but missing]
  * 

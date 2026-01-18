@@ -30,9 +30,10 @@ import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
 
 type QuoteEditorPageProps = {
     mode?: "view" | "edit";
+    createTarget?: "quote" | "order";
 };
 
-export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
+export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: QuoteEditorPageProps = {}) {
     // ALL HOOKS MUST BE CALLED UNCONDITIONALLY AT THE TOP
     const navigate = useNavigate();
     const location = useLocation();
@@ -41,6 +42,8 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const { preferences: orgPreferences } = useOrgPreferences();
     const { toast } = useToast();
     const state = useQuoteEditorState();
+
+    const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
 
     // Get effective workflow state (includes derived states like converted)
     const workflowState = useQuoteWorkflowState(state.quote as any);
@@ -569,6 +572,25 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
         // For NEW quotes, always navigate to edit route with the new quoteId
         // (this is required for the quote to be properly loaded)
         if (result.kind === "created") {
+            // Special case: /orders/new uses the quote editor UI but immediately converts
+            // the created quote into an order and navigates to the order detail.
+            if (createTarget === "order") {
+                // Fire-and-forget-ish: convert hook handles toast + navigation.
+                void (async () => {
+                    try {
+                        await state.convertToOrderHook?.mutateAsync({ quoteId: result.quoteId });
+                    } catch (err) {
+                        // Fall back to the quote editor (with id) so the user doesn't lose work.
+                        navigate(ROUTES.quotes.edit(result.quoteId), {
+                            replace: true,
+                            preventScrollReset: true,
+                            state: { quoteId: result.quoteId },
+                        });
+                    }
+                })();
+                return;
+            }
+
             navigate(ROUTES.quotes.edit(result.quoteId), {
                 replace: true,
                 preventScrollReset: true,
@@ -579,7 +601,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
 
         // For EXISTING quotes, check user preference
         if (preferences.afterSaveNavigation === "back") {
-            navigate(ROUTES.quotes.list);
+            navigate(backPath);
         }
         // If preference is "stay", do nothing (stay on page)
     };
@@ -601,6 +623,22 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     };
 
     /**
+     * /orders/new primary action.
+     * Creates/updates the underlying quote, then converts it into an order.
+     */
+    const handleCreateOrder = async () => {
+        try {
+            customerSelectRef.current?.commitPendingFlags?.();
+
+            const result = await state.handlers.saveQuote();
+            await state.convertToOrderHook?.mutateAsync({ quoteId: result.quoteId });
+        } catch (err) {
+            // saveQuote / convertToOrder both toast already; just fail-soft.
+            console.error("[QuoteEditorPage] Create Order failed", err);
+        }
+    };
+
+    /**
      * Ensure quote exists and return its ID.
      * For new quotes, this saves the quote first.
      * For existing quotes, returns the current quoteId.
@@ -613,14 +651,18 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
 
         // New quote - save it first
         const result = await state.handlers.saveQuote();
-        
-        // CRITICAL: Navigate to the newly created quote so the editor adopts it as canonical.
-        // This prevents "Save Changes" from creating a duplicate quote and orphaning attachments.
-        navigate(ROUTES.quotes.edit(result.quoteId), {
-            replace: true,
-            preventScrollReset: true,
-            state: { quoteId: result.quoteId },
-        });
+
+        // In the standard quote flow, we navigate to the newly created quote so the editor adopts
+        // it as canonical. In the /orders/new flow, we intentionally avoid route changes.
+        if (createTarget !== "order") {
+            // CRITICAL: Navigate to the newly created quote so the editor adopts it as canonical.
+            // This prevents "Save Changes" from creating a duplicate quote and orphaning attachments.
+            navigate(ROUTES.quotes.edit(result.quoteId), {
+                replace: true,
+                preventScrollReset: true,
+                state: { quoteId: result.quoteId },
+            });
+        }
         
         return result.quoteId;
     };
@@ -634,7 +676,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             customerSelectRef.current?.commitPendingFlags?.();
             
             await state.handlers.saveQuote();
-            navigate(ROUTES.quotes.list, { replace: true });
+            navigate(backPath, { replace: true });
         } catch (err) {
             // Error handling is already done inside saveQuote (toast shown)
             console.error("[QuoteEditorPage] Save & Back failed", err);
@@ -672,7 +714,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             await queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
             
             // Navigate back to quotes list
-            navigate(ROUTES.quotes.list, { replace: true });
+            navigate(backPath, { replace: true });
         } catch (error) {
             console.error("[handleConfirmVoid] Error voiding quote:", error);
             toast({
@@ -715,7 +757,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             setEditMode(false);
             
             // Navigate back to quotes list
-            navigate(ROUTES.quotes.list, { replace: true });
+            navigate(backPath, { replace: true });
         } catch (error) {
             console.error("[handleDiscard] Error discarding quote:", error);
             toast({
@@ -736,10 +778,10 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
     const handleBack = () => {
         if (state.hasUnsavedChanges) {
             // Set up pending navigation for the back button
-            setPendingNavigation(() => () => navigate(ROUTES.quotes.list));
+            setPendingNavigation(() => () => navigate(backPath));
             setShowUnsavedChangesDialog(true);
         } else {
-            navigate(ROUTES.quotes.list);
+            navigate(backPath);
         }
     };
 
@@ -760,7 +802,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                 pendingNavigation();
                 setPendingNavigation(null);
             } else {
-                navigate(ROUTES.quotes.list);
+                navigate(backPath);
             }
         } catch (err) {
             // Error is already shown via toast in saveQuote
@@ -784,7 +826,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
             pendingNavigation();
             setPendingNavigation(null);
         } else {
-            navigate(ROUTES.quotes.list);
+            navigate(backPath);
         }
     };
 
@@ -845,6 +887,7 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                 <QuoteHeader
                     quoteNumber={(state.quote as any)?.quoteNumber || ""}
                     quoteId={state.quoteId}
+                    newTitle={createTarget === "order" ? "New Order" : undefined}
                     canDuplicateQuote={state.canDuplicateQuote}
                     isDuplicatingQuote={state.isDuplicatingQuote}
                     status={(state.quote as any)?.status}
@@ -948,16 +991,18 @@ export function QuoteEditorPage({ mode = "edit" }: QuoteEditorPageProps = {}) {
                             selectedContactId={state.selectedContactId}
                             pricingStale={state.pricingStale}
                             canSaveQuote={state.canSaveQuote}
-                            isSaving={state.isSaving}
+                            isSaving={createTarget === "order" ? (state.isSaving || !!state.convertToOrderHook?.isPending) : state.isSaving}
                             hasUnsavedChanges={state.hasUnsavedChanges}
                             readOnly={readOnly}
-                            onSave={handleSave}
-                            onSaveAndBack={preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack}
+                            onSave={createTarget === "order" ? handleCreateOrder : handleSave}
+                            onSaveAndBack={createTarget === "order" ? undefined : (preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack)}
                             afterSaveNavigation={preferences.afterSaveNavigation}
-                            onConvertToOrder={() => setShowConvertDialog(true)}
+                            primaryActionLabel={createTarget === "order" ? "Create Order" : undefined}
+                            primaryActionSavingLabel={createTarget === "order" ? "Creating Order…" : undefined}
+                            onConvertToOrder={createTarget === "order" ? (() => {}) : (() => setShowConvertDialog(true))}
                             canConvertToOrder={state.canConvertToOrder}
                             convertToOrderPending={state.convertToOrderHook?.isPending}
-                            showConvertToOrder={!editMode && !!state.quoteId}
+                            showConvertToOrder={createTarget === "order" ? false : (!editMode && !!state.quoteId)}
                             onDiscard={handleDiscard}
                             onDiscountAmountChange={state.handlers.setDiscountAmount}
                             quoteTaxExempt={state.quoteTaxExempt}

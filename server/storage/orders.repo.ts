@@ -661,12 +661,31 @@ export class OrdersRepository {
                     notesInternal: null,
                 } as any;
                 const [newJob] = await this.dbInstance.insert(jobs).values(jobInsert).returning();
-                await this.dbInstance.insert(jobStatusLog).values({
-                    jobId: newJob.id,
-                    oldStatusKey: null,
-                    newStatusKey: 'new',
-                    userId: data.createdByUserId,
-                } as InsertJobStatusLog).returning();
+                // Fail-soft: logging should not block order creation/conversion.
+                // Multi-tenant: organizationId must always be persisted.
+                try {
+                    if (!organizationId) {
+                        console.error('[createOrder] Missing organizationId; skipping job_status_log insert', {
+                            orderId: created.order.id,
+                            jobId: newJob.id,
+                        });
+                    } else {
+                        await this.dbInstance.insert(jobStatusLog).values({
+                            organizationId,
+                            jobId: newJob.id,
+                            oldStatusKey: null,
+                            newStatusKey: 'new',
+                            userId: data.createdByUserId,
+                        } as InsertJobStatusLog).returning();
+                    }
+                } catch (error) {
+                    console.error('[createOrder] Failed job_status_log insert (non-blocking)', {
+                        organizationId,
+                        orderId: created.order.id,
+                        jobId: newJob.id,
+                        error,
+                    });
+                }
             }
         }));
 

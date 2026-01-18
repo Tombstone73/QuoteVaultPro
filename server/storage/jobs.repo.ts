@@ -112,12 +112,32 @@ export class JobsRepository {
         const [updated] = await this.dbInstance.update(jobs).set(updateData).where(eq(jobs.id, id)).returning();
         if (!updated) throw new Error('Job not found after update');
         if (data.statusKey && data.statusKey !== existing.statusKey) {
-            await this.dbInstance.insert(jobStatusLog).values({
-                jobId: id,
-                oldStatusKey: existing.statusKey,
-                newStatusKey: data.statusKey,
-                userId: userId || null,
-            } as InsertJobStatusLog).returning();
+            // Fail-soft: job status audit logging should not block the update.
+            try {
+                if (!organizationId) {
+                    console.error('[updateJob] Missing organizationId; skipping job_status_log insert', {
+                        jobId: id,
+                        oldStatusKey: existing.statusKey,
+                        newStatusKey: data.statusKey,
+                    });
+                } else {
+                    await this.dbInstance.insert(jobStatusLog).values({
+                        organizationId,
+                        jobId: id,
+                        oldStatusKey: existing.statusKey,
+                        newStatusKey: data.statusKey,
+                        userId: userId || null,
+                    } as InsertJobStatusLog).returning();
+                }
+            } catch (error) {
+                console.error('[updateJob] Failed job_status_log insert (non-blocking)', {
+                    organizationId,
+                    jobId: id,
+                    oldStatusKey: existing.statusKey,
+                    newStatusKey: data.statusKey,
+                    error,
+                });
+            }
         }
         return updated;
     }
