@@ -45,6 +45,8 @@ type SummaryCardProps = {
     onSave: () => void;
     onSaveAndBack?: () => void;
     afterSaveNavigation?: AfterSaveNavigation;
+    primaryActionLabel?: string;
+    primaryActionSavingLabel?: string;
     onConvertToOrder: () => void;
     onDiscard: () => void;
     onCancelQuote?: () => void;
@@ -88,6 +90,8 @@ export function SummaryCard({
     onSave,
     onSaveAndBack,
     afterSaveNavigation = "stay",
+    primaryActionLabel,
+    primaryActionSavingLabel,
     onConvertToOrder,
     onDiscard,
     onCancelQuote,
@@ -288,11 +292,13 @@ export function SummaryCard({
                             disabled={!canSaveQuote || isSaving}
                         >
                             <Save className="w-4 h-4 mr-2" />
-                            {isSaving 
-                                ? "Saving…" 
-                                : afterSaveNavigation === "back" 
-                                    ? "Save & Back" 
-                                    : "Save Changes"}
+                            {primaryActionLabel
+                                ? (isSaving ? (primaryActionSavingLabel || "Saving…") : primaryActionLabel)
+                                : (isSaving
+                                    ? "Saving…"
+                                    : afterSaveNavigation === "back"
+                                        ? "Save & Back"
+                                        : "Save Changes")}
                         </Button>
 
                         {/* Row 2: Save & Back (conditional, only shown when preference is "stay") */}

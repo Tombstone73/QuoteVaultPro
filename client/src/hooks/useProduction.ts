@@ -12,6 +12,31 @@ export type ProductionTimerSummary = {
   currentSeconds: number;
 };
 
+export type ProductionOrderLineItemSummary = {
+  id: string;
+  description: string;
+  quantity: number;
+  width: string | null;
+  height: string | null;
+  materialId: string | null;
+  materialName: string | null;
+  productType: string;
+  status: string;
+};
+
+export type ProductionOrderArtworkSummary = {
+  id: string;
+  orderLineItemId: string | null;
+  fileName: string;
+  fileUrl: string;
+  thumbKey: string | null;
+  previewKey: string | null;
+  thumbnailUrl: string | null;
+  side: string;
+  isPrimary: boolean;
+  thumbStatus: string | null;
+};
+
 export type ProductionJobListItem = {
   id: string;
   view: string;
@@ -27,6 +52,13 @@ export type ProductionJobListItem = {
     customerName: string;
     dueDate: string | null;
     priority: string;
+    lineItems?: {
+      count: number;
+      totalQuantity: number;
+      primary: ProductionOrderLineItemSummary | null;
+      items: ProductionOrderLineItemSummary[];
+    };
+    artwork?: ProductionOrderArtworkSummary[];
   };
   createdAt: string;
   updatedAt: string;

@@ -8400,6 +8400,142 @@ export async function registerRoutes(app: Express): Promise<Server> {
         reprintCountByJobId.set(r.productionJobId, Number(r.count) || 0);
       }
 
+      // Batched order enrichment for cockpit UI (no schema changes, no N+1)
+      const orderIds = Array.from(new Set(baseRows.map((r) => r.orderId)));
+
+      const lineItemRows = await db
+        .select({
+          orderId: orderLineItems.orderId,
+          id: orderLineItems.id,
+          description: orderLineItems.description,
+          quantity: orderLineItems.quantity,
+          width: orderLineItems.width,
+          height: orderLineItems.height,
+          materialId: orderLineItems.materialId,
+          productType: orderLineItems.productType,
+          status: orderLineItems.status,
+          sortOrder: orderLineItems.sortOrder,
+          createdAt: orderLineItems.createdAt,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orders.organizationId, organizationId), inArray(orderLineItems.orderId, orderIds)))
+        .orderBy(asc(orderLineItems.orderId), asc(orderLineItems.sortOrder), asc(orderLineItems.createdAt));
+
+      const materialIds = Array.from(
+        new Set(
+          lineItemRows
+            .map((li) => li.materialId)
+            .filter((v): v is string => typeof v === "string" && !!v.trim()),
+        ),
+      );
+
+      const materialRows = materialIds.length
+        ? await db
+            .select({ id: materials.id, name: materials.name })
+            .from(materials)
+            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
+        : [];
+
+      const materialNameById = new Map<string, string>();
+      for (const m of materialRows) {
+        materialNameById.set(m.id, m.name);
+      }
+
+      const lineItemsByOrderId = new Map<
+        string,
+        Array<{
+          id: string;
+          description: string;
+          quantity: number;
+          width: any;
+          height: any;
+          materialId: string | null;
+          materialName: string | null;
+          productType: string;
+          status: string;
+          sortOrder: number;
+          createdAt: any;
+        }>
+      >();
+      for (const li of lineItemRows) {
+        const list = lineItemsByOrderId.get(li.orderId) ?? [];
+        list.push({
+          id: li.id,
+          description: li.description,
+          quantity: Number(li.quantity) || 0,
+          width: li.width,
+          height: li.height,
+          materialId: li.materialId ?? null,
+          materialName: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
+          productType: li.productType,
+          status: li.status,
+          sortOrder: Number(li.sortOrder) || 0,
+          createdAt: li.createdAt,
+        });
+        lineItemsByOrderId.set(li.orderId, list);
+      }
+
+      const attachmentRows = await db
+        .select({
+          id: orderAttachments.id,
+          orderId: orderAttachments.orderId,
+          orderLineItemId: orderAttachments.orderLineItemId,
+          fileName: orderAttachments.fileName,
+          fileUrl: orderAttachments.fileUrl,
+          thumbKey: orderAttachments.thumbKey,
+          previewKey: orderAttachments.previewKey,
+          thumbnailUrl: orderAttachments.thumbnailUrl,
+          role: orderAttachments.role,
+          side: orderAttachments.side,
+          isPrimary: orderAttachments.isPrimary,
+          thumbStatus: orderAttachments.thumbStatus,
+          createdAt: orderAttachments.createdAt,
+        })
+        .from(orderAttachments)
+        .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            inArray(orderAttachments.orderId, orderIds),
+            eq(orderAttachments.role, "artwork"),
+          ),
+        )
+        .orderBy(desc(orderAttachments.isPrimary), asc(orderAttachments.side), desc(orderAttachments.createdAt));
+
+      const artworkByOrderId = new Map<
+        string,
+        Array<{
+          id: string;
+          orderLineItemId: string | null;
+          fileName: string;
+          fileUrl: string;
+          thumbKey: string | null;
+          previewKey: string | null;
+          thumbnailUrl: string | null;
+          side: string;
+          isPrimary: boolean;
+          thumbStatus: string | null;
+        }>
+      >();
+      for (const a of attachmentRows) {
+        const list = artworkByOrderId.get(a.orderId) ?? [];
+        if (list.length >= 6) continue;
+        list.push({
+          id: a.id,
+          orderLineItemId: a.orderLineItemId ?? null,
+          fileName: a.fileName,
+          fileUrl: a.fileUrl,
+          thumbKey: a.thumbKey ?? null,
+          previewKey: a.previewKey ?? null,
+          thumbnailUrl: a.thumbnailUrl ?? null,
+          side: a.side ?? "na",
+          isPrimary: !!a.isPrimary,
+          thumbStatus: a.thumbStatus ?? null,
+        });
+        artworkByOrderId.set(a.orderId, list);
+      }
+
       const now = Date.now();
       const data = baseRows.map((row) => {
         const lastTimer = latestTimerEventByJobId.get(row.id);
@@ -8408,6 +8544,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const currentSeconds =
           Number(row.totalSeconds) +
           (isRunning ? toSeconds(now - new Date(lastTimer!.createdAt as any).getTime()) : 0);
+
+        const orderLineItemsList = lineItemsByOrderId.get(row.orderId) ?? [];
+        const primaryLineItem = orderLineItemsList[0] ?? null;
+        const orderLineItemsTop = orderLineItemsList.slice(0, 3);
+        const totalQuantity = orderLineItemsList.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
+
         return {
           id: row.id,
           view: view ?? config.defaultView,
@@ -8427,6 +8569,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             customerName: row.customerName,
             dueDate: row.dueDate,
             priority: row.priority,
+            lineItems: {
+              count: orderLineItemsList.length,
+              totalQuantity,
+              primary: primaryLineItem,
+              items: orderLineItemsTop,
+            },
+            artwork: artworkByOrderId.get(row.orderId) ?? [],
           },
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
