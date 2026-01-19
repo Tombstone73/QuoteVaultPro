@@ -19,7 +19,6 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ROUTES } from "@/config/routes";
-import { getThumbSrc } from "@/lib/getThumbSrc";
 import {
   ProductionJobListItem,
   ProductionOrderArtworkSummary,
@@ -53,19 +52,90 @@ type ProductionStatus = "queued" | "in_progress" | "done";
 type DueUrgency = "overdue" | "today" | "soon" | "normal";
 
 /**
+ * DEV-only: Test if a URL is accessible
+ */
+async function testUrlAccessibility(url: string, label: string): Promise<void> {
+  if (process.env.NODE_ENV !== 'development') return;
+  
+  try {
+    const response = await fetch(url, { method: 'HEAD', credentials: 'include' });
+    console.log(`[DEV:URL] ${label}: ${response.status} ${response.statusText} - ${url}`);
+  } catch (error) {
+    console.error(`[DEV:URL] ${label}: FETCH_ERROR - ${url}`, error);
+  }
+}
+
+/**
+ * DEV-only: Log artwork details comprehensively
+ */
+function logArtworkDetails(artwork: ProductionOrderArtworkSummary | null, context: string): void {
+  if (process.env.NODE_ENV !== 'development') return;
+  
+  console.group(`[DEV:Artwork] ${context}`);
+  if (!artwork) {
+    console.log('No artwork provided');
+  } else {
+    console.log('ID:', artwork.id);
+    console.log('fileName:', artwork.fileName);
+    console.log('side:', artwork.side);
+    console.log('fileUrl:', artwork.fileUrl || '(empty)');
+    console.log('thumbnailUrl:', artwork.thumbnailUrl || '(empty)');
+    console.log('thumbKey:', artwork.thumbKey || '(empty)');
+    console.log('previewKey:', artwork.previewKey || '(empty)');
+    console.log('thumbStatus:', artwork.thumbStatus || '(empty)');
+    
+    // Test URLs if present
+    if (artwork.fileUrl) testUrlAccessibility(artwork.fileUrl, 'fileUrl');
+    if (artwork.thumbnailUrl) testUrlAccessibility(artwork.thumbnailUrl, 'thumbnailUrl');
+  }
+  console.groupEnd();
+}
+
+/**
  * Get the best available image source for artwork
- * Priority: thumbnailUrl > previewKey (if exists) > fileUrl
+ * Priority: thumbnailUrl > fileUrl (if image) > null
+ * 
+ * Note: thumbnailUrl is always an image. fileUrl might be a PDF or other non-image.
+ * We check fileName extension to determine if fileUrl can be used as an image.
  */
 function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
   if (!artwork) return null;
-  if (artwork.thumbnailUrl) return artwork.thumbnailUrl;
-  // Note: previewKey would need to be constructed into a URL, skip for now
-  if (artwork.fileUrl) return artwork.fileUrl;
+  
+  // 1. Prefer thumbnailUrl (always an image if present)
+  if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[DEV:getBestArtworkImage] Using thumbnailUrl: ${artwork.thumbnailUrl}`);
+    }
+    return artwork.thumbnailUrl;
+  }
+  
+  // 2. Fallback to fileUrl, but ONLY if it's an image file
+  if (artwork.fileUrl && artwork.fileUrl.trim()) {
+    // Check if fileName suggests an image (jpg, jpeg, png, gif, webp, svg)
+    const fileName = (artwork.fileName || '').toLowerCase();
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.tif', '.tiff'];
+    const isImageFile = imageExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (isImageFile) {
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[DEV:getBestArtworkImage] Using fileUrl (image): ${artwork.fileUrl}`);
+      }
+      return artwork.fileUrl;
+    } else if (process.env.NODE_ENV === 'development') {
+      console.log(`[DEV:getBestArtworkImage] fileUrl exists but not an image file: ${fileName}`);
+    }
+  }
+  
+  // 3. No valid image URL available (might be PDF or thumbnail pending)
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`[DEV:getBestArtworkImage] No valid image URL - fileName: ${artwork.fileName}, has thumbnailUrl: ${!!artwork.thumbnailUrl}, has fileUrl: ${!!artwork.fileUrl}`);
+  }
   return null;
 }
 
 /**
  * Artwork image component with fallback handling
+ * Used primarily for modal previews
  */
 function ArtworkImage({
   artwork,
@@ -82,6 +152,10 @@ function ArtworkImage({
   const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
+    // DEV: Log artwork details on mount/change
+    if (process.env.NODE_ENV === 'development') {
+      logArtworkDetails(artwork, 'ArtworkImage');
+    }
     setSrc(getBestArtworkImage(artwork));
     setHasError(false);
   }, [artwork]);
@@ -114,6 +188,74 @@ function ArtworkImage({
       className={className}
       onError={handleError}
       onClick={onClick}
+      style={onClick ? { cursor: "pointer" } : undefined}
+    />
+  );
+}
+
+/**
+ * Production-specific thumbnail component
+ * More forgiving than ArtworkImage - renders any valid image URL without aggressive error handling
+ */
+function ProductionThumbnail({
+  artwork,
+  alt,
+  className,
+  onClick,
+}: {
+  artwork: ProductionOrderArtworkSummary | null;
+  alt: string;
+  className?: string;
+  onClick?: () => void;
+}) {
+  // DEV: Log artwork details on mount
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development' && artwork) {
+      logArtworkDetails(artwork, `ProductionThumbnail (${alt})`);
+    }
+  }, [artwork, alt]);
+
+  const src = getBestArtworkImage(artwork);
+  const [failed, setFailed] = useState(false);
+
+  // Reset failed state when artwork changes
+  useEffect(() => {
+    setFailed(false);
+  }, [artwork]);
+
+  if (!src || failed) {
+    return (
+      <div className={`flex items-center justify-center bg-titan-bg-muted ${className || ""}`}>
+        <div className="text-center p-2">
+          <FileText className="mx-auto h-8 w-8 text-titan-text-muted" />
+          <div className="mt-1 text-[10px] text-titan-text-muted">No Preview</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      onClick={onClick}
+      onError={() => {
+        // DEV-only: log thumbnail load failures
+        if (process.env.NODE_ENV === 'development') {
+          console.error(`[ProductionThumbnail] Failed to load:`, {
+            src,
+            artwork: artwork ? {
+              id: artwork.id,
+              fileName: artwork.fileName,
+              fileUrl: artwork.fileUrl,
+              thumbnailUrl: artwork.thumbnailUrl,
+              side: artwork.side
+            } : null
+          });
+        }
+        setFailed(true);
+      }}
       style={onClick ? { cursor: "pointer" } : undefined}
     />
   );
@@ -619,9 +761,6 @@ function PreviewPanel({
     () => normalizeArtworkForSides(sidesValue, thumbs),
     [sidesValue, thumbs]
   );
-  
-  const frontSrc = front ? getThumbSrc(front) : null;
-  const backSrc = back ? getThumbSrc(back) : null;
 
   const due = dueMeta(job.order.dueDate);
   
@@ -657,7 +796,7 @@ function PreviewPanel({
               className="relative aspect-square w-full max-w-[180px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
               onClick={() => onPreviewArtwork("front")}
             >
-              <ArtworkImage
+              <ProductionThumbnail
                 artwork={front}
                 alt="Front artwork"
                 className="h-full w-full object-contain"
@@ -673,7 +812,7 @@ function PreviewPanel({
                 className="relative aspect-square w-full max-w-[180px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
                 onClick={() => onPreviewArtwork("back")}
               >
-                <ArtworkImage
+                <ProductionThumbnail
                   artwork={back}
                   alt="Back artwork"
                   className="h-full w-full object-contain"
@@ -970,11 +1109,11 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                         )}
                       </TableCell>
                       <TableCell className="py-5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
                           {!showBackSlot ? (
-                            // Single-sided: show only F indicator with thumbnail
+                            // Single-sided: show only Front thumbnail
                             <div
-                              className="flex items-center gap-1.5 cursor-pointer"
+                              className="relative cursor-pointer"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedJobId(job.id);
@@ -982,12 +1121,17 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                                 setPreviewModalOpen(true);
                               }}
                             >
-                              {hasFront && front?.thumbnailUrl ? (
-                                <ArtworkImage
-                                  artwork={front}
-                                  alt="Front"
-                                  className="w-12 h-12 rounded object-cover border-2 border-blue-500 hover:border-blue-600 transition-colors"
-                                />
+                              {hasFront ? (
+                                <div className="relative">
+                                  <ProductionThumbnail
+                                    artwork={front}
+                                    alt="Front"
+                                    className="w-12 h-12 rounded object-cover border-2 border-blue-500 hover:border-blue-600 transition-colors"
+                                  />
+                                  <div className="absolute top-0.5 left-0.5 bg-blue-600 text-white text-[9px] font-bold px-1 py-0.5 rounded">
+                                    F
+                                  </div>
+                                </div>
                               ) : (
                                 <span className="inline-flex items-center justify-center w-12 h-12 rounded bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors">
                                   F
@@ -995,10 +1139,11 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                               )}
                             </div>
                           ) : (
-                            // Double-sided: show F and B indicators with thumbnails
-                            <div className="flex items-center gap-1.5">
+                            // Double-sided: ALWAYS show both Front and Back thumbnails
+                            <>
+                              {/* Front Thumbnail */}
                               <div
-                                className="cursor-pointer"
+                                className="relative cursor-pointer"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setSelectedJobId(job.id);
@@ -1006,57 +1151,69 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                                   setPreviewModalOpen(true);
                                 }}
                               >
-                                {hasFront && front?.thumbnailUrl ? (
+                                {hasFront ? (
                                   <div className="relative">
-                                    <ArtworkImage
+                                    <ProductionThumbnail
                                       artwork={front}
                                       alt="Front"
                                       className="w-11 h-11 rounded object-cover border-2 border-rose-500 hover:border-rose-600 transition-colors"
                                     />
-                                    {isSameArtwork && (
-                                      <div className="absolute -bottom-1 -right-1 bg-amber-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                                        2
-                                      </div>
-                                    )}
+                                    <div className="absolute top-0.5 left-0.5 bg-rose-600 text-white text-[9px] font-bold px-1 py-0.5 rounded">
+                                      F
+                                    </div>
                                   </div>
                                 ) : (
-                                  <span
-                                    className={`inline-flex items-center justify-center w-11 h-11 rounded text-white text-sm font-semibold transition-colors ${
-                                      hasFront ? "bg-rose-500 hover:bg-rose-600" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
-                                    }`}
-                                  >
+                                  <span className="inline-flex items-center justify-center w-11 h-11 rounded bg-rose-500 text-white text-sm font-semibold hover:bg-rose-600 transition-colors">
                                     F
                                   </span>
                                 )}
                               </div>
-                              {!isSameArtwork && (
-                                <div
-                                  className="cursor-pointer"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedJobId(job.id);
-                                    setPreviewSide("back");
-                                    setPreviewModalOpen(true);
-                                  }}
-                                >
-                                  {hasBack && back?.thumbnailUrl ? (
-                                    <ArtworkImage
+                              
+                              {/* Back Thumbnail - ALWAYS shown for double-sided */}
+                              <div
+                                className="relative cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedJobId(job.id);
+                                  setPreviewSide(isSameArtwork ? "front" : "back");
+                                  setPreviewModalOpen(true);
+                                }}
+                              >
+                                {isSameArtwork ? (
+                                  // Back is same as front: show "Same" badge
+                                  <div className="relative">
+                                    <ProductionThumbnail
+                                      artwork={front}
+                                      alt="Back (same as front)"
+                                      className="w-11 h-11 rounded object-cover border-2 border-teal-500 hover:border-teal-600 transition-colors opacity-80"
+                                    />
+                                    <div className="absolute top-0.5 left-0.5 bg-teal-600 text-white text-[9px] font-bold px-1 py-0.5 rounded">
+                                      B
+                                    </div>
+                                    <div className="absolute inset-0 flex items-center justify-center bg-black/60 rounded">
+                                      <span className="text-white text-[10px] font-bold">Same</span>
+                                    </div>
+                                  </div>
+                                ) : hasBack ? (
+                                  // Back has different artwork
+                                  <div className="relative">
+                                    <ProductionThumbnail
                                       artwork={back}
                                       alt="Back"
                                       className="w-11 h-11 rounded object-cover border-2 border-teal-500 hover:border-teal-600 transition-colors"
                                     />
-                                  ) : (
-                                    <span
-                                      className={`inline-flex items-center justify-center w-11 h-11 rounded text-white text-sm font-semibold transition-colors ${
-                                        hasBack ? "bg-teal-500 hover:bg-teal-600" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
-                                      }`}
-                                    >
+                                    <div className="absolute top-0.5 left-0.5 bg-teal-600 text-white text-[9px] font-bold px-1 py-0.5 rounded">
                                       B
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                            </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  // No back artwork available
+                                  <span className="inline-flex items-center justify-center w-11 h-11 rounded bg-teal-500 text-white text-sm font-semibold hover:bg-teal-600 transition-colors">
+                                    B
+                                  </span>
+                                )}
+                              </div>
+                            </>
                           )}
                         </div>
                       </TableCell>
@@ -1125,18 +1282,11 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
 
                 {/* Large artwork preview */}
                 <div className="relative w-full bg-titan-bg-muted rounded-lg border-2 border-titan-border-subtle overflow-hidden flex items-center justify-center" style={{ minHeight: "400px", maxHeight: "600px" }}>
-                  {imageSrc ? (
-                    <ArtworkImage
-                      artwork={currentArtwork}
-                      alt={`${previewSide === "front" ? "Front" : "Back"} artwork`}
-                      className="max-w-full max-h-[600px] object-contain"
-                    />
-                  ) : (
-                    <div className="text-center p-8">
-                      <FileText className="mx-auto h-16 w-16 text-titan-text-muted" />
-                      <div className="mt-4 text-sm text-titan-text-muted">No artwork available</div>
-                    </div>
-                  )}
+                  <ArtworkImage
+                    artwork={currentArtwork}
+                    alt={`${previewSide === "front" ? "Front" : "Back"} artwork`}
+                    className="max-w-full max-h-[600px] object-contain"
+                  />
                 </div>
 
                 {/* File info and actions */}

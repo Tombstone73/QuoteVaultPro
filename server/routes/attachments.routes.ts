@@ -752,6 +752,94 @@ export async function registerAttachmentRoutes(
   });
 
   /**
+   * GET /api/assets/:id/download
+   * Download an asset file by ID
+   * Proxies through /objects/ endpoint
+   */
+  app.get("/api/assets/:id/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const assetId = req.params.id; // Asset IDs are strings (varchar)
+      if (!assetId) {
+        return res.status(400).json({ error: "Invalid asset ID" });
+      }
+
+      const organizationId = getRequestOrganizationId(req);
+      
+      // Lookup asset
+      const [asset] = await db
+        .select({
+          fileKey: assets.fileKey,
+          fileName: assets.fileName,
+          mimeType: assets.mimeType,
+        })
+        .from(assets)
+        .where(and(
+          eq(assets.id, assetId),
+          eq(assets.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!asset || !asset.fileKey) {
+        return res.status(404).json({ error: "Asset not found" });
+      }
+
+      // Redirect to authenticated /objects/ proxy
+      const objectPath = asset.fileKey;
+      const filename = asset.fileName || 'download';
+      const redirectUrl = `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`;
+      
+      return res.redirect(302, redirectUrl);
+    } catch (error) {
+      console.error("[/api/assets/:id/download] Error:", error);
+      return res.status(500).json({ error: "Failed to download asset" });
+    }
+  });
+
+  /**
+   * GET /api/assets/:id/thumb
+   * Get thumbnail for an asset by ID
+   * Proxies through /objects/ endpoint
+   */
+  app.get("/api/assets/:id/thumb", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const assetId = req.params.id; // Asset IDs are strings (varchar)
+      if (!assetId) {
+        return res.status(400).json({ error: "Invalid asset ID" });
+      }
+
+      const organizationId = getRequestOrganizationId(req);
+      
+      // Lookup asset
+      const [asset] = await db
+        .select({
+          thumbKey: assets.thumbKey,
+          fileName: assets.fileName,
+        })
+        .from(assets)
+        .where(and(
+          eq(assets.id, assetId),
+          eq(assets.organizationId, organizationId)
+        ))
+        .limit(1);
+
+      if (!asset || !asset.thumbKey) {
+        // No thumbnail available, return 404
+        return res.status(404).json({ error: "Thumbnail not found" });
+      }
+
+      // Redirect to authenticated /objects/ proxy
+      const objectPath = asset.thumbKey;
+      const filename = asset.fileName ? `thumb_${asset.fileName}` : 'thumbnail';
+      const redirectUrl = `/objects/${objectPath}?filename=${encodeURIComponent(filename)}`;
+      
+      return res.redirect(302, redirectUrl);
+    } catch (error) {
+      console.error("[/api/assets/:id/thumb] Error:", error);
+      return res.status(500).json({ error: "Failed to fetch thumbnail" });
+    }
+  });
+
+  /**
    * POST /api/objects/upload
    * Get signed upload URL for direct file upload to storage
    * Admin-only endpoint

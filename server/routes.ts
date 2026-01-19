@@ -9196,14 +9196,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
       >();
 
       for (const a of attachmentRows) {
+        // Convert legacy external URLs to authenticated /objects/ proxy
+        let fileUrl = a.fileUrl;
+        let thumbnailUrl = a.thumbnailUrl ?? null;
+        
+        // If thumbnailUrl is null but thumbKey exists, construct URL from thumbKey
+        if (!thumbnailUrl && a.thumbKey && a.thumbStatus === 'thumb_ready') {
+          thumbnailUrl = `/objects/${a.thumbKey}`;
+        }
+        
+        // If fileUrl doesn't start with http/https or /objects/, prepend /objects/
+        if (fileUrl && !fileUrl.startsWith('http') && !fileUrl.startsWith('/objects/')) {
+          fileUrl = `/objects/${fileUrl}`;
+        }
+        
+        // If fileUrl contains /objects/ path, convert to proxy URL
+        if (fileUrl && fileUrl.includes('/objects/')) {
+          const match = fileUrl.match(/\/objects\/(.+?)(?:\?|$)/);
+          if (match) {
+            fileUrl = `/objects/${match[1]}`;
+          }
+        }
+        
+        // If thumbnailUrl contains /objects/ path, convert to proxy URL
+        if (thumbnailUrl && thumbnailUrl.includes('/objects/')) {
+          const match = thumbnailUrl.match(/\/objects\/(.+?)(?:\?|$)/);
+          if (match) {
+            thumbnailUrl = `/objects/${match[1]}`;
+          }
+        }
+        
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
           fileName: a.fileName,
-          fileUrl: a.fileUrl,
+          fileUrl,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
-          thumbnailUrl: a.thumbnailUrl ?? null,
+          thumbnailUrl,
           side: a.side ?? "na",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
