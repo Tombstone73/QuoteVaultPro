@@ -8869,7 +8869,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   }
 
-  // 1) GET /api/production/jobs?status=&station=
+  // 1) GET /api/production/jobs?status=&station=&orderId=
   app.get("/api/production/jobs", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -8881,6 +8881,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const stationRaw = req.query.station as string | undefined;
       const stationCandidate = stationRaw ?? viewRaw;
       const searchRaw = req.query.search as string | undefined;
+      const orderIdRaw = req.query.orderId as string | undefined;
       const statusParsed = statusRaw ? productionStatusSchema.safeParse(statusRaw) : null;
       const viewParsed = viewRaw ? productionViewKeySchema.safeParse(viewRaw) : null;
       const stationParsed = stationCandidate ? productionViewKeySchema.safeParse(stationCandidate) : null;
@@ -8906,10 +8907,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // FIX: lineItemId filter was too strict - production_jobs can exist without line items during initial intake
       // Station scoping is OPTIONAL - when omitted, returns ALL jobs across all stations (for Overview)
+      // orderId filtering for sibling production jobs on same order
       const whereClause = and(
         eq(productionJobs.organizationId, organizationId),
         station ? eq(productionJobs.stationKey, station) : undefined,
         status ? eq(productionJobs.status, status) : undefined,
+        orderIdRaw ? eq(productionJobs.orderId, orderIdRaw) : undefined,
       );
 
       const baseRows = await db
