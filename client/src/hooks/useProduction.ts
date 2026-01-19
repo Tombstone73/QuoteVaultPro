@@ -22,6 +22,14 @@ export type ProductionOrderLineItemSummary = {
   materialName: string | null;
   productType: string;
   status: string;
+  selectedOptions?: Array<{ // ADDED: For deriving Sides (single/double)
+    optionId: string;
+    optionName: string;
+    value: string | number | boolean;
+    note?: string;
+    setupCost: number;
+    calculatedCost: number;
+  }>;
 };
 
 export type ProductionOrderArtworkSummary = {
@@ -114,6 +122,8 @@ export function useProductionJobs(filters: { status?: string; view?: string; sta
       const json = await res.json();
       return json.data || [];
     },
+    staleTime: 10_000, // Cache for 10 seconds to prevent rapid refetches during tab switches
+    refetchOnWindowFocus: true, // Refresh when user returns to window (check for new jobs)
   });
 }
 

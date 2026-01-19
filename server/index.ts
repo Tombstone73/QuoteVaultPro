@@ -72,6 +72,19 @@ process.on('uncaughtException', (error) => {
     const { probeDatabaseSchema } = await import('./db');
     await probeDatabaseSchema();
 
+    // DEV-ONLY: Log redacted DATABASE_URL on startup
+    if (app.get("env") === "development") {
+      const dbUrl = process.env.DATABASE_URL || "";
+      let redactedDbInfo = "not_set";
+      try {
+        const url = new URL(dbUrl);
+        redactedDbInfo = `${url.hostname}:${url.port || '5432'}${url.pathname}`;
+      } catch {
+        redactedDbInfo = "invalid_url";
+      }
+      console.log(`[Server] DATABASE_URL (redacted): ${redactedDbInfo}`);
+    }
+
     const server = await registerRoutes(app);
     
     // Run user-to-customer sync in development

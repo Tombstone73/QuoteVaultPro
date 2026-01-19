@@ -12,7 +12,8 @@ type ProductionStatus = "queued" | "in_progress" | "done";
 
 export default function ProductionBoard() {
   const { data: config, isLoading, error } = useProductionConfig();
-  const [status, setStatus] = useState<ProductionStatus>("queued");
+  // Default to "in_progress" - operators want to see active jobs first
+  const [status, setStatus] = useState<ProductionStatus>("in_progress");
   const [viewKey, setViewKey] = useState<string>("flatbed");
 
   useEffect(() => {

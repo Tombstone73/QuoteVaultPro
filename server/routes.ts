@@ -7,7 +7,7 @@ import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -8672,6 +8672,161 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
   );
 
+  // DEV-ONLY: Debug endpoint to inspect DB connection and production_jobs data (NO AUTH for quick testing)
+  if (nodeEnv === "development" || process.env.PROD_DEBUG === "1") {
+    app.get("/api/debug/db", async (req: any, res) => {
+      try {
+        // Use default org for unauthenticated debug requests
+        const organizationId = DEFAULT_ORGANIZATION_ID;
+        
+        // Redact DATABASE_URL to show only host and database name
+        const dbUrl = process.env.DATABASE_URL || "";
+        let redactedInfo = "not_set";
+        try {
+          const url = new URL(dbUrl);
+          redactedInfo = `${url.hostname}:${url.port || '5432'}${url.pathname}`;
+        } catch {
+          redactedInfo = "invalid_url";
+        }
+
+        // Query PostgreSQL for connection details
+        const pgInfoResult = await db.execute(sql`
+          SELECT 
+            current_database() as current_database,
+            inet_server_addr() as inet_server_addr,
+            inet_server_port() as inet_server_port,
+            current_user as current_user
+        `);
+        const pgInfo = (pgInfoResult.rows || [])[0] || {};
+
+        // Query current_setting for app.organization_id (if set)
+        const orgSettingResult = await db.execute(sql`
+          SELECT current_setting('app.organization_id', true) as app_org_id
+        `);
+        const orgSetting = (orgSettingResult.rows || [])[0] || {};
+
+        // Count production_jobs
+        const [countOrgTitan] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(productionJobs)
+          .where(eq(productionJobs.organizationId, 'org_titan_001'));
+        
+        const [countAll] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(productionJobs);
+
+        res.json({
+          success: true,
+          data: {
+            nodeEnv: process.env.NODE_ENV || "",
+            databaseUrlRedactedHostAndDb: redactedInfo,
+            pg: pgInfo,
+            orgContext: {
+              organizationIdFromRequest: organizationId,
+              currentSettingAppOrgId: (orgSetting as any)?.app_org_id || null,
+            },
+            counts: {
+              productionJobsOrgTitan001: countOrgTitan?.count || 0,
+              productionJobsAll: countAll?.count || 0,
+            },
+          },
+        });
+      } catch (error) {
+        console.error("Error in /api/debug/db:", error);
+        res.status(500).json({ error: "Failed to fetch debug info" });
+      }
+    });
+
+    app.get("/api/debug/production-jobs", async (req: any, res) => {
+      try {
+        // Use default org for unauthenticated debug requests
+        const organizationId = DEFAULT_ORGANIZATION_ID;
+
+        const statusRaw = req.query.status as string | undefined;
+        const viewRaw = req.query.view as string | undefined;
+        const stationRaw = req.query.station as string | undefined;
+        const stepKeyRaw = req.query.stepKey as string | undefined;
+
+        const stationCandidate = stationRaw ?? viewRaw;
+
+        // Count by org only
+        const [countByOrg] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(productionJobs)
+          .where(eq(productionJobs.organizationId, organizationId));
+
+        // Count by org + station
+        let countByOrgStation = 0;
+        if (stationCandidate) {
+          const [result] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(productionJobs)
+            .where(and(
+              eq(productionJobs.organizationId, organizationId),
+              eq(productionJobs.stationKey, stationCandidate)
+            ));
+          countByOrgStation = result?.count || 0;
+        }
+
+        // Count by org + station + status
+        let countByOrgStationStatus = 0;
+        if (stationCandidate && statusRaw) {
+          const [result] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(productionJobs)
+            .where(and(
+              eq(productionJobs.organizationId, organizationId),
+              eq(productionJobs.stationKey, stationCandidate),
+              eq(productionJobs.status, statusRaw)
+            ));
+          countByOrgStationStatus = result?.count || 0;
+        }
+
+        // Fetch first 10 rows matching filters
+        const whereConditions = [eq(productionJobs.organizationId, organizationId)];
+        if (stationCandidate) whereConditions.push(eq(productionJobs.stationKey, stationCandidate));
+        if (statusRaw) whereConditions.push(eq(productionJobs.status, statusRaw));
+        if (stepKeyRaw) whereConditions.push(eq(productionJobs.stepKey, stepKeyRaw));
+
+        const rows = await db
+          .select({
+            id: productionJobs.id,
+            organizationId: productionJobs.organizationId,
+            orderId: productionJobs.orderId,
+            lineItemId: productionJobs.lineItemId,
+            stationKey: productionJobs.stationKey,
+            stepKey: productionJobs.stepKey,
+            status: productionJobs.status,
+            createdAt: productionJobs.createdAt,
+          })
+          .from(productionJobs)
+          .where(and(...whereConditions))
+          .limit(10);
+
+        res.json({
+          success: true,
+          data: {
+            parsedFilters: {
+              organizationId,
+              station: stationCandidate || null,
+              status: statusRaw || null,
+              stepKey: stepKeyRaw || null,
+            },
+            counts: {
+              byOrgOnly: countByOrg?.count || 0,
+              byOrgStation: countByOrgStation,
+              byOrgStationStatus: countByOrgStationStatus,
+            },
+            first10Rows: rows,
+          },
+        });
+      } catch (error) {
+        console.error("Error in /api/debug/production-jobs:", error);
+        res.status(500).json({ error: "Failed to fetch debug production jobs" });
+      }
+    });
+  }
+
   // 1) GET /api/production/jobs?status=&station=
   app.get("/api/production/jobs", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -8709,12 +8864,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json({ success: true, data: [] });
       }
 
+      // FIX: lineItemId filter was too strict - production_jobs can exist without line items during initial intake
+      // Only filter out jobs that were explicitly designed to be orphaned (future use case)
       const whereClause = and(
         eq(productionJobs.organizationId, organizationId),
         // Station scoping is REQUIRED for boards.
         eq(productionJobs.stationKey, station),
-        // Correct model: only line-item-backed work items.
-        isNotNull(productionJobs.lineItemId),
+        // Allow jobs with or without lineItemId - the lineItemId requirement was preventing MVP test data from showing
         status ? eq(productionJobs.status, status) : undefined,
       );
 
@@ -8824,7 +8980,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Batched order enrichment for cockpit UI (no schema changes, no N+1)
       const orderIds = Array.from(new Set(baseRows.map((r) => r.orderId)));
 
-      const lineItemIds = Array.from(
+      // Collect BOTH order IDs (for context) AND explicit line item IDs from production_jobs
+      // This ensures we fetch the specific line item each job references, even if it's
+      // not the first/default line item for the order
+      const productionLineItemIds = Array.from(
         new Set(
           baseRows
             .map((r) => r.lineItemId)
@@ -8832,6 +8991,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ),
       );
 
+      // Query strategy: Fetch line items by order ID (for context) OR by explicit line item ID
+      // This handles both normal cases (line items belong to order) and edge cases
+      // (orphaned/reassigned line items that production_jobs still references)
       const lineItemRows = await db
         .select({
           orderId: orderLineItems.orderId,
@@ -8844,11 +9006,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
           productType: orderLineItems.productType,
           status: orderLineItems.status,
           sortOrder: orderLineItems.sortOrder,
+          selectedOptions: orderLineItems.selectedOptions, // For deriving Sides (single/double)
           createdAt: orderLineItems.createdAt,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
-        .where(and(eq(orders.organizationId, organizationId), inArray(orderLineItems.orderId, orderIds)))
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            or(
+              inArray(orderLineItems.orderId, orderIds),
+              productionLineItemIds.length > 0 ? inArray(orderLineItems.id, productionLineItemIds) : undefined,
+            ),
+          ),
+        )
         .orderBy(asc(orderLineItems.orderId), asc(orderLineItems.sortOrder), asc(orderLineItems.createdAt));
 
       const materialIds = Array.from(
@@ -8884,6 +9055,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           productType: string;
           status: string;
           sortOrder: number;
+          selectedOptions: any; // ADDED: For Sides derivation
           createdAt: any;
         }>
       >();
@@ -8901,6 +9073,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           productType: string;
           status: string;
           sortOrder: number;
+          selectedOptions: any; // ADDED: For Sides derivation
           createdAt: any;
         }
       >();
@@ -8917,6 +9090,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           productType: li.productType,
           status: li.status,
           sortOrder: Number(li.sortOrder) || 0,
+          selectedOptions: li.selectedOptions ?? [], // ADDED: Pass through selected_options
           createdAt: li.createdAt,
         };
         list.push(mapped);
@@ -8950,6 +9124,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ),
         )
         .orderBy(desc(orderAttachments.isPrimary), asc(orderAttachments.side), desc(orderAttachments.createdAt));
+
+      // ALSO fetch artwork from new assets + assetLinks system (newer uploads may use this)
+      // Join: assetLinks -> assets to get files linked to orders or line items
+      const assetLinkRows = await db
+        .select({
+          id: assets.id,
+          parentType: assetLinks.parentType,
+          parentId: assetLinks.parentId,
+          role: assetLinks.role,
+          fileName: assets.fileName,
+          fileKey: assets.fileKey,
+          thumbKey: assets.thumbKey,
+          previewKey: assets.previewKey,
+          previewStatus: assets.previewStatus,
+          createdAt: assetLinks.createdAt,
+        })
+        .from(assetLinks)
+        .innerJoin(assets, eq(assetLinks.assetId, assets.id))
+        .where(
+          and(
+            eq(assetLinks.organizationId, organizationId),
+            or(
+              // Assets linked to orders
+              and(
+                eq(assetLinks.parentType, "order"),
+                inArray(assetLinks.parentId, orderIds),
+              ),
+              // Assets linked to line items (if we have production line item IDs)
+              productionLineItemIds.length > 0
+                ? and(
+                    eq(assetLinks.parentType, "order_line_item"),
+                    inArray(assetLinks.parentId, productionLineItemIds),
+                  )
+                : undefined,
+            ),
+          ),
+        )
+        .orderBy(desc(assetLinks.createdAt));
 
       const artworkByOrderId = new Map<
         string,
@@ -9014,6 +9226,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Process new assets/assetLinks data and merge into artwork maps
+      for (const link of assetLinkRows) {
+        const mapped = {
+          id: link.id,
+          orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
+          fileName: link.fileName,
+          fileUrl: `/api/assets/${link.id}/download`, // Construct download URL
+          thumbKey: link.thumbKey ?? null,
+          previewKey: link.previewKey ?? null,
+          thumbnailUrl: link.thumbKey ? `/api/assets/${link.id}/thumb` : null, // Construct thumb URL
+          side: "na", // New assets system doesn't track side yet, could enhance later
+          isPrimary: false, // New assets system doesn't track isPrimary yet
+          thumbStatus: link.previewStatus ?? null,
+        };
+
+        // Add to appropriate map based on parentType
+        if (link.parentType === "order") {
+          const orderList = artworkByOrderId.get(link.parentId) ?? [];
+          if (orderList.length < 6) {
+            orderList.push(mapped);
+            artworkByOrderId.set(link.parentId, orderList);
+          }
+        } else if (link.parentType === "order_line_item") {
+          const liList = artworkByLineItemId.get(link.parentId) ?? [];
+          if (liList.length < 6) {
+            liList.push(mapped);
+            artworkByLineItemId.set(link.parentId, liList);
+          }
+        }
+      }
+
       const now = Date.now();
       const data = baseRows.map((row) => {
         const lastTimer = latestTimerEventByJobId.get(row.id);
@@ -9024,28 +9267,87 @@ export async function registerRoutes(app: Express): Promise<Server> {
           (isRunning ? toSeconds(now - new Date(lastTimer!.createdAt as any).getTime()) : 0);
 
         const orderLineItemsList = lineItemsByOrderId.get(row.orderId) ?? [];
+        
+        // CRITICAL: Use the SPECIFIC line item referenced by production_jobs.line_item_id
+        // This ensures derived fields (qty/size/sides/media) match what the job is actually producing
         const primaryLineItem = row.lineItemId ? lineItemById.get(row.lineItemId) ?? null : orderLineItemsList[0] ?? null;
-        const orderLineItemsTop = orderLineItemsList.slice(0, 3);
+        
+        // DEV: Log when production job references a line item that wasn't found
+        if (process.env.NODE_ENV === "development" && row.lineItemId && !primaryLineItem) {
+          console.warn(`[Production Job ${row.id}] Line item ${row.lineItemId} not found. Order ${row.orderId} has ${orderLineItemsList.length} line items.`);
+        }
+        
+        // Ensure the primary line item appears first in the items array for UI consistency
+        // If production job has a specific line_item_id, that line item should be primary
+        const orderLineItemsTop = primaryLineItem
+          ? [
+              primaryLineItem,
+              ...orderLineItemsList.filter((li) => li.id !== primaryLineItem.id).slice(0, 2),
+            ]
+          : orderLineItemsList.slice(0, 3);
         const totalQuantity = orderLineItemsList.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
 
         const artwork = row.lineItemId
           ? artworkByLineItemId.get(row.lineItemId) ?? artworkByOrderId.get(row.orderId) ?? []
           : artworkByOrderId.get(row.orderId) ?? [];
 
+        // DEV: Log when production job has no artwork
+        if (process.env.NODE_ENV === "development" && artwork.length === 0) {
+          console.warn(`[Production Job ${row.id}] No artwork found. LineItemId: ${row.lineItemId}, OrderId: ${row.orderId}`);
+        }
+
         const sidesSet = new Set<string>();
         for (const a of artwork) {
           const s = (a.side || "").toLowerCase();
           if (s === "front" || s === "back") sidesSet.add(s);
         }
-        const sides = sidesSet.size > 0 ? sidesSet.size : null;
+        const artworkBasedSides = sidesSet.size > 0 ? sidesSet.size : null;
+
+        // DERIVE DISPLAY FIELDS (Backend responsibility - UI should not infer)
+        // These fields are computed here to keep business logic centralized and consistent.
+        
+        // 1) Media: Material name from joined materials table, fallback to line item description
+        let media = String(primaryLineItem?.materialName || "").trim();
+        if (!media) {
+          // Fallback: Use line item description if no material name
+          media = String(primaryLineItem?.description || "").trim();
+        }
+        if (!media) {
+          media = "—"; // Only show "—" if both materialName and description are empty
+        }
+        
+        // 2) Size: Format width × height if both exist
+        const width = primaryLineItem?.width;
+        const height = primaryLineItem?.height;
+        const size = (width && height) ? `${width} × ${height}` : "—";
+        
+        // 3) Sides: Parse selected_options for "Single Sided" / "Double Sided" choice
+        let sides: string = "—";
+        if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
+          const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
+            const optName = String(opt.optionName || "").toLowerCase();
+            return optName.includes("side") || optName.includes("print");
+          });
+          if (sidesOption) {
+            const val = String(sidesOption.value || "").toLowerCase();
+            if (val.includes("single") || val === "1") {
+              sides = "Single";
+            } else if (val.includes("double") || val === "2") {
+              sides = "Double";
+            }
+          }
+        }
+        // Fallback: if selected_options didn't provide sides, use artwork count
+        if (sides === "—" && artworkBasedSides) {
+          sides = artworkBasedSides === 1 ? "Single" : "Double";
+        }
 
         const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
-        const size = primaryLineItem?.width && primaryLineItem?.height ? `${primaryLineItem.width} × ${primaryLineItem.height}` : "—";
-        const mediaLabel = String(primaryLineItem?.materialName ?? "—") || "—";
 
         const artworkThumbs = (artwork ?? []).slice(0, 2).map((a) => ({
           id: a.id,
           fileName: a.fileName,
+          fileUrl: a.fileUrl, // Full file URL for download/display
           thumbnailUrl: a.thumbnailUrl,
           thumbKey: a.thumbKey,
           side: a.side,
@@ -9058,17 +9360,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return {
           id: row.id,
           // Stable, UI-ready fields (no guessing / no missing keys)
+          productionJobId: row.id, // Explicit production job ID for clarity
           jobId: row.id,
           lineItemId: String(row.lineItemId ?? ""),
           orderId: row.orderId,
+          orderNumber: String(row.orderNumber ?? ""), // Order number at top level for easy access
           customerName: String(row.customerName ?? "—"),
           dueDate: row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
           stepKey: String(row.stepKey ?? ""),
           qty,
-          size,
-          sides: Number(sides ?? 0) || 0,
-          mediaLabel,
+          // DERIVED DISPLAY FIELDS (computed in API, not UI)
+          size,        // "12\" × 18\"" or "—"
+          sides,       // "Single", "Double", or "—"
+          media,       // Material name or "—"
+          // Legacy field for backwards compatibility
+          mediaLabel: media,
           artwork: artworkThumbs,
           notes,
           // Back-compat: treat view as stationKey
@@ -9098,7 +9405,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               items: orderLineItemsTop,
             },
             artwork,
-            sides,
+            sides: artworkBasedSides, // Keep original artwork-based count for backwards compatibility
           },
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
