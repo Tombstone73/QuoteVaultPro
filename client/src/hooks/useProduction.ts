@@ -57,6 +57,13 @@ export type ProductionJobListItem = {
   totalSeconds: number;
   timer: ProductionTimerSummary;
   reprintCount: number;
+  // LIVE LINE ITEM FIELDS (top-level, synced from current line item state)
+  qty?: number; // Current quantity from line item
+  jobDescription?: string; // Line item description or fallback
+  size?: string; // Formatted "W × H" or "—"
+  sides?: string; // "Single", "Double", or "—" (parsed from selectedOptions)
+  media?: string; // Material name or "—"
+  mediaLabel?: string; // Alias for media (legacy)
   order: {
     id: string;
     orderNumber: string;
@@ -72,7 +79,7 @@ export type ProductionJobListItem = {
       items: ProductionOrderLineItemSummary[];
     };
     artwork?: ProductionOrderArtworkSummary[];
-    sides?: number | null;
+    sides?: number | null; // Legacy: artwork-based count
   };
   createdAt: string;
   updatedAt: string;
@@ -161,6 +168,50 @@ export function useCreateProductionJobFromOrder() {
     },
     onError: (e: Error) => {
       toast({ title: "Create job failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export type ScheduleProductionResult = {
+  success: boolean;
+  data: {
+    createdJobCount: number;
+    existingJobCount: number;
+    skippedNonProductionCount: number;
+    affectedLineItemIds: string[];
+  };
+  message: string;
+};
+
+export function useScheduleOrderLineItemsForProduction(orderId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (lineItemIds?: string[]) => {
+      const res = await fetch(`/api/orders/${orderId}/production/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lineItemIds }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to schedule line items for production");
+      return json as ScheduleProductionResult;
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
+      toast({ 
+        title: "Production scheduling complete", 
+        description: data.message 
+      });
+    },
+    onError: (e: Error) => {
+      toast({ 
+        title: "Scheduling failed", 
+        description: e.message, 
+        variant: "destructive" 
+      });
     },
   });
 }

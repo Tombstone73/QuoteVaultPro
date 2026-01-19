@@ -9,6 +9,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   ChevronDown,
   Download,
@@ -21,6 +22,7 @@ import {
   Check,
   Trash2,
   Upload,
+  Send,
 } from "lucide-react";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -41,6 +43,7 @@ import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem,
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
+import { useScheduleOrderLineItemsForProduction } from "@/hooks/useProduction";
 
 import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/components/line-items/LineItemRowEnterprise";
 import { buildLineItemFlags } from "@/lib/lineItems/lineItemDerivation";
@@ -278,6 +281,10 @@ export function OrderLineItemsSection({
   const [pbv2CurrentSignatureByLineItemId, setPbv2CurrentSignatureByLineItemId] = useState<Record<string, string>>({});
   const [pbv2SnapshotSignatureByLineItemId, setPbv2SnapshotSignatureByLineItemId] = useState<Record<string, string>>({});
   const [pbv2KeepAckByLineItemId, setPbv2KeepAckByLineItemId] = useState<Record<string, string>>({});
+
+  // Production scheduling state
+  const [selectedForProduction, setSelectedForProduction] = useState<Set<string>>(new Set());
+  const scheduleProduction = useScheduleOrderLineItemsForProduction(orderId);;
 
   const acceptPbv2Components = useMutation({
     mutationFn: async (lineItemId: string) => {
@@ -861,13 +868,78 @@ export function OrderLineItemsSection({
 
   const count = activeLineItems.length;
 
+  const handleToggleProductionSelection = (lineItemId: string) => {
+    setSelectedForProduction((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineItemId)) {
+        next.delete(lineItemId);
+      } else {
+        next.add(lineItemId);
+      }
+      return next;
+    });
+  };
+
+  const handleSendSelectedToProduction = async () => {
+    if (selectedForProduction.size === 0) return;
+    
+    const lineItemIds = Array.from(selectedForProduction);
+    await scheduleProduction.mutateAsync(lineItemIds);
+    setSelectedForProduction(new Set());
+  };
+
+  const productionRequiredItemCount = useMemo(() => {
+    return activeLineItems.filter((item) => {
+      const product = products.find((p) => p.id === item.productId);
+      return (product as any)?.requiresProductionJob === true;
+    }).length;
+  }, [activeLineItems, products]);
+
   return (
     <Card className="border-0 bg-transparent shadow-none">
       <CardHeader className="px-0 pt-0 pb-2">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="border-border/60 text-xs">
-            {count} {count === 1 ? "item" : "items"}
-          </Badge>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="border-border/60 text-xs">
+              {count} {count === 1 ? "item" : "items"}
+            </Badge>
+            {productionRequiredItemCount > 0 && !readOnly && (
+              <Badge variant="secondary" className="text-xs">
+                {productionRequiredItemCount} require production
+              </Badge>
+            )}
+          </div>
+          
+          {!readOnly && productionRequiredItemCount > 0 && (
+            <div className="flex items-center gap-2">
+              {selectedForProduction.size > 0 && (
+                <>
+                  <span className="text-xs text-muted-foreground">
+                    {selectedForProduction.size} selected
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedForProduction(new Set())}
+                    disabled={scheduleProduction.isPending}
+                  >
+                    Clear
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleSendSelectedToProduction}
+                disabled={selectedForProduction.size === 0 || scheduleProduction.isPending}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                {scheduleProduction.isPending
+                  ? "Sending..."
+                  : `Send ${selectedForProduction.size > 0 ? selectedForProduction.size : "Selected"} to Production`}
+              </Button>
+            </div>
+          )}
         </div>
       </CardHeader>
 
@@ -1048,6 +1120,10 @@ export function OrderLineItemsSection({
                     />
                   );
 
+                  const productForItem = products.find((p) => p.id === item.productId);
+                  const itemRequiresProduction = (productForItem as any)?.requiresProductionJob === true;
+                  const isSelectedForProduction = selectedForProduction.has(item.id);
+
                   return (
                     <SortableOrderLineItemWrapper key={itemKey} id={itemKey} disabled={reorderDisabled}>
                       {({ dragAttributes, dragListeners, isDragging, isOver }) => (
@@ -1058,6 +1134,17 @@ export function OrderLineItemsSection({
                             isDragging && "opacity-60"
                           )}
                         >
+                          <div className="flex items-start gap-2">
+                            {!readOnly && itemRequiresProduction && (
+                              <div className="pt-3 pl-2" onClick={(e) => e.stopPropagation()}>
+                                <Checkbox
+                                  checked={isSelectedForProduction}
+                                  onCheckedChange={() => handleToggleProductionSelection(item.id)}
+                                  aria-label="Select for production"
+                                />
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
                           <div
                             role="button"
                             tabIndex={0}
@@ -1905,6 +1992,8 @@ export function OrderLineItemsSection({
                         </div>
                       </div>
                     )}
+                  </div>
+                  </div>
                   </div>
                 )}
               </SortableOrderLineItemWrapper>

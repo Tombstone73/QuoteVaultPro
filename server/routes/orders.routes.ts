@@ -1090,6 +1090,15 @@ export async function registerOrderRoutes(
                 });
             }
 
+            // BLOCK state changes - TitanOS state transitions should also use /transition endpoint
+            // (Production scheduling and other side effects depend on proper state transitions)
+            if (req.body.state !== undefined) {
+                return res.status(400).json({
+                    message: "State changes must use the /api/orders/:id/transition endpoint for proper validation and side effects.",
+                    code: "USE_TRANSITION_ENDPOINT"
+                });
+            }
+
             // Get order to check current status
             const existingOrder = await storage.getOrderById(organizationId, req.params.id);
             if (!existingOrder) {
@@ -1426,6 +1435,38 @@ export async function registerOrderRoutes(
                     lineItemIds: itemsToUpdate.map(li => li.id),
                 },
             });
+            
+            // Trigger: Auto-schedule production when line items move into in_production
+            if (status === 'in_production') {
+                if (process.env.NODE_ENV === 'development') {
+                    console.log(`[BulkLineItemStatus:TRIGGER] Detected ${itemsToUpdate.length} items moving to in_production for orderId=${orderId}`);
+                }
+                
+                try {
+                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
+                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
+                    
+                    // Only schedule items that weren't already in production
+                    const itemsMovingIntoProduction = itemsToUpdate.filter(li => li.status !== 'in_production');
+                    
+                    if (itemsMovingIntoProduction.length > 0) {
+                        const scheduleResult = await scheduleOrderLineItemsForProduction({
+                            organizationId,
+                            orderId,
+                            lineItemIds: itemsMovingIntoProduction.map(li => li.id),
+                            loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
+                            appendEvent,
+                        });
+                        
+                        if (process.env.NODE_ENV === 'development') {
+                            console.log(`[BulkLineItemStatus:TRIGGER] Auto-scheduled production for ${itemsMovingIntoProduction.length} items:`, scheduleResult.data);
+                        }
+                    }
+                } catch (productionErr: any) {
+                    console.error('[BulkLineItemStatus:TRIGGER] Production auto-scheduling failed:', productionErr);
+                    // Fail soft - don't break the status update
+                }
+            }
 
             // Billing readiness recompute (fail-soft)
             try {
@@ -1539,6 +1580,10 @@ export async function registerOrderRoutes(
             };
 
             const now = new Date().toISOString();
+            
+            // Trigger: Auto-schedule production when order moves into in_production
+            const isMovingIntoProduction = order.status !== 'in_production' && toStatus === 'in_production';
+            
             if (order.status === 'new' && toStatus === 'in_production') {
                 try {
                     await storage.autoDeductInventoryWhenOrderMovesToProduction(organizationId, orderId, userId);
@@ -1551,6 +1596,39 @@ export async function registerOrderRoutes(
             }
 
             const updatedOrder = await storage.updateOrder(organizationId, orderId, updateData);
+            
+            // Auto-schedule production jobs after status update (fail-soft)
+            if (isMovingIntoProduction) {
+                if (process.env.NODE_ENV === 'development') {
+                    console.log(`[OrderTransition:TRIGGER] Detected transition to in_production for orderId=${orderId}`);
+                }
+                
+                try {
+                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
+                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
+                    
+                    const scheduleResult = await scheduleOrderLineItemsForProduction({
+                        organizationId,
+                        orderId,
+                        lineItemIds: undefined, // Schedule ALL production-required items
+                        loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
+                        appendEvent,
+                    });
+                    
+                    if (process.env.NODE_ENV === 'development') {
+                        console.log(`[OrderTransition:TRIGGER] Auto-scheduled production jobs for order ${orderId}:`, scheduleResult.data);
+                    }
+                    
+                    if (scheduleResult.success && scheduleResult.data.createdJobCount > 0) {
+                        validation.warnings = validation.warnings || [];
+                        validation.warnings.push(`✓ Scheduled ${scheduleResult.data.createdJobCount} line item(s) for production.`);
+                    }
+                } catch (productionErr: any) {
+                    console.error('[OrderTransition:TRIGGER] Production auto-scheduling failed:', productionErr);
+                    validation.warnings = validation.warnings || [];
+                    validation.warnings.push('Production auto-scheduling failed - use "Send to Production" button if needed.');
+                }
+            }
             const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
 
             await storage.createAuditLog(organizationId, {
@@ -4755,6 +4833,33 @@ export async function registerOrderRoutes(
             }
 
             await recomputeOrderBillingStatus({ organizationId, orderId });
+            
+            // Trigger: Auto-schedule production when single line item moves into in_production
+            if (status === 'in_production' && oldLineItem.status !== 'in_production') {
+                if (process.env.NODE_ENV === 'development') {
+                    console.log(`[SingleLineItemStatus:TRIGGER] Detected line item ${lineItemId} moving to in_production for orderId=${orderId}`);
+                }
+                
+                try {
+                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
+                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
+                    
+                    const scheduleResult = await scheduleOrderLineItemsForProduction({
+                        organizationId,
+                        orderId,
+                        lineItemIds: [lineItemId],
+                        loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
+                        appendEvent,
+                    });
+                    
+                    if (process.env.NODE_ENV === 'development') {
+                        console.log(`[SingleLineItemStatus:TRIGGER] Auto-scheduled production for item ${lineItemId}:`, scheduleResult.data);
+                    }
+                } catch (productionErr: any) {
+                    console.error('[SingleLineItemStatus:TRIGGER] Production auto-scheduling failed:', productionErr);
+                    // Fail soft - don't break the status update
+                }
+            }
 
             const warnings: string[] = [];
             if (routing.source !== 'org') {
