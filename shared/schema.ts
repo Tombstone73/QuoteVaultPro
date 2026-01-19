@@ -2335,6 +2335,8 @@ export type Job = typeof jobs.$inferSelect;
 
 export type ProductionJobStatus = "queued" | "in_progress" | "done";
 export type ProductionEventType =
+  | "intake"
+  | "routing_override"
   | "timer_started"
   | "timer_stopped"
   | "note"
@@ -2345,6 +2347,9 @@ export const productionJobs = pgTable("production_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  stationKey: varchar("station_key", { length: 40 }).notNull().default("flatbed"),
+  stepKey: varchar("step_key", { length: 40 }).notNull().default("prepress"),
   status: varchar("status", { length: 20 }).notNull().default("queued"),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -2352,9 +2357,10 @@ export const productionJobs = pgTable("production_jobs", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
-  uniqueIndex("production_jobs_org_order_uidx").on(table.organizationId, table.orderId),
   index("production_jobs_org_status_idx").on(table.organizationId, table.status),
+  index("production_jobs_org_station_status_idx").on(table.organizationId, table.stationKey, table.status),
   index("production_jobs_order_id_idx").on(table.orderId),
+  index("production_jobs_line_item_id_idx").on(table.lineItemId),
 ]);
 
 export const productionEvents = pgTable("production_events", {

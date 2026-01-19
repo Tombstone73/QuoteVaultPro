@@ -141,6 +141,20 @@
       "when": 0,
       "tag": "0027_stripe_connect_integration_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 0,
+      "tag": "0028_production_mvp",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 0,
+      "tag": "0029_production_line_item_intake",
+      "breakpoints": true
     }
   ]
 }

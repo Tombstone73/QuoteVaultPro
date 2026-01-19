@@ -8206,12 +8206,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const productionStatusSchema = z.enum(["queued", "in_progress", "done"]);
   const productionViewKeySchema = z.string().min(1);
   const productionEventTypeSchema = z.enum([
+    "intake",
+    "routing_override",
     "timer_started",
     "timer_stopped",
     "note",
     "reprint_incremented",
     "media_used_set",
   ]);
+
+  const productionLineItemStatusRuleSchema = z
+    .object({
+      id: z.string().optional().nullable(),
+      // Back-compat (older drafts)
+      key: z.string().optional().nullable(),
+      label: z.string().min(1),
+      color: z.string().optional().nullable(),
+      sendToProduction: z.boolean().optional().default(false),
+      stationKey: z.string().optional().nullable(),
+      stepKey: z.string().optional().nullable(),
+      // Back-compat (older drafts)
+      defaultStepKey: z.string().optional().nullable(),
+      sortOrder: z.number().int().optional().nullable(),
+    })
+    .strict();
+
+  const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
 
   const getProductionConfigForOrganization = async (organizationId: string) => {
     const rows = await db
@@ -8228,6 +8248,137 @@ export async function registerRoutes(app: Express): Promise<Server> {
       enabledViews: Array.isArray(enabledViews) && enabledViews.length > 0 ? enabledViews : ["flatbed"],
       defaultView: typeof defaultView === "string" && defaultView.trim() ? defaultView : "flatbed",
     };
+  };
+
+  // ---------------------------------------------------------------------------
+  // Production Routing Contract (v1.2 lock)
+  //
+  // Line Item
+  //   -> Status change
+  //     -> Routing Rule (org-configured, deterministic)
+  //       -> Station (station_key)
+  //       -> Initial Step (step_key)
+  //
+  // Rules:
+  // - station_key + step_key MUST be resolved before inserting production_jobs.
+  // - Defaults are system-suggested, but intake requires org config to exist.
+  // - Overrides are only allowed via explicit API call (see routing_override endpoint).
+  // - Legacy (order-level) jobs are readable but MUST NOT be created anymore.
+  // ---------------------------------------------------------------------------
+
+  const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = [
+    {
+      id: "prepress",
+      label: "Sent to Prepress",
+      color: "blue",
+      sendToProduction: true,
+      stationKey: "flatbed",
+      stepKey: "prepress",
+      sortOrder: 10,
+    },
+    {
+      id: "print",
+      label: "Sent to Print",
+      color: "purple",
+      sendToProduction: true,
+      stationKey: "flatbed",
+      stepKey: "print",
+      sortOrder: 20,
+    },
+    {
+      id: "done",
+      label: "Done",
+      color: "green",
+      sendToProduction: false,
+      stationKey: null,
+      stepKey: null,
+      sortOrder: 90,
+    },
+  ];
+
+  const loadProductionLineItemStatusRulesForOrganization = async (organizationId: string) => {
+    const rows = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const settings = (rows[0]?.settings as any) ?? {};
+    const raw = settings?.preferences?.production?.lineItemStatuses;
+
+    if (raw == null) {
+      return {
+        source: "missing" as const,
+        rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      };
+    }
+
+    const parsed = productionLineItemStatusRulesSchema.safeParse(raw);
+    if (!parsed.success) {
+      return {
+        source: "invalid" as const,
+        rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      };
+    }
+
+    const items = parsed.data;
+    if (items.length === 0) {
+      return {
+        source: "empty" as const,
+        rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES,
+      };
+    }
+
+    const normalized = items
+      .map((r) => ({
+        ...r,
+        id: String((r as any).id ?? (r as any).key ?? "").trim(),
+        stepKey: ((r as any).stepKey ?? (r as any).defaultStepKey ?? null) as any,
+      }))
+      .filter((r) => !!r.id);
+
+    const sorted = [...normalized].sort((a, b) => {
+      const ao = Number(a.sortOrder ?? 0);
+      const bo = Number(b.sortOrder ?? 0);
+      if (ao !== bo) return ao - bo;
+      return a.label.localeCompare(b.label);
+    });
+
+    return {
+      source: "org" as const,
+      rules: sorted,
+    };
+  };
+
+  const getProductionLineItemStatusRulesForOrganization = async (organizationId: string) => {
+    const loaded = await loadProductionLineItemStatusRulesForOrganization(organizationId);
+    return loaded.rules;
+  };
+
+  const setProductionLineItemStatusRulesForOrganization = async (
+    organizationId: string,
+    rules: z.infer<typeof productionLineItemStatusRulesSchema>,
+  ) => {
+    const rows = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .limit(1);
+
+    const settings = (rows[0]?.settings as any) ?? {};
+    const next = {
+      ...settings,
+      preferences: {
+        ...(settings.preferences ?? {}),
+        production: {
+          ...(settings.preferences?.production ?? {}),
+          lineItemStatuses: rules,
+        },
+      },
+    };
+
+    await db.update(organizations).set({ settings: next }).where(eq(organizations.id, organizationId));
+    return next;
   };
 
   const assertInternalUser = (req: any, res: any) => {
@@ -8300,7 +8451,228 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 1) GET /api/production/jobs?status=&view=
+  // 10) Settings: Line item status routing rules
+  app.get(
+    "/api/production/settings/line-item-statuses",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const rules = await getProductionLineItemStatusRulesForOrganization(organizationId);
+        res.json({ success: true, data: rules });
+      } catch (error) {
+        console.error("Error fetching production line item status rules:", error);
+        res.status(500).json({ error: "Failed to fetch production settings" });
+      }
+    },
+  );
+
+  app.put(
+    "/api/production/settings/line-item-statuses",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const parsed = productionLineItemStatusRulesSchema.safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ error: "Invalid rules" });
+
+        const rules = parsed.data;
+        const keys = new Set<string>();
+        for (const r of rules) {
+          const id = String((r as any).id ?? (r as any).key ?? "").trim();
+          if (!id) return res.status(400).json({ error: "Invalid id" });
+          if (keys.has(id)) return res.status(400).json({ error: `Duplicate id: ${id}` });
+          keys.add(id);
+        }
+
+        await setProductionLineItemStatusRulesForOrganization(organizationId, rules);
+        const next = await getProductionLineItemStatusRulesForOrganization(organizationId);
+        res.json({ success: true, data: next });
+      } catch (error) {
+        console.error("Error saving production line item status rules:", error);
+        res.status(500).json({ error: "Failed to save production settings" });
+      }
+    },
+  );
+
+  // 11) Intake: upsert a production job from an order line item (idempotent)
+  app.post(
+    "/api/production/intake/from-line-item/:lineItemId",
+    isAuthenticated,
+    tenantContext,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const lineItemId = String(req.params.lineItemId);
+
+        const [li] = await db
+          .select({
+            id: orderLineItems.id,
+            orderId: orderLineItems.orderId,
+            status: orderLineItems.status,
+          })
+          .from(orderLineItems)
+          .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+          .where(and(eq(orders.organizationId, organizationId), eq(orderLineItems.id, lineItemId)))
+          .limit(1);
+
+        if (!li) return res.status(404).json({ error: "Order line item not found" });
+
+        const routing = await loadProductionLineItemStatusRulesForOrganization(organizationId);
+        if (routing.source !== "org") {
+          console.warn(
+            `[ProductionIntake] No org routing config (source=${routing.source}); skipping production job creation for lineItemId=${li.id}`,
+          );
+          return res.json({
+            success: true,
+            data: null,
+            warnings: ["Production routing config missing/invalid; no job created."],
+          });
+        }
+
+        const rule = routing.rules.find((r) => r.id === li.status);
+        if (!rule || rule.sendToProduction !== true) {
+          return res.json({
+            success: true,
+            data: null,
+            warnings: ["Line item status is not routed to production; no job created."],
+          });
+        }
+
+        const stationKey = String(rule.stationKey ?? "").trim();
+        const stepKey = String((rule as any).stepKey ?? "").trim();
+        if (!stationKey || !stepKey) {
+          console.warn(
+            `[ProductionIntake] Routing rule missing station/step; skipping job creation for lineItemId=${li.id} status=${li.status}`,
+          );
+          return res.json({
+            success: true,
+            data: null,
+            warnings: ["Routing rule missing station/step; no job created."],
+          });
+        }
+
+        const job = await db.transaction(async (tx) => {
+          const existing = await tx
+            .select({
+              id: productionJobs.id,
+              status: productionJobs.status,
+              stationKey: productionJobs.stationKey,
+              stepKey: productionJobs.stepKey,
+            })
+            .from(productionJobs)
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, li.id)))
+            .limit(1);
+
+          if (!existing[0]) {
+            const [inserted] = await tx
+              .insert(productionJobs)
+              .values({
+                organizationId,
+                orderId: li.orderId,
+                lineItemId: li.id,
+                stationKey,
+                stepKey,
+                status: "queued",
+                totalSeconds: 0,
+              })
+              .returning({
+                id: productionJobs.id,
+                orderId: productionJobs.orderId,
+                lineItemId: productionJobs.lineItemId,
+                stationKey: productionJobs.stationKey,
+                stepKey: productionJobs.stepKey,
+                status: productionJobs.status,
+              });
+
+            await appendEvent({
+              tx,
+              organizationId,
+              productionJobId: inserted.id,
+              type: "intake",
+              payload: {
+                fromStatus: null,
+                toStatus: li.status,
+                stationKey,
+                stepKey,
+              },
+            });
+
+            return inserted;
+          }
+
+          const ex = existing[0];
+          // No implicit routing changes. If the job already exists, keep its routing unless an explicit override is used.
+          const isDone = ex.status === "done";
+          const routingDiffers = ex.stationKey !== stationKey || ex.stepKey !== stepKey;
+          if (!isDone && routingDiffers) {
+            console.warn(
+              `[ProductionIntake] Routing differs for existing jobId=${ex.id}; ignoring requested routing (${stationKey}/${stepKey}) and keeping existing (${ex.stationKey}/${ex.stepKey}). Use /api/production/jobs/:jobId/routing for explicit override.`,
+            );
+          }
+          if (!isDone) {
+            await tx
+              .update(productionJobs)
+              .set({
+                orderId: li.orderId,
+                updatedAt: new Date(),
+              })
+              .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, ex.id)));
+          }
+
+          await appendEvent({
+            tx,
+            organizationId,
+            productionJobId: ex.id,
+            type: "intake",
+            payload: {
+              fromStatus: null,
+              toStatus: li.status,
+              requested: { stationKey, stepKey },
+              applied: { stationKey: ex.stationKey, stepKey: ex.stepKey },
+              duplicate: true,
+              ignoredDueToDone: isDone,
+              ignoredDueToExistingRouting: !isDone && routingDiffers,
+            },
+          });
+
+          const [out] = await tx
+            .select({
+              id: productionJobs.id,
+              orderId: productionJobs.orderId,
+              lineItemId: productionJobs.lineItemId,
+              stationKey: productionJobs.stationKey,
+              stepKey: productionJobs.stepKey,
+              status: productionJobs.status,
+            })
+            .from(productionJobs)
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, ex.id)))
+            .limit(1);
+          return out;
+        });
+
+        res.json({ success: true, data: job });
+      } catch (error) {
+        console.error("Error ingesting production job from line item:", error);
+        res.status(500).json({ error: "Failed to intake production job" });
+      }
+    },
+  );
+
+  // 1) GET /api/production/jobs?status=&station=
   app.get("/api/production/jobs", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -8309,24 +8681,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const statusRaw = req.query.status as string | undefined;
       const viewRaw = req.query.view as string | undefined;
+      const stationRaw = req.query.station as string | undefined;
+      const stationCandidate = stationRaw ?? viewRaw;
+      const searchRaw = req.query.search as string | undefined;
       const statusParsed = statusRaw ? productionStatusSchema.safeParse(statusRaw) : null;
       const viewParsed = viewRaw ? productionViewKeySchema.safeParse(viewRaw) : null;
+      const stationParsed = stationCandidate ? productionViewKeySchema.safeParse(stationCandidate) : null;
       if (statusParsed && !statusParsed.success) {
         return res.status(400).json({ error: "Invalid status" });
       }
       if (viewParsed && !viewParsed.success) {
         return res.status(400).json({ error: "Invalid view" });
       }
+      if (!stationCandidate) {
+        return res.status(400).json({ error: "station is required (or pass legacy view= as back-compat)" });
+      }
+      if (!stationParsed?.success) {
+        return res.status(400).json({ error: "Invalid station" });
+      }
       const status = statusParsed?.success ? statusParsed.data : undefined;
       const view = viewParsed?.success ? viewParsed.data : undefined;
+      const station = stationParsed.data;
+      const search = typeof searchRaw === "string" ? searchRaw.trim() : "";
 
       const config = await getProductionConfigForOrganization(organizationId);
-      if (view && !config.enabledViews.includes(view)) {
+      if (station && !config.enabledViews.includes(station)) {
         return res.json({ success: true, data: [] });
       }
 
       const whereClause = and(
         eq(productionJobs.organizationId, organizationId),
+        // Station scoping is REQUIRED for boards.
+        eq(productionJobs.stationKey, station),
+        // Correct model: only line-item-backed work items.
+        isNotNull(productionJobs.lineItemId),
         status ? eq(productionJobs.status, status) : undefined,
       );
 
@@ -8334,6 +8722,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .select({
           id: productionJobs.id,
           orderId: productionJobs.orderId,
+          lineItemId: productionJobs.lineItemId,
+          stationKey: productionJobs.stationKey,
+          stepKey: productionJobs.stepKey,
           status: productionJobs.status,
           startedAt: productionJobs.startedAt,
           completedAt: productionJobs.completedAt,
@@ -8343,6 +8734,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           orderNumber: orders.orderNumber,
           dueDate: orders.dueDate,
           priority: orders.priority,
+          fulfillmentStatus: orders.fulfillmentStatus,
+          routingTarget: orders.routingTarget,
           customerName: customers.companyName,
         })
         .from(productionJobs)
@@ -8400,8 +8793,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         reprintCountByJobId.set(r.productionJobId, Number(r.count) || 0);
       }
 
+      const noteRows = await db
+        .select({
+          id: productionEvents.id,
+          productionJobId: productionEvents.productionJobId,
+          payload: productionEvents.payload,
+          createdAt: productionEvents.createdAt,
+        })
+        .from(productionEvents)
+        .where(
+          and(
+            eq(productionEvents.organizationId, organizationId),
+            inArray(productionEvents.productionJobId, jobIds),
+            eq(productionEvents.type, "note"),
+          ),
+        )
+        .orderBy(desc(productionEvents.createdAt))
+        .limit(500);
+
+      const notesByJobId = new Map<string, Array<{ id: string; text: string; createdAt: string }>>();
+      for (const row of noteRows) {
+        const list = notesByJobId.get(row.productionJobId) ?? [];
+        if (list.length >= 5) continue;
+        const text = typeof (row.payload as any)?.text === "string" ? (row.payload as any).text : "";
+        if (!text.trim()) continue;
+        list.push({ id: row.id, text, createdAt: new Date(row.createdAt as any).toISOString() });
+        notesByJobId.set(row.productionJobId, list);
+      }
+
       // Batched order enrichment for cockpit UI (no schema changes, no N+1)
       const orderIds = Array.from(new Set(baseRows.map((r) => r.orderId)));
+
+      const lineItemIds = Array.from(
+        new Set(
+          baseRows
+            .map((r) => r.lineItemId)
+            .filter((v): v is string => typeof v === "string" && !!v.trim()),
+        ),
+      );
 
       const lineItemRows = await db
         .select({
@@ -8458,9 +8887,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
           createdAt: any;
         }>
       >();
+
+      const lineItemById = new Map<
+        string,
+        {
+          id: string;
+          description: string;
+          quantity: number;
+          width: any;
+          height: any;
+          materialId: string | null;
+          materialName: string | null;
+          productType: string;
+          status: string;
+          sortOrder: number;
+          createdAt: any;
+        }
+      >();
       for (const li of lineItemRows) {
         const list = lineItemsByOrderId.get(li.orderId) ?? [];
-        list.push({
+        const mapped = {
           id: li.id,
           description: li.description,
           quantity: Number(li.quantity) || 0,
@@ -8472,8 +8918,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: li.status,
           sortOrder: Number(li.sortOrder) || 0,
           createdAt: li.createdAt,
-        });
+        };
+        list.push(mapped);
         lineItemsByOrderId.set(li.orderId, list);
+        lineItemById.set(li.id, mapped);
       }
 
       const attachmentRows = await db
@@ -8518,10 +8966,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
           thumbStatus: string | null;
         }>
       >();
+
+      const artworkByLineItemId = new Map<
+        string,
+        Array<{
+          id: string;
+          orderLineItemId: string | null;
+          fileName: string;
+          fileUrl: string;
+          thumbKey: string | null;
+          previewKey: string | null;
+          thumbnailUrl: string | null;
+          side: string;
+          isPrimary: boolean;
+          thumbStatus: string | null;
+        }>
+      >();
+
       for (const a of attachmentRows) {
-        const list = artworkByOrderId.get(a.orderId) ?? [];
-        if (list.length >= 6) continue;
-        list.push({
+        const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
           fileName: a.fileName,
@@ -8532,8 +8995,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
           side: a.side ?? "na",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
-        });
-        artworkByOrderId.set(a.orderId, list);
+        };
+
+        // By order (fallback)
+        const orderList = artworkByOrderId.get(a.orderId) ?? [];
+        if (orderList.length < 6) {
+          orderList.push(mapped);
+          artworkByOrderId.set(a.orderId, orderList);
+        }
+
+        // By line item (preferred)
+        if (a.orderLineItemId) {
+          const liList = artworkByLineItemId.get(a.orderLineItemId) ?? [];
+          if (liList.length < 6) {
+            liList.push(mapped);
+            artworkByLineItemId.set(a.orderLineItemId, liList);
+          }
+        }
       }
 
       const now = Date.now();
@@ -8546,13 +9024,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
           (isRunning ? toSeconds(now - new Date(lastTimer!.createdAt as any).getTime()) : 0);
 
         const orderLineItemsList = lineItemsByOrderId.get(row.orderId) ?? [];
-        const primaryLineItem = orderLineItemsList[0] ?? null;
+        const primaryLineItem = row.lineItemId ? lineItemById.get(row.lineItemId) ?? null : orderLineItemsList[0] ?? null;
         const orderLineItemsTop = orderLineItemsList.slice(0, 3);
         const totalQuantity = orderLineItemsList.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
 
+        const artwork = row.lineItemId
+          ? artworkByLineItemId.get(row.lineItemId) ?? artworkByOrderId.get(row.orderId) ?? []
+          : artworkByOrderId.get(row.orderId) ?? [];
+
+        const sidesSet = new Set<string>();
+        for (const a of artwork) {
+          const s = (a.side || "").toLowerCase();
+          if (s === "front" || s === "back") sidesSet.add(s);
+        }
+        const sides = sidesSet.size > 0 ? sidesSet.size : null;
+
+        const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
+        const size = primaryLineItem?.width && primaryLineItem?.height ? `${primaryLineItem.width} × ${primaryLineItem.height}` : "—";
+        const mediaLabel = String(primaryLineItem?.materialName ?? "—") || "—";
+
+        const artworkThumbs = (artwork ?? []).slice(0, 2).map((a) => ({
+          id: a.id,
+          fileName: a.fileName,
+          thumbnailUrl: a.thumbnailUrl,
+          thumbKey: a.thumbKey,
+          side: a.side,
+          isPrimary: a.isPrimary,
+          thumbStatus: a.thumbStatus,
+        }));
+
+        const notes = notesByJobId.get(row.id) ?? [];
+
         return {
           id: row.id,
-          view: view ?? config.defaultView,
+          // Stable, UI-ready fields (no guessing / no missing keys)
+          jobId: row.id,
+          lineItemId: String(row.lineItemId ?? ""),
+          orderId: row.orderId,
+          customerName: String(row.customerName ?? "—"),
+          dueDate: row.dueDate ?? null,
+          stationKey: String(row.stationKey ?? ""),
+          stepKey: String(row.stepKey ?? ""),
+          qty,
+          size,
+          sides: Number(sides ?? 0) || 0,
+          mediaLabel,
+          artwork: artworkThumbs,
+          notes,
+          // Back-compat: treat view as stationKey
+          view: station ?? view ?? config.defaultView,
           status: row.status,
           startedAt: row.startedAt,
           completedAt: row.completedAt,
@@ -8569,20 +9089,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
             customerName: row.customerName,
             dueDate: row.dueDate,
             priority: row.priority,
+            fulfillmentStatus: row.fulfillmentStatus,
+            routingTarget: row.routingTarget,
             lineItems: {
               count: orderLineItemsList.length,
               totalQuantity,
               primary: primaryLineItem,
               items: orderLineItemsTop,
             },
-            artwork: artworkByOrderId.get(row.orderId) ?? [],
+            artwork,
+            sides,
           },
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
         };
       });
 
-      res.json({ success: true, data });
+      const filtered = search
+        ? data.filter((j) => {
+            const q = search.toLowerCase();
+            const orderNumber = String(j.order?.orderNumber ?? "").toLowerCase();
+            const customerName = String(j.order?.customerName ?? "").toLowerCase();
+            const desc = String(j.order?.lineItems?.primary?.description ?? "").toLowerCase();
+            return orderNumber.includes(q) || customerName.includes(q) || desc.includes(q);
+          })
+        : data;
+
+      res.json({ success: true, data: filtered });
     } catch (error) {
       console.error("Error fetching production jobs:", error);
       res.status(500).json({ error: "Failed to fetch production jobs" });
@@ -8601,6 +9134,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .select({
           id: productionJobs.id,
           orderId: productionJobs.orderId,
+          lineItemId: productionJobs.lineItemId,
+          stationKey: productionJobs.stationKey,
+          stepKey: productionJobs.stepKey,
           status: productionJobs.status,
           startedAt: productionJobs.startedAt,
           completedAt: productionJobs.completedAt,
@@ -8610,6 +9146,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           orderNumber: orders.orderNumber,
           dueDate: orders.dueDate,
           priority: orders.priority,
+          fulfillmentStatus: orders.fulfillmentStatus,
+          routingTarget: orders.routingTarget,
           customerName: customers.companyName,
         })
         .from(productionJobs)
@@ -8641,6 +9179,117 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ? toSeconds(now - new Date(timerState.runningSince as any).getTime())
           : 0);
 
+      const lineItemRows = await db
+        .select({
+          id: orderLineItems.id,
+          orderId: orderLineItems.orderId,
+          description: orderLineItems.description,
+          quantity: orderLineItems.quantity,
+          width: orderLineItems.width,
+          height: orderLineItems.height,
+          materialId: orderLineItems.materialId,
+          productType: orderLineItems.productType,
+          status: orderLineItems.status,
+          sortOrder: orderLineItems.sortOrder,
+          createdAt: orderLineItems.createdAt,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orders.organizationId, organizationId), eq(orderLineItems.orderId, job.orderId)))
+        .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.createdAt));
+
+      const materialIds = Array.from(
+        new Set(lineItemRows.map((li) => li.materialId).filter((v): v is string => typeof v === "string" && !!v.trim())),
+      );
+
+      const materialNameById = new Map<string, string>();
+      if (materialIds.length > 0) {
+        const materialRows = await db
+          .select({ id: materials.id, name: materials.name })
+          .from(materials)
+          .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)));
+        for (const m of materialRows) materialNameById.set(m.id, m.name);
+      }
+
+      const lineItems = lineItemRows.map((li) => ({
+        id: li.id,
+        description: li.description,
+        quantity: Number(li.quantity) || 0,
+        width: li.width,
+        height: li.height,
+        materialId: li.materialId ?? null,
+        materialName: li.materialId ? materialNameById.get(li.materialId) ?? null : null,
+        productType: li.productType,
+        status: li.status,
+        sortOrder: Number(li.sortOrder) || 0,
+        createdAt: li.createdAt,
+      }));
+
+      const primaryLineItem = job.lineItemId
+        ? lineItems.find((li) => li.id === job.lineItemId) ?? null
+        : lineItems[0] ?? null;
+
+      const attachmentRows = await db
+        .select({
+          id: orderAttachments.id,
+          orderId: orderAttachments.orderId,
+          orderLineItemId: orderAttachments.orderLineItemId,
+          fileName: orderAttachments.fileName,
+          fileUrl: orderAttachments.fileUrl,
+          thumbKey: orderAttachments.thumbKey,
+          previewKey: orderAttachments.previewKey,
+          thumbnailUrl: orderAttachments.thumbnailUrl,
+          role: orderAttachments.role,
+          side: orderAttachments.side,
+          isPrimary: orderAttachments.isPrimary,
+          thumbStatus: orderAttachments.thumbStatus,
+          createdAt: orderAttachments.createdAt,
+        })
+        .from(orderAttachments)
+        .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+        .where(
+          and(
+            eq(orders.organizationId, organizationId),
+            eq(orderAttachments.orderId, job.orderId),
+            eq(orderAttachments.role, "artwork"),
+          ),
+        )
+        .orderBy(desc(orderAttachments.isPrimary), asc(orderAttachments.side), desc(orderAttachments.createdAt))
+        .limit(50);
+
+      const byOrder: Array<any> = [];
+      const byLineItem = new Map<string, Array<any>>();
+      for (const a of attachmentRows) {
+        const mapped = {
+          id: a.id,
+          orderLineItemId: a.orderLineItemId ?? null,
+          fileName: a.fileName,
+          fileUrl: a.fileUrl,
+          thumbKey: a.thumbKey ?? null,
+          previewKey: a.previewKey ?? null,
+          thumbnailUrl: a.thumbnailUrl ?? null,
+          side: a.side ?? "na",
+          isPrimary: !!a.isPrimary,
+          thumbStatus: a.thumbStatus ?? null,
+        };
+        if (byOrder.length < 12) byOrder.push(mapped);
+        if (a.orderLineItemId) {
+          const list = byLineItem.get(a.orderLineItemId) ?? [];
+          if (list.length < 12) {
+            list.push(mapped);
+            byLineItem.set(a.orderLineItemId, list);
+          }
+        }
+      }
+
+      const artwork = job.lineItemId ? byLineItem.get(job.lineItemId) ?? byOrder : byOrder;
+      const sidesSet = new Set<string>();
+      for (const a of artwork) {
+        const s = (a.side || "").toLowerCase();
+        if (s === "front" || s === "back") sidesSet.add(s);
+      }
+      const sides = sidesSet.size > 0 ? sidesSet.size : null;
+
       const reprintCountRows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(productionEvents)
@@ -8656,6 +9305,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         success: true,
         data: {
           id: job.id,
+          stationKey: job.stationKey,
+          stepKey: job.stepKey,
+          lineItemId: job.lineItemId,
           status: job.status,
           startedAt: job.startedAt,
           completedAt: job.completedAt,
@@ -8672,6 +9324,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             customerName: job.customerName,
             dueDate: job.dueDate,
             priority: job.priority,
+            fulfillmentStatus: job.fulfillmentStatus,
+            routingTarget: job.routingTarget,
+            lineItems: {
+              count: lineItems.length,
+              totalQuantity: lineItems.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0),
+              primary: primaryLineItem,
+              items: lineItems.slice(0, 20),
+            },
+            artwork,
+            sides,
           },
           events,
           createdAt: job.createdAt,
@@ -8684,7 +9346,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 2) POST /api/production/jobs/from-order/:orderId (idempotent)
+  // 2) POST /api/production/jobs/from-order/:orderId
+  // HARD DEPRECATED: Order-level production is no longer supported.
   app.post("/api/production/jobs/from-order/:orderId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -8692,44 +9355,106 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const orderId = req.params.orderId;
-      const orderRows = await db
-        .select({ id: orders.id })
-        .from(orders)
-        .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
-        .limit(1);
-      if (!orderRows[0]) return res.status(404).json({ error: "Order not found" });
-
-      await db
-        .insert(productionJobs)
-        .values({
-          organizationId,
-          orderId,
-          status: "queued",
-          totalSeconds: 0,
-        })
-        .onConflictDoNothing({ target: [productionJobs.organizationId, productionJobs.orderId] });
-
-      const jobRows = await db
-        .select({
-          id: productionJobs.id,
-          orderId: productionJobs.orderId,
-          status: productionJobs.status,
-          startedAt: productionJobs.startedAt,
-          completedAt: productionJobs.completedAt,
-          totalSeconds: productionJobs.totalSeconds,
-          createdAt: productionJobs.createdAt,
-          updatedAt: productionJobs.updatedAt,
-        })
-        .from(productionJobs)
-        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId)))
-        .limit(1);
-
-      res.json({ success: true, data: jobRows[0] });
+      console.warn(
+        `[ProductionDeprecated] Attempted order-level job creation for orderId=${orderId}. Order-level production is deprecated; use line-item status routing.`,
+      );
+      res.status(410).json({
+        error: "Order-level production is deprecated. Production jobs are created per line item via status routing.",
+      });
     } catch (error) {
       console.error("Error creating production job:", error);
       res.status(500).json({ error: "Failed to create production job" });
     }
   });
+
+  // 2b) POST /api/production/jobs/:jobId/routing (explicit override)
+  // This is the ONLY supported way to change station_key/step_key after a job exists.
+  app.post(
+    "/api/production/jobs/:jobId/routing",
+    isAuthenticated,
+    tenantContext,
+    isAdminOrOwner,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const bodySchema = z
+          .object({
+            stationKey: z.string().min(1),
+            stepKey: z.string().min(1),
+            reason: z.string().optional(),
+          })
+          .strict();
+
+        const parsed = bodySchema.safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ error: "Invalid routing override" });
+
+        const jobId = String(req.params.jobId);
+        const nextStationKey = parsed.data.stationKey.trim();
+        const nextStepKey = parsed.data.stepKey.trim();
+
+        const result = await db.transaction(async (tx) => {
+          const rows = await tx
+            .select({
+              id: productionJobs.id,
+              stationKey: productionJobs.stationKey,
+              stepKey: productionJobs.stepKey,
+            })
+            .from(productionJobs)
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+            .limit(1);
+
+          const job = rows[0];
+          if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+
+          await tx
+            .update(productionJobs)
+            .set({
+              stationKey: nextStationKey,
+              stepKey: nextStepKey,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+          await appendEvent({
+            tx,
+            organizationId,
+            productionJobId: jobId,
+            type: "routing_override",
+            payload: {
+              from: { stationKey: job.stationKey, stepKey: job.stepKey },
+              to: { stationKey: nextStationKey, stepKey: nextStepKey },
+              reason: parsed.data.reason ?? null,
+            },
+          });
+
+          const updatedRows = await tx
+            .select({
+              id: productionJobs.id,
+              orderId: productionJobs.orderId,
+              lineItemId: productionJobs.lineItemId,
+              stationKey: productionJobs.stationKey,
+              stepKey: productionJobs.stepKey,
+              status: productionJobs.status,
+              updatedAt: productionJobs.updatedAt,
+            })
+            .from(productionJobs)
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+            .limit(1);
+
+          return updatedRows[0];
+        });
+
+        res.json({ success: true, data: result });
+      } catch (error: any) {
+        const status = error?.statusCode || 500;
+        console.error("Error overriding production routing:", error);
+        res.status(status).json({ error: error?.message || "Failed to override routing" });
+      }
+    },
+  );
 
   // 3) POST /api/production/jobs/:jobId/start
   app.post("/api/production/jobs/:jobId/start", isAuthenticated, tenantContext, async (req: any, res) => {

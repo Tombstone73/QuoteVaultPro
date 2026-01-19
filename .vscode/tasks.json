@@ -82,6 +82,85 @@
 			],
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "DB status (drizzle journal)",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"db:status"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Validate drizzle meta JSON",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require('fs'); JSON.parse(fs.readFileSync('server/db/migrations/meta/_journal.json','utf8')); JSON.parse(fs.readFileSync('server/db/migrations/meta/0001_snapshot.json','utf8')); console.log('OK');"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Validate drizzle meta JSON (safe quotes)",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require(\"fs\"); JSON.parse(fs.readFileSync(\"server/db/migrations/meta/_journal.json\",\"utf8\")); JSON.parse(fs.readFileSync(\"server/db/migrations/meta/0001_snapshot.json\",\"utf8\")); console.log(\"OK\");"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Validate drizzle meta JSON (print error)",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"try{const fs=require(\"fs\"); JSON.parse(fs.readFileSync(\"server/db/migrations/meta/_journal.json\",\"utf8\")); JSON.parse(fs.readFileSync(\"server/db/migrations/meta/0001_snapshot.json\",\"utf8\")); console.log(\"OK\");}catch(e){console.error(String(e&&e.stack||e)); process.exit(1);}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Validate drizzle meta JSON via require",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"try{require(\"./server/db/migrations/meta/_journal.json\"); require(\"./server/db/migrations/meta/0001_snapshot.json\"); console.log(\"OK\");}catch(e){console.error(e); process.exit(1);}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Node -e smoke",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"console.log(\"hi\")"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check SQL tags missing from journal",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$journal = Get-Content server/db/migrations/meta/_journal.json | ConvertFrom-Json; $tags = @($journal.entries | ForEach-Object { $_.tag }); $sql = Get-ChildItem server/db/migrations -Filter *.sql | Sort-Object Name | ForEach-Object { $_.BaseName }; $missing = $sql | Where-Object { $tags -notcontains $_ }; if ($missing.Count -eq 0) { Write-Output 'OK: no SQL files missing from journal' } else { Write-Output 'MISSING:'; $missing }"
+			],
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

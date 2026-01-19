@@ -25,6 +25,8 @@ import {
     inventoryAdjustments,
     orderMaterialUsage,
     inventoryReservations,
+    productionJobs,
+    productionEvents,
     insertOrderSchema,
     updateOrderSchema,
     insertOrderLineItemSchema,
@@ -87,6 +89,88 @@ function getUserId(user: any): string | undefined {
 // Helper to get organizationId from request (matches server/routes.ts behavior)
 function getRequestOrganizationId(req: any): string | undefined {
     return req.organizationId || req.headers['x-organization-id'] as string;
+}
+
+const productionLineItemStatusRuleSchema = z
+    .object({
+        id: z.string().optional().nullable(),
+        // Back-compat (older drafts)
+        key: z.string().optional().nullable(),
+        label: z.string().min(1),
+        color: z.string().optional().nullable(),
+        sendToProduction: z.boolean().optional().default(false),
+        stationKey: z.string().optional().nullable(),
+        stepKey: z.string().optional().nullable(),
+        // Back-compat (older drafts)
+        defaultStepKey: z.string().optional().nullable(),
+        sortOrder: z.number().int().optional().nullable(),
+    })
+    .strict();
+
+const productionLineItemStatusRulesSchema = z.array(productionLineItemStatusRuleSchema);
+
+const SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES = [
+    {
+        id: 'prepress',
+        label: 'Sent to Prepress',
+        color: 'blue',
+        sendToProduction: true,
+        stationKey: 'flatbed',
+        stepKey: 'prepress',
+        sortOrder: 10,
+    },
+    {
+        id: 'print',
+        label: 'Sent to Print',
+        color: 'purple',
+        sendToProduction: true,
+        stationKey: 'flatbed',
+        stepKey: 'print',
+        sortOrder: 20,
+    },
+    {
+        id: 'done',
+        label: 'Done',
+        color: 'green',
+        sendToProduction: false,
+        stationKey: null,
+        stepKey: null,
+        sortOrder: 90,
+    },
+];
+
+async function loadProductionLineItemStatusRulesForOrganization(organizationId: string) {
+    const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+    const settings = (org?.settings as any) ?? {};
+    const raw = settings?.preferences?.production?.lineItemStatuses;
+
+    if (raw == null) {
+        return { source: 'missing' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES };
+    }
+
+    const parsed = productionLineItemStatusRulesSchema.safeParse(raw);
+    if (!parsed.success) {
+        return { source: 'invalid' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES };
+    }
+
+    if (parsed.data.length === 0) {
+        return { source: 'empty' as const, rules: SYSTEM_DEFAULT_LINE_ITEM_STATUS_RULES };
+    }
+
+    const rules = parsed.data
+        .map((r) => ({
+            ...r,
+            id: String((r as any).id ?? (r as any).key ?? '').trim(),
+            stepKey: (r as any).stepKey ?? (r as any).defaultStepKey ?? null,
+        }))
+        .filter((r) => !!r.id);
+
+    return { source: 'org' as const, rules };
 }
 
 async function loadInventoryPolicyForOrg(organizationId: string) {
@@ -4635,8 +4719,15 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             const { orderId, lineItemId } = req.params;
             const { status } = req.body;
-            const validStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
-            if (!status || !validStatuses.includes(status)) return res.status(400).json({ message: "Invalid status" });
+
+            const routing = await loadProductionLineItemStatusRulesForOrganization(organizationId);
+            const routingRules = routing.rules;
+            const fallbackValidStatuses = ['queued', 'printing', 'finishing', 'done', 'canceled'];
+            const rule = routingRules.find((r) => r.id === status);
+
+            if (!status) return res.status(400).json({ message: "Invalid status" });
+            // Allow org-configured statuses; also allow legacy statuses for back-compat.
+            if (!rule && !fallbackValidStatuses.includes(status)) return res.status(400).json({ message: "Invalid status" });
 
             const order = await storage.getOrderById(organizationId, orderId);
             if (!order) return res.status(404).json({ message: "Order not found" });
@@ -4664,7 +4755,109 @@ export async function registerOrderRoutes(
             }
 
             await recomputeOrderBillingStatus({ organizationId, orderId });
-            res.json({ success: true, data: updatedLineItem });
+
+            const warnings: string[] = [];
+            if (routing.source !== 'org') {
+                console.warn(`[OrderLineItemStatus] No org routing config (source=${routing.source}); skipping production intake.`);
+                warnings.push('Production routing config missing/invalid; no job created.');
+            } else if (!rule) {
+                warnings.push('Status saved. No production routing rule found for this status.');
+            } else if (rule.sendToProduction) {
+                const stationKey = String(rule.stationKey ?? '').trim();
+                const stepKey = String((rule as any).stepKey ?? '').trim();
+
+                if (!stationKey || !stepKey) {
+                    console.warn('[OrderLineItemStatus] Routing rule missing station/step; skipping intake.');
+                    warnings.push('Routing rule missing station/step; no job created.');
+                } else {
+                    try {
+                        await db.transaction(async (tx) => {
+                            const existing = await tx
+                                .select({
+                                    id: productionJobs.id,
+                                    status: productionJobs.status,
+                                    stationKey: productionJobs.stationKey,
+                                    stepKey: productionJobs.stepKey,
+                                })
+                                .from(productionJobs)
+                                .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId)))
+                                .limit(1);
+
+                            let jobId: string;
+                            let created = false;
+                            let appliedStationKey = stationKey;
+                            let appliedStepKey = stepKey;
+                            let ignoredDueToDone = false;
+                            let ignoredDueToExistingRouting = false;
+
+                            if (!existing[0]) {
+                                // New job MUST be line-item backed.
+                                const [inserted] = await tx
+                                    .insert(productionJobs)
+                                    .values({
+                                        organizationId,
+                                        orderId,
+                                        lineItemId,
+                                        stationKey,
+                                        stepKey,
+                                        status: 'queued',
+                                        totalSeconds: 0,
+                                    })
+                                    .returning({ id: productionJobs.id });
+                                jobId = inserted.id;
+                                created = true;
+                            } else {
+                                jobId = existing[0].id;
+
+                                // No implicit routing changes. Keep existing station/step unless explicit override is used.
+                                appliedStationKey = existing[0].stationKey;
+                                appliedStepKey = existing[0].stepKey;
+                                ignoredDueToDone = existing[0].status === 'done';
+                                ignoredDueToExistingRouting =
+                                    existing[0].status !== 'done' &&
+                                    (existing[0].stationKey !== stationKey || existing[0].stepKey !== stepKey);
+
+                                if (ignoredDueToExistingRouting) {
+                                    console.warn(
+                                        `[OrderLineItemStatus] Routing differs for existing jobId=${jobId}; ignoring requested routing (${stationKey}/${stepKey}) and keeping existing (${existing[0].stationKey}/${existing[0].stepKey}). Use /api/production/jobs/:jobId/routing for explicit override.`,
+                                    );
+                                }
+
+                                if (existing[0].status !== 'done') {
+                                    await tx
+                                        .update(productionJobs)
+                                        .set({
+                                            orderId,
+                                            updatedAt: new Date(),
+                                        })
+                                        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+                                }
+                            }
+
+                            await tx.insert(productionEvents).values({
+                                organizationId,
+                                productionJobId: jobId,
+                                type: 'intake',
+                                payload: {
+                                    fromStatus: oldLineItem.status,
+                                    toStatus: status,
+                                    requested: { stationKey, stepKey },
+                                    applied: { stationKey: appliedStationKey, stepKey: appliedStepKey },
+                                    created,
+                                    duplicate: !created,
+                                    ignoredDueToDone,
+                                    ignoredDueToExistingRouting,
+                                },
+                            });
+                        });
+                    } catch (e: any) {
+                        console.warn('[OrderLineItemStatus] production intake failed:', e);
+                        warnings.push('Production intake failed (status saved).');
+                    }
+                }
+            }
+
+            res.json({ success: true, data: updatedLineItem, warnings: warnings.length ? warnings : undefined });
         } catch (error) {
             const err: any = error;
             console.error({
