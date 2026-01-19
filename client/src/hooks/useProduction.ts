@@ -40,6 +40,9 @@ export type ProductionOrderArtworkSummary = {
 export type ProductionJobListItem = {
   id: string;
   view: string;
+  stationKey?: string | null;
+  stepKey?: string | null;
+  lineItemId?: string | null;
   status: "queued" | "in_progress" | "done";
   startedAt: string | null;
   completedAt: string | null;
@@ -52,6 +55,8 @@ export type ProductionJobListItem = {
     customerName: string;
     dueDate: string | null;
     priority: string;
+    fulfillmentStatus?: string | null;
+    routingTarget?: string | null;
     lineItems?: {
       count: number;
       totalQuantity: number;
@@ -59,6 +64,7 @@ export type ProductionJobListItem = {
       items: ProductionOrderLineItemSummary[];
     };
     artwork?: ProductionOrderArtworkSummary[];
+    sides?: number | null;
   };
   createdAt: string;
   updatedAt: string;
@@ -66,7 +72,14 @@ export type ProductionJobListItem = {
 
 export type ProductionEvent = {
   id: string;
-  type: "timer_started" | "timer_stopped" | "note" | "reprint_incremented" | "media_used_set";
+  type:
+    | "timer_started"
+    | "timer_stopped"
+    | "note"
+    | "reprint_incremented"
+    | "media_used_set"
+    | "intake"
+    | "routing_override";
   payload: any;
   createdAt: string;
 };
@@ -87,13 +100,14 @@ export function useProductionConfig() {
   });
 }
 
-export function useProductionJobs(filters: { status?: string; view?: string }) {
+export function useProductionJobs(filters: { status?: string; view?: string; station?: string }) {
   return useQuery<ProductionJobListItem[]>({
     queryKey: ["/api/production/jobs", filters],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters.status) params.set("status", filters.status);
-      if (filters.view) params.set("view", filters.view);
+      if (filters.station) params.set("station", filters.station);
+      else if (filters.view) params.set("view", filters.view);
       const url = `/api/production/jobs${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch production jobs");

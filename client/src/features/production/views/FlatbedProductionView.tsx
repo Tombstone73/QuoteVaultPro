@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef, useState } from "react";
+import { useMemo, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -29,17 +29,19 @@ import {
   useProductionJobs,
   useReopenProductionJob,
   useReprintProductionJob,
+  useSetProductionMediaUsed,
   useStartProductionTimer,
   useStopProductionTimer,
 } from "@/hooks/useProduction";
 import {
   CheckCircle2,
-  ChevronsUpDown,
-  ExternalLink,
   FileText,
-  GripHorizontal,
+  Home,
+  Pause,
   MessageSquarePlus,
   Play,
+  ArrowLeft,
+  Printer,
   RotateCcw,
   Square,
   Undo2,
@@ -47,9 +49,7 @@ import {
 
 type ProductionStatus = "queued" | "in_progress" | "done";
 
-const PREVIEW_HEIGHT_KEY = "qvp.production.flatbed.previewHeight";
-const PREVIEW_HEIGHT_MIN = 220;
-const PREVIEW_HEIGHT_MAX = 560;
+type DueUrgency = "overdue" | "today" | "soon" | "normal";
 
 function formatSeconds(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -60,11 +60,77 @@ function formatSeconds(totalSeconds: number) {
   return `${pad(hh)}:${pad(mm)}:${pad(ss)}`;
 }
 
+function formatQtyPieces(qty: number | null | undefined) {
+  const n = Number(qty);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  const label = n === 1 ? "piece" : "pieces";
+  return `${n} ${label}`;
+}
+
+function formatInchesOrRaw(value: string | null | undefined) {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  if (raw.includes("\"") || raw.toLowerCase().includes("in")) return raw;
+  const asNum = Number(raw);
+  if (Number.isFinite(asNum)) return `${raw}\"`;
+  return raw;
+}
+
+function formatDimsMock(width: string | null | undefined, height: string | null | undefined) {
+  const w = formatInchesOrRaw(width);
+  const h = formatInchesOrRaw(height);
+  if (!w || !h) return "—";
+  return `${w} x ${h}`;
+}
+
 function dueLabel(dueDate: string | null | undefined): string | null {
   if (!dueDate) return null;
   const d = new Date(dueDate);
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleDateString();
+}
+
+function startOfDay(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function dueMeta(dueDate: string | null | undefined):
+  | {
+      dateLabel: string;
+      dayDelta: number;
+      urgency: DueUrgency;
+      displaySuffix: string;
+    }
+  | null {
+  if (!dueDate) return null;
+  const d = new Date(dueDate);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const now = new Date();
+  const deltaMs = startOfDay(d).getTime() - startOfDay(now).getTime();
+  const dayDelta = Math.round(deltaMs / 86400000);
+
+  let urgency: DueUrgency = "normal";
+  if (dayDelta < 0) urgency = "overdue";
+  else if (dayDelta === 0) urgency = "today";
+  else if (dayDelta <= 2) urgency = "soon";
+
+  const dateLabel = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const displaySuffix =
+    urgency === "overdue"
+      ? "(OVERDUE)"
+      : urgency === "today"
+        ? "(TODAY)"
+        : `(${dayDelta}d)`;
+
+  return { dateLabel, dayDelta, urgency, displaySuffix };
+}
+
+function dueClass(urgency: DueUrgency | null | undefined) {
+  if (urgency === "overdue") return "text-red-300";
+  if (urgency === "today") return "text-amber-200";
+  if (urgency === "soon") return "text-amber-100";
+  return "text-titan-text-primary";
 }
 
 function priorityRank(priority: string | null | undefined) {
@@ -94,7 +160,93 @@ function artworkThumbs(job: ProductionJobListItem): ProductionOrderArtworkSummar
   return job.order.artwork ?? [];
 }
 
-function ActionRail({ job }: { job: ProductionJobListItem }) {
+function normalizeSide(side: string | null | undefined): "front" | "back" | "na" {
+  const s = String(side || "").toLowerCase();
+  if (s === "front") return "front";
+  if (s === "back") return "back";
+  return "na";
+}
+
+function pickArtworkForPreview(artwork: ProductionOrderArtworkSummary[]) {
+  const list = [...(artwork || [])];
+  const byFront = list.filter((a) => normalizeSide(a.side) === "front");
+  const byBack = list.filter((a) => normalizeSide(a.side) === "back");
+
+  const pickBest = (items: ProductionOrderArtworkSummary[]) => {
+    if (items.length === 0) return null;
+    const primary = items.find((a) => a.isPrimary);
+    return primary || items[0];
+  };
+
+  const front = pickBest(byFront) ?? pickBest(list);
+  const back = pickBest(byBack);
+  return { front, back };
+}
+
+function deriveRuntimeFromEvents(
+  events: Array<{ type: string; createdAt: string }> | undefined,
+): { seconds: number | null; isRunning: boolean; runningSince: string | null } {
+  if (!events || events.length === 0) return { seconds: null, isRunning: false, runningSince: null };
+
+  const sorted = [...events]
+    .map((e) => ({ ...e, ts: new Date(e.createdAt).getTime() }))
+    .filter((e) => Number.isFinite(e.ts))
+    .sort((a, b) => a.ts - b.ts);
+
+  let runningStart: number | null = null;
+  let totalSeconds = 0;
+  for (const e of sorted) {
+    if (e.type === "timer_started") {
+      runningStart = e.ts;
+    }
+    if (e.type === "timer_stopped") {
+      if (runningStart != null) {
+        const seg = Math.max(0, Math.floor((e.ts - runningStart) / 1000));
+        totalSeconds += seg;
+        runningStart = null;
+      }
+    }
+  }
+
+  const isRunning = runningStart != null;
+  if (isRunning && runningStart != null) {
+    const now = Date.now();
+    totalSeconds += Math.max(0, Math.floor((now - runningStart) / 1000));
+  }
+
+  return {
+    seconds: Number.isFinite(totalSeconds) ? totalSeconds : null,
+    isRunning,
+    runningSince: isRunning && runningStart != null ? new Date(runningStart).toISOString() : null,
+  };
+}
+
+function useLiveSeconds(baseSeconds: number | null, isRunning: boolean) {
+  const [live, setLive] = useState<number | null>(baseSeconds);
+
+  useEffect(() => {
+    setLive(baseSeconds);
+  }, [baseSeconds]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    if (typeof live !== "number" || !Number.isFinite(live)) return;
+    const t = window.setInterval(() => setLive((prev) => (typeof prev === "number" ? prev + 1 : prev)), 1000);
+    return () => window.clearInterval(t);
+  }, [isRunning, live]);
+
+  return live;
+}
+
+function ActionRail({
+  job,
+  timerSeconds,
+  timerIsRunning,
+}: {
+  job: ProductionJobListItem;
+  timerSeconds: number | null;
+  timerIsRunning: boolean;
+}) {
   const navigate = useNavigate();
   const start = useStartProductionTimer(job.id);
   const stop = useStopProductionTimer(job.id);
@@ -102,20 +254,15 @@ function ActionRail({ job }: { job: ProductionJobListItem }) {
   const reopen = useReopenProductionJob(job.id);
   const reprint = useReprintProductionJob(job.id);
   const addNote = useAddProductionNote(job.id);
+  const setMedia = useSetProductionMediaUsed(job.id);
 
-  const [tickSeconds, setTickSeconds] = useState(job.timer.currentSeconds);
   const [skipCompleteOpen, setSkipCompleteOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
-
-  useEffect(() => {
-    setTickSeconds(job.timer.currentSeconds);
-  }, [job.timer.currentSeconds]);
-
-  useEffect(() => {
-    if (!job.timer.isRunning) return;
-    const t = window.setInterval(() => setTickSeconds((prev) => prev + 1), 1000);
-    return () => window.clearInterval(t);
-  }, [job.timer.isRunning]);
+  const [wasteOpen, setWasteOpen] = useState(false);
+  const [wasteText, setWasteText] = useState("");
+  const [wasteQty, setWasteQty] = useState<string>("");
+  const [wasteUnit, setWasteUnit] = useState("");
 
   const isBusy =
     start.isPending ||
@@ -123,62 +270,59 @@ function ActionRail({ job }: { job: ProductionJobListItem }) {
     complete.isPending ||
     reopen.isPending ||
     reprint.isPending ||
-    addNote.isPending;
+    addNote.isPending ||
+    setMedia.isPending;
 
-  const canStartStop = job.status !== "done";
+  const canAct = job.status !== "done";
+  const canStart = canAct && !timerIsRunning;
+  const canPause = canAct && timerIsRunning;
 
   return (
-    <Card className="bg-titan-bg-card border-titan-border-subtle">
-      <CardHeader className="p-4 pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-titan-text-primary truncate">Operator</div>
-            <div className="text-xs text-titan-text-muted truncate">Actions for selected job</div>
-          </div>
-          <Badge variant="outline" className="text-titan-text-secondary">
-            {job.status.replace("_", " ")}
-          </Badge>
-        </div>
-      </CardHeader>
-
-      <CardContent className="p-4 pt-2 space-y-4">
-        <div>
-          <div className="text-xs text-titan-text-muted">Timer</div>
-          <div className="mt-1 flex items-baseline justify-between gap-3">
-            <div className="text-2xl font-mono text-titan-text-primary">{formatSeconds(tickSeconds)}</div>
-            {job.timer.isRunning ? (
-              <Badge variant="secondary">Running</Badge>
-            ) : (
-              <Badge variant="outline" className="text-titan-text-secondary">
-                Paused
-              </Badge>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
+    <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3">
+      <div className="space-y-3">
+        <div className="space-y-2">
           <Button
-            className="w-full"
-            variant={job.timer.isRunning ? "secondary" : "default"}
-            onClick={() => (job.timer.isRunning ? stop.mutate() : start.mutate())}
-            disabled={!canStartStop || isBusy}
+            className="w-full justify-start"
+            size="sm"
+            variant="ghost"
+            onClick={() => navigate(-1)}
+            disabled={isBusy}
           >
-            {job.timer.isRunning ? (
-              <>
-                <Square className="w-4 h-4 mr-2" /> Stop
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 mr-2" /> Start
-              </>
-            )}
+            <ArrowLeft className="w-4 h-4 mr-2" /> BACK
+          </Button>
+          <Button
+            className="w-full justify-start"
+            size="sm"
+            variant="ghost"
+            onClick={() => navigate(ROUTES.production.board)}
+            disabled={isBusy}
+          >
+            <Home className="w-4 h-4 mr-2" /> HOME
+          </Button>
+        </div>
+
+        <div className="h-px bg-titan-border-subtle" />
+
+        <div className="space-y-2">
+          <Button
+            className="w-full justify-start bg-emerald-600 hover:bg-emerald-600/90 text-white"
+            onClick={() => start.mutate()}
+            disabled={!canStart || isBusy}
+          >
+            <Play className="w-4 h-4 mr-2" /> START
+          </Button>
+          <Button
+            className="w-full justify-start bg-blue-600 hover:bg-blue-600/90 text-white"
+            onClick={() => stop.mutate()}
+            disabled={!canPause || isBusy}
+          >
+            <Pause className="w-4 h-4 mr-2" /> PAUSE
           </Button>
 
           {job.status !== "done" ? (
             <>
               <Button
-                className="w-full"
-                variant="outline"
+                className="w-full justify-start bg-emerald-700 hover:bg-emerald-700/90 text-white"
                 onClick={() => {
                   if (job.status === "queued") {
                     setSkipCompleteOpen(true);
@@ -188,7 +332,7 @@ function ActionRail({ job }: { job: ProductionJobListItem }) {
                 }}
                 disabled={isBusy}
               >
-                <CheckCircle2 className="w-4 h-4 mr-2" /> Complete
+                <CheckCircle2 className="w-4 h-4 mr-2" /> COMPLETE
               </Button>
 
               <AlertDialog open={skipCompleteOpen} onOpenChange={setSkipCompleteOpen}>
@@ -201,9 +345,7 @@ function ActionRail({ job }: { job: ProductionJobListItem }) {
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() => complete.mutate({ skipProduction: true })}
-                    >
+                    <AlertDialogAction onClick={() => complete.mutate({ skipProduction: true })}>
                       Skip & Complete
                     </AlertDialogAction>
                   </AlertDialogFooter>
@@ -211,211 +353,263 @@ function ActionRail({ job }: { job: ProductionJobListItem }) {
               </AlertDialog>
             </>
           ) : (
-            <Button className="w-full" variant="outline" onClick={() => reopen.mutate()} disabled={isBusy}>
-              <RotateCcw className="w-4 h-4 mr-2" /> Reopen
+            <Button className="w-full justify-start" variant="outline" onClick={() => reopen.mutate()} disabled={isBusy}>
+              <RotateCcw className="w-4 h-4 mr-2" /> REOPEN
             </Button>
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <Button className="w-full" variant="outline" onClick={() => reprint.mutate()} disabled={isBusy}>
-            <Undo2 className="w-4 h-4 mr-2" /> Reprint
-          </Button>
-          <Button
-            className="w-full"
-            variant="outline"
-            onClick={() => navigate(ROUTES.production.jobDetail(job.id))}
-            disabled={isBusy}
-          >
-            <FileText className="w-4 h-4 mr-2" /> Details
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            className="w-full"
-            variant="ghost"
-            onClick={() => navigate(ROUTES.orders.detail(job.order.id))}
-            disabled={isBusy}
-          >
-            <ExternalLink className="w-4 h-4 mr-2" /> Order
-          </Button>
-          <Button
-            className="w-full"
-            variant="ghost"
-            onClick={() => navigate(ROUTES.production.board)}
-            disabled={isBusy}
-          >
-            <ChevronsUpDown className="w-4 h-4 mr-2" /> Queue
-          </Button>
-        </div>
-
-        <Separator />
+        <div className="h-px bg-titan-border-subtle" />
 
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-medium text-titan-text-primary">Quick note</div>
-            <div className="text-xs text-titan-text-muted">Reprints: {job.reprintCount}</div>
-          </div>
-          <Textarea
-            value={noteText}
-            onChange={(e) => setNoteText(e.target.value)}
-            placeholder="Add operator note…"
-            className="min-h-[72px]"
-            disabled={isBusy}
-          />
-          <Button
-            className="w-full"
-            onClick={() => {
-              const text = noteText.trim();
-              if (!text) return;
-              addNote.mutate(text, {
-                onSuccess: () => setNoteText(""),
-              });
-            }}
-            disabled={isBusy || !noteText.trim()}
-          >
-            <MessageSquarePlus className="w-4 h-4 mr-2" /> Add Note
+          <Button className="w-full justify-start bg-yellow-600 hover:bg-yellow-600/90 text-white" onClick={() => reprint.mutate()} disabled={isBusy}>
+            <Printer className="w-4 h-4 mr-2" /> REPRINT
+          </Button>
+          <Button className="w-full justify-start bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
+            <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
           </Button>
         </div>
-      </CardContent>
-    </Card>
+
+        <div className="h-px bg-titan-border-subtle" />
+
+        <Button className="w-full justify-start bg-sky-700 hover:bg-sky-700/90 text-white" onClick={() => setNoteOpen(true)} disabled={isBusy}>
+          <MessageSquarePlus className="w-4 h-4 mr-2" /> ADD NOTES
+        </Button>
+
+        <AlertDialog open={noteOpen} onOpenChange={setNoteOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Add note</AlertDialogTitle>
+              <AlertDialogDescription>Attach a production note to this job.</AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-2">
+              <Textarea
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                placeholder="Add operator note…"
+                className="min-h-[96px]"
+                disabled={isBusy}
+              />
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  const text = noteText.trim();
+                  if (!text) return;
+                  addNote.mutate(text, {
+                    onSuccess: () => {
+                      setNoteText("");
+                      setNoteOpen(false);
+                    },
+                  });
+                }}
+                disabled={isBusy || !noteText.trim()}
+              >
+                Add Note
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={wasteOpen} onOpenChange={setWasteOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Log waste</AlertDialogTitle>
+              <AlertDialogDescription>
+                Record waste/media usage notes for this job (saved as a production event).
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-3">
+              <Input
+                value={wasteText}
+                onChange={(e) => setWasteText(e.target.value)}
+                placeholder='e.g. 1 sheet scrapped, edge damage'
+                disabled={isBusy}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <Input value={wasteQty} onChange={(e) => setWasteQty(e.target.value)} placeholder="Qty" disabled={isBusy} />
+                <Input value={wasteUnit} onChange={(e) => setWasteUnit(e.target.value)} placeholder="Unit" disabled={isBusy} />
+              </div>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  const text = wasteText.trim();
+                  if (!text) return;
+                  const qtyNum = wasteQty.trim() ? Number(wasteQty) : undefined;
+                  setMedia.mutate(
+                    {
+                      text,
+                      qty: Number.isFinite(qtyNum as any) ? qtyNum : undefined,
+                      unit: wasteUnit.trim() || undefined,
+                    },
+                    {
+                      onSuccess: () => {
+                        setWasteText("");
+                        setWasteQty("");
+                        setWasteUnit("");
+                        setWasteOpen(false);
+                      },
+                    },
+                  );
+                }}
+                disabled={isBusy || !wasteText.trim()}
+              >
+                Save
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <div className="text-[11px] text-titan-text-muted">
+          Status: <span className="text-titan-text-secondary">{job.status.replace("_", " ")}</span>
+          {typeof timerSeconds === "number" ? (
+            <span>
+              {" "}• Run {formatSeconds(timerSeconds)}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
-function PreviewPanel({ job }: { job: ProductionJobListItem }) {
+function Fact({ label, value, valueClassName }: { label: string; value: React.ReactNode; valueClassName?: string }) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wide text-titan-text-muted">{label}</div>
+      <div className={valueClassName || "text-sm font-semibold text-titan-text-primary"}>{value}</div>
+    </div>
+  );
+}
+
+function PreviewPanel({
+  job,
+  timerSeconds,
+  timerIsRunning,
+  notes,
+}: {
+  job: ProductionJobListItem;
+  timerSeconds: number | null;
+  timerIsRunning: boolean;
+  notes: Array<{ id: string; text: string; createdAt: string }>;
+}) {
   const li = primaryLineItem(job);
   const thumbs = artworkThumbs(job);
+  const { front, back } = useMemo(() => pickArtworkForPreview(thumbs), [thumbs]);
+  const frontSrc = front ? getThumbSrc(front) : null;
+  const backSrc = back ? getThumbSrc(back) : null;
 
-  const due = dueLabel(job.order.dueDate);
-  const dims = li ? formatDims(li.width, li.height) : "—";
-  const qty = li ? li.quantity : job.order.lineItems?.totalQuantity ?? 0;
+  const due = dueMeta(job.order.dueDate);
+  const dims = li ? formatDimsMock(li.width, li.height) : "—";
+  const qty = li ? li.quantity : job.order.lineItems?.totalQuantity ?? null;
   const material = li?.materialName || "—";
+  const thicknessRaw = li ? (li as any).thickness ?? (li as any).thicknessMm ?? null : null;
+  const thickness = typeof thicknessRaw === "string" || typeof thicknessRaw === "number" ? String(thicknessRaw).trim() : "";
+  const media = material !== "—" ? `${material}${thickness ? ` ${thickness}` : ""}` : "—";
+  const sidesCount = typeof job.order.sides === "number" ? job.order.sides : null;
+  const sidesLabelHuman = sidesCount === 1 ? "Single-Sided" : sidesCount === 2 ? "Double-Sided" : "—";
+
+  const packaging =
+    (typeof job.order.fulfillmentStatus === "string" && job.order.fulfillmentStatus.trim())
+      ? job.order.fulfillmentStatus
+      : "—";
+
+  const jobRefParts = [
+    job.lineItemId ? `Job ${String(job.lineItemId).slice(-6)}` : null,
+    job.id ? `ID ${String(job.id).slice(-6)}` : null,
+  ].filter(Boolean);
+  const jobRef = jobRefParts.length ? jobRefParts.join(" • ") : "—";
+
+  const noteText = (notes[0]?.text || "").trim() || "—";
 
   return (
-    <Card className="bg-titan-bg-card border-titan-border-subtle">
-      <CardHeader className="p-4 pb-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-titan-text-primary truncate">{job.order.customerName || "—"}</div>
-            <div className="text-xs text-titan-text-muted truncate">
-              Order {job.order.orderNumber || "—"}
-              {due ? ` • Due ${due}` : ""}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {job.order.priority === "rush" && <Badge variant="destructive">RUSH</Badge>}
-            <Badge variant="outline" className="text-titan-text-secondary">
-              {job.status.replace("_", " ")}
-            </Badge>
-          </div>
-        </div>
-      </CardHeader>
-
-      <CardContent className="p-4 pt-2">
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_220px] gap-4">
+    <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
+      <div className="grid grid-cols-1 xl:grid-cols-[340px_1fr_360px] gap-4">
+        <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
-            <div className="text-xs text-titan-text-muted">Item</div>
-            <div className="text-sm font-medium text-titan-text-primary line-clamp-2">
-              {li?.description || job.order.lineItems?.items?.[0]?.description || "—"}
+            <div className="rounded-md border border-titan-border-subtle bg-titan-bg-muted overflow-hidden aspect-[4/3] flex items-center justify-center">
+              {frontSrc ? (
+                <img src={frontSrc} alt={front?.fileName || "Front"} className="w-full h-full object-contain" />
+              ) : (
+                <div className="text-2xl font-semibold text-titan-text-muted">—</div>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded-md border border-titan-border-subtle p-2">
-                <div className="text-titan-text-muted">Qty</div>
-                <div className="text-titan-text-primary font-medium">{qty || "—"}</div>
-              </div>
-              <div className="rounded-md border border-titan-border-subtle p-2">
-                <div className="text-titan-text-muted">Size</div>
-                <div className="text-titan-text-primary font-medium">{dims}</div>
-              </div>
-              <div className="rounded-md border border-titan-border-subtle p-2">
-                <div className="text-titan-text-muted">Material</div>
-                <div className="text-titan-text-primary font-medium truncate">{material}</div>
-              </div>
-              <div className="rounded-md border border-titan-border-subtle p-2">
-                <div className="text-titan-text-muted">Line items</div>
-                <div className="text-titan-text-primary font-medium">{job.order.lineItems?.count ?? "—"}</div>
-              </div>
-            </div>
+            <div className="text-xs text-titan-text-muted text-center">FRONT</div>
           </div>
 
           <div className="space-y-2">
-            <div className="text-xs text-titan-text-muted">Artwork</div>
-            {thumbs.length === 0 ? (
-              <div className="rounded-md border border-dashed border-titan-border-subtle p-3 text-xs text-titan-text-muted">
-                No artwork thumbnails available.
-              </div>
-            ) : (
-              <div className="grid grid-cols-3 gap-2">
-                {thumbs.slice(0, 6).map((a) => {
-                  const src = getThumbSrc(a);
-                  return (
-                    <div
-                      key={a.id}
-                      className="rounded-md border border-titan-border-subtle bg-titan-bg-muted overflow-hidden"
-                      title={a.fileName}
-                    >
-                      {src ? (
-                        <img src={src} alt={a.fileName} className="w-full h-16 object-cover" />
-                      ) : (
-                        <div className="w-full h-16 flex items-center justify-center text-xs text-titan-text-muted">
-                          —
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <div className="rounded-md border border-titan-border-subtle bg-titan-bg-muted overflow-hidden aspect-[4/3] flex items-center justify-center">
+              {backSrc ? (
+                <img src={backSrc} alt={back?.fileName || "Back"} className="w-full h-full object-contain" />
+              ) : (
+                <div className="text-2xl font-semibold text-titan-text-muted">—</div>
+              )}
+            </div>
+            <div className="text-xs text-titan-text-muted text-center">BACK</div>
           </div>
         </div>
-      </CardContent>
-    </Card>
+
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xl font-semibold text-titan-text-primary truncate">{job.order.customerName || "—"}</div>
+              <div className="text-xs text-titan-text-muted truncate">{jobRef}</div>
+            </div>
+            {job.order.priority === "rush" ? <Badge variant="destructive">RUSH</Badge> : null}
+          </div>
+
+          <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-wide text-amber-200">Production notes</div>
+            <div className="text-sm font-semibold text-titan-text-primary line-clamp-2">{noteText}</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-8 gap-y-3">
+          <div className="space-y-3">
+            <Fact
+              label="Due date"
+              value={
+                due ? (
+                  <span className={dueClass(due.urgency)}>
+                    {due.dateLabel} <span className="text-titan-text-muted">{due.displaySuffix}</span>
+                  </span>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <Fact label="Media" value={<span className="truncate">{media}</span>} />
+            <Fact label="Sides" value={sidesLabelHuman} />
+          </div>
+
+          <div className="space-y-3">
+            <Fact label="Size" value={dims} />
+            <Fact label="Quantity" value={formatQtyPieces(qty)} />
+            <Fact label="Packaging" value={packaging} />
+            <Fact
+              label="Run time"
+              value={typeof timerSeconds === "number" ? <span className="font-mono">{formatSeconds(timerSeconds)}</span> : "—"}
+              valueClassName="text-lg font-mono text-titan-text-primary"
+            />
+            {timerIsRunning ? <div className="text-[11px] text-titan-text-muted text-right">RUNNING</div> : null}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
 export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus }) {
   const { data, isLoading, error } = useProductionJobs({ status: props.status, view: props.viewKey });
-
-  const [search, setSearch] = useState("");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-
-  const [previewHeight, setPreviewHeight] = useState<number>(() => {
-    const raw = window.localStorage.getItem(PREVIEW_HEIGHT_KEY);
-    const n = raw ? Number(raw) : NaN;
-    if (!Number.isFinite(n)) return 340;
-    return Math.min(PREVIEW_HEIGHT_MAX, Math.max(PREVIEW_HEIGHT_MIN, n));
-  });
-
-  const dragStateRef = useRef<
-    | null
-    | {
-        startY: number;
-        startHeight: number;
-      }
-  >(null);
 
   const jobsSafe = data ?? [];
 
-  const filteredSortedJobs = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const base = q
-      ? jobsSafe.filter((j) => {
-          const parts = [
-            j.order.orderNumber,
-            j.order.customerName,
-            j.order.priority,
-            j.order.lineItems?.primary?.description,
-            j.order.lineItems?.items?.[0]?.description,
-          ]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
-          return parts.includes(q);
-        })
-      : jobsSafe;
-
-    return [...base].sort((a, b) => {
+  const sortedJobs = useMemo(() => {
+    return [...jobsSafe].sort((a, b) => {
       const sr = statusRank(a.status) - statusRank(b.status);
       if (sr !== 0) return sr;
 
@@ -431,20 +625,20 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
 
       return String(a.id).localeCompare(String(b.id));
     });
-  }, [jobsSafe, search]);
+  }, [jobsSafe]);
 
   useEffect(() => {
-    if (filteredSortedJobs.length === 0) {
+    if (sortedJobs.length === 0) {
       setSelectedJobId(null);
       return;
     }
-    if (selectedJobId && filteredSortedJobs.some((j) => j.id === selectedJobId)) return;
-    setSelectedJobId(filteredSortedJobs[0].id);
-  }, [filteredSortedJobs, selectedJobId]);
+    if (selectedJobId && sortedJobs.some((j) => j.id === selectedJobId)) return;
+    setSelectedJobId(sortedJobs[0].id);
+  }, [sortedJobs, selectedJobId]);
 
   const selectedJob = useMemo(
-    () => filteredSortedJobs.find((j) => j.id === selectedJobId) ?? null,
-    [filteredSortedJobs, selectedJobId],
+    () => sortedJobs.find((j) => j.id === selectedJobId) ?? null,
+    [sortedJobs, selectedJobId],
   );
 
   const { data: selectedDetail } = useProductionJob(selectedJob?.id ?? undefined);
@@ -462,50 +656,55 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
       .filter((n) => n.text.trim());
   }, [selectedDetail]);
 
-  const beginDrag = (e: React.MouseEvent) => {
-    dragStateRef.current = { startY: e.clientY, startHeight: previewHeight };
-    const onMove = (ev: MouseEvent) => {
-      const state = dragStateRef.current;
-      if (!state) return;
-      const delta = ev.clientY - state.startY;
-      const next = Math.min(PREVIEW_HEIGHT_MAX, Math.max(PREVIEW_HEIGHT_MIN, state.startHeight + delta));
-      setPreviewHeight(next);
-      window.localStorage.setItem(PREVIEW_HEIGHT_KEY, String(next));
-    };
-    const onUp = () => {
-      dragStateRef.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  };
+  const derivedTimer = useMemo(() => {
+    if (!selectedJob) return { seconds: null as number | null, isRunning: false, source: "none" as const };
+
+    const fromEvents = deriveRuntimeFromEvents(selectedDetail?.events);
+    const eventSeconds = fromEvents.seconds;
+    const eventIsRunning = fromEvents.isRunning;
+
+    if (typeof eventSeconds === "number" && Number.isFinite(eventSeconds)) {
+      return {
+        seconds: eventSeconds,
+        isRunning: selectedJob.status !== "done" && eventIsRunning,
+        source: "events" as const,
+      };
+    }
+
+    const fallbackSeconds =
+      typeof selectedJob.timer?.currentSeconds === "number" && Number.isFinite(selectedJob.timer.currentSeconds)
+        ? selectedJob.timer.currentSeconds
+        : null;
+    const fallbackIsRunning = !!selectedJob.timer?.isRunning;
+    if (typeof fallbackSeconds === "number") {
+      return {
+        seconds: fallbackSeconds,
+        isRunning: selectedJob.status !== "done" && fallbackIsRunning,
+        source: "job" as const,
+      };
+    }
+
+    return { seconds: null as number | null, isRunning: false, source: "none" as const };
+  }, [selectedDetail?.events, selectedJob]);
+
+  const liveTimerSeconds = useLiveSeconds(derivedTimer.seconds, derivedTimer.isRunning);
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4">
-        <Card className="bg-titan-bg-card border-titan-border-subtle">
-          <CardContent className="p-4 space-y-3">
-            <div className="h-4 w-2/3 bg-titan-bg-muted rounded" />
-            <div className="h-9 w-full bg-titan-bg-muted rounded" />
-            <div className="h-9 w-full bg-titan-bg-muted rounded" />
-            <div className="h-9 w-full bg-titan-bg-muted rounded" />
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-4">
+        <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3">
+          <div className="h-9 w-full bg-titan-bg-muted rounded" />
+          <div className="h-9 w-full bg-titan-bg-muted rounded mt-2" />
+          <div className="h-9 w-full bg-titan-bg-muted rounded mt-4" />
+          <div className="h-9 w-full bg-titan-bg-muted rounded mt-2" />
+        </div>
         <div className="space-y-4">
-          <Card className="bg-titan-bg-card border-titan-border-subtle">
-            <CardContent className="p-4">
-              <div className="h-4 w-1/2 bg-titan-bg-muted rounded" />
-              <div className="h-3 w-1/3 bg-titan-bg-muted rounded mt-2" />
-              <div className="h-28 w-full bg-titan-bg-muted rounded mt-4" />
-            </CardContent>
-          </Card>
-          <Card className="bg-titan-bg-card border-titan-border-subtle">
-            <CardContent className="p-4">
-              <div className="h-4 w-1/3 bg-titan-bg-muted rounded" />
-              <div className="h-40 w-full bg-titan-bg-muted rounded mt-3" />
-            </CardContent>
-          </Card>
+          <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
+            <div className="h-56 w-full bg-titan-bg-muted rounded" />
+          </div>
+          <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
+            <div className="h-64 w-full bg-titan-bg-muted rounded" />
+          </div>
         </div>
       </div>
     );
@@ -552,124 +751,108 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4">
+    <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-4">
       <div className="space-y-4">
         {selectedJob ? (
-          <ActionRail job={selectedJob} />
+          <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} />
         ) : (
-          <Card className="bg-titan-bg-card border-titan-border-subtle">
-            <CardContent className="p-4 text-sm text-titan-text-muted">Select a job to begin.</CardContent>
-          </Card>
-        )}
-
-        {recentNotes.length > 0 && (
-          <Card className="bg-titan-bg-card border-titan-border-subtle">
-            <CardHeader className="p-4 pb-2">
-              <div className="text-sm font-semibold text-titan-text-primary">Recent notes</div>
-            </CardHeader>
-            <CardContent className="p-4 pt-2 space-y-2">
-              {recentNotes.map((n) => (
-                <div key={n.id} className="rounded-md border border-titan-border-subtle p-2">
-                  <div className="text-xs text-titan-text-muted">{new Date(n.createdAt).toLocaleString()}</div>
-                  <div className="text-sm text-titan-text-primary whitespace-pre-wrap">{n.text}</div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+          <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 text-sm text-titan-text-muted">
+            Select a job to begin.
+          </div>
         )}
       </div>
 
       <div className="space-y-4">
-        <div style={{ height: previewHeight }} className="min-h-0">
-          {selectedJob ? <PreviewPanel job={selectedJob} /> : null}
-        </div>
+        {selectedJob ? (
+          <PreviewPanel
+            job={selectedJob}
+            timerSeconds={liveTimerSeconds}
+            timerIsRunning={derivedTimer.isRunning}
+            notes={recentNotes}
+          />
+        ) : null}
 
-        <div
-          className="flex items-center justify-center text-titan-text-muted select-none"
-          onMouseDown={beginDrag}
-          role="separator"
-          aria-label="Resize preview"
-        >
-          <div className="w-full h-7 rounded-md border border-titan-border-subtle bg-titan-bg-card flex items-center justify-center gap-2 cursor-row-resize">
-            <GripHorizontal className="w-4 h-4" />
-            <span className="text-xs">Drag to resize preview</span>
-          </div>
-        </div>
-
-        <Card className="bg-titan-bg-card border-titan-border-subtle">
-          <CardHeader className="p-4 pb-2">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-titan-text-primary">Queue</div>
-                <div className="text-xs text-titan-text-muted">{filteredSortedJobs.length} jobs</div>
-              </div>
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search order/customer…"
-                className="max-w-[260px]"
-              />
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
+        <div>
+          <div className="text-sm font-semibold text-titan-text-primary">JOB QUEUE</div>
+          <div className="mt-2 rounded-lg border border-titan-border-subtle bg-titan-bg-card overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Order</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Due</TableHead>
-                  <TableHead>Priority</TableHead>
-                  <TableHead>Item</TableHead>
-                  <TableHead className="text-right">Qty</TableHead>
-                  <TableHead>Size</TableHead>
-                  <TableHead>Material</TableHead>
-                  <TableHead className="text-right">Reprints</TableHead>
-                  <TableHead className="text-right">Timer</TableHead>
+                  <TableHead>CLIENT</TableHead>
+                  <TableHead className="w-[120px]">ART</TableHead>
+                  <TableHead className="w-[200px]">DUE DATE</TableHead>
+                  <TableHead className="text-right w-[120px]">QTY</TableHead>
+                  <TableHead className="text-right w-[120px]">SIDES</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredSortedJobs.map((job) => {
-                  const li = primaryLineItem(job);
+                {sortedJobs.map((job) => {
                   const selected = job.id === selectedJobId;
+                  const li = primaryLineItem(job);
+                  const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
+                  const due = dueMeta(job.order.dueDate);
+                  const sidesCount = typeof job.order.sides === "number" ? job.order.sides : null;
+
+                  const thumbs = artworkThumbs(job);
+                  const sidesInArtwork = new Set<string>();
+                  for (const a of thumbs) {
+                    const s = normalizeSide(a.side);
+                    if (s === "front" || s === "back") sidesInArtwork.add(s);
+                  }
+                  const hasFront = sidesInArtwork.has("front");
+                  const hasBack = sidesInArtwork.has("back");
+
+                  const showSingle = sidesCount === 1 || (!hasBack && hasFront);
+
                   return (
                     <TableRow
                       key={job.id}
-                      className={selected ? "bg-titan-bg-muted" : undefined}
+                      className={selected ? "bg-titan-bg-muted" : "hover:bg-titan-bg-muted/40"}
                       onClick={() => setSelectedJobId(job.id)}
                       style={{ cursor: "pointer" }}
                     >
-                      <TableCell className="font-medium">{job.order.orderNumber || "—"}</TableCell>
-                      <TableCell className="max-w-[220px] truncate">{job.order.customerName || "—"}</TableCell>
-                      <TableCell>{dueLabel(job.order.dueDate) || "—"}</TableCell>
-                      <TableCell>
-                        {job.order.priority === "rush" ? (
-                          <Badge variant="destructive">RUSH</Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-titan-text-secondary">
-                            {job.order.priority || "—"}
-                          </Badge>
-                        )}
+                      <TableCell className="py-5 text-sm font-semibold">{job.order.customerName || "—"}</TableCell>
+                      <TableCell className="py-5">
+                        <div className="flex items-center gap-2">
+                          {showSingle ? (
+                            <span className="inline-flex items-center justify-center w-7 h-7 rounded bg-blue-600 text-white text-xs font-semibold">S</span>
+                          ) : (
+                            <>
+                              <span
+                                className={`inline-flex items-center justify-center w-7 h-7 rounded text-white text-xs font-semibold ${
+                                  hasFront ? "bg-rose-500" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
+                                }`}
+                              >
+                                F
+                              </span>
+                              <span
+                                className={`inline-flex items-center justify-center w-7 h-7 rounded text-white text-xs font-semibold ${
+                                  hasBack ? "bg-teal-500" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
+                                }`}
+                              >
+                                B
+                              </span>
+                            </>
+                          )}
+                        </div>
                       </TableCell>
-                      <TableCell className="max-w-[320px] truncate">
-                        {li?.description || job.order.lineItems?.items?.[0]?.description || "—"}
+                      <TableCell className={`py-5 text-sm font-semibold ${due ? dueClass(due.urgency) : "text-titan-text-primary"}`}>
+                        {due ? `${due.dateLabel} ${due.displaySuffix}` : "—"}
                       </TableCell>
-                      <TableCell className="text-right">{li?.quantity ?? job.order.lineItems?.totalQuantity ?? "—"}</TableCell>
-                      <TableCell>{li ? formatDims(li.width, li.height) : "—"}</TableCell>
-                      <TableCell className="max-w-[220px] truncate">{li?.materialName || "—"}</TableCell>
-                      <TableCell className="text-right">{job.reprintCount}</TableCell>
-                      <TableCell className="text-right font-mono">{formatSeconds(job.timer.currentSeconds)}</TableCell>
+                      <TableCell className="py-5 text-sm text-right font-semibold">{Number.isFinite(Number(qty)) ? Number(qty) : "—"}</TableCell>
+                      <TableCell className="py-5 text-sm text-right font-semibold">
+                        {typeof sidesCount === "number" && Number.isFinite(sidesCount) ? sidesCount : "—"}
+                      </TableCell>
                     </TableRow>
                   );
                 })}
               </TableBody>
             </Table>
-          </CardContent>
-        </Card>
-
-        {selectedJob && (
-          <div className="text-xs text-titan-text-muted">
-            Tip: open job details for full timeline.
           </div>
+        </div>
+
+        {selectedJob ? null : (
+          <div className="text-xs text-titan-text-muted">No job selected.</div>
         )}
       </div>
     </div>

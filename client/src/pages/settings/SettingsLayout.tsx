@@ -7,6 +7,16 @@ import { useTheme } from "@/hooks/useTheme";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Select,
   SelectContent,
@@ -16,6 +26,11 @@ import {
 } from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  useProductionLineItemStatusRules,
+  useSaveProductionLineItemStatusRules,
+  type ProductionLineItemStatusRule,
+} from "@/hooks/useProductionSettings";
 import {
   Settings,
   Users,
@@ -250,6 +265,57 @@ export function AccountingSettings() {
 }
 
 export function ProductionSettings() {
+  const { data, isLoading, isError, error } = useProductionLineItemStatusRules();
+  const save = useSaveProductionLineItemStatusRules();
+  const [draft, setDraft] = React.useState<ProductionLineItemStatusRule[]>([]);
+
+  React.useEffect(() => {
+    if (Array.isArray(data)) setDraft(data);
+  }, [data]);
+
+  const validation = React.useMemo(() => {
+    const errors: string[] = [];
+    const keys = new Set<string>();
+    for (const r of draft) {
+      const k = (r.id || r.key || "").trim();
+      const label = (r.label || "").trim();
+      if (!k) errors.push("Each status needs an id.");
+      if (!label) errors.push("Each status needs a label.");
+      if (k) {
+        if (keys.has(k)) errors.push(`Duplicate id: ${k}`);
+        keys.add(k);
+      }
+      if (r.sendToProduction) {
+        const station = (r.stationKey || "").trim();
+        if (!station) errors.push(`Status '${k || "(missing key)"}' routes to production but has no station.`);
+      }
+    }
+    return { isValid: errors.length === 0, errors };
+  }, [draft]);
+
+  const setRule = (idx: number, patch: Partial<ProductionLineItemStatusRule>) => {
+    setDraft((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  };
+
+  const addRule = () => {
+    setDraft((prev) => [
+      ...prev,
+      {
+        id: "",
+        label: "",
+        color: null,
+        sendToProduction: false,
+        stationKey: "flatbed",
+        stepKey: "prepress",
+        sortOrder: prev.length,
+      },
+    ]);
+  };
+
+  const removeRule = (idx: number) => {
+    setDraft((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   return (
     <TitanCard className="p-6">
       <div className="space-y-6">
@@ -263,9 +329,156 @@ export function ProductionSettings() {
         <div className="h-px bg-titan-border-subtle" />
         
         <div className="space-y-4">
-          <p className="text-titan-sm text-titan-text-muted">
-            Production settings UI will be implemented here
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-titan-md font-semibold text-titan-text-primary">Line Item Status Routing</h3>
+              <p className="text-titan-sm text-titan-text-muted mt-1">
+                Define the allowed line-item statuses and choose which statuses automatically create/update a production job.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={addRule}>
+                Add status
+              </Button>
+              <Button
+                onClick={() => save.mutate(draft)}
+                disabled={save.isPending || !validation.isValid}
+              >
+                {save.isPending ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </div>
+
+          {isLoading ? (
+            <div className="flex items-center gap-2 text-titan-sm text-titan-text-muted">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+            </div>
+          ) : isError ? (
+            <div className="text-titan-sm text-red-600">{(error as any)?.message || "Failed to load"}</div>
+          ) : null}
+
+          {validation.errors.length > 0 ? (
+            <div className="rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-titan-sm text-titan-text-secondary">
+              <div className="font-medium text-titan-text-primary">Fix these before saving:</div>
+              <ul className="list-disc pl-5 mt-1 space-y-1">
+                {Array.from(new Set(validation.errors)).slice(0, 6).map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="rounded-md border border-titan-border-subtle overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[180px]">ID</TableHead>
+                  <TableHead>Label</TableHead>
+                  <TableHead className="w-[140px]">Color</TableHead>
+                  <TableHead className="w-[160px]">Send to Production</TableHead>
+                  <TableHead className="w-[180px]">Station</TableHead>
+                  <TableHead className="w-[180px]">Step</TableHead>
+                  <TableHead className="w-[120px]">Sort</TableHead>
+                  <TableHead className="w-[100px]"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {draft.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-titan-sm text-titan-text-muted">
+                      No statuses configured yet. Add one to start.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  draft.map((r, idx) => (
+                    <TableRow key={`${idx}-${(r.id ?? r.key ?? "") as any}`.trim()}>
+                      <TableCell>
+                        <Input
+                          value={(r.id ?? r.key ?? "") as any}
+                          onChange={(e) => setRule(idx, { id: e.target.value })}
+                          placeholder="prepress"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          value={r.label ?? ""}
+                          onChange={(e) => setRule(idx, { label: e.target.value })}
+                          placeholder="Queued"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          value={r.color ?? ""}
+                          onChange={(e) => setRule(idx, { color: e.target.value || null })}
+                          placeholder="blue"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={r.sendToProduction === true}
+                            onCheckedChange={(v) => setRule(idx, { sendToProduction: v })}
+                          />
+                          <span className="text-titan-sm text-titan-text-muted">
+                            {r.sendToProduction ? "Yes" : "No"}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={(r.stationKey ?? "").trim() || "flatbed"}
+                          onValueChange={(v) => setRule(idx, { stationKey: v })}
+                          disabled={!r.sendToProduction}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Station" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="flatbed">Flatbed</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={String((r.stepKey ?? r.defaultStepKey ?? "")).trim() || "prepress"}
+                          onValueChange={(v) => setRule(idx, { stepKey: v })}
+                          disabled={!r.sendToProduction}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Step" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="prepress">Prepress</SelectItem>
+                            <SelectItem value="print">Print</SelectItem>
+                            <SelectItem value="finish">Finish</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          inputMode="numeric"
+                          value={r.sortOrder ?? ""}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            if (!raw.trim()) return setRule(idx, { sortOrder: null });
+                            const n = Number(raw);
+                            setRule(idx, { sortOrder: Number.isFinite(n) ? n : r.sortOrder ?? null });
+                          }}
+                          placeholder="0"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Button variant="outline" onClick={() => removeRule(idx)}>
+                          Remove
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </div>
       </div>
     </TitanCard>
