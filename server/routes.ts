@@ -8672,6 +8672,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
   );
 
+  // =============================
+  // Production Ingestion Service
+  // =============================
+
+  // Import the service function
+  const { scheduleOrderLineItemsForProduction } = await import("./services/productionScheduling");
+
+  // 12) Schedule line items for production (Option A: all items, or selected items)
+  app.post(
+    "/api/orders/:orderId/production/schedule",
+    isAuthenticated,
+    tenantContext,
+    async (req: any, res) => {
+      try {
+        if (!assertInternalUser(req, res)) return;
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+        const orderId = String(req.params.orderId);
+        const lineItemIds = Array.isArray(req.body.lineItemIds)
+          ? req.body.lineItemIds.filter((id: any) => typeof id === "string" && id.length > 0)
+          : undefined;
+
+        const result = await scheduleOrderLineItemsForProduction({
+          organizationId,
+          orderId,
+          lineItemIds,
+          loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
+          appendEvent,
+        });
+
+        res.json(result);
+      } catch (error: any) {
+        console.error("Error scheduling line items for production:", error);
+        res.status(500).json({
+          success: false,
+          error: error?.message || "Failed to schedule line items for production",
+        });
+      }
+    },
+  );
+
   // DEV-ONLY: Debug endpoint to inspect DB connection and production_jobs data (NO AUTH for quick testing)
   if (nodeEnv === "development" || process.env.PROD_DEBUG === "1") {
     app.get("/api/debug/db", async (req: any, res) => {
@@ -8848,15 +8890,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (viewParsed && !viewParsed.success) {
         return res.status(400).json({ error: "Invalid view" });
       }
-      if (!stationCandidate) {
-        return res.status(400).json({ error: "station is required (or pass legacy view= as back-compat)" });
-      }
-      if (!stationParsed?.success) {
+      // BUGFIX: Make station optional to support Overview page showing ALL jobs across all stations
+      if (stationCandidate && !stationParsed?.success) {
         return res.status(400).json({ error: "Invalid station" });
       }
       const status = statusParsed?.success ? statusParsed.data : undefined;
       const view = viewParsed?.success ? viewParsed.data : undefined;
-      const station = stationParsed.data;
+      const station = stationParsed?.data; // May be undefined for "all stations" query
       const search = typeof searchRaw === "string" ? searchRaw.trim() : "";
 
       const config = await getProductionConfigForOrganization(organizationId);
@@ -8865,12 +8905,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // FIX: lineItemId filter was too strict - production_jobs can exist without line items during initial intake
-      // Only filter out jobs that were explicitly designed to be orphaned (future use case)
+      // Station scoping is OPTIONAL - when omitted, returns ALL jobs across all stations (for Overview)
       const whereClause = and(
         eq(productionJobs.organizationId, organizationId),
-        // Station scoping is REQUIRED for boards.
-        eq(productionJobs.stationKey, station),
-        // Allow jobs with or without lineItemId - the lineItemId requirement was preventing MVP test data from showing
+        station ? eq(productionJobs.stationKey, station) : undefined,
         status ? eq(productionJobs.status, status) : undefined,
       );
 
@@ -9373,6 +9411,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
+        
+        // Job description: Prefer line item description, fallback to "Job #{id}"
+        const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${row.id.slice(-8)}`;
 
         const artworkThumbs = (artwork ?? []).slice(0, 2).map((a) => ({
           id: a.id,
@@ -9399,11 +9440,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dueDate: row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
           stepKey: String(row.stepKey ?? ""),
-          qty,
-          // DERIVED DISPLAY FIELDS (computed in API, not UI)
-          size,        // "12\" × 18\"" or "—"
-          sides,       // "Single", "Double", or "—"
-          media,       // Material name or "—"
+          // LIVE LINE ITEM FIELDS (top-level for easy frontend access)
+          qty,                // LIVE: from line item, updates when qty changed
+          jobDescription,     // LIVE: from line item description
+          size,              // LIVE: computed from line item width/height
+          sides,             // LIVE: parsed from line item selectedOptions
+          media,             // LIVE: from line item material or description
           // Legacy field for backwards compatibility
           mediaLabel: media,
           artwork: artworkThumbs,
@@ -9451,6 +9493,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             return orderNumber.includes(q) || customerName.includes(q) || desc.includes(q);
           })
         : data;
+      
+      // DEV: Log response shape for verification
+      if (process.env.NODE_ENV === "development" && filtered.length > 0) {
+        console.log(`[GET /api/production/jobs] Returning ${filtered.length} jobs. Sample keys:`, Object.keys(filtered[0]));
+      }
 
       res.json({ success: true, data: filtered });
     } catch (error) {

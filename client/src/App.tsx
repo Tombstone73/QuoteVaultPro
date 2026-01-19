@@ -122,6 +122,9 @@ function Router() {
 
         {/* Production workflow routes */}
         <Route path="/production" element={<ProductionBoard />} />
+        <Route path="/production/flatbed" element={<ProductionBoard />} />
+        <Route path="/production/roll" element={<ProductionBoard />} />
+        <Route path="/production/apparel" element={<ProductionBoard />} />
         <Route path="/production/jobs/:jobId" element={<ProductionJobDetailPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
 
