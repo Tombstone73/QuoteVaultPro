@@ -115,22 +115,27 @@ export function useProductionConfig() {
   });
 }
 
-export function useProductionJobs(filters: { status?: string; view?: string; station?: string }) {
+export function useProductionJobs(
+  filters?: { status?: string; view?: string; station?: string; orderId?: string },
+  options?: { enabled?: boolean }
+) {
   return useQuery<ProductionJobListItem[]>({
     queryKey: ["/api/production/jobs", filters],
     queryFn: async () => {
       const params = new URLSearchParams();
-      if (filters.status) params.set("status", filters.status);
-      if (filters.station) params.set("station", filters.station);
-      else if (filters.view) params.set("view", filters.view);
+      if (filters?.status) params.set("status", filters.status);
+      if (filters?.station) params.set("station", filters.station);
+      else if (filters?.view) params.set("view", filters.view);
+      if (filters?.orderId) params.set("orderId", filters.orderId);
       const url = `/api/production/jobs${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch production jobs");
       const json = await res.json();
       return json.data || [];
     },
-    staleTime: 10_000, // Cache for 10 seconds to prevent rapid refetches during tab switches
-    refetchOnWindowFocus: true, // Refresh when user returns to window (check for new jobs)
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
+    enabled: options?.enabled !== false,
   });
 }
 
