@@ -16,6 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ROUTES } from "@/config/routes";
 import { getThumbSrc } from "@/lib/getThumbSrc";
@@ -50,6 +51,73 @@ import {
 type ProductionStatus = "queued" | "in_progress" | "done";
 
 type DueUrgency = "overdue" | "today" | "soon" | "normal";
+
+/**
+ * Get the best available image source for artwork
+ * Priority: thumbnailUrl > previewKey (if exists) > fileUrl
+ */
+function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
+  if (!artwork) return null;
+  if (artwork.thumbnailUrl) return artwork.thumbnailUrl;
+  // Note: previewKey would need to be constructed into a URL, skip for now
+  if (artwork.fileUrl) return artwork.fileUrl;
+  return null;
+}
+
+/**
+ * Artwork image component with fallback handling
+ */
+function ArtworkImage({
+  artwork,
+  alt,
+  className,
+  onClick,
+}: {
+  artwork: ProductionOrderArtworkSummary | null;
+  alt: string;
+  className?: string;
+  onClick?: () => void;
+}) {
+  const [src, setSrc] = useState<string | null>(() => getBestArtworkImage(artwork));
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setSrc(getBestArtworkImage(artwork));
+    setHasError(false);
+  }, [artwork]);
+
+  const handleError = () => {
+    if (!hasError && artwork?.fileUrl && src !== artwork.fileUrl) {
+      // Fallback to fileUrl if thumbnail fails
+      setSrc(artwork.fileUrl);
+      setHasError(false);
+    } else {
+      setHasError(true);
+    }
+  };
+
+  if (!src || hasError) {
+    return (
+      <div className={`flex items-center justify-center bg-titan-bg-muted ${className || ""}`}>
+        <div className="text-center p-2">
+          <FileText className="mx-auto h-8 w-8 text-titan-text-muted" />
+          <div className="mt-1 text-[10px] text-titan-text-muted">No Preview</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      onError={handleError}
+      onClick={onClick}
+      style={onClick ? { cursor: "pointer" } : undefined}
+    />
+  );
+}
 
 function formatSeconds(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -181,6 +249,50 @@ function pickArtworkForPreview(artwork: ProductionOrderArtworkSummary[]) {
   const front = pickBest(byFront) ?? pickBest(list);
   const back = pickBest(byBack);
   return { front, back };
+}
+
+/**
+ * Normalize artwork based on sides logic for Production MVP
+ * Rules:
+ * - Single: Only front, no back slot
+ * - Double: Front + back (if back missing, defaults to front)
+ */
+function normalizeArtworkForSides(
+  sides: string,
+  artwork: ProductionOrderArtworkSummary[],
+): {
+  front: ProductionOrderArtworkSummary | null;
+  back: ProductionOrderArtworkSummary | null;
+  showBackSlot: boolean;
+  isSameArtwork: boolean;
+} {
+  const list = [...(artwork || [])];
+  const byFront = list.filter((a) => normalizeSide(a.side) === "front");
+  const byBack = list.filter((a) => normalizeSide(a.side) === "back");
+
+  const pickBest = (items: ProductionOrderArtworkSummary[]) => {
+    if (items.length === 0) return null;
+    const primary = items.find((a) => a.isPrimary);
+    return primary || items[0];
+  };
+
+  const frontArt = pickBest(byFront) ?? pickBest(list);
+  let backArt = pickBest(byBack);
+
+  const isDouble = sides === "Double" || sides === "2" || sides === "double";
+
+  if (isDouble) {
+    // Double-sided: show back slot
+    if (!backArt && frontArt) {
+      // Default back to front if missing
+      backArt = frontArt;
+      return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: true };
+    }
+    return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: backArt === frontArt };
+  } else {
+    // Single-sided: no back slot
+    return { front: frontArt, back: null, showBackSlot: false, isSameArtwork: false };
+  }
 }
 
 function deriveRuntimeFromEvents(
@@ -490,36 +602,46 @@ function PreviewPanel({
   timerSeconds,
   timerIsRunning,
   notes,
+  onPreviewArtwork,
 }: {
   job: ProductionJobListItem;
   timerSeconds: number | null;
   timerIsRunning: boolean;
   notes: Array<{ id: string; text: string; createdAt: string }>;
+  onPreviewArtwork: (side: "front" | "back") => void;
 }) {
   const li = primaryLineItem(job);
   const thumbs = artworkThumbs(job);
-  const { front, back } = useMemo(() => pickArtworkForPreview(thumbs), [thumbs]);
+  
+  // Use backend-derived sides and normalize artwork accordingly
+  const sidesValue = (job as any).sides ?? "—";
+  const { front, back, showBackSlot, isSameArtwork } = useMemo(
+    () => normalizeArtworkForSides(sidesValue, thumbs),
+    [sidesValue, thumbs]
+  );
+  
   const frontSrc = front ? getThumbSrc(front) : null;
   const backSrc = back ? getThumbSrc(back) : null;
 
   const due = dueMeta(job.order.dueDate);
-  const dims = li ? formatDimsMock(li.width, li.height) : "—";
+  
+  // Use backend-derived display fields (no UI computation)
+  const media = (job as any).media ?? "—";
+  const sides = (job as any).sides ?? "—";
+  const size = (job as any).size ?? "—";
+  const orderNumber = (job as any).orderNumber ?? job.order.orderNumber ?? "—";
+  const productionJobId = (job as any).productionJobId ?? job.id;
+  
   const qty = li ? li.quantity : job.order.lineItems?.totalQuantity ?? null;
-  const material = li?.materialName || "—";
-  const thicknessRaw = li ? (li as any).thickness ?? (li as any).thicknessMm ?? null : null;
-  const thickness = typeof thicknessRaw === "string" || typeof thicknessRaw === "number" ? String(thicknessRaw).trim() : "";
-  const media = material !== "—" ? `${material}${thickness ? ` ${thickness}` : ""}` : "—";
-  const sidesCount = typeof job.order.sides === "number" ? job.order.sides : null;
-  const sidesLabelHuman = sidesCount === 1 ? "Single-Sided" : sidesCount === 2 ? "Double-Sided" : "—";
-
   const packaging =
     (typeof job.order.fulfillmentStatus === "string" && job.order.fulfillmentStatus.trim())
       ? job.order.fulfillmentStatus
       : "—";
 
+  // Show Order # and Production Job ID (Order # is primary identifier)
   const jobRefParts = [
-    job.lineItemId ? `Job ${String(job.lineItemId).slice(-6)}` : null,
-    job.id ? `ID ${String(job.id).slice(-6)}` : null,
+    orderNumber && orderNumber !== "—" ? `Order #${orderNumber}` : null,
+    productionJobId ? `Job ${String(productionJobId).slice(-6)}` : null,
   ].filter(Boolean);
   const jobRef = jobRefParts.length ? jobRefParts.join(" • ") : "—";
 
@@ -529,27 +651,40 @@ function PreviewPanel({
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
       <div className="grid grid-cols-1 xl:grid-cols-[340px_1fr_360px] gap-4">
         <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <div className="rounded-md border border-titan-border-subtle bg-titan-bg-muted overflow-hidden aspect-[4/3] flex items-center justify-center">
-              {frontSrc ? (
-                <img src={frontSrc} alt={front?.fileName || "Front"} className="w-full h-full object-contain" />
-              ) : (
-                <div className="text-2xl font-semibold text-titan-text-muted">—</div>
-              )}
+          {/* FRONT preview - always shown */}
+          <div className="space-y-1">
+            <div
+              className="relative aspect-square w-full max-w-[180px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
+              onClick={() => onPreviewArtwork("front")}
+            >
+              <ArtworkImage
+                artwork={front}
+                alt="Front artwork"
+                className="h-full w-full object-contain"
+              />
             </div>
-            <div className="text-xs text-titan-text-muted text-center">FRONT</div>
+            <div className="text-xs text-titan-text-muted text-center">FRONT (click to enlarge)</div>
           </div>
 
-          <div className="space-y-2">
-            <div className="rounded-md border border-titan-border-subtle bg-titan-bg-muted overflow-hidden aspect-[4/3] flex items-center justify-center">
-              {backSrc ? (
-                <img src={backSrc} alt={back?.fileName || "Back"} className="w-full h-full object-contain" />
-              ) : (
-                <div className="text-2xl font-semibold text-titan-text-muted">—</div>
-              )}
+          {/* BACK preview - only shown for double-sided */}
+          {showBackSlot && (
+            <div className="space-y-1">
+              <div
+                className="relative aspect-square w-full max-w-[180px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
+                onClick={() => onPreviewArtwork("back")}
+              >
+                <ArtworkImage
+                  artwork={back}
+                  alt="Back artwork"
+                  className="h-full w-full object-contain"
+                />
+              </div>
+              <div className="text-xs text-titan-text-muted text-center">
+                BACK (click to enlarge)
+                {isSameArtwork && <span className="ml-1 text-[10px] text-amber-500">(Same as Front)</span>}
+              </div>
             </div>
-            <div className="text-xs text-titan-text-muted text-center">BACK</div>
-          </div>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -582,11 +717,11 @@ function PreviewPanel({
               }
             />
             <Fact label="Media" value={<span className="truncate">{media}</span>} />
-            <Fact label="Sides" value={sidesLabelHuman} />
+            <Fact label="Sides" value={sides} />
           </div>
 
           <div className="space-y-3">
-            <Fact label="Size" value={dims} />
+            <Fact label="Size" value={size} />
             <Fact label="Quantity" value={formatQtyPieces(qty)} />
             <Fact label="Packaging" value={packaging} />
             <Fact
@@ -605,6 +740,8 @@ function PreviewPanel({
 export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus }) {
   const { data, isLoading, error } = useProductionJobs({ status: props.status, view: props.viewKey });
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
 
   const jobsSafe = data ?? [];
 
@@ -769,6 +906,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
             timerSeconds={liveTimerSeconds}
             timerIsRunning={derivedTimer.isRunning}
             notes={recentNotes}
+            onPreviewArtwork={(side) => {
+              setPreviewSide(side);
+              setPreviewModalOpen(true);
+            }}
           />
         ) : null}
 
@@ -779,10 +920,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               <TableHeader>
                 <TableRow>
                   <TableHead>CLIENT</TableHead>
+                  <TableHead className="w-[100px]">ORDER #</TableHead>
                   <TableHead className="w-[120px]">ART</TableHead>
+                  <TableHead className="w-[140px]">MEDIA</TableHead>
                   <TableHead className="w-[200px]">DUE DATE</TableHead>
-                  <TableHead className="text-right w-[120px]">QTY</TableHead>
-                  <TableHead className="text-right w-[120px]">SIDES</TableHead>
+                  <TableHead className="text-right w-[80px]">QTY</TableHead>
+                  <TableHead className="text-right w-[80px]">SIDES</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -791,18 +934,20 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                   const li = primaryLineItem(job);
                   const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
                   const due = dueMeta(job.order.dueDate);
-                  const sidesCount = typeof job.order.sides === "number" ? job.order.sides : null;
+                  
+                  // Backend-derived display fields (API computes these)
+                  const mediaName = (job as any).media ?? "—";
+                  const sidesDisplay = (job as any).sides ?? "—";
 
+                  // Normalize artwork based on sides for UI display
                   const thumbs = artworkThumbs(job);
-                  const sidesInArtwork = new Set<string>();
-                  for (const a of thumbs) {
-                    const s = normalizeSide(a.side);
-                    if (s === "front" || s === "back") sidesInArtwork.add(s);
-                  }
-                  const hasFront = sidesInArtwork.has("front");
-                  const hasBack = sidesInArtwork.has("back");
+                  const { front, back, showBackSlot, isSameArtwork } = normalizeArtworkForSides(sidesDisplay, thumbs);
+                  const hasFront = !!front;
+                  const hasBack = !!back;
 
-                  const showSingle = sidesCount === 1 || (!hasBack && hasFront);
+                  // Extract order number and ID for linking
+                  const orderNumber = (job as any).orderNumber || job.order?.orderNumber || "—";
+                  const orderId = (job as any).orderId || job.order?.id;
 
                   return (
                     <TableRow
@@ -812,36 +957,116 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       style={{ cursor: "pointer" }}
                     >
                       <TableCell className="py-5 text-sm font-semibold">{job.order.customerName || "—"}</TableCell>
+                      <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
+                        {orderId && orderNumber !== "—" ? (
+                          <Link
+                            to={ROUTES.orders.detail(orderId)}
+                            className="text-sm font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                          >
+                            {orderNumber}
+                          </Link>
+                        ) : (
+                          <span className="text-sm text-titan-text-muted">—</span>
+                        )}
+                      </TableCell>
                       <TableCell className="py-5">
                         <div className="flex items-center gap-2">
-                          {showSingle ? (
-                            <span className="inline-flex items-center justify-center w-7 h-7 rounded bg-blue-600 text-white text-xs font-semibold">S</span>
+                          {!showBackSlot ? (
+                            // Single-sided: show only F indicator with thumbnail
+                            <div
+                              className="flex items-center gap-1.5 cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedJobId(job.id);
+                                setPreviewSide("front");
+                                setPreviewModalOpen(true);
+                              }}
+                            >
+                              {hasFront && front?.thumbnailUrl ? (
+                                <ArtworkImage
+                                  artwork={front}
+                                  alt="Front"
+                                  className="w-12 h-12 rounded object-cover border-2 border-blue-500 hover:border-blue-600 transition-colors"
+                                />
+                              ) : (
+                                <span className="inline-flex items-center justify-center w-12 h-12 rounded bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors">
+                                  F
+                                </span>
+                              )}
+                            </div>
                           ) : (
-                            <>
-                              <span
-                                className={`inline-flex items-center justify-center w-7 h-7 rounded text-white text-xs font-semibold ${
-                                  hasFront ? "bg-rose-500" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
-                                }`}
+                            // Double-sided: show F and B indicators with thumbnails
+                            <div className="flex items-center gap-1.5">
+                              <div
+                                className="cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedJobId(job.id);
+                                  setPreviewSide("front");
+                                  setPreviewModalOpen(true);
+                                }}
                               >
-                                F
-                              </span>
-                              <span
-                                className={`inline-flex items-center justify-center w-7 h-7 rounded text-white text-xs font-semibold ${
-                                  hasBack ? "bg-teal-500" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
-                                }`}
-                              >
-                                B
-                              </span>
-                            </>
+                                {hasFront && front?.thumbnailUrl ? (
+                                  <div className="relative">
+                                    <ArtworkImage
+                                      artwork={front}
+                                      alt="Front"
+                                      className="w-11 h-11 rounded object-cover border-2 border-rose-500 hover:border-rose-600 transition-colors"
+                                    />
+                                    {isSameArtwork && (
+                                      <div className="absolute -bottom-1 -right-1 bg-amber-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                                        2
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span
+                                    className={`inline-flex items-center justify-center w-11 h-11 rounded text-white text-sm font-semibold transition-colors ${
+                                      hasFront ? "bg-rose-500 hover:bg-rose-600" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
+                                    }`}
+                                  >
+                                    F
+                                  </span>
+                                )}
+                              </div>
+                              {!isSameArtwork && (
+                                <div
+                                  className="cursor-pointer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedJobId(job.id);
+                                    setPreviewSide("back");
+                                    setPreviewModalOpen(true);
+                                  }}
+                                >
+                                  {hasBack && back?.thumbnailUrl ? (
+                                    <ArtworkImage
+                                      artwork={back}
+                                      alt="Back"
+                                      className="w-11 h-11 rounded object-cover border-2 border-teal-500 hover:border-teal-600 transition-colors"
+                                    />
+                                  ) : (
+                                    <span
+                                      className={`inline-flex items-center justify-center w-11 h-11 rounded text-white text-sm font-semibold transition-colors ${
+                                        hasBack ? "bg-teal-500 hover:bg-teal-600" : "bg-titan-bg-muted border border-titan-border-subtle text-titan-text-muted"
+                                      }`}
+                                    >
+                                      B
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                       </TableCell>
+                      <TableCell className="py-5 text-sm">{mediaName}</TableCell>
                       <TableCell className={`py-5 text-sm font-semibold ${due ? dueClass(due.urgency) : "text-titan-text-primary"}`}>
                         {due ? `${due.dateLabel} ${due.displaySuffix}` : "—"}
                       </TableCell>
                       <TableCell className="py-5 text-sm text-right font-semibold">{Number.isFinite(Number(qty)) ? Number(qty) : "—"}</TableCell>
                       <TableCell className="py-5 text-sm text-right font-semibold">
-                        {typeof sidesCount === "number" && Number.isFinite(sidesCount) ? sidesCount : "—"}
+                        {sidesDisplay}
                       </TableCell>
                     </TableRow>
                   );
@@ -855,6 +1080,87 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
           <div className="text-xs text-titan-text-muted">No job selected.</div>
         )}
       </div>
+
+      {/* Artwork Preview Modal */}
+      <Dialog open={previewModalOpen} onOpenChange={setPreviewModalOpen}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>
+              {selectedJob
+                ? `${selectedJob.order.customerName} • Order #${(selectedJob as any).orderNumber ?? selectedJob.order.orderNumber} • Job ${String((selectedJob as any).productionJobId ?? selectedJob.id).slice(-6)}`
+                : "Artwork Preview"}
+            </DialogTitle>
+          </DialogHeader>
+          {selectedJob && (() => {
+            const sidesValue = (selectedJob as any).sides ?? "—";
+            const thumbs = artworkThumbs(selectedJob);
+            const { front, back, showBackSlot, isSameArtwork } = normalizeArtworkForSides(sidesValue, thumbs);
+            const currentArtwork = previewSide === "front" ? front : back;
+            const imageSrc = getBestArtworkImage(currentArtwork);
+
+            return (
+              <div className="space-y-4">
+                {/* Front/Back toggle - only show for double-sided jobs */}
+                {showBackSlot && (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={previewSide === "front" ? "default" : "outline"}
+                      onClick={() => setPreviewSide("front")}
+                    >
+                      Front
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={previewSide === "back" ? "default" : "outline"}
+                      onClick={() => setPreviewSide("back")}
+                    >
+                      Back
+                    </Button>
+                    {isSameArtwork && previewSide === "back" && (
+                      <span className="text-xs text-amber-500 ml-2">(Same as Front)</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Large artwork preview */}
+                <div className="relative w-full bg-titan-bg-muted rounded-lg border-2 border-titan-border-subtle overflow-hidden flex items-center justify-center" style={{ minHeight: "400px", maxHeight: "600px" }}>
+                  {imageSrc ? (
+                    <ArtworkImage
+                      artwork={currentArtwork}
+                      alt={`${previewSide === "front" ? "Front" : "Back"} artwork`}
+                      className="max-w-full max-h-[600px] object-contain"
+                    />
+                  ) : (
+                    <div className="text-center p-8">
+                      <FileText className="mx-auto h-16 w-16 text-titan-text-muted" />
+                      <div className="mt-4 text-sm text-titan-text-muted">No artwork available</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* File info and actions */}
+                {currentArtwork && (
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="text-titan-text-muted">
+                      {currentArtwork.fileName}
+                    </div>
+                    {currentArtwork.fileUrl && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => window.open(currentArtwork.fileUrl, "_blank")}
+                      >
+                        Open file
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
