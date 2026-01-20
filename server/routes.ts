@@ -8937,6 +8937,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           priority: orders.priority,
           fulfillmentStatus: orders.fulfillmentStatus,
           routingTarget: orders.routingTarget,
+          customerId: customers.id,
           customerName: customers.companyName,
         })
         .from(productionJobs)
@@ -9532,6 +9533,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           reprintCount: reprintCountByJobId.get(row.id) ?? 0,
           order: {
             id: row.orderId,
+            customerId: row.customerId,
             orderNumber: row.orderNumber,
             customerName: row.customerName,
             dueDate: row.dueDate,

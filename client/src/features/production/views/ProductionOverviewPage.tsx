@@ -171,7 +171,7 @@ function artworkThumbs(job: ProductionJobListItem): {
   front: ProductionOrderArtworkSummary | null;
   back: ProductionOrderArtworkSummary | null;
 } {
-  const artwork = (job as any).artwork as ProductionOrderArtworkSummary[] | undefined;
+  const artwork = job.artwork;
   
   if (!artwork || artwork.length === 0) {
     return { front: null, back: null };
@@ -825,7 +825,7 @@ export default function ProductionOverviewPage() {
                       size="sm"
                       variant="default"
                       onClick={() => {
-                        const orderId = (selectedJob.order as any)?.id;
+                        const orderId = selectedJob.order.id;
                         if (orderId) window.location.href = `/orders/${orderId}`;
                       }}
                       className="gap-1.5"
@@ -909,7 +909,7 @@ function KanbanColumn({
   const { setNodeRef } = useDroppable({ id: column.status });
 
   return (
-    <Card className="flex flex-col" ref={setNodeRef}>
+    <Card className="flex flex-col">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium flex items-center justify-between">
           <span>{column.label}</span>
@@ -918,7 +918,7 @@ function KanbanColumn({
           </Badge>
         </CardTitle>
       </CardHeader>
-      <CardContent className="flex-1 space-y-2 pt-0 min-h-[200px]">
+      <CardContent ref={setNodeRef} className="flex-1 space-y-2 pt-0 min-h-[200px]">
         {jobs.length === 0 ? (
           <div className="text-xs text-muted-foreground text-center py-4">
             No jobs
@@ -1027,8 +1027,8 @@ function JobCard({
   const navigate = useNavigate();
   const sides = job.sides || "single";
   const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
-  const customerId = (job.order as any)?.customerId;
-  const orderId = (job.order as any)?.id;
+  const customerId = job.order.customerId;
+  const orderId = job.order.id;
 
   const style = transform ? {
     transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
@@ -1162,8 +1162,8 @@ function JobRow({ job, visibleColumns, onArtworkClick }: { job: ProductionJobLis
   const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
   const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
-  const customerId = (job.order as any)?.customerId;
-  const orderId = (job.order as any)?.id;
+  const customerId = job.order.customerId;
+  const orderId = job.order.id;
 
   const handleClick = () => {
     navigate(`/production/jobs/${job.id}`);

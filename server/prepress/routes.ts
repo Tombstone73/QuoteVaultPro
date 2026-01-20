@@ -97,13 +97,14 @@ export function registerPrepressRoutes(app: Express): void {
       const organizationId = (req as any).organizationId || 'standalone';
       
       // Query jobs for this organization, newest first
-      const jobs = await db.query.prepressJobs.findMany({
-        where: organizationId !== 'standalone' 
-          ? eq(prepressJobs.organizationId, organizationId)
-          : sql`1=1`, // Standalone mode: show all
-        orderBy: (jobs, { desc }) => [desc(jobs.createdAt)],
-        limit: 100, // Reasonable limit
-      });
+      const jobs = organizationId !== 'standalone'
+        ? await db.select().from(prepressJobs)
+            .where(eq(prepressJobs.organizationId, organizationId))
+            .orderBy(desc(prepressJobs.createdAt))
+            .limit(100)
+        : await db.select().from(prepressJobs)
+            .orderBy(desc(prepressJobs.createdAt))
+            .limit(100);
       
       return res.json({
         success: true,

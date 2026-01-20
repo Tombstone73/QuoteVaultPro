@@ -23,7 +23,7 @@ export default function PrepressPage() {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   
   const createJob = useCreatePrepressJob();
-  const { data: jobsList, isLoading: jobsListLoading } = usePrepressJobList();
+  const { data: jobsList, isLoading: jobsListLoading, isError: jobsListError } = usePrepressJobList();
   const { data: job, isError: jobError } = usePrepressJob(currentJobId);
   const { data: report } = usePrepressReport(job?.status === 'succeeded' ? currentJobId : null);
   const { data: findings } = usePrepressFindings(currentJobId);
@@ -187,7 +187,13 @@ export default function PrepressPage() {
               <div className="text-center text-muted-foreground py-8">
                 Loading jobs...
               </div>
-            ) : !jobsList || jobsList.length === 0 ? (
+            ) : jobsListError ? (
+              <Alert variant="destructive">
+                <AlertDescription>
+                  Failed to load jobs list. Please refresh the page or contact support if the issue persists.
+                </AlertDescription>
+              </Alert>
+            ) : !jobsList || (Array.isArray(jobsList) && jobsList.length === 0) ? (
               <div className="text-center text-muted-foreground py-8">
                 No preflight jobs yet. Upload a file to get started.
               </div>
@@ -203,7 +209,7 @@ export default function PrepressPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {jobsList.map((jobItem) => (
+                  {Array.isArray(jobsList) && jobsList.map((jobItem) => (
                     <TableRow key={jobItem.id}>
                       <TableCell className="font-medium">
                         {jobItem.originalFilename}

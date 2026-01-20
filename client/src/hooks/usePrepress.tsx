@@ -53,7 +53,10 @@ export function usePrepressJobList() {
       const result = await response.json();
       return result.data as PrepressJob[];
     },
-    refetchInterval: 10000, // Refresh every 10s to catch status changes
+    refetchInterval: (query) => {
+      // Stop polling if query is in error state to prevent spam
+      return query?.state?.status === 'error' ? false : 10000;
+    },
   });
 }
 
@@ -107,8 +110,8 @@ export function usePrepressJob(jobId: string | null) {
     enabled: !!jobId,
     refetchInterval: (data) => {
       // Poll every 2s while running/queued, stop when complete
-      if (!data) return false;
-      return ['queued', 'running'].includes(data.status) ? 2000 : false;
+      if (!data || typeof data !== 'object') return false;
+      return ['queued', 'running'].includes((data as PrepressJob).status) ? 2000 : false;
     },
   });
 }
