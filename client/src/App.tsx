@@ -47,6 +47,7 @@ import PurchaseOrdersPage from "@/pages/purchase-orders";
 import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
+import PrepressPage from "@/pages/prepress";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -89,6 +90,9 @@ function Router() {
         <Route path="/admin/product-types" element={<ProductTypesSettings />} />
         <Route path="/users" element={<UserManagement />} />
         <Route path="/admin" element={<Admin />} />
+        
+        {/* Prepress (standalone PDF preflight tool) */}
+        <Route path="/prepress" element={<PrepressPage />} />
 
         {/* Customer routes */}
         <Route path="/customers/:id" element={<CustomerDetail />} />
