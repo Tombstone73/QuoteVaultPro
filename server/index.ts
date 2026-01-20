@@ -145,6 +145,16 @@ process.on('uncaughtException', (error) => {
       } catch (error) {
         console.error('[Server] Asset preview worker failed to start:', error);
       }
+
+      // Start in-process prepress worker (optional dev convenience)
+      if (process.env.PREPRESS_WORKER_IN_PROCESS === 'true') {
+        try {
+          const { startInProcessWorker } = await import('./prepress/worker/in-process');
+          startInProcessWorker();
+        } catch (error) {
+          console.error('[Server] Prepress in-process worker failed to start:', error);
+        }
+      }
       
       // Start QuickBooks sync worker
       if (process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET) {

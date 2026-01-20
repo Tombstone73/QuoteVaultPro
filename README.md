@@ -123,6 +123,32 @@ npm run build
 
 Dev DX helpers: `npm run pdf:gen:local` writes `tmp/invoice-local.pdf`; `npm run pdf:smoke -- --invoiceId ...` hits the running server (needs `connect.sid=...`); if Jest OOMs use `npm run test:client:mem`. Don’t paste `package.json` JSON into PowerShell.
 
+## 🔬 Prepress Service
+
+TitanOS includes a standalone PDF preflight processor for analyzing and validating PDFs before printing.
+
+### Quick Start
+
+```bash
+# Optional: Install PDF processing tools (for full functionality)
+# Ubuntu/Debian
+sudo apt-get install qpdf poppler-utils ghostscript
+
+# macOS
+brew install qpdf poppler ghostscript
+
+# Start the worker process (production mode)
+npm run prepress:worker
+
+# OR enable in-process worker (dev mode only)
+# Add to .env: PREPRESS_WORKER_IN_PROCESS=true
+npm run dev
+```
+
+**Access**: Navigate to `/prepress` in your browser to access the PDF preflight tool.
+
+**Documentation**: See [docs/PREPRESS_SERVICE.md](docs/PREPRESS_SERVICE.md) and [docs/PREPRESS_TOOLCHAIN.md](docs/PREPRESS_TOOLCHAIN.md)
+
 ## 📦 Project Structure
 
 ```
@@ -137,7 +163,8 @@ QuoteVaultPro/
 │   ├── routes.ts       # API routes (monolithic)
 │   ├── db.ts           # Database connection
 │   ├── services/       # Business logic
-│   └── workers/        # Background jobs
+│   ├── workers/        # Background jobs
+│   └── prepress/       # PDF preflight service (standalone)
 ├── shared/             # Shared code (schemas, types)
 │   └── schema.ts       # Drizzle schemas and Zod validators
 └── docs/               # Documentation

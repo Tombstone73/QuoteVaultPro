@@ -38,6 +38,7 @@ import {
 } from "@shared/quoteWorkflow";
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
 import { registerOrderRoutes } from "./routes/orders.routes";
+import { registerPrepressRoutes } from "./prepress/routes";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
@@ -455,6 +456,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // MVP Invoicing + Payments + Billing Ready (mounted, minimal changes in routes.ts)
   await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext });
+
+  // Prepress routes (standalone PDF preflight service)
+  registerPrepressRoutes(app);
 
   // Dev-only debug: verify status pills exist per org/state
   if (nodeEnv === 'development') {
