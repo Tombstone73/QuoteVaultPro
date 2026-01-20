@@ -64,6 +64,11 @@ export type ProductionJobListItem = {
   sides?: string; // "Single", "Double", or "—" (parsed from selectedOptions)
   media?: string; // Material name or "—"
   mediaLabel?: string; // Alias for media (legacy)
+  // Explicit preview URLs for fast Overview thumbnails
+  frontPreviewUrl?: string;
+  backPreviewUrl?: string;
+  frontFileUrl?: string;
+  backFileUrl?: string;
   order: {
     id: string;
     orderNumber: string;
@@ -99,8 +104,25 @@ export type ProductionEvent = {
   createdAt: string;
 };
 
+export type ProductionOtherJobInOrder = {
+  id: string;
+  jobId: string;
+  lineItemId: string | null;
+  stationKey: string | null;
+  stepKey: string | null;
+  status: "queued" | "in_progress" | "done" | (string & {});
+  qty: number;
+  size: string;
+  sides: string;
+  media: string;
+  jobDescription: string;
+  dueDate: string | null;
+  createdAt: string;
+};
+
 export type ProductionJobDetail = Omit<ProductionJobListItem, "view"> & {
   events: ProductionEvent[];
+  otherJobsInOrder?: ProductionOtherJobInOrder[];
 };
 
 export function useProductionConfig() {
