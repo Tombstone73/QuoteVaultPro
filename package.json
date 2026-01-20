@@ -21,6 +21,8 @@
     "pdf:smoke": "tsx scripts/pdf-smoke.ts",
     "pdf:smoke:help": "tsx scripts/pdf-smoke.ts --help",
     "pdf:gen:local": "tsx scripts/pdf-gen-local.ts",
+    "prepress:worker": "tsx scripts/prepress-worker.ts",
+    "prepress:worker:dev": "tsx --watch scripts/prepress-worker.ts",
     "fix-user": "tsx fix-user-role.ts",
     "migrate:file-storage": "powershell ./scripts/run_file_storage_migration.ps1",
     "test": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest",
