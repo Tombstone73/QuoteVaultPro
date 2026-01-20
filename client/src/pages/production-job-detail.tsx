@@ -4,9 +4,7 @@ import { Page, PageHeader, ContentLayout } from "@/components/titan";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Separator } from "@/components/ui/separator";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ROUTES } from "@/config/routes";
@@ -14,10 +12,8 @@ import {
   useAddProductionNote,
   useCompleteProductionJob,
   useProductionJob,
-  useProductionJobs,
   useReopenProductionJob,
   useReprintProductionJob,
-  useSetProductionMediaUsed,
   useStartProductionTimer,
   useStopProductionTimer,
   ProductionOrderArtworkSummary,
@@ -132,13 +128,8 @@ function ProductionThumbnail({
   );
 }
 
-/**
- * Determine if job is done (completed or fulfilled status)
- */
-function isJobDone(job: any): boolean {
-  if (!job) return false;
-  const status = String(job.status || "").toLowerCase();
-  return status === "completed" || status === "fulfilled";
+function isProductionJobDone(status: unknown): boolean {
+  return String(status || "").toLowerCase() === "done";
 }
 
 /**
@@ -192,25 +183,14 @@ export default function ProductionJobDetailPage() {
 
   const { data, isLoading, error } = useProductionJob(jobId);
 
-  // Fetch sibling jobs for Order Jobs panel
-  const { data: siblingJobsRaw } = useProductionJobs(
-    data?.order.id ? { orderId: data.order.id } : undefined,
-    { enabled: !!data?.order.id }
-  );
-  const siblingJobs = siblingJobsRaw || [];
-
   const start = useStartProductionTimer(jobId || "");
   const stop = useStopProductionTimer(jobId || "");
   const complete = useCompleteProductionJob(jobId || "");
   const reopen = useReopenProductionJob(jobId || "");
   const reprint = useReprintProductionJob(jobId || "");
-  const setMedia = useSetProductionMediaUsed(jobId || "");
   const addNote = useAddProductionNote(jobId || "");
 
   const [tickSeconds, setTickSeconds] = useState(0);
-  const [mediaText, setMediaText] = useState("");
-  const [mediaQty, setMediaQty] = useState<string>("");
-  const [mediaUnit, setMediaUnit] = useState("");
   const [noteText, setNoteText] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [previewArtwork, setPreviewArtwork] = useState<ProductionOrderArtworkSummary | null>(null);
@@ -246,43 +226,13 @@ export default function ProductionJobDetailPage() {
     complete.isPending ||
     reopen.isPending ||
     reprint.isPending ||
-    setMedia.isPending ||
     addNote.isPending;
 
   // Artwork normalization
   const artwork = useMemo(() => {
     if (!data) return { front: null, back: null, showBackSlot: false, isSameArtwork: false };
-    const sides = data.order.lineItems?.primary?.selectedOptions?.find((opt: any) =>
-      String(opt.optionName || "").toLowerCase().includes("side"),
-    )?.value || "";
-    const sidesStr = String(sides || "").toLowerCase().includes("single")
-      ? "Single"
-      : String(sides || "").toLowerCase().includes("double")
-        ? "Double"
-        : "";
-    return normalizeArtworkForSides(sidesStr, data.order.artwork || []);
+    return normalizeArtworkForSides(String(data.sides || ""), data.order.artwork || []);
   }, [data]);
-
-  // DEV: Artwork diagnostics
-  useEffect(() => {
-    if (process.env.NODE_ENV === "development" && data) {
-      console.group("[ProductionJobDetail] Artwork Diagnostics");
-      console.log("Artwork array:", data.order.artwork);
-      console.log("Normalized:", artwork);
-      data.order.artwork?.forEach((art, idx) => {
-        console.log(`Art ${idx}:`, {
-          id: art.id,
-          side: art.side,
-          fileName: art.fileName,
-          thumbnailUrl: art.thumbnailUrl,
-          fileUrl: art.fileUrl,
-          thumbKey: art.thumbKey,
-          thumbStatus: art.thumbStatus,
-        });
-      });
-      console.groupEnd();
-    }
-  }, [data, artwork]);
 
   if (isLoading) {
     return (
@@ -307,25 +257,15 @@ export default function ProductionJobDetailPage() {
     );
   }
 
-  const primaryLineItem = data.order.lineItems?.primary;
-  const media = primaryLineItem?.materialName || "—";
-  const qty = primaryLineItem?.quantity || 0;
-  const size =
-    primaryLineItem?.width && primaryLineItem?.height
-      ? `${primaryLineItem.width} × ${primaryLineItem.height}`
-      : "—";
-  const jobDescription = primaryLineItem?.description || `Job #${data.id.slice(-8)}`;
-
-  // Derive sides from selectedOptions
-  const sidesOption = primaryLineItem?.selectedOptions?.find((opt: any) =>
-    String(opt.optionName || "").toLowerCase().includes("side"),
-  );
-  const sidesValue = String(sidesOption?.value || "").toLowerCase();
-  const sidesDisplay = sidesValue.includes("single")
-    ? "Single Sided"
-    : sidesValue.includes("double")
-      ? "Double Sided"
-      : "—";
+  const jobDescription = data.jobDescription || `Job #${data.id.slice(-8)}`;
+  const media = data.media || "—";
+  const qty = data.qty ?? 0;
+  const size = data.size || "—";
+  const sidesDisplay = data.sides || "—";
+  const otherJobsInOrder = data.otherJobsInOrder || [];
+  const doneCount = otherJobsInOrder.filter((j) => isProductionJobDone(j.status)).length;
+  const totalCount = otherJobsInOrder.length;
+  const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
   // Get first artwork file URL for "Open File" button
   const firstArtworkFile = (data.order.artwork || [])[0];
@@ -362,80 +302,8 @@ export default function ProductionJobDetailPage() {
 
       <ContentLayout>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
-          {/* LEFT COLUMN: Artwork + Actions + Timeline */}
+          {/* LEFT COLUMN: Actions + Timeline */}
           <div className="space-y-4">
-            {/* ARTWORK PREVIEW */}
-            <Card>
-              <CardHeader className="p-4 pb-3">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <FileText className="w-4 h-4" />
-                  Artwork
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-0">
-                <div className="grid grid-cols-2 gap-3">
-                  {/* FRONT */}
-                  <div>
-                    <div className="text-xs font-medium text-muted-foreground mb-1.5">FRONT</div>
-                    <div
-                      className="relative aspect-[3/4] rounded-md border overflow-hidden bg-muted cursor-pointer hover:opacity-90 transition-opacity"
-                      onClick={() => artwork.front && setPreviewArtwork(artwork.front)}
-                    >
-                      <ProductionThumbnail
-                        artwork={artwork.front}
-                        alt="Front artwork"
-                        className="w-full h-full object-contain"
-                      />
-                    </div>
-                  </div>
-
-                  {/* BACK */}
-                  {artwork.showBackSlot && (
-                    <div>
-                      <div className="text-xs font-medium text-muted-foreground mb-1.5">BACK</div>
-                      <div
-                        className="relative aspect-[3/4] rounded-md border overflow-hidden bg-muted cursor-pointer hover:opacity-90 transition-opacity"
-                        onClick={() => artwork.back && setPreviewArtwork(artwork.back)}
-                      >
-                        {artwork.isSameArtwork ? (
-                          <div className="w-full h-full flex items-center justify-center p-4 text-center text-xs text-muted-foreground">
-                            Same as Front
-                          </div>
-                        ) : (
-                          <ProductionThumbnail
-                            artwork={artwork.back}
-                            alt="Back artwork"
-                            className="w-full h-full object-contain"
-                          />
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* File Actions */}
-                <div className="mt-3 flex items-center gap-2">
-                  {firstArtworkFile?.fileUrl && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => window.open(firstArtworkFile.fileUrl, "_blank")}
-                      className="gap-1.5"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      Open File
-                    </Button>
-                  )}
-                  <Link to={ROUTES.orders.detail(data.order.id)}>
-                    <Button size="sm" variant="ghost" className="gap-1.5">
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      View Order
-                    </Button>
-                  </Link>
-                </div>
-              </CardContent>
-            </Card>
-
             {/* WORKFLOW ACTIONS */}
             <Card>
               <CardHeader className="p-4 pb-3">
@@ -515,114 +383,6 @@ export default function ProductionJobDetailPage() {
               </CardContent>
             </Card>
 
-            {/* ORDER JOBS PANEL - Sibling Production Jobs */}
-            {siblingJobs.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Order Jobs</CardTitle>
-                    {/* Completion Meter */}
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-normal text-muted-foreground">
-                        {siblingJobs.filter(isJobDone).length} of {siblingJobs.length} done
-                      </span>
-                      <div className="w-20 h-2 bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary transition-all"
-                          style={{
-                            width: `${(siblingJobs.filter(isJobDone).length / siblingJobs.length) * 100}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  {siblingJobs.length === 1 && (
-                    <p className="text-sm text-muted-foreground mt-2">
-                      No other production jobs on this order.
-                    </p>
-                  )}
-                </CardHeader>
-                {siblingJobs.length > 1 && (
-                  <CardContent>
-                    <div className="space-y-2">
-                      {siblingJobs.map((siblingJob) => {
-                        const isCurrent = siblingJob.id === jobId;
-                        const sidesValue = siblingJob.sides || "single";
-                        const artworkList = siblingJob.order?.artwork || [];
-                        const jobArtwork = normalizeArtworkForSides(sidesValue, artworkList);
-                        return (
-                          <button
-                            key={siblingJob.id}
-                            onClick={() => {
-                              if (!isCurrent) {
-                                navigate(`/production/jobs/${siblingJob.id}`);
-                              }
-                            }}
-                            className={`w-full text-left p-3 rounded-lg border transition-all ${
-                              isCurrent
-                                ? "border-primary bg-primary/5 cursor-default"
-                                : "border-border hover:border-primary/50 hover:bg-accent cursor-pointer"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3">
-                              {/* Thumbnail Indicator */}
-                              <div className="flex-shrink-0 flex gap-1">
-                                {jobArtwork.front && (
-                                  <div className="w-10 h-10 rounded border border-border bg-muted overflow-hidden">
-                                    <ProductionThumbnail
-                                      artwork={jobArtwork.front}
-                                      alt="Front"
-                                      className="w-full h-full object-cover"
-                                    />
-                                  </div>
-                                )}
-                                {jobArtwork.showBackSlot && (
-                                  jobArtwork.back && !jobArtwork.isSameArtwork ? (
-                                    <div className="w-10 h-10 rounded border border-border bg-muted overflow-hidden">
-                                      <ProductionThumbnail
-                                        artwork={jobArtwork.back}
-                                        alt="Back"
-                                        className="w-full h-full object-cover"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <div className="w-10 h-10 rounded border border-border bg-muted flex items-center justify-center text-xs font-medium">
-                                      2
-                                    </div>
-                                  )
-                                )}
-                              </div>
-
-                              {/* Job Info */}
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <Badge variant={isJobDone(siblingJob) ? "default" : "outline"}>
-                                    {siblingJob.status}
-                                  </Badge>
-                                  <Badge variant="secondary">{siblingJob.stationKey}</Badge>
-                                  {isCurrent && (
-                                    <Badge variant="outline" className="border-primary text-primary">
-                                      Current
-                                    </Badge>
-                                  )}
-                                </div>
-                                <p className="font-medium mt-1 truncate">
-                                  {siblingJob.jobDescription || "Untitled Job"}
-                                </p>
-                                <p className="text-sm text-muted-foreground">
-                                  Qty: {siblingJob.qty || 0} • Sides: {sidesValue}
-                                </p>
-                              </div>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </CardContent>
-                )}
-              </Card>
-            )}
-
             {/* TIMELINE - Collapsible */}
             <Collapsible open={timelineOpen} onOpenChange={setTimelineOpen}>
               <Card>
@@ -675,8 +435,75 @@ export default function ProductionJobDetailPage() {
             </Collapsible>
           </div>
 
-          {/* RIGHT COLUMN: Job Specs + Production Record */}
+          {/* RIGHT COLUMN: Artwork thumbs + Job Specs + Order Jobs + Notes */}
           <div className="space-y-4">
+            {/* ARTWORK THUMBNAILS (compact) */}
+            <Card>
+              <CardHeader className="p-4 pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  Artwork Thumbnails
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 pt-0">
+                <div className="flex items-start gap-3">
+                  <button
+                    type="button"
+                    className="w-20 h-20 rounded-md border bg-muted overflow-hidden hover:opacity-90 transition-opacity"
+                    onClick={() => artwork.front && setPreviewArtwork(artwork.front)}
+                    title="Front"
+                  >
+                    <ProductionThumbnail
+                      artwork={artwork.front}
+                      alt="Front artwork"
+                      className="w-full h-full object-contain"
+                    />
+                  </button>
+
+                  {artwork.showBackSlot && (
+                    <button
+                      type="button"
+                      className="w-20 h-20 rounded-md border bg-muted overflow-hidden hover:opacity-90 transition-opacity"
+                      onClick={() => artwork.back && setPreviewArtwork(artwork.back)}
+                      title="Back"
+                    >
+                      {artwork.isSameArtwork ? (
+                        <div className="w-full h-full flex items-center justify-center p-2 text-center text-[10px] text-muted-foreground">
+                          Same as front
+                        </div>
+                      ) : (
+                        <ProductionThumbnail
+                          artwork={artwork.back}
+                          alt="Back artwork"
+                          className="w-full h-full object-contain"
+                        />
+                      )}
+                    </button>
+                  )}
+
+                  <div className="ml-auto flex flex-col gap-2">
+                    {firstArtworkFile?.fileUrl && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => window.open(firstArtworkFile.fileUrl, "_blank")}
+                        className="gap-1.5"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Open File
+                      </Button>
+                    )}
+                    <Link to={ROUTES.orders.detail(data.order.id)}>
+                      <Button size="sm" variant="ghost" className="gap-1.5">
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        View Order
+                      </Button>
+                    </Link>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* JOB SPECS */}
             <Card>
               <CardHeader className="p-4 pb-3">
@@ -699,6 +526,9 @@ export default function ProductionJobDetailPage() {
                       <div className={isDueOverdue ? "text-destructive font-medium" : ""}>{dueLabel}</div>
                     </>
                   )}
+
+                  <div className="text-muted-foreground">Priority:</div>
+                  <div className="capitalize">{data.order.priority || "—"}</div>
 
                   <div className="text-muted-foreground">Description:</div>
                   <div>{jobDescription}</div>
@@ -724,35 +554,70 @@ export default function ProductionJobDetailPage() {
               </CardContent>
             </Card>
 
-            {/* MEDIA USED */}
+            {/* ORDER JOBS */}
             <Card>
-              <CardHeader className="p-4 pb-2">
-                <CardTitle className="text-base">Media Used</CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-2 space-y-3">
-                <Input
-                  placeholder={`e.g. 3/4" PVC, 54" roll`}
-                  value={mediaText}
-                  onChange={(e) => setMediaText(e.target.value)}
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <Input placeholder="Qty" value={mediaQty} onChange={(e) => setMediaQty(e.target.value)} />
-                  <Input placeholder="Unit" value={mediaUnit} onChange={(e) => setMediaUnit(e.target.value)} />
+              <CardHeader className="p-4 pb-3">
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="text-base">Order Jobs</CardTitle>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-normal text-muted-foreground">
+                      {doneCount} of {totalCount} jobs done
+                    </span>
+                    <div className="w-24 h-2 bg-muted rounded-full overflow-hidden" aria-label="Completion">
+                      <div className="h-full bg-primary transition-all" style={{ width: `${progressPct}%` }} />
+                    </div>
+                  </div>
                 </div>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    const qtyNum = mediaQty.trim() ? Number(mediaQty) : undefined;
-                    setMedia.mutate({
-                      text: mediaText,
-                      qty: Number.isFinite(qtyNum as any) ? qtyNum : undefined,
-                      unit: mediaUnit.trim() || undefined,
-                    });
-                  }}
-                  disabled={isBusy || !mediaText.trim()}
-                >
-                  Save
-                </Button>
+              </CardHeader>
+              <CardContent className="p-4 pt-0">
+                {otherJobsInOrder.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No production jobs found for this order.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {otherJobsInOrder.map((j) => {
+                      const isCurrent = j.id === data.id;
+                      return (
+                        <button
+                          key={j.id}
+                          type="button"
+                          onClick={() => {
+                            if (!isCurrent) navigate(`/production/jobs/${j.id}`);
+                          }}
+                          className={`w-full text-left p-3 rounded-lg border transition-all ${
+                            isCurrent
+                              ? "border-primary bg-primary/5 cursor-default"
+                              : "border-border hover:border-primary/50 hover:bg-accent"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <Badge variant={isProductionJobDone(j.status) ? "default" : "outline"} className="capitalize">
+                                  {String(j.status || "").replaceAll("_", " ")}
+                                </Badge>
+                                <Badge variant="secondary" className="capitalize">
+                                  {j.stationKey || "—"}
+                                </Badge>
+                                <Badge variant="outline" className="capitalize">
+                                  {j.stepKey || "—"}
+                                </Badge>
+                                {isCurrent && (
+                                  <Badge variant="outline" className="border-primary text-primary">
+                                    Current
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="font-medium mt-1 truncate">{j.jobDescription || "Untitled Job"}</div>
+                              <div className="text-sm text-muted-foreground mt-0.5">
+                                Qty: {j.qty ?? 0} • Sides: {j.sides || "—"} • Media: {j.media || "—"}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </CardContent>
             </Card>
 

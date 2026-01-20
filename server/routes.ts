@@ -9299,14 +9299,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Process new assets/assetLinks data and merge into artwork maps
       for (const link of assetLinkRows) {
+        const normalizedAssetFileUrl = link.fileKey
+          ? `/objects/${String(link.fileKey).replace(/^\/+/, "")}`
+          : `/api/assets/${link.id}/download`;
+        const normalizedAssetThumbUrl =
+          link.thumbKey && link.previewStatus === "ready"
+            ? `/objects/${String(link.thumbKey).replace(/^\/+/, "")}`
+            : null;
         const mapped = {
           id: link.id,
           orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
           fileName: link.fileName,
-          fileUrl: `/api/assets/${link.id}/download`, // Construct download URL
+          fileUrl: normalizedAssetFileUrl,
           thumbKey: link.thumbKey ?? null,
           previewKey: link.previewKey ?? null,
-          thumbnailUrl: link.thumbKey ? `/api/assets/${link.id}/thumb` : null, // Construct thumb URL
+          thumbnailUrl: normalizedAssetThumbUrl,
           side: "na", // New assets system doesn't track side yet, could enhance later
           isPrimary: false, // New assets system doesn't track isPrimary yet
           thumbStatus: link.previewStatus ?? null,
@@ -9327,6 +9334,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       }
+
+      const normalizeObjectsUrl = (url: string | null | undefined): string | undefined => {
+        if (!url) return undefined;
+        if (url.startsWith("/objects/")) return url;
+        if (url.startsWith("http")) {
+          const match = url.match(/\/objects\/(.+?)(?:\?|$)/);
+          if (match) return `/objects/${match[1]}`;
+          return url;
+        }
+        return `/objects/${String(url).replace(/^\/+/, "")}`;
+      };
+
+      const getFileExt = (fileNameOrUrl: string | null | undefined): string => {
+        const s = String(fileNameOrUrl || "").toLowerCase();
+        const noQuery = s.split("?")[0];
+        const idx = noQuery.lastIndexOf(".");
+        return idx >= 0 ? noQuery.slice(idx + 1) : "";
+      };
+
+      const isImageExt = (ext: string): boolean =>
+        ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "svg"].includes(ext);
+
+      const computePreviewUrl = (art: any): string | undefined => {
+        const thumbUrl = normalizeObjectsUrl(art?.thumbnailUrl);
+        if (thumbUrl) return thumbUrl;
+
+        const thumbKey = typeof art?.thumbKey === "string" ? art.thumbKey : null;
+        const thumbStatus = String(art?.thumbStatus || "").toLowerCase();
+        if (thumbKey && (thumbStatus === "thumb_ready" || thumbStatus === "ready")) {
+          return normalizeObjectsUrl(thumbKey) ?? `/objects/${String(thumbKey).replace(/^\/+/, "")}`;
+        }
+
+        const ext = getFileExt(art?.fileName) || getFileExt(art?.fileUrl);
+        const fileUrl = normalizeObjectsUrl(art?.fileUrl);
+        if (fileUrl && isImageExt(ext)) return fileUrl;
+        return undefined;
+      };
 
       const now = Date.now();
       const data = baseRows.map((row) => {
@@ -9429,6 +9473,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           thumbStatus: a.thumbStatus,
         }));
 
+        // Explicit preview/file URLs for fast board/list thumbnail rendering
+        const frontBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "front");
+        const backBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "back");
+        const primaryArt = artwork.find((a) => !!a?.isPrimary);
+        const frontArt = frontBySide ?? primaryArt ?? artwork[0] ?? null;
+        const backArt = backBySide ?? artwork.find((a) => a && frontArt && a.id !== frontArt.id) ?? null;
+
+        const frontFileUrl = frontArt ? normalizeObjectsUrl(frontArt.fileUrl) : undefined;
+        const backFileUrl = backArt ? normalizeObjectsUrl(backArt.fileUrl) : undefined;
+        const frontPreviewUrl = frontArt ? computePreviewUrl(frontArt) : undefined;
+        const backPreviewUrl = backArt ? computePreviewUrl(backArt) : undefined;
+
         const notes = notesByJobId.get(row.id) ?? [];
 
         return {
@@ -9451,6 +9507,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           media,             // LIVE: from line item material or description
           // Legacy field for backwards compatibility
           mediaLabel: media,
+          // NEW: explicit preview URLs for Production Overview thumbnails
+          frontPreviewUrl,
+          backPreviewUrl,
+          frontFileUrl,
+          backFileUrl,
           artwork: artworkThumbs,
           notes,
           // Back-compat: treat view as stationKey
@@ -9500,6 +9561,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // DEV: Log response shape for verification
       if (process.env.NODE_ENV === "development" && filtered.length > 0) {
         console.log(`[GET /api/production/jobs] Returning ${filtered.length} jobs. Sample keys:`, Object.keys(filtered[0]));
+
+        const g: any = global as any;
+        if (!g.__dev_logged_production_jobs_preview_coverage) {
+          g.__dev_logged_production_jobs_preview_coverage = true;
+          const withFront = filtered.filter((j: any) => !!j.frontPreviewUrl).length;
+          console.log(`[GET /api/production/jobs] preview coverage`, {
+            total: filtered.length,
+            withFrontPreviewUrl: withFront,
+          });
+        }
       }
 
       res.json({ success: true, data: filtered });
@@ -9516,8 +9587,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const jobId = req.params.jobId;
-      const rows = await db
+      const jobId = String(req.params.jobId || "");
+      if (!jobId.trim()) return res.status(400).json({ error: "jobId required" });
+
+      // Fetch production job ONLY (org-scoped). Related entities are fetched separately to avoid brittle joins.
+      const jobRows = await db
         .select({
           id: productionJobs.id,
           orderId: productionJobs.orderId,
@@ -9530,6 +9604,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           totalSeconds: productionJobs.totalSeconds,
           createdAt: productionJobs.createdAt,
           updatedAt: productionJobs.updatedAt,
+        })
+        .from(productionJobs)
+        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+        .limit(1);
+
+      const job = jobRows[0];
+      if (!job) return res.status(404).json({ error: "Production job not found" });
+
+      const orderId = String(job.orderId || "");
+      const lineItemId = String(job.lineItemId || "");
+      if (!orderId) return res.status(404).json({ error: "Order not found for production job" });
+      if (!lineItemId) return res.status(404).json({ error: "Line item not found for production job" });
+
+      const orderRows = await db
+        .select({
+          id: orders.id,
           orderNumber: orders.orderNumber,
           dueDate: orders.dueDate,
           priority: orders.priority,
@@ -9537,14 +9627,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           routingTarget: orders.routingTarget,
           customerName: customers.companyName,
         })
-        .from(productionJobs)
-        .innerJoin(orders, eq(productionJobs.orderId, orders.id))
-        .innerJoin(customers, eq(orders.customerId, customers.id))
-        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+        .from(orders)
+        .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, organizationId)))
+        .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
         .limit(1);
 
-      const job = rows[0];
-      if (!job) return res.status(404).json({ error: "Production job not found" });
+      const order = orderRows[0];
+      if (!order) return res.status(404).json({ error: "Order not found for production job" });
 
       const events = await db
         .select({
@@ -9578,11 +9667,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           productType: orderLineItems.productType,
           status: orderLineItems.status,
           sortOrder: orderLineItems.sortOrder,
+          selectedOptions: orderLineItems.selectedOptions,
           createdAt: orderLineItems.createdAt,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
-        .where(and(eq(orders.organizationId, organizationId), eq(orderLineItems.orderId, job.orderId)))
+        .where(and(eq(orders.organizationId, organizationId), eq(orderLineItems.orderId, orderId)))
         .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.createdAt));
 
       const materialIds = Array.from(
@@ -9609,12 +9699,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         productType: li.productType,
         status: li.status,
         sortOrder: Number(li.sortOrder) || 0,
+        selectedOptions: li.selectedOptions ?? [],
         createdAt: li.createdAt,
       }));
 
-      const primaryLineItem = job.lineItemId
-        ? lineItems.find((li) => li.id === job.lineItemId) ?? null
-        : lineItems[0] ?? null;
+      const primaryLineItem = lineItems.find((li) => li.id === lineItemId) ?? null;
+      if (!primaryLineItem) return res.status(404).json({ error: "Line item not found for production job" });
 
       const attachmentRows = await db
         .select({
@@ -9637,7 +9727,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(
           and(
             eq(orders.organizationId, organizationId),
-            eq(orderAttachments.orderId, job.orderId),
+            eq(orderAttachments.orderId, orderId),
             eq(orderAttachments.role, "artwork"),
           ),
         )
@@ -9647,14 +9737,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const byOrder: Array<any> = [];
       const byLineItem = new Map<string, Array<any>>();
       for (const a of attachmentRows) {
+        // Convert legacy relative URLs to authenticated /objects/ proxy
+        let fileUrl = a.fileUrl;
+        let thumbnailUrl = a.thumbnailUrl ?? null;
+
+        // If thumbnailUrl is null but thumbKey exists, construct URL from thumbKey (only when ready)
+        if (!thumbnailUrl && a.thumbKey && a.thumbStatus === "thumb_ready") {
+          thumbnailUrl = `/objects/${a.thumbKey}`;
+        }
+
+        // If fileUrl doesn't start with http/https or /objects/, prepend /objects/
+        if (fileUrl && !fileUrl.startsWith("http") && !fileUrl.startsWith("/objects/")) {
+          fileUrl = `/objects/${fileUrl}`;
+        }
+
+        // If fileUrl contains /objects/ path, normalize to proxy URL
+        if (fileUrl && fileUrl.includes("/objects/")) {
+          const match = fileUrl.match(/\/objects\/(.+?)(?:\?|$)/);
+          if (match) {
+            fileUrl = `/objects/${match[1]}`;
+          }
+        }
+
+        // If thumbnailUrl contains /objects/ path, normalize to proxy URL
+        if (thumbnailUrl && thumbnailUrl.includes("/objects/")) {
+          const match = thumbnailUrl.match(/\/objects\/(.+?)(?:\?|$)/);
+          if (match) {
+            thumbnailUrl = `/objects/${match[1]}`;
+          }
+        }
+
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
           fileName: a.fileName,
-          fileUrl: a.fileUrl,
+          fileUrl,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
-          thumbnailUrl: a.thumbnailUrl ?? null,
+          thumbnailUrl,
           side: a.side ?? "na",
           isPrimary: !!a.isPrimary,
           thumbStatus: a.thumbStatus ?? null,
@@ -9669,13 +9789,189 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      const artwork = job.lineItemId ? byLineItem.get(job.lineItemId) ?? byOrder : byOrder;
+      // ALSO fetch artwork from new assets + assetLinks system (newer uploads may use this)
+      // Fail-soft: if this optional query fails, do not 500 job detail.
+      try {
+        const assetLinkRows = await db
+          .select({
+            id: assets.id,
+            parentType: assetLinks.parentType,
+            parentId: assetLinks.parentId,
+            fileName: assets.fileName,
+            fileKey: assets.fileKey,
+            thumbKey: assets.thumbKey,
+            previewKey: assets.previewKey,
+            previewStatus: assets.previewStatus,
+            createdAt: assetLinks.createdAt,
+          })
+          .from(assetLinks)
+          .innerJoin(assets, eq(assetLinks.assetId, assets.id))
+          .where(
+            and(
+              eq(assetLinks.organizationId, organizationId),
+              or(
+                and(eq(assetLinks.parentType, "order"), eq(assetLinks.parentId, orderId)),
+                and(eq(assetLinks.parentType, "order_line_item"), eq(assetLinks.parentId, lineItemId)),
+              ),
+            ),
+          )
+          .orderBy(desc(assetLinks.createdAt));
+
+        for (const link of assetLinkRows) {
+          const mapped = {
+            id: link.id,
+            orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
+            fileName: link.fileName,
+            fileUrl: link.fileKey ? `/objects/${String(link.fileKey).replace(/^\/+/, "")}` : `/api/assets/${link.id}/download`,
+            thumbKey: link.thumbKey ?? null,
+            previewKey: link.previewKey ?? null,
+            thumbnailUrl:
+              link.thumbKey && link.previewStatus === "ready"
+                ? `/objects/${String(link.thumbKey).replace(/^\/+/, "")}`
+                : null,
+            side: "na",
+            isPrimary: false,
+            thumbStatus: link.previewStatus ?? null,
+          };
+
+          if (byOrder.length < 12 && link.parentType === "order") {
+            byOrder.push(mapped);
+          }
+
+          if (link.parentType === "order_line_item" && link.parentId) {
+            const list = byLineItem.get(link.parentId) ?? [];
+            if (list.length < 12) {
+              list.push(mapped);
+              byLineItem.set(link.parentId, list);
+            }
+          }
+        }
+      } catch (e: any) {
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[DEV][GET /api/production/jobs/:jobId] asset artwork query failed (ignored)", {
+            jobId,
+            organizationId,
+            message: String(e?.message || e),
+          });
+        }
+      }
+
+      const artwork = byLineItem.get(lineItemId) ?? byOrder;
       const sidesSet = new Set<string>();
       for (const a of artwork) {
         const s = (a.side || "").toLowerCase();
         if (s === "front" || s === "back") sidesSet.add(s);
       }
-      const sides = sidesSet.size > 0 ? sidesSet.size : null;
+      const artworkBasedSides = sidesSet.size > 0 ? sidesSet.size : null;
+
+      // DERIVE LIVE DISPLAY FIELDS (match overview endpoint logic)
+      // 1) Media
+      let media = String(primaryLineItem?.materialName || "").trim();
+      if (!media) {
+        media = String(primaryLineItem?.description || "").trim();
+      }
+      if (!media) media = "—";
+
+      // 2) Size
+      const width = primaryLineItem?.width;
+      const height = primaryLineItem?.height;
+      const size = width && height ? `${width} × ${height}` : "—";
+
+      // 3) Sides
+      let sides: string = "—";
+      if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
+        const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
+          const optName = String(opt.optionName || "").toLowerCase();
+          return optName.includes("side") || optName.includes("print");
+        });
+        if (sidesOption) {
+          const val = String((sidesOption as any).value || "").toLowerCase();
+          if (val.includes("single") || val === "1") {
+            sides = "Single";
+          } else if (val.includes("double") || val === "2") {
+            sides = "Double";
+          }
+        }
+      }
+      if (sides === "—" && artworkBasedSides) {
+        sides = artworkBasedSides === 1 ? "Single" : "Double";
+      }
+
+      const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
+      const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${job.id.slice(-8)}`;
+
+      // Sibling jobs list for operator workflow
+      const otherJobsRows = await db
+        .select({
+          id: productionJobs.id,
+          lineItemId: productionJobs.lineItemId,
+          stationKey: productionJobs.stationKey,
+          stepKey: productionJobs.stepKey,
+          status: productionJobs.status,
+          createdAt: productionJobs.createdAt,
+        })
+        .from(productionJobs)
+        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId)))
+        .orderBy(asc(productionJobs.createdAt));
+
+      const lineItemById = new Map(lineItems.map((li) => [li.id, li] as const));
+      const otherJobsInOrder = otherJobsRows.map((r) => {
+        const li = r.lineItemId ? lineItemById.get(r.lineItemId) ?? null : null;
+        const artworkForRow = r.lineItemId ? byLineItem.get(r.lineItemId) ?? byOrder : byOrder;
+
+        const rowSidesSet = new Set<string>();
+        for (const a of artworkForRow ?? []) {
+          const s = String((a as any).side || "").toLowerCase();
+          if (s === "front" || s === "back") rowSidesSet.add(s);
+        }
+        const rowArtworkSides = rowSidesSet.size > 0 ? rowSidesSet.size : null;
+
+        let rowMedia = String(li?.materialName || "").trim();
+        if (!rowMedia) rowMedia = String(li?.description || "").trim();
+        if (!rowMedia) rowMedia = "—";
+
+        const rowWidth = li?.width;
+        const rowHeight = li?.height;
+        const rowSize = rowWidth && rowHeight ? `${rowWidth} × ${rowHeight}` : "—";
+
+        let rowSides: string = "—";
+        if (li?.selectedOptions && Array.isArray(li.selectedOptions)) {
+          const sidesOption = li.selectedOptions.find((opt: any) => {
+            const optName = String(opt.optionName || "").toLowerCase();
+            return optName.includes("side") || optName.includes("print");
+          });
+          if (sidesOption) {
+            const val = String((sidesOption as any).value || "").toLowerCase();
+            if (val.includes("single") || val === "1") {
+              rowSides = "Single";
+            } else if (val.includes("double") || val === "2") {
+              rowSides = "Double";
+            }
+          }
+        }
+        if (rowSides === "—" && rowArtworkSides) {
+          rowSides = rowArtworkSides === 1 ? "Single" : "Double";
+        }
+
+        const rowQty = Number(li?.quantity ?? 0) || 0;
+        const rowDesc = String(li?.description || "").trim() || `Job #${String(r.id).slice(-8)}`;
+
+        return {
+          id: r.id,
+          jobId: r.id,
+          lineItemId: r.lineItemId,
+          stationKey: r.stationKey,
+          stepKey: r.stepKey,
+          status: r.status,
+          qty: rowQty,
+          size: rowSize,
+          sides: rowSides,
+          media: rowMedia,
+          jobDescription: rowDesc,
+          dueDate: order.dueDate ?? null,
+          createdAt: r.createdAt,
+        };
+      });
 
       const reprintCountRows = await db
         .select({ count: sql<number>`count(*)::int` })
@@ -9695,6 +9991,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           stationKey: job.stationKey,
           stepKey: job.stepKey,
           lineItemId: job.lineItemId,
+          orderId,
           status: job.status,
           startedAt: job.startedAt,
           completedAt: job.completedAt,
@@ -9705,14 +10002,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
             currentSeconds,
           },
           reprintCount: Number(reprintCountRows[0]?.count) || 0,
+          // LIVE LINE ITEM FIELDS (top-level for operator UI)
+          qty,
+          jobDescription,
+          size,
+          sides,
+          media,
+          mediaLabel: media,
+          // Convenience top-level order context
+          orderNumber: order.orderNumber,
+          customerName: String(order.customerName || "—"),
+          dueDate: order.dueDate ?? null,
+          priority: order.priority ?? null,
+          // Convenience top-level artwork (same list used in order.artwork)
+          artwork,
           order: {
-            id: job.orderId,
-            orderNumber: job.orderNumber,
-            customerName: job.customerName,
-            dueDate: job.dueDate,
-            priority: job.priority,
-            fulfillmentStatus: job.fulfillmentStatus,
-            routingTarget: job.routingTarget,
+            id: orderId,
+            orderNumber: order.orderNumber,
+            customerName: String(order.customerName || "—"),
+            dueDate: order.dueDate,
+            priority: order.priority,
+            fulfillmentStatus: order.fulfillmentStatus,
+            routingTarget: order.routingTarget,
             lineItems: {
               count: lineItems.length,
               totalQuantity: lineItems.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0),
@@ -9720,15 +10031,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
               items: lineItems.slice(0, 20),
             },
             artwork,
-            sides,
+            sides: artworkBasedSides,
           },
+          otherJobsInOrder,
           events,
           createdAt: job.createdAt,
           updatedAt: job.updatedAt,
         },
       });
-    } catch (error) {
-      console.error("Error fetching production job:", error);
+
+      // DEV-only: Log once to verify payload counts (no secrets)
+      if (process.env.NODE_ENV === "development") {
+        const g: any = global as any;
+        if (!g.__dev_logged_production_job_detail_payload) {
+          g.__dev_logged_production_job_detail_payload = true;
+          console.log("[DEV][GET /api/production/jobs/:jobId] OK", {
+            jobId,
+            organizationId,
+            artworkCount: Array.isArray(artwork) ? artwork.length : 0,
+            otherJobsInOrderCount: Array.isArray(otherJobsInOrder) ? otherJobsInOrder.length : 0,
+          });
+        }
+      }
+    } catch (error: any) {
+      if (process.env.NODE_ENV === "development") {
+        console.error("[DEV] Error in GET /api/production/jobs/:jobId", {
+          jobId: String(req?.params?.jobId || ""),
+          organizationId: getRequestOrganizationId(req),
+          message: String(error?.message || error),
+          stack: String(error?.stack || ""),
+        });
+      } else {
+        console.error("Error fetching production job:", String(error?.message || error));
+      }
       res.status(500).json({ error: "Failed to fetch production job" });
     }
   });

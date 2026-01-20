@@ -467,7 +467,12 @@ export function useUpdateOrderLineItem(
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       
       // CRITICAL: Invalidate production jobs to sync live fields (qty/sides/media/description)
-      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      queryClient.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "/api/production/jobs";
+        },
+      });
       
       if (shouldToast) {
         toast({
@@ -726,7 +731,12 @@ export function useTransitionOrderStatus(orderId: string) {
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       
       // BUGFIX: Invalidate production queries so scheduled jobs appear immediately
-      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      queryClient.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "/api/production/jobs";
+        },
+      });
       
       // Show success message with any warnings
       const warnings = response.warnings?.length ? `\n\nWarnings: ${response.warnings.join(', ')}` : '';

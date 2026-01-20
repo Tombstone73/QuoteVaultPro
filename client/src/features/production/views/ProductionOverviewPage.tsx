@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -134,6 +134,24 @@ export default function ProductionOverviewPage() {
   };
 
   const jobs = useMemo(() => allJobs ?? [], [allJobs]);
+
+  // DEV-only: log sample preview URLs once
+  const devLoggedSample = useRef(false);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    if (devLoggedSample.current) return;
+    if (!jobs || jobs.length === 0) return;
+    const j = jobs[0];
+    devLoggedSample.current = true;
+    // eslint-disable-next-line no-console
+    console.log("[ProductionOverview] sample job previews", {
+      id: j.id,
+      frontPreviewUrl: j.frontPreviewUrl,
+      backPreviewUrl: j.backPreviewUrl,
+      frontFileUrl: j.frontFileUrl,
+      backFileUrl: j.backFileUrl,
+    });
+  }, [jobs]);
 
   // Sort jobs for list view
   const sortedJobs = useMemo(() => {
@@ -481,7 +499,6 @@ function ResizableTableHead({
 // Job card component for Kanban board
 function JobCard({ job }: { job: ProductionJobListItem }) {
   const navigate = useNavigate();
-  const artwork = job.order.artwork ?? [];
   const sides = job.sides || "single";
   const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
 
@@ -512,7 +529,7 @@ function JobCard({ job }: { job: ProductionJobListItem }) {
 
         {/* Middle: thumbnails + job number */}
         <div className="flex items-center gap-2">
-          <ThumbnailGroup artwork={artwork} sides={sides} />
+          <ThumbnailGroup job={job} sides={sides} />
           <div className="flex-1 min-w-0">
             <div className="text-xs text-muted-foreground truncate">
               {job.order.orderNumber}
@@ -545,7 +562,6 @@ function JobCard({ job }: { job: ProductionJobListItem }) {
 // Job row component for list view
 function JobRow({ job, visibleColumns }: { job: ProductionJobListItem; visibleColumns: ColumnConfig[] }) {
   const navigate = useNavigate();
-  const artwork = job.order.artwork ?? [];
   const sides = job.sides || "single";
   const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
 
@@ -556,7 +572,7 @@ function JobRow({ job, visibleColumns }: { job: ProductionJobListItem; visibleCo
   const getCellContent = (colId: ColumnId) => {
     switch (colId) {
       case "artwork":
-        return <ThumbnailGroup artwork={artwork} sides={sides} />;
+        return <ThumbnailGroup job={job} sides={sides} />;
       
       case "dueDate":
         return job.order.dueDate ? (
@@ -624,49 +640,39 @@ function JobRow({ job, visibleColumns }: { job: ProductionJobListItem; visibleCo
   );
 }
 
-// Thumbnail group component (shared between card and row)
-function ThumbnailGroup({ artwork, sides }: { artwork: any[]; sides: string }) {
-  const frontArt = artwork.find(a => a.side === "front" || a.isPrimary);
-  const backArt = artwork.find(a => a.side === "back");
+function PreviewThumb({ src, alt }: { src?: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
 
+  if (!src || failed) {
+    return (
+      <div className="w-8 h-8 rounded border border-dashed border-muted-foreground/30 bg-muted/20 flex items-center justify-center">
+        <FileText className="w-3 h-3 text-muted-foreground/50" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-8 h-8 rounded border border-border overflow-hidden bg-muted">
+      <img
+        src={src}
+        alt={alt}
+        className="w-full h-full object-cover"
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+}
+
+// Thumbnail group component (shared between card and row)
+function ThumbnailGroup({ job, sides }: { job: ProductionJobListItem; sides: string }) {
   const isDoubleSided = sides.toLowerCase().includes("double");
-  const showThumbs = isDoubleSided ? [frontArt, backArt] : [frontArt];
+  const front = job.frontPreviewUrl;
+  const back = job.backPreviewUrl;
 
   return (
     <div className="flex items-center gap-1">
-      {showThumbs.map((art, idx) => {
-        if (!art) {
-          return (
-            <div 
-              key={`empty-${idx}`}
-              className="w-8 h-8 rounded border border-dashed border-muted-foreground/30 bg-muted/20 flex items-center justify-center"
-            >
-              <FileText className="w-3 h-3 text-muted-foreground/50" />
-            </div>
-          );
-        }
-
-        const thumbUrl = art.thumbnailUrl || art.thumbKey || art.fileUrl;
-
-        return (
-          <div 
-            key={art.id}
-            className="w-8 h-8 rounded border border-border overflow-hidden bg-muted"
-          >
-            {thumbUrl ? (
-              <img 
-                src={thumbUrl} 
-                alt={art.fileName} 
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <FileText className="w-3 h-3 text-muted-foreground" />
-              </div>
-            )}
-          </div>
-        );
-      })}
+      <PreviewThumb src={front} alt={`Job ${job.id} front preview`} />
+      {isDoubleSided && <PreviewThumb src={back} alt={`Job ${job.id} back preview`} />}
     </div>
   );
 }
