@@ -162,6 +162,13 @@
       "when": 0,
       "tag": "0030_prepress_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 0,
+      "tag": "0031_prepress_findings_and_fixes",
+      "breakpoints": true
     }
   ]
 }

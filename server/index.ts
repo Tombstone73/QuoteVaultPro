@@ -148,12 +148,14 @@ process.on('uncaughtException', (error) => {
 
       // Start in-process prepress worker (optional dev convenience)
       if (process.env.PREPRESS_WORKER_IN_PROCESS === 'true') {
-        try {
-          const { startInProcessWorker } = await import('./prepress/worker/in-process');
-          startInProcessWorker();
-        } catch (error) {
-          console.error('[Server] Prepress in-process worker failed to start:', error);
-        }
+        // Fire-and-forget: prepress worker start is fail-soft and should not block server readiness
+        void import('./prepress/worker/in-process')
+          .then(({ startInProcessWorker }) => {
+            startInProcessWorker();
+          })
+          .catch((error) => {
+            console.error('[Server] Prepress in-process worker failed to start:', error);
+          });
       }
       
       // Start QuickBooks sync worker
