@@ -47,6 +47,7 @@ import PurchaseOrdersPage from "@/pages/purchase-orders";
 import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
+import Prepress from "@/pages/prepress";
 
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -127,6 +128,9 @@ function Router() {
         <Route path="/production/apparel" element={<ProductionBoard />} />
         <Route path="/production/jobs/:jobId" element={<ProductionJobDetailPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
+
+        {/* Prepress routes */}
+        <Route path="/prepress" element={<Prepress />} />
 
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />

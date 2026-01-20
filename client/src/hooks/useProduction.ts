@@ -43,6 +43,8 @@ export type ProductionOrderArtworkSummary = {
   side: string;
   isPrimary: boolean;
   thumbStatus: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
 };
 
 export type ProductionJobListItem = {
@@ -411,6 +413,31 @@ export function useAddProductionNote(jobId: string) {
     },
     onError: (e: Error) => {
       toast({ title: "Note failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useUpdateProductionJobStatus(jobId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (status: "queued" | "in_progress" | "done") => {
+      const res = await fetch(`/api/production/jobs/${jobId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to update status");
+      return json.data;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, jobId);
+      toast({ title: "Status updated" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Status update failed", description: e.message, variant: "destructive" });
     },
   });
 }

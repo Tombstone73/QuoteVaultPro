@@ -5,6 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ROUTES } from "@/config/routes";
@@ -16,6 +23,7 @@ import {
   useReprintProductionJob,
   useStartProductionTimer,
   useStopProductionTimer,
+  useUpdateProductionJobStatus,
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
 import {
@@ -189,6 +197,7 @@ export default function ProductionJobDetailPage() {
   const reopen = useReopenProductionJob(jobId || "");
   const reprint = useReprintProductionJob(jobId || "");
   const addNote = useAddProductionNote(jobId || "");
+  const updateStatus = useUpdateProductionJobStatus(jobId || "");
 
   const [tickSeconds, setTickSeconds] = useState(0);
   const [noteText, setNoteText] = useState("");
@@ -293,9 +302,24 @@ export default function ProductionJobDetailPage() {
                 OVERDUE
               </Badge>
             )}
-            <Badge variant="outline" className="capitalize">
-              {data.status.replace("_", " ")}
-            </Badge>
+            <Select
+              value={data.status}
+              onValueChange={(value) => {
+                if (value !== data.status) {
+                  updateStatus.mutate(value as "queued" | "in_progress" | "done");
+                }
+              }}
+              disabled={updateStatus.isPending}
+            >
+              <SelectTrigger className="w-[140px] h-8 text-xs font-medium capitalize">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="queued">Queued</SelectItem>
+                <SelectItem value="in_progress">In Progress</SelectItem>
+                <SelectItem value="done">Done</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         }
       />
@@ -512,10 +536,32 @@ export default function ProductionJobDetailPage() {
               <CardContent className="p-4 pt-0 space-y-2 text-sm">
                 <div className="grid grid-cols-[100px_1fr] gap-2">
                   <div className="text-muted-foreground">Customer:</div>
-                  <div className="font-medium">{data.order.customerName}</div>
+                  <div>
+                    {(data.order as any).customerId ? (
+                      <Link
+                        to={ROUTES.customers.detail((data.order as any).customerId)}
+                        className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                      >
+                        {data.order.customerName}
+                      </Link>
+                    ) : (
+                      <span className="font-medium">{data.order.customerName}</span>
+                    )}
+                  </div>
 
                   <div className="text-muted-foreground">Order #:</div>
-                  <div className="font-medium">{data.order.orderNumber}</div>
+                  <div>
+                    {data.order.id ? (
+                      <Link
+                        to={ROUTES.orders.detail(data.order.id)}
+                        className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                      >
+                        {data.order.orderNumber}
+                      </Link>
+                    ) : (
+                      <span className="font-medium">{data.order.orderNumber}</span>
+                    )}
+                  </div>
 
                   <div className="text-muted-foreground">Job ID:</div>
                   <div className="font-mono text-xs">{data.id.slice(-12)}</div>
