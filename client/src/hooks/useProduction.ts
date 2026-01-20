@@ -71,9 +71,11 @@ export type ProductionJobListItem = {
   backPreviewUrl?: string;
   frontFileUrl?: string;
   backFileUrl?: string;
+  // Artwork at job level (for Production Overview)
+  artwork?: ProductionOrderArtworkSummary[];
+  notes?: Array<{ id: string; text: string; createdAt: string }>;
   order: {
-    id: string;
-    orderNumber: string;
+    id: string;    customerId: string;    orderNumber: string;
     customerName: string;
     dueDate: string | null;
     priority: string;
