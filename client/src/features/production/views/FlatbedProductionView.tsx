@@ -18,6 +18,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
 import {
   ProductionJobListItem,
@@ -32,6 +39,7 @@ import {
   useSetProductionMediaUsed,
   useStartProductionTimer,
   useStopProductionTimer,
+  useUpdateProductionJobStatus,
 } from "@/hooks/useProduction";
 import {
   CheckCircle2,
@@ -45,7 +53,11 @@ import {
   RotateCcw,
   Square,
   Undo2,
+  Download,
+  Upload,
 } from "lucide-react";
+import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
+import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 
 type ProductionStatus = "queued" | "in_progress" | "done";
 
@@ -395,9 +407,11 @@ function pickArtworkForPreview(artwork: ProductionOrderArtworkSummary[]) {
 
 /**
  * Normalize artwork based on sides logic for Production MVP
- * Rules:
- * - Single: Only front, no back slot
- * - Double: Front + back (if back missing, defaults to front)
+ * Deterministic rule (NO "same as front" logic):
+ * - If 2+ artwork assets: front = first, back = second
+ * - If 1 artwork asset: front = first, back = null (show "Back file not uploaded" placeholder)
+ * - If 0 artwork assets: both null
+ * - Single-sided: only front, no back slot
  */
 function normalizeArtworkForSides(
   sides: string,
@@ -406,34 +420,57 @@ function normalizeArtworkForSides(
   front: ProductionOrderArtworkSummary | null;
   back: ProductionOrderArtworkSummary | null;
   showBackSlot: boolean;
-  isSameArtwork: boolean;
+  backMissingReason: "not_uploaded" | null;
 } {
   const list = [...(artwork || [])];
-  const byFront = list.filter((a) => normalizeSide(a.side) === "front");
-  const byBack = list.filter((a) => normalizeSide(a.side) === "back");
-
-  const pickBest = (items: ProductionOrderArtworkSummary[]) => {
-    if (items.length === 0) return null;
-    const primary = items.find((a) => a.isPrimary);
-    return primary || items[0];
-  };
-
-  const frontArt = pickBest(byFront) ?? pickBest(list);
-  let backArt = pickBest(byBack);
-
   const isDouble = sides === "Double" || sides === "2" || sides === "double";
 
-  if (isDouble) {
-    // Double-sided: show back slot
-    if (!backArt && frontArt) {
-      // Default back to front if missing
-      backArt = frontArt;
-      return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: true };
-    }
-    return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: backArt === frontArt };
+  // DEV logging for debugging artwork mapping
+  if (process.env.NODE_ENV === "development" && list.length > 0) {
+    console.log("[normalizeArtworkForSides]", {
+      sides,
+      isDouble,
+      artworkCount: list.length,
+      frontFile: list[0]?.fileName ?? null,
+      backFile: list[1]?.fileName ?? null,
+    });
+  }
+
+  if (!isDouble) {
+    // Single-sided: only front, no back slot
+    return { 
+      front: list[0] ?? null, 
+      back: null, 
+      showBackSlot: false, 
+      backMissingReason: null 
+    };
+  }
+
+  // Double-sided: deterministic mapping
+  if (list.length === 0) {
+    // No artwork at all
+    return { 
+      front: null, 
+      back: null, 
+      showBackSlot: true, 
+      backMissingReason: "not_uploaded" 
+    };
+  } else if (list.length === 1) {
+    // Only 1 asset: front gets it, back is missing
+    return { 
+      front: list[0], 
+      back: null, 
+      showBackSlot: true, 
+      backMissingReason: "not_uploaded" 
+    };
   } else {
-    // Single-sided: no back slot
-    return { front: frontArt, back: null, showBackSlot: false, isSameArtwork: false };
+    // 2+ assets: front = first, back = second
+    return { 
+      front: list[0], 
+      back: list[1], 
+      showBackSlot: true, 
+      backMissingReason: null 
+    };
   }
 }
 
@@ -739,6 +776,43 @@ function Fact({ label, value, valueClassName }: { label: string; value: React.Re
   );
 }
 
+function StatusDropdown({ jobId, currentStatus }: { jobId: string; currentStatus: string }) {
+  const updateStatus = useUpdateProductionJobStatus(jobId);
+  
+  const statusDisplay: Record<string, string> = {
+    queued: "Queued",
+    in_progress: "In Progress",
+    done: "Done",
+  };
+  
+  const statusColors: Record<string, string> = {
+    queued: "bg-gray-100 text-gray-800 border-gray-300",
+    in_progress: "bg-blue-100 text-blue-800 border-blue-300",
+    done: "bg-green-100 text-green-800 border-green-300",
+  };
+  
+  return (
+    <Select
+      value={currentStatus}
+      onValueChange={(value) => {
+        if (value !== currentStatus) {
+          updateStatus.mutate(value as "queued" | "in_progress" | "done");
+        }
+      }}
+      disabled={updateStatus.isPending}
+    >
+      <SelectTrigger className={`w-[130px] h-8 text-xs font-medium border ${statusColors[currentStatus] || ""}`}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="queued">Queued</SelectItem>
+        <SelectItem value="in_progress">In Progress</SelectItem>
+        <SelectItem value="done">Done</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
 function PreviewPanel({
   job,
   timerSeconds,
@@ -757,7 +831,7 @@ function PreviewPanel({
   
   // Use backend-derived sides and normalize artwork accordingly
   const sidesValue = (job as any).sides ?? "—";
-  const { front, back, showBackSlot, isSameArtwork } = useMemo(
+  const { front, back, showBackSlot, backMissingReason } = useMemo(
     () => normalizeArtworkForSides(sidesValue, thumbs),
     [sidesValue, thumbs]
   );
@@ -770,6 +844,10 @@ function PreviewPanel({
   const size = (job as any).size ?? "—";
   const orderNumber = (job as any).orderNumber ?? job.order.orderNumber ?? "—";
   const productionJobId = (job as any).productionJobId ?? job.id;
+  
+  // Extract IDs for linking
+  const orderId = (job as any).orderId || job.order?.id;
+  const customerId = (job as any).customerId || (job.order as any)?.customerId;
   
   const qty = li ? li.quantity : job.order.lineItems?.totalQuantity ?? null;
   const packaging =
@@ -788,18 +866,18 @@ function PreviewPanel({
 
   return (
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
-      <div className="grid grid-cols-1 xl:grid-cols-[340px_1fr_360px] gap-4">
-        <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 xl:grid-cols-[700px_1fr_360px] gap-4">
+        <div className="flex gap-4">
           {/* FRONT preview - always shown */}
           <div className="space-y-1">
             <div
-              className="relative aspect-square w-full max-w-[180px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
+              className="relative aspect-square w-[280px] md:w-[320px] lg:w-[340px] h-[280px] md:h-[320px] lg:h-[340px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
               onClick={() => onPreviewArtwork("front")}
             >
               <ProductionThumbnail
                 artwork={front}
                 alt="Front artwork"
-                className="h-full w-full object-contain"
+                className="w-full h-full object-contain"
               />
             </div>
             <div className="text-xs text-titan-text-muted text-center">FRONT (click to enlarge)</div>
@@ -809,18 +887,25 @@ function PreviewPanel({
           {showBackSlot && (
             <div className="space-y-1">
               <div
-                className="relative aspect-square w-full max-w-[180px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
+                className={`relative aspect-square w-[280px] md:w-[320px] lg:w-[340px] h-[280px] md:h-[320px] lg:h-[340px] overflow-hidden rounded-lg ${backMissingReason === "not_uploaded" ? "border-2 border-dashed border-muted-foreground/30" : "border-2 border-titan-border-subtle"} bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer`}
                 onClick={() => onPreviewArtwork("back")}
               >
-                <ProductionThumbnail
-                  artwork={back}
-                  alt="Back artwork"
-                  className="h-full w-full object-contain"
-                />
+                {backMissingReason === "not_uploaded" ? (
+                  <div className="flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
+                    <FileText className="h-16 w-16 mb-4" />
+                    <p className="text-sm font-medium">Back file not uploaded</p>
+                  </div>
+                ) : (
+                  <ProductionThumbnail
+                    artwork={back}
+                    alt="Back artwork"
+                    className="h-full w-full object-contain"
+                  />
+                )}
               </div>
               <div className="text-xs text-titan-text-muted text-center">
                 BACK (click to enlarge)
-                {isSameArtwork && <span className="ml-1 text-[10px] text-amber-500">(Same as Front)</span>}
+                {backMissingReason === "not_uploaded" && <span className="ml-1 text-[10px] text-amber-500">(Not uploaded)</span>}
               </div>
             </div>
           )}
@@ -829,8 +914,33 @@ function PreviewPanel({
         <div className="space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-xl font-semibold text-titan-text-primary truncate">{job.order.customerName || "—"}</div>
-              <div className="text-xs text-titan-text-muted truncate">{jobRef}</div>
+              {customerId ? (
+                <Link
+                  to={ROUTES.customers.detail(customerId)}
+                  className="text-xl font-semibold text-blue-600 hover:text-blue-700 hover:underline truncate block"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {job.order.customerName || "—"}
+                </Link>
+              ) : (
+                <div className="text-xl font-semibold text-titan-text-primary truncate">{job.order.customerName || "—"}</div>
+              )}
+              <div className="text-xs text-titan-text-muted truncate">
+                {orderId && orderNumber !== "—" ? (
+                  <>
+                    <Link
+                      to={ROUTES.orders.detail(orderId)}
+                      className="text-blue-600 hover:text-blue-700 hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Order #{orderNumber}
+                    </Link>
+                    {productionJobId && <span> • Job {String(productionJobId).slice(-6)}</span>}
+                  </>
+                ) : (
+                  jobRef
+                )}
+              </div>
             </div>
             {job.order.priority === "rush" ? <Badge variant="destructive">RUSH</Badge> : null}
           </div>
@@ -1065,6 +1175,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                   <TableHead className="w-[200px]">DUE DATE</TableHead>
                   <TableHead className="text-right w-[80px]">QTY</TableHead>
                   <TableHead className="text-right w-[80px]">SIDES</TableHead>
+                  <TableHead className="w-[140px]">STATUS</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1080,13 +1191,14 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
 
                   // Normalize artwork based on sides for UI display
                   const thumbs = artworkThumbs(job);
-                  const { front, back, showBackSlot, isSameArtwork } = normalizeArtworkForSides(sidesDisplay, thumbs);
+                  const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesDisplay, thumbs);
                   const hasFront = !!front;
                   const hasBack = !!back;
 
                   // Extract order number and ID for linking
                   const orderNumber = (job as any).orderNumber || job.order?.orderNumber || "—";
                   const orderId = (job as any).orderId || job.order?.id;
+                  const customerId = (job as any).customerId || (job.order as any)?.customerId;
 
                   return (
                     <TableRow
@@ -1095,7 +1207,18 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       onClick={() => setSelectedJobId(job.id)}
                       style={{ cursor: "pointer" }}
                     >
-                      <TableCell className="py-5 text-sm font-semibold">{job.order.customerName || "—"}</TableCell>
+                      <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
+                        {customerId ? (
+                          <Link
+                            to={ROUTES.customers.detail(customerId)}
+                            className="text-sm font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                          >
+                            {job.order.customerName || "—"}
+                          </Link>
+                        ) : (
+                          <span className="text-sm font-semibold">{job.order.customerName || "—"}</span>
+                        )}
+                      </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
                         {orderId && orderNumber !== "—" ? (
                           <Link
@@ -1175,27 +1298,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setSelectedJobId(job.id);
-                                  setPreviewSide(isSameArtwork ? "front" : "back");
+                                  setPreviewSide("back");
                                   setPreviewModalOpen(true);
                                 }}
                               >
-                                {isSameArtwork ? (
-                                  // Back is same as front: show "Same" badge
-                                  <div className="relative">
-                                    <ProductionThumbnail
-                                      artwork={front}
-                                      alt="Back (same as front)"
-                                      className="w-11 h-11 rounded object-cover border-2 border-teal-500 hover:border-teal-600 transition-colors opacity-80"
-                                    />
-                                    <div className="absolute top-0.5 left-0.5 bg-teal-600 text-white text-[9px] font-bold px-1 py-0.5 rounded">
-                                      B
-                                    </div>
-                                    <div className="absolute inset-0 flex items-center justify-center bg-black/60 rounded">
-                                      <span className="text-white text-[10px] font-bold">Same</span>
-                                    </div>
-                                  </div>
-                                ) : hasBack ? (
-                                  // Back has different artwork
+                                {hasBack ? (
+                                  // Back has artwork
                                   <div className="relative">
                                     <ProductionThumbnail
                                       artwork={back}
@@ -1207,10 +1315,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                                     </div>
                                   </div>
                                 ) : (
-                                  // No back artwork available
-                                  <span className="inline-flex items-center justify-center w-11 h-11 rounded bg-teal-500 text-white text-sm font-semibold hover:bg-teal-600 transition-colors">
-                                    B
-                                  </span>
+                                  // Back file not uploaded
+                                  <div className="relative inline-flex items-center justify-center w-11 h-11 rounded bg-muted border-2 border-dashed border-muted-foreground/30 hover:border-muted-foreground/50 transition-colors" title="Back file not uploaded">
+                                    <div className="text-[9px] font-bold text-muted-foreground">B</div>
+                                  </div>
                                 )}
                               </div>
                             </>
@@ -1224,6 +1332,9 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       <TableCell className="py-5 text-sm text-right font-semibold">{Number.isFinite(Number(qty)) ? Number(qty) : "—"}</TableCell>
                       <TableCell className="py-5 text-sm text-right font-semibold">
                         {sidesDisplay}
+                      </TableCell>
+                      <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
+                        <StatusDropdown jobId={job.id} currentStatus={job.status} />
                       </TableCell>
                     </TableRow>
                   );
@@ -1240,8 +1351,8 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
 
       {/* Artwork Preview Modal */}
       <Dialog open={previewModalOpen} onOpenChange={setPreviewModalOpen}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
+        <DialogContent className="max-w-[90vw] w-[90vw] max-h-[90vh] h-[90vh] flex flex-col">
+          <DialogHeader className="shrink-0">
             <DialogTitle>
               {selectedJob
                 ? `${selectedJob.order.customerName} • Order #${(selectedJob as any).orderNumber ?? selectedJob.order.orderNumber} • Job ${String((selectedJob as any).productionJobId ?? selectedJob.id).slice(-6)}`
@@ -1251,15 +1362,15 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
           {selectedJob && (() => {
             const sidesValue = (selectedJob as any).sides ?? "—";
             const thumbs = artworkThumbs(selectedJob);
-            const { front, back, showBackSlot, isSameArtwork } = normalizeArtworkForSides(sidesValue, thumbs);
+            const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesValue, thumbs);
             const currentArtwork = previewSide === "front" ? front : back;
             const imageSrc = getBestArtworkImage(currentArtwork);
 
             return (
-              <div className="space-y-4">
+              <div className="flex-1 flex flex-col min-h-0 gap-4">
                 {/* Front/Back toggle - only show for double-sided jobs */}
                 {showBackSlot && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <Button
                       size="sm"
                       variant={previewSide === "front" ? "default" : "outline"}
@@ -1274,36 +1385,80 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                     >
                       Back
                     </Button>
-                    {isSameArtwork && previewSide === "back" && (
-                      <span className="text-xs text-amber-500 ml-2">(Same as Front)</span>
+                    {backMissingReason === "not_uploaded" && previewSide === "back" && (
+                      <span className="text-xs text-amber-500 ml-2">(Not uploaded)</span>
                     )}
                   </div>
                 )}
 
-                {/* Large artwork preview */}
-                <div className="relative w-full bg-titan-bg-muted rounded-lg border-2 border-titan-border-subtle overflow-hidden flex items-center justify-center" style={{ minHeight: "400px", maxHeight: "600px" }}>
-                  <ArtworkImage
-                    artwork={currentArtwork}
+                {/* Large artwork preview with zoom/pan controls */}
+                {previewSide === "back" && backMissingReason === "not_uploaded" ? (
+                  <div className="flex-1 min-h-0 rounded-lg border-2 border-dashed border-titan-border-subtle flex flex-col items-center justify-center bg-muted/30 p-8 text-center">
+                    <FileText className="h-16 w-16 text-muted-foreground mb-4" />
+                    <h3 className="text-lg font-semibold text-titan-text-primary mb-2">Back file not uploaded</h3>
+                    <p className="text-sm text-muted-foreground mb-4">This double-sided job only has front artwork. Upload a back file to complete the artwork set.</p>
+                    <Button
+                      size="sm"
+                      variant="default"
+                      onClick={() => {
+                        const orderId = (selectedJob as any).orderId || selectedJob.order?.id;
+                        if (orderId) window.location.href = `/orders/${orderId}`;
+                      }}
+                      className="gap-1.5"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      Upload back file
+                    </Button>
+                  </div>
+                ) : (
+                  <ZoomPanImageViewer
+                    src={imageSrc}
                     alt={`${previewSide === "front" ? "Front" : "Back"} artwork`}
-                    className="max-w-full max-h-[600px] object-contain"
+                    className="flex-1 min-h-0 rounded-lg border-2 border-titan-border-subtle"
                   />
-                </div>
+                )}
 
-                {/* File info and actions */}
+                {/* File info and actions - pinned at bottom */}
                 {currentArtwork && (
-                  <div className="flex items-center justify-between text-sm">
-                    <div className="text-titan-text-muted">
-                      {currentArtwork.fileName}
+                  <div className="flex items-center justify-between gap-4 text-sm shrink-0 p-3 bg-titan-bg-card rounded-lg border border-titan-border-subtle">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate">{currentArtwork.fileName}</div>
+                      <div className="flex items-center gap-3 text-xs text-titan-text-muted mt-1">
+                        <span>{getFileTypeLabel(currentArtwork.mimeType, currentArtwork.fileName)}</span>
+                        {currentArtwork.sizeBytes && (
+                          <>
+                            <span>•</span>
+                            <span>{formatFileSize(currentArtwork.sizeBytes)}</span>
+                          </>
+                        )}
+                      </div>
                     </div>
-                    {currentArtwork.fileUrl && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => window.open(currentArtwork.fileUrl, "_blank")}
-                      >
-                        Open file
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {currentArtwork.fileUrl && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => {
+                              const downloadUrl = buildDownloadUrl(currentArtwork.fileUrl, currentArtwork.fileName);
+                              window.location.href = downloadUrl;
+                            }}
+                            className="gap-1.5"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => window.open(currentArtwork.fileUrl, "_blank")}
+                            className="gap-1.5"
+                          >
+                            Open
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

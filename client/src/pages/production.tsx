@@ -120,7 +120,9 @@ export default function ProductionBoard() {
 
             {!isLoading && !error && hasImplementedEnabledView && (
               <div className="space-y-4">
+                {/* Header row with status tabs and view selector */}
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  {/* Status tabs - now in header */}
                   <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
                     <TabsList>
                       <TabsTrigger value="queued">Queued</TabsTrigger>
@@ -129,6 +131,7 @@ export default function ProductionBoard() {
                     </TabsList>
                   </Tabs>
 
+                  {/* View selector (if multiple views enabled) */}
                   {showViewSelector && (
                     <div className="w-full md:w-[240px]">
                       <Select value={viewKey} onValueChange={setViewKey}>
@@ -147,6 +150,7 @@ export default function ProductionBoard() {
                   )}
                 </div>
 
+                {/* Production view content */}
                 <ProductionViewRenderer viewKey={viewKey} status={status} />
               </div>
             )}
