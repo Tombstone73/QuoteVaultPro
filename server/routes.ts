@@ -9802,6 +9802,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             thumbKey: assets.thumbKey,
             previewKey: assets.previewKey,
             previewStatus: assets.previewStatus,
+            mimeType: assets.mimeType,
+            sizeBytes: assets.sizeBytes,
             createdAt: assetLinks.createdAt,
           })
           .from(assetLinks)
@@ -9832,6 +9834,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             side: "na",
             isPrimary: false,
             thumbStatus: link.previewStatus ?? null,
+            mimeType: link.mimeType ?? null,
+            sizeBytes: link.sizeBytes ?? null,
           };
 
           if (byOrder.length < 12 && link.parentType === "order") {
@@ -10573,6 +10577,112 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const status = error?.statusCode || 500;
       console.error("Error adding production note:", error);
       res.status(status).json({ error: error?.message || "Failed to add note" });
+    }
+  });
+
+  // 9) PATCH /api/production/jobs/:jobId/status - Inline status update (queued/in_progress/done)
+  app.patch("/api/production/jobs/:jobId/status", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+
+      const jobId = req.params.jobId;
+      const statusSchema = z.object({
+        status: z.enum(["queued", "in_progress", "done"]),
+      });
+      const parsed = statusSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+      const newStatus = parsed.data.status;
+      const now = new Date();
+
+      const result = await db.transaction(async (tx) => {
+        const jobRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        const job = jobRows[0];
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+
+        // If setting to done, stop timer if running
+        if (newStatus === "done") {
+          const lastTimer = await tx
+            .select({ createdAt: productionEvents.createdAt, type: productionEvents.type })
+            .from(productionEvents)
+            .where(
+              and(
+                eq(productionEvents.organizationId, organizationId),
+                eq(productionEvents.productionJobId, jobId),
+                inArray(productionEvents.type, ["timer_started", "timer_stopped"]),
+              ),
+            )
+            .orderBy(desc(productionEvents.createdAt))
+            .limit(1);
+          const last = lastTimer[0];
+          if (last?.type === "timer_started") {
+            const startedAtMs = new Date(last.createdAt as any).getTime();
+            const deltaSeconds = toSeconds(now.getTime() - startedAtMs);
+            await appendEvent({
+              tx,
+              organizationId,
+              productionJobId: jobId,
+              type: "timer_stopped",
+              payload: { seconds: deltaSeconds },
+            });
+            await tx
+              .update(productionJobs)
+              .set({ totalSeconds: (Number(job.totalSeconds) || 0) + deltaSeconds })
+              .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+          }
+        }
+
+        // Update status
+        const updateData: any = { status: newStatus, updatedAt: now };
+        if (newStatus === "done") {
+          updateData.completedAt = now;
+        } else if ((job.status as string) === "done" && (newStatus as string) !== "done") {
+          updateData.completedAt = null; // Reopening
+        }
+        if (newStatus === "in_progress" && !job.startedAt) {
+          updateData.startedAt = now;
+        }
+
+        await tx
+          .update(productionJobs)
+          .set(updateData)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId: userId ?? null,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "UPDATE",
+          entityType: "production_job",
+          entityId: jobId,
+          entityName: jobId,
+          description: `Production job status changed to ${newStatus}`,
+          oldValues: { status: job.status },
+          newValues: { status: newStatus },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+
+        const updatedRows = await tx
+          .select()
+          .from(productionJobs)
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
+          .limit(1);
+        return updatedRows[0];
+      });
+
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("Error updating production job status:", error);
+      res.status(status).json({ error: error?.message || "Failed to update status" });
     }
   });
 
