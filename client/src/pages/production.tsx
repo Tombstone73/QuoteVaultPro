@@ -4,7 +4,6 @@ import { Page, PageHeader, ContentLayout } from "@/components/titan";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
 import { useProductionConfig } from "@/hooks/useProduction";
 import ProductionViewRenderer from "@/features/production/ProductionViewRenderer";
@@ -43,51 +42,37 @@ export default function ProductionBoard() {
 
   const hasImplementedEnabledView = enabledViews.includes("flatbed");
 
-  const handleModuleChange = (module: string) => {
-    if (module === "overview") navigate("/production");
-    else if (module === "flatbed") navigate("/production/flatbed");
-    else if (module === "roll") navigate("/production/roll");
-    else if (module === "apparel") navigate("/production/apparel");
-  };
+  // OVERVIEW MODULE - Render without Page/PageHeader wrapper (uses own internal structure)
+  if (activeModule === "overview") {
+    return <ProductionOverviewPage />;
+  }
 
+  // OTHER MODULES - Render with Page/PageHeader wrapper
   return (
     <Page maxWidth="full">
       <PageHeader 
-        title="Production" 
+        title={
+          activeModule === "flatbed"
+            ? "Flatbed Production"
+            : activeModule === "roll"
+            ? "Roll Production"
+            : activeModule === "apparel"
+            ? "Apparel Production"
+            : "Production"
+        }
         subtitle={
-          activeModule === "overview" 
-            ? "Production job overview across all modules"
-            : activeModule === "flatbed"
-            ? "Flatbed production workflow (MVP)"
-            : `${activeModule.charAt(0).toUpperCase() + activeModule.slice(1)} production module`
+          activeModule === "flatbed"
+            ? "Flatbed production workflow"
+            : activeModule === "roll"
+            ? "Roll production workflow"
+            : activeModule === "apparel"
+            ? "Apparel production workflow"
+            : "Production workflow"
         }
       />
 
       <ContentLayout>
-        {/* Module tabs for future expansion */}
-        <div className="mb-4">
-          <Tabs value={activeModule} onValueChange={handleModuleChange}>
-            <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="flatbed">
-                Flatbed
-              </TabsTrigger>
-              <TabsTrigger value="roll" disabled>
-                Roll
-                <Badge variant="outline" className="ml-2 text-[10px]">Soon</Badge>
-              </TabsTrigger>
-              <TabsTrigger value="apparel" disabled>
-                Apparel
-                <Badge variant="outline" className="ml-2 text-[10px]">Soon</Badge>
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </div>
-
-        {/* Overview module (new) */}
-        {activeModule === "overview" && <ProductionOverviewPage />}
-
-        {/* Flatbed module (existing MVP) */}
+        {/* Flatbed module */}
         {activeModule === "flatbed" && (
           <>
             {isLoading && (
@@ -122,7 +107,7 @@ export default function ProductionBoard() {
               <div className="space-y-4">
                 {/* Header row with status tabs and view selector */}
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  {/* Status tabs - now in header */}
+                  {/* Status tabs */}
                   <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
                     <TabsList>
                       <TabsTrigger value="queued">Queued</TabsTrigger>
@@ -162,7 +147,7 @@ export default function ProductionBoard() {
           <Card>
             <CardContent className="p-8 text-center">
               <h3 className="text-lg font-semibold mb-2">Roll Printing Module</h3>
-              <p className="text-muted-foreground">Coming soon...</p>
+              <p className="text-muted-foreground">Production workflow for roll-based printing coming soon...</p>
             </CardContent>
           </Card>
         )}
@@ -172,7 +157,7 @@ export default function ProductionBoard() {
           <Card>
             <CardContent className="p-8 text-center">
               <h3 className="text-lg font-semibold mb-2">Apparel Printing Module</h3>
-              <p className="text-muted-foreground">Coming soon...</p>
+              <p className="text-muted-foreground">Production workflow for apparel printing coming soon...</p>
             </CardContent>
           </Card>
         )}
