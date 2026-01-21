@@ -207,9 +207,6 @@ export default function ProductionBoard() {
 
                 {/* Production view content */}
                 <ProductionViewRenderer viewKey="roll" status={status} />
-
-                {/* Production view content */}
-                <ProductionViewRenderer viewKey={viewKey} status={status} />
               </div>
             )}
           </>
