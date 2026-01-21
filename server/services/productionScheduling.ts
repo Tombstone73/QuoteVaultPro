@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { orderLineItems, products, productionJobs, productionEvents, orders } from "@shared/schema";
+import { orderLineItems, products, productionJobs, productionEvents, orders, materials } from "@shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 
 /**
@@ -52,15 +52,19 @@ export async function scheduleOrderLineItemsForProduction(args: {
     }
 
     // Load line items with their products to check requiresProductionJob flag
+    // Also load material type to determine station routing (roll vs flatbed)
     let lineItemQuery = tx
       .select({
         lineItemId: orderLineItems.id,
         productId: orderLineItems.productId,
+        materialId: orderLineItems.materialId,
         status: orderLineItems.status,
         requiresProductionJob: products.requiresProductionJob,
+        materialType: materials.type,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(orderLineItems.productId, products.id))
+      .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
       .where(and(
         eq(orderLineItems.orderId, orderId),
         // Filter to selected items if specified
@@ -147,36 +151,47 @@ export async function scheduleOrderLineItemsForProduction(args: {
         continue;
       }
 
+      // Determine station routing based on material type (roll vs flatbed)
+      // Material type determines station, line item status determines step
+      let stationKey: string;
+      const materialBasedStation = item.materialType === "roll" ? "roll" : "flatbed";
+      
       // Determine routing from line item status (fail-soft: use defaults if not found)
       const rule = routing.rules.find((r: any) => r.id === item.status);
       
-      let stationKey: string;
       let stepKey: string;
       let usedDefaults = false;
       
       if (!rule || rule.sendToProduction !== true) {
-        // No rule or not routed to production - use defaults to avoid blocking intake
-        stationKey = DEFAULT_STATION_KEY;
+        // No rule or not routed to production - use material-based station and default step
+        stationKey = materialBasedStation;
         stepKey = DEFAULT_STEP_KEY;
         usedDefaults = true;
         console.warn(
-          `[ProductionScheduling] No routing rule for lineItemId=${item.lineItemId} status=${item.status}; using defaults (${stationKey}/${stepKey})`
+          `[ProductionScheduling] No routing rule for lineItemId=${item.lineItemId} status=${item.status}; using material-based station=${stationKey}, step=${stepKey}`
         );
       } else {
         const ruleStationKey = String(rule.stationKey ?? "").trim();
         const ruleStepKey = String((rule as any).stepKey ?? "").trim();
         
         if (!ruleStationKey || !ruleStepKey) {
-          // Rule exists but incomplete - use defaults
-          stationKey = DEFAULT_STATION_KEY;
+          // Rule exists but incomplete - use material-based station and default step
+          stationKey = materialBasedStation;
           stepKey = DEFAULT_STEP_KEY;
           usedDefaults = true;
           console.warn(
-            `[ProductionScheduling] Incomplete routing rule for lineItemId=${item.lineItemId}; using defaults (${stationKey}/${stepKey})`
+            `[ProductionScheduling] Incomplete routing rule for lineItemId=${item.lineItemId}; using material-based station=${stationKey}, step=${stepKey}`
           );
         } else {
-          stationKey = ruleStationKey;
+          // Rule provides step, but override station based on material type for safety
+          stationKey = materialBasedStation;
           stepKey = ruleStepKey;
+          
+          if (ruleStationKey !== materialBasedStation) {
+            console.warn(
+              `[ProductionScheduling] Rule stationKey=${ruleStationKey} overridden by material type (${item.materialType}) → station=${stationKey}`
+            );
+          }
         }
       }
 

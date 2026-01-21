@@ -1,10 +1,12 @@
 import FlatbedProductionView from "@/features/production/views/FlatbedProductionView";
+import RollProductionView from "@/features/production/views/RollProductionView";
 import { Card, CardContent } from "@/components/ui/card";
 
 type ProductionStatus = "queued" | "in_progress" | "done";
 
 const registry: Record<string, (props: { viewKey: string; status: ProductionStatus }) => JSX.Element> = {
   flatbed: (props) => <FlatbedProductionView {...props} />,
+  roll: (props) => <RollProductionView {...props} />,
 };
 
 export default function ProductionViewRenderer(props: { viewKey: string; status: ProductionStatus }) {
