@@ -436,7 +436,7 @@ export function useUpdateProductionJobStatus(jobId: string) {
     },
     onSuccess: () => {
       invalidateProduction(qc, jobId);
-      toast({ title: "Status updated" });
+      // Don't show toast for drag/drop updates - too noisy
     },
     onError: (e: Error) => {
       toast({ title: "Status update failed", description: e.message, variant: "destructive" });

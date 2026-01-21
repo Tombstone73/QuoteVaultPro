@@ -71,9 +71,20 @@ export const prepressJobs = pgTable("prepress_jobs", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(), // TTL for cleanup
   
   // Results (populated on completion)
-  reportSummary: jsonb("report_summary"), // { score, counts, pageCount }
-  outputManifest: jsonb("output_manifest"), // { proof_png: true, fixed_pdf: true }
-  error: jsonb("error"), // { message, code, details }
+  reportSummary: jsonb("report_summary").$type<{
+    score: number;
+    counts: { blockers: number; warnings: number; info: number };
+    pageCount: number;
+  } | null>(),
+  outputManifest: jsonb("output_manifest").$type<{
+    proof_png?: boolean;
+    fixed_pdf?: boolean;
+  } | null>(),
+  error: jsonb("error").$type<{
+    message: string;
+    code: string;
+    details?: any;
+  } | null>(),
   
   // Progress tracking
   progressMessage: text("progress_message"),
