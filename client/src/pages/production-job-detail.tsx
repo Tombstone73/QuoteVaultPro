@@ -283,7 +283,21 @@ export default function ProductionJobDetailPage() {
     <Page maxWidth="full">
       <PageHeader
         title={`Production Job`}
-        subtitle={`Order ${data.order.orderNumber} • ${data.order.customerName}`}
+        subtitle={
+          <span>
+            Order {data.order.orderNumber} • 
+            {(data.order as any).customerId ? (
+              <Link
+                to={ROUTES.customers.detail((data.order as any).customerId)}
+                className="text-blue-600 hover:text-blue-700 hover:underline"
+              >
+                {data.order.customerName}
+              </Link>
+            ) : (
+              <span>{data.order.customerName}</span>
+            )}
+          </span>
+        }
         backButton={
           <Button variant="ghost" size="icon" onClick={() => navigate(ROUTES.production.board)}>
             <ArrowLeft className="w-5 h-5" />

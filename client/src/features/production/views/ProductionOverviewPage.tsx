@@ -332,6 +332,7 @@ export default function ProductionOverviewPage() {
   const [pendingStatusUpdate, setPendingStatusUpdate] = useState<{
     jobId: string;
     status: "queued" | "in_progress" | "done";
+    rollback: Array<[unknown, ProductionJobListItem[] | undefined]>;
   } | null>(null);
   
   const statusUpdateMutation = useUpdateProductionJobStatus(pendingStatusUpdate?.jobId || '');
@@ -340,6 +341,11 @@ export default function ProductionOverviewPage() {
   useEffect(() => {
     if (pendingStatusUpdate && pendingStatusUpdate.jobId) {
       statusUpdateMutation.mutate(pendingStatusUpdate.status, {
+        onError: () => {
+          for (const [queryKey, data] of pendingStatusUpdate.rollback) {
+            queryClient.setQueryData(queryKey as any, data);
+          }
+        },
         onSettled: () => {
           setPendingStatusUpdate(null);
         }
@@ -414,19 +420,23 @@ export default function ProductionOverviewPage() {
       });
     }
 
-    // OPTIMISTIC UPDATE: Update cache immediately
-    const queryKey = ["/api/production/jobs"];
-    const previousData = queryClient.getQueryData<ProductionJobListItem[]>(queryKey);
-    
-    if (previousData) {
-      const optimisticData = previousData.map(j =>
-        j.id === jobId ? { ...j, status: targetStatus as "queued" | "in_progress" | "done" } : j
-      );
-      queryClient.setQueryData(queryKey, optimisticData);
-    }
-    
-    // MUTATION: Call API to persist change
-    setPendingStatusUpdate({ jobId, status: targetStatus });
+    // OPTIMISTIC UPDATE: update all production job list queries (any filters)
+    const rollback = queryClient.getQueriesData<ProductionJobListItem[]>({
+      queryKey: ["/api/production/jobs"],
+    });
+
+    queryClient.setQueriesData<ProductionJobListItem[]>(
+      { queryKey: ["/api/production/jobs"] },
+      (old) => {
+        if (!old) return old;
+        return old.map((j) =>
+          j.id === jobId ? { ...j, status: targetStatus as "queued" | "in_progress" | "done" } : j
+        );
+      }
+    );
+
+    // MUTATION: Call API to persist change (rollback on failure)
+    setPendingStatusUpdate({ jobId, status: targetStatus, rollback });
     
     // Note: Rollback on error is handled by React Query's automatic invalidation
     // The mutation hook already calls invalidateProduction on both success and error
@@ -1025,6 +1035,7 @@ function JobCard({
     id: job.id,
   });
   const navigate = useNavigate();
+  const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
   const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
   const customerId = job.order.customerId;
@@ -1043,6 +1054,7 @@ function JobCard({
       ref={setNodeRef}
       style={style}
       className={cn(
+        "relative",
         "hover:shadow-md transition-shadow",
         (isDragging && !isDragOverlay) && "opacity-50",
         isDragOverlay && "shadow-lg rotate-3"
@@ -1069,7 +1081,7 @@ function JobCard({
                 {customerId ? (
                   <Link
                     to={ROUTES.customers.detail(customerId)}
-                    className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline truncate block"
+                    className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline inline-flex max-w-full truncate"
                     onClick={(e) => e.stopPropagation()}
                   >
                     {job.order.customerName}
@@ -1131,26 +1143,43 @@ function JobCard({
             </Badge>
           )}
           {boardCardConfig.status && (
-            <Badge 
-              variant={job.status === "done" ? "default" : "secondary"}
-              className="text-[10px] px-1.5 py-0.5 capitalize"
+            <div
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
             >
-              {job.status.replace("_", " ")}
-            </Badge>
+              <Select
+                value={job.status}
+                onValueChange={(value) => {
+                  const next = value as "queued" | "in_progress" | "done";
+                  if (next !== job.status) updateStatus.mutate(next);
+                }}
+                disabled={updateStatus.isPending || isDragOverlay}
+              >
+                <SelectTrigger className="h-6 px-1.5 text-[10px] w-[110px] capitalize">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="queued">Queued</SelectItem>
+                  <SelectItem value="in_progress">In Progress</SelectItem>
+                  <SelectItem value="done">Done</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           )}
         </div>
       </div>
 
       {/* Artwork thumbnails - separate click zone for modal */}
-      <div 
+      <button
+        type="button"
         onClick={(e) => {
           e.stopPropagation();
           onArtworkClick(job);
         }}
-        className="cursor-pointer hover:opacity-80 transition-opacity"
+        className="inline-flex w-fit cursor-pointer hover:opacity-80 transition-opacity p-0 bg-transparent"
       >
         <ThumbnailGroup job={job} sides={sides} />
-      </div>
+      </button>
       </CardContent>
     </Card>
   );
