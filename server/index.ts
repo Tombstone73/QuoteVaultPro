@@ -8,6 +8,7 @@ import { startThumbnailWorker } from "./workers/thumbnailWorker";
 import { assetPreviewWorker } from "./workers/assetPreviewWorker";
 import { assertStripeServerConfig } from "./lib/stripe";
 import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
+import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
 
 const app = express();
 
@@ -132,23 +133,49 @@ process.on('uncaughtException', (error) => {
       log(`serving on port ${port}`);
       console.log('[Server] Ready to accept connections');
 
-      // Start attachment thumbnail worker (fail-soft)
-      try {
-        startThumbnailWorker();
-      } catch (error) {
-        console.error('[Server] Thumbnail worker failed to start:', error);
+      // ===== BACKGROUND WORKERS INITIALIZATION =====
+      // All workers gated by workerGates.ts for dev/preview cost control
+      
+      // Thumbnail Worker
+      const thumbnailsEnabled = isWorkerEnabled('THUMBNAILS', true);
+      logWorkerStatus(
+        'Thumbnails',
+        thumbnailsEnabled,
+        thumbnailsEnabled ? getWorkerIntervalOverride('THUMBNAILS', 10_000, 300_000, 'THUMBNAIL_WORKER_POLL_INTERVAL_MS') : undefined
+      );
+      if (thumbnailsEnabled) {
+        try {
+          startThumbnailWorker();
+        } catch (error) {
+          console.error('[Server] Thumbnail worker failed to start:', error);
+        }
       }
 
-      // Start canonical asset preview worker (Phase 1: alongside legacy worker)
-      try {
-        assetPreviewWorker.start();
-      } catch (error) {
-        console.error('[Server] Asset preview worker failed to start:', error);
+      // Asset Preview Worker
+      const assetPreviewEnabled = isWorkerEnabled('ASSET_PREVIEW', true);
+      logWorkerStatus(
+        'AssetPreview',
+        assetPreviewEnabled,
+        assetPreviewEnabled ? getWorkerIntervalOverride('ASSET_PREVIEW', 600_000, 300_000) : undefined
+      );
+      if (assetPreviewEnabled) {
+        try {
+          assetPreviewWorker.start();
+        } catch (error) {
+          console.error('[Server] Asset preview worker failed to start:', error);
+        }
       }
 
-      // Start in-process prepress worker (optional dev convenience)
-      if (process.env.PREPRESS_WORKER_IN_PROCESS === 'true') {
-        // Fire-and-forget: prepress worker start is fail-soft and should not block server readiness
+      // Prepress Worker (in-process, optional)
+      // Controlled by both WORKERS_ENABLED and PREPRESS_WORKER_IN_PROCESS
+      const globalWorkersEnabled = process.env.WORKERS_ENABLED;
+      const globalDisabled = globalWorkersEnabled !== undefined && globalWorkersEnabled.toLowerCase() === 'false';
+      const prepressExplicit = process.env.PREPRESS_WORKER_IN_PROCESS === 'true';
+      const prepressEnabled = prepressExplicit && !globalDisabled;
+      
+      logWorkerStatus('Prepress (in-process)', prepressEnabled);
+      if (prepressEnabled) {
+        // Fire-and-forget: prepress worker start is fail-soft
         void import('./prepress/worker/in-process')
           .then(({ startInProcessWorker }) => {
             startInProcessWorker();
@@ -158,53 +185,76 @@ process.on('uncaughtException', (error) => {
           });
       }
       
-      // Start QuickBooks sync worker
-      if (process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET) {
-        console.log('[Server] Starting QuickBooks sync worker...');
-        startSyncWorker();
+      // QuickBooks Workers (only if credentials exist)
+      const hasQbCreds = !!(process.env.QUICKBOOKS_CLIENT_ID && process.env.QUICKBOOKS_CLIENT_SECRET);
+      
+      if (hasQbCreds) {
+        // QB Sync Worker (accounting_sync_jobs processor)
+        const qbSyncEnabled = isWorkerEnabled('QB_SYNC', true);
+        logWorkerStatus(
+          'QuickBooks Sync',
+          qbSyncEnabled,
+          qbSyncEnabled ? getWorkerIntervalOverride('QB_SYNC', 30_000, 300_000) : undefined
+        );
+        if (qbSyncEnabled) {
+          console.log('[Server] Starting QuickBooks sync worker...');
+          startSyncWorker();
+        }
 
-        // QB queue worker (outbox-like): sync pending/failed invoices & payments on an interval.
-        // Fail-soft by design; avoids any QB calls when there is nothing eligible.
-        const intervalMs = Number(process.env.QB_SYNC_QUEUE_INTERVAL_MS || String(5 * 60_000));
-        const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
-        const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
+        // QB Queue Worker (invoice/payment outbox sync)
+        const qbQueueEnabled = isWorkerEnabled('QB_QUEUE', true);
+        const qbQueueInterval = getWorkerIntervalOverride(
+          'QB_QUEUE',
+          Number(process.env.QB_SYNC_QUEUE_INTERVAL_MS || String(5 * 60_000)),
+          300_000,
+          'QB_SYNC_QUEUE_INTERVAL_MS'
+        );
+        logWorkerStatus('QuickBooks Queue', qbQueueEnabled, qbQueueEnabled ? qbQueueInterval : undefined);
+        
+        if (qbQueueEnabled) {
+          const settleWindowMinutes = Math.max(0, Number(process.env.QB_SYNC_SETTLE_WINDOW_MINUTES || '10'));
+          const limitPerRun = Math.max(1, Math.min(100, Number(process.env.QB_SYNC_LIMIT_PER_RUN || '25')));
 
-        console.log('[Server] QuickBooks queue worker enabled', {
-          intervalMs,
-          settleWindowMinutes,
-          limitPerRun,
-          policy: 'interval=pending-only, flush=pending+failed',
-        });
+          console.log('[Server] QuickBooks queue worker enabled', {
+            intervalMs: qbQueueInterval,
+            settleWindowMinutes,
+            limitPerRun,
+            policy: 'interval=pending-only, flush=pending+failed',
+          });
 
-        setInterval(async () => {
-          try {
-            const orgIds = await listQuickBooksConnectedOrganizationIds();
-            if (orgIds.length === 0) return;
+          setInterval(async () => {
+            const tickStart = Date.now();
+            try {
+              const orgIds = await listQuickBooksConnectedOrganizationIds();
+              if (orgIds.length === 0) return;
 
-            for (const organizationId of orgIds) {
-              // Only log when there is actual work to do.
-              const run = await runQuickBooksSyncWorkerForOrg({
-                organizationId,
-                settleWindowMinutes,
-                limitPerRun,
-                ignoreSettleWindow: false,
-                includeFailed: false,
-                log: false,
-              });
+              for (const organizationId of orgIds) {
+                const run = await runQuickBooksSyncWorkerForOrg({
+                  organizationId,
+                  settleWindowMinutes,
+                  limitPerRun,
+                  ignoreSettleWindow: false,
+                  includeFailed: false,
+                  log: false,
+                });
 
-              const attempted = run.invoices.attempted + run.payments.attempted;
-              if (attempted > 0) {
-                console.log(
-                  `[QB QueueTick] org=${organizationId} inv=${run.invoices.succeeded}/${run.invoices.failed} pay=${run.payments.succeeded}/${run.payments.failed}`
-                );
+                const attempted = run.invoices.attempted + run.payments.attempted;
+                if (attempted > 0) {
+                  console.log(
+                    `[QB QueueTick] org=${organizationId} inv=${run.invoices.succeeded}/${run.invoices.failed} pay=${run.payments.succeeded}/${run.payments.failed}`
+                  );
+                }
               }
+            } catch (e) {
+              console.error('[QB QueueTick] failed:', e);
+            } finally {
+              logWorkerTick('qb_queue', Date.now() - tickStart);
             }
-          } catch (e) {
-            console.error('[QB QueueTick] failed:', e);
-          }
-        }, intervalMs);
+          }, qbQueueInterval);
+        }
       } else {
-        console.log('[Server] QuickBooks not configured, sync worker disabled');
+        logWorkerStatus('QuickBooks Sync', false, undefined, 'no QB credentials');
+        logWorkerStatus('QuickBooks Queue', false, undefined, 'no QB credentials');
       }
     });
 

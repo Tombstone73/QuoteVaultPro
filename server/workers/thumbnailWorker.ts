@@ -2,6 +2,7 @@ import { db } from "../db";
 import { orderAttachments, orders, quoteAttachments } from "@shared/schema";
 import { and, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import { fileExists } from "../utils/fileStorage";
+import { getWorkerIntervalOverride, logWorkerTick } from "./workerGates";
 
 type AttachmentType = "quote" | "order";
 
@@ -20,7 +21,10 @@ type PendingAttachmentRow = {
   thumbError: string | null;
 };
 
+// Production default: 10s (existing behavior)
+// Non-production default: 5min (to prevent Neon compute burn)
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
+const DEFAULT_NON_PROD_POLL_INTERVAL_MS = 300_000;
 const DEFAULT_BATCH_SIZE = 10;
 
 let workerInterval: NodeJS.Timeout | null = null;
@@ -58,9 +62,12 @@ function isWorkerEnabled(): boolean {
 }
 
 function getPollIntervalMs(): number {
-  const parsed = Number(process.env.THUMBNAIL_WORKER_POLL_INTERVAL_MS);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  return DEFAULT_POLL_INTERVAL_MS;
+  return getWorkerIntervalOverride(
+    'THUMBNAILS',
+    DEFAULT_POLL_INTERVAL_MS,
+    DEFAULT_NON_PROD_POLL_INTERVAL_MS,
+    'THUMBNAIL_WORKER_POLL_INTERVAL_MS'
+  );
 }
 
 function getBatchSize(): number {
@@ -181,7 +188,10 @@ async function pollOnce(): Promise<void> {
     return;
   }
 
+  const startTime = Date.now();
   isPolling = true;
+  let rowsProcessed = 0;
+  
   try {
     const batchSize = getBatchSize();
 
@@ -389,6 +399,7 @@ async function pollOnce(): Promise<void> {
           fileName
         );
         if (debug) console.log(`[Thumbnail Worker] Image processing completed for ${row.id}`);
+        rowsProcessed++;
       } catch (error) {
         console.error(`[Thumbnail Worker] Error processing attachment ${row.id}:`, error);
       }
@@ -397,6 +408,8 @@ async function pollOnce(): Promise<void> {
     console.error("[Thumbnail Worker] Poll error:", error);
   } finally {
     isPolling = false;
+    const duration = Date.now() - startTime;
+    logWorkerTick('thumbnails', duration, rowsProcessed);
   }
 }
 
