@@ -1,6 +1,14 @@
 import { db } from "../../db";
-import { prepressJobs } from "../schema";
-import type { PrepressJob } from "../schema";
+import { 
+  prepressJobs,
+  prepressReportSummarySchema,
+  prepressOutputManifestSchema,
+  prepressErrorSchema,
+  type PrepressJob,
+  type PrepressReportSummary,
+  type PrepressOutputManifest,
+  type PrepressError,
+} from "../schema";
 import { eq, sql } from "drizzle-orm";
 import { runPreflightPipeline, buildReportSummary, buildOutputManifest } from "../pipeline";
 import { cleanupScratchFiles } from "../storage";
@@ -37,12 +45,12 @@ export async function claimJob(): Promise<PrepressJob | null> {
     
     console.log(`[Prepress Worker] Claimed job ${claimed.id}`);
     
-    // Normalize JSONB fields from unknown to expected types
+    // Type JSONB fields correctly (Drizzle returns them as-is from DB)
     return {
       ...claimed,
-      reportSummary: claimed.reportSummary as any,
-      outputManifest: claimed.outputManifest as any,
-      error: claimed.error as any,
+      reportSummary: claimed.reportSummary as PrepressReportSummary | null,
+      outputManifest: claimed.outputManifest as PrepressOutputManifest | null,
+      error: claimed.error as PrepressError | null,
     };
     
   } catch (error) {
@@ -69,14 +77,30 @@ export async function processJob(job: PrepressJob): Promise<void> {
     const reportSummary = buildReportSummary(report);
     const outputManifest = buildOutputManifest(report);
     
+    // Validate JSONB data before writing
+    const validatedSummary = prepressReportSummarySchema.safeParse(reportSummary);
+    const validatedManifest = prepressOutputManifestSchema.safeParse(outputManifest);
+    
+    if (!validatedSummary.success) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`[Prepress Worker] Invalid reportSummary for job ${job.id}:`, validatedSummary.error);
+      }
+    }
+    
+    if (!validatedManifest.success) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`[Prepress Worker] Invalid outputManifest for job ${job.id}:`, validatedManifest.error);
+      }
+    }
+    
     // Update job as succeeded
     await db
       .update(prepressJobs)
       .set({
         status: 'succeeded',
         finishedAt: new Date(),
-        reportSummary: reportSummary as any,
-        outputManifest: outputManifest as any,
+        reportSummary: validatedSummary.success ? validatedSummary.data : null,
+        outputManifest: validatedManifest.success ? validatedManifest.data : null,
         progressMessage: 'Completed successfully',
       })
       .where(eq(prepressJobs.id, job.id));
@@ -89,18 +113,34 @@ export async function processJob(job: PrepressJob): Promise<void> {
   } catch (error: any) {
     console.error(`[Prepress Worker] Job ${job.id} failed:`, error);
     
+    // Build error object
+    const errorObj: PrepressError = {
+      message: error.message || 'Unknown error',
+      code: error.code || 'PROCESSING_ERROR',
+      details: error.details || {},
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    };
+    
+    // Validate error object
+    const validatedError = prepressErrorSchema.safeParse(errorObj);
+    
+    if (!validatedError.success) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`[Prepress Worker] Invalid error object for job ${job.id}:`, validatedError.error);
+      }
+    }
+    
     // Update job as failed
     await db
       .update(prepressJobs)
       .set({
         status: 'failed',
         finishedAt: new Date(),
-        error: {
-          message: error.message,
-          code: error.code || 'PROCESSING_ERROR',
-          details: { stack: error.stack },
+        error: validatedError.success ? validatedError.data : {
+          message: 'Processing failed',
+          code: 'UNKNOWN_ERROR',
         },
-        progressMessage: `Failed: ${error.message}`,
+        progressMessage: `Failed: ${error.message || 'Unknown error'}`,
       })
       .where(eq(prepressJobs.id, job.id));
     

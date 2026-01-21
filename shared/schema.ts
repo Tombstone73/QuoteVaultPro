@@ -3870,6 +3870,10 @@ export {
   selectPrepressJobSchema,
   insertPrepressFindingSchema,
   insertPrepressFixLogSchema,
+  issueCountsSchema,
+  prepressReportSummarySchema,
+  prepressOutputManifestSchema,
+  prepressErrorSchema,
   type PrepressJob,
   type InsertPrepressJob,
   type PrepressJobStatus,
@@ -3878,4 +3882,7 @@ export {
   type InsertPrepressFinding,
   type PrepressFixLog,
   type InsertPrepressFixLog,
+  type PrepressReportSummary,
+  type PrepressOutputManifest,
+  type PrepressError,
 } from "../server/prepress/schema";
