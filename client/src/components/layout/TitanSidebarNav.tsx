@@ -221,9 +221,13 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
   const Icon = item.icon;
 
   // Check if this item is active (exact match or starts with for nested routes)
-  const isActive =
-    location.pathname === item.path ||
-    (item.path !== "/" && location.pathname.startsWith(item.path));
+  // Special case: /production should ONLY match exact /production, not /production/flatbed etc.
+  const isActive = (() => {
+    const { pathname } = location;
+    if (pathname === item.path) return true;
+    if (item.path === "/production") return false; // Exact match only for Overview
+    return item.path !== "/" && pathname.startsWith(item.path + "/");
+  })();
 
   return (
     <NavLink

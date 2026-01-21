@@ -418,10 +418,19 @@ export default function ProductionOverviewPage() {
     const container = boardContainerRef.current;
     if (!container) return;
 
+    // Immediately measure on mount
+    const initialWidth = container.getBoundingClientRect().width;
+    setBoardWidth(initialWidth);
+
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         // Use contentRect for the inner dimensions
-        setBoardWidth(entry.contentRect.width);
+        const newWidth = entry.contentRect.width;
+        setBoardWidth(newWidth);
+        
+        if (process.env.NODE_ENV === 'development') {
+          console.log('[ProductionBoard] Resize detected:', { newWidth, fitColumns });
+        }
       }
     });
 
@@ -430,7 +439,7 @@ export default function ProductionOverviewPage() {
     return () => {
       resizeObserver.disconnect();
     };
-  }, []);
+  }, [fitColumns]);
 
   // Calculate column width when fit mode is enabled
   const visibleColumnsCount = useMemo(() => {
@@ -962,7 +971,7 @@ export default function ProductionOverviewPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="px-4 md:px-6 py-4 space-y-4">
       {/* Header with view toggle and controls */}
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>

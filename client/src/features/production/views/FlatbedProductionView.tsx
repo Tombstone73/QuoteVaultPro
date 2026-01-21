@@ -819,12 +819,14 @@ function PreviewPanel({
   timerIsRunning,
   notes,
   onPreviewArtwork,
+  viewKey,
 }: {
   job: ProductionJobListItem;
   timerSeconds: number | null;
   timerIsRunning: boolean;
   notes: Array<{ id: string; text: string; createdAt: string }>;
   onPreviewArtwork: (side: "front" | "back") => void;
+  viewKey: string;
 }) {
   const li = primaryLineItem(job);
   const thumbs = artworkThumbs(job);
@@ -967,6 +969,37 @@ function PreviewPanel({
             />
             <Fact label="Media" value={<span className="truncate">{media}</span>} />
             <Fact label="Sides" value={sides} />
+            {/* Roll-specific: Lamination */}
+            {viewKey === "roll" && (() => {
+              const laminationValue = (() => {
+                // Try optionSelectionsJson first (PBV2)
+                const optSelections = li?.optionSelectionsJson;
+                if (optSelections && typeof optSelections === 'object') {
+                  const lam = (optSelections as any).lamination || (optSelections as any).Lamination;
+                  if (lam) return String(lam);
+                }
+                // Try selectedOptions array (legacy)
+                const selectedOpts = li?.selectedOptions;
+                if (Array.isArray(selectedOpts)) {
+                  const lamOpt = selectedOpts.find((o) => 
+                    o.optionName?.toLowerCase().includes('lamin') ||
+                    o.optionId?.toLowerCase().includes('lamin')
+                  );
+                  if (lamOpt?.value) return String(lamOpt.value);
+                }
+                return null;
+              })();
+              return (
+                <Fact 
+                  label="Lamination" 
+                  value={laminationValue ? (
+                    <Badge className="bg-purple-100 text-purple-800 border-purple-300">
+                      {laminationValue === 'Custom' ? 'Custom (see notes)' : laminationValue}
+                    </Badge>
+                  ) : "—"}
+                />
+              );
+            })()}
           </div>
 
           <div className="space-y-3">
@@ -988,11 +1021,22 @@ function PreviewPanel({
 
 export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus }) {
   const { data, isLoading, error } = useProductionJobs({ status: props.status, view: props.viewKey });
+  // Module-aware selection state (resets when switching between flatbed/roll)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
 
   const jobsSafe = data ?? [];
+
+  // Reset selection when switching views or when selected job no longer exists in current dataset
+  useEffect(() => {
+    if (selectedJobId) {
+      const jobStillExists = jobsSafe.some((j) => j.id === selectedJobId);
+      if (!jobStillExists) {
+        setSelectedJobId(null);
+      }
+    }
+  }, [props.viewKey, selectedJobId, jobsSafe]);
 
   const sortedJobs = useMemo(() => {
     return [...jobsSafe].sort((a, b) => {
@@ -1159,6 +1203,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               setPreviewSide(side);
               setPreviewModalOpen(true);
             }}
+            viewKey={props.viewKey}
           />
         ) : null}
 

@@ -136,20 +136,83 @@ export default function ProductionBoard() {
                 </div>
 
                 {/* Production view content */}
-                <ProductionViewRenderer viewKey={viewKey} status={status} />
+                <ProductionViewRenderer viewKey="flatbed" status={status} />
               </div>
             )}
           </>
         )}
 
-        {/* Roll module (placeholder) */}
+        {/* Roll module */}
         {activeModule === "roll" && (
-          <Card>
-            <CardContent className="p-8 text-center">
-              <h3 className="text-lg font-semibold mb-2">Roll Printing Module</h3>
-              <p className="text-muted-foreground">Production workflow for roll-based printing coming soon...</p>
-            </CardContent>
-          </Card>
+          <>
+            {isLoading && (
+              <Card className="bg-titan-bg-card border-titan-border-subtle">
+                <CardContent className="p-4 text-sm text-titan-text-muted">Loading production…</CardContent>
+              </Card>
+            )}
+
+            {!isLoading && error && (
+              <Card className="bg-titan-bg-card border-titan-border-subtle">
+                <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production config.</CardContent>
+              </Card>
+            )}
+
+            {!isLoading && !error && !hasImplementedEnabledView && (
+              <Card className="bg-titan-bg-card border-titan-border-subtle">
+                <CardContent className="p-4">
+                  <div className="text-sm font-medium text-titan-text-primary">No production views enabled</div>
+                  <div className="text-sm text-titan-text-muted mt-1">
+                    Enable the Roll module (or another implemented view) in settings.
+                  </div>
+                  <div className="mt-3">
+                    <Link className="text-sm underline" to={ROUTES.settings.production}>
+                      Go to Production Settings
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {!isLoading && !error && hasImplementedEnabledView && (
+              <div className="space-y-4">
+                {/* Header row with status tabs and view selector */}
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  {/* Status tabs */}
+                  <Tabs value={status} onValueChange={(v) => setStatus(v as ProductionStatus)}>
+                    <TabsList>
+                      <TabsTrigger value="queued">Queued</TabsTrigger>
+                      <TabsTrigger value="in_progress">In Progress</TabsTrigger>
+                      <TabsTrigger value="done">Done</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+
+                  {/* View selector (if multiple views enabled) */}
+                  {showViewSelector && (
+                    <div className="w-full md:w-[240px]">
+                      <Select value={viewKey} onValueChange={setViewKey}>
+                        <SelectTrigger className="bg-titan-bg-card border-titan-border-subtle">
+                          <SelectValue placeholder="Select view" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {enabledViews.map((v) => (
+                            <SelectItem key={v} value={v}>
+                              {v}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+
+                {/* Production view content */}
+                <ProductionViewRenderer viewKey="roll" status={status} />
+
+                {/* Production view content */}
+                <ProductionViewRenderer viewKey={viewKey} status={status} />
+              </div>
+            )}
+          </>
         )}
 
         {/* Apparel module (placeholder) */}
