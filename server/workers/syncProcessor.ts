@@ -7,14 +7,25 @@ import { db } from '../db';
 import { accountingSyncJobs } from '../../shared/schema';
 import { eq } from 'drizzle-orm';
 import * as qbService from '../quickbooksService';
+import { getWorkerIntervalOverride, logWorkerTick } from './workerGates';
 
 // Track if worker is running to prevent multiple instances
 let isRunning = false;
 let workerInterval: NodeJS.Timeout | null = null;
 
 // Configuration
-const POLL_INTERVAL_MS = 30000; // Poll every 30 seconds
+// Production: 30s, Non-production: 5min (to prevent Neon compute burn)
+const DEFAULT_POLL_INTERVAL_MS = 30_000;
+const DEFAULT_NON_PROD_POLL_INTERVAL_MS = 300_000;
 const MAX_RETRIES = 3;
+
+function getPollIntervalMs(): number {
+  return getWorkerIntervalOverride(
+    'QB_SYNC',
+    DEFAULT_POLL_INTERVAL_MS,
+    DEFAULT_NON_PROD_POLL_INTERVAL_MS
+  );
+}
 
 /**
  * Process a single sync job based on resource type and direction
@@ -73,7 +84,9 @@ async function pollAndProcessJobs(): Promise<void> {
     return;
   }
 
+  const startTime = Date.now();
   isRunning = true;
+  let jobsProcessed = 0;
 
   try {
     // Fetch pending jobs
@@ -93,6 +106,7 @@ async function pollAndProcessJobs(): Promise<void> {
     for (const job of pendingJobs) {
       try {
         await processSyncJob(job);
+        jobsProcessed++;
       } catch (error: any) {
         console.error(`[Sync Worker] Error processing job ${job.id}:`, error);
         // Continue with next job even if this one failed
@@ -102,6 +116,8 @@ async function pollAndProcessJobs(): Promise<void> {
     console.error('[Sync Worker] Error in poll cycle:', error);
   } finally {
     isRunning = false;
+    const duration = Date.now() - startTime;
+    logWorkerTick('qb_sync', duration, jobsProcessed);
   }
 }
 
@@ -114,7 +130,8 @@ export function startSyncWorker(): void {
     return;
   }
 
-  console.log(`[Sync Worker] Starting worker (poll interval: ${POLL_INTERVAL_MS}ms)`);
+  const intervalMs = getPollIntervalMs();
+  console.log(`[Sync Worker] Starting worker (poll interval: ${intervalMs}ms)`);
 
   // Run immediately on start
   pollAndProcessJobs().catch((error) => {
@@ -126,7 +143,7 @@ export function startSyncWorker(): void {
     pollAndProcessJobs().catch((error) => {
       console.error('[Sync Worker] Error in scheduled poll:', error);
     });
-  }, POLL_INTERVAL_MS);
+  }, intervalMs);
 
   console.log('[Sync Worker] Worker started successfully');
 }
@@ -152,7 +169,7 @@ export function getWorkerStatus(): {
 } {
   return {
     running: workerInterval !== null,
-    pollIntervalMs: POLL_INTERVAL_MS,
+    pollIntervalMs: getPollIntervalMs(),
     isProcessing: isRunning,
   };
 }

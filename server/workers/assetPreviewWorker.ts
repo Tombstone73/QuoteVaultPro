@@ -1,4 +1,5 @@
 import { assetPreviewGenerator } from '../services/assets/AssetPreviewGenerator';
+import { getWorkerIntervalOverride, logWorkerTick } from './workerGates';
 
 /**
  * Asset Preview Worker
@@ -6,7 +7,8 @@ import { assetPreviewGenerator } from '../services/assets/AssetPreviewGenerator'
  * Background job that polls for assets with previewStatus='pending'
  * and generates thumbnail + preview images for them.
  * 
- * Runs every 60s in development, 10m in production.
+ * Production default: 10 minutes (600s)
+ * Non-production default: 5 minutes (300s) - to prevent Neon compute burn
  * 
  * Phase 1: Runs alongside existing thumbnailWorker.
  * Phase 2: Will replace thumbnailWorker entirely.
@@ -14,7 +16,18 @@ import { assetPreviewGenerator } from '../services/assets/AssetPreviewGenerator'
 export class AssetPreviewWorker {
   private interval: NodeJS.Timeout | null = null;
   private isRunning = false;
-  private readonly POLL_INTERVAL = process.env.NODE_ENV === 'development' ? 60000 : 600000;
+  
+  // Production: 10min, Non-prod: 5min
+  private readonly DEFAULT_PROD_INTERVAL = 600_000;
+  private readonly DEFAULT_NON_PROD_INTERVAL = 300_000;
+
+  private getPollInterval(): number {
+    return getWorkerIntervalOverride(
+      'ASSET_PREVIEW',
+      this.DEFAULT_PROD_INTERVAL,
+      this.DEFAULT_NON_PROD_INTERVAL
+    );
+  }
 
   start(): void {
     if (this.interval) {
@@ -22,12 +35,13 @@ export class AssetPreviewWorker {
       return;
     }
 
-    const intervalSeconds = Math.round(this.POLL_INTERVAL / 1000);
+    const intervalMs = this.getPollInterval();
+    const intervalSeconds = Math.round(intervalMs / 1000);
     console.log(`[AssetPreviewWorker] Starting worker (${intervalSeconds}s interval)`);
 
     this.interval = setInterval(() => {
       this.processQueue();
-    }, this.POLL_INTERVAL);
+    }, intervalMs);
 
     // Run immediately on start
     this.processQueue();
@@ -47,6 +61,7 @@ export class AssetPreviewWorker {
       return;
     }
 
+    const startTime = Date.now();
     this.isRunning = true;
 
     try {
@@ -62,6 +77,8 @@ export class AssetPreviewWorker {
       }
     } finally {
       this.isRunning = false;
+      const duration = Date.now() - startTime;
+      logWorkerTick('asset_preview', duration);
     }
   }
 }
