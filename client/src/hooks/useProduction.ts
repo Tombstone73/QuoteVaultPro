@@ -22,7 +22,8 @@ export type ProductionOrderLineItemSummary = {
   materialName: string | null;
   productType: string;
   status: string;
-  selectedOptions?: Array<{ // ADDED: For deriving Sides (single/double)
+  optionSelectionsJson?: any; // PBV2 options (lamination, etc.)
+  selectedOptions?: Array<{ // Legacy options format
     optionId: string;
     optionName: string;
     value: string | number | boolean;
@@ -440,6 +441,30 @@ export function useUpdateProductionJobStatus(jobId: string) {
     },
     onError: (e: Error) => {
       toast({ title: "Status update failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useOverrideProductionJobRouting() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { jobId: string; stationKey: string; stepKey: string; reason?: string }) => {
+      const res = await fetch(`/api/production/jobs/${args.jobId}/routing`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stationKey: args.stationKey, stepKey: args.stepKey, reason: args.reason }),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || "Failed to override routing");
+      }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs", variables.jobId] });
     },
   });
 }
