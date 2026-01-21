@@ -17,6 +17,13 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { 
   LayoutGrid, 
   List, 
@@ -28,6 +35,11 @@ import {
   ChevronsUpDown,
   Download,
   Upload,
+  Search,
+  X,
+  Eye,
+  EyeOff,
+  Maximize2,
 } from "lucide-react";
 import { 
   useProductionJobs, 
@@ -100,6 +112,12 @@ const KANBAN_COLUMNS = [
   { id: "production_complete", label: "Production Complete", stepKey: "production_complete" },
 ] as const;
 
+// Column width constraints for fit mode
+const MIN_COLUMN_WIDTH = 320;
+const MAX_COLUMN_WIDTH = 520;
+const DEFAULT_COLUMN_WIDTH = 420;
+const BOARD_GAP = 16; // gap-4 = 16px
+
 // Board card display configuration
 type BoardCardField = "customer" | "orderNumber" | "jobDescription" | "media" | "qty" | "sides" | "dueDate" | "station" | "status";
 
@@ -117,6 +135,49 @@ const DEFAULT_BOARD_CARD_CONFIG: BoardCardConfig = {
   dueDate: true,
   station: true,
   status: true,
+};
+
+// Board column visibility configuration
+type BoardColumnVisibility = Record<string, boolean>;
+
+const DEFAULT_BOARD_COLUMN_VISIBILITY: BoardColumnVisibility = {
+  queued: true,
+  prepress: true,
+  printing: true,
+  finishing: true,
+  fulfillment: true,
+  production_complete: true,
+};
+
+// Board sorting configuration
+type BoardSortKey = "dueDate" | "customer" | "orderNumber" | "status";
+
+type BoardSortConfig = {
+  key: BoardSortKey;
+  direction: "asc" | "desc";
+};
+
+const DEFAULT_BOARD_SORT: BoardSortConfig = {
+  key: "dueDate",
+  direction: "asc",
+};
+
+// Search result type
+type SearchResult = {
+  id: string;
+  title: string;
+  subtitle?: string;
+  url: string;
+  type: string;
+};
+
+type GlobalSearchResults = {
+  customers: SearchResult[];
+  contacts: SearchResult[];
+  orders: SearchResult[];
+  quotes: SearchResult[];
+  invoices: SearchResult[];
+  jobs: SearchResult[];
 };
 
 /**
@@ -286,8 +347,203 @@ export default function ProductionOverviewPage() {
     localStorage.setItem("productionOverviewBoardCardConfig", JSON.stringify(newConfig));
   };
 
+  // Board column visibility state
+  const [boardColumnVisibility, setBoardColumnVisibility] = useState<BoardColumnVisibility>(() => {
+    const saved = localStorage.getItem("productionBoardColumnVisibility");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        return DEFAULT_BOARD_COLUMN_VISIBILITY;
+      }
+    }
+    return DEFAULT_BOARD_COLUMN_VISIBILITY;
+  });
+
+  const saveBoardColumnVisibility = (newConfig: BoardColumnVisibility) => {
+    setBoardColumnVisibility(newConfig);
+    localStorage.setItem("productionBoardColumnVisibility", JSON.stringify(newConfig));
+  };
+
+  const showAllColumns = () => {
+    const allVisible = KANBAN_COLUMNS.reduce((acc, col) => ({ ...acc, [col.id]: true }), {} as BoardColumnVisibility);
+    saveBoardColumnVisibility(allVisible);
+  };
+
+  const hiddenColumnCount = useMemo(() => {
+    return Object.values(boardColumnVisibility).filter(v => !v).length;
+  }, [boardColumnVisibility]);
+
+  // Board sorting state
+  const [boardSort, setBoardSort] = useState<BoardSortConfig>(() => {
+    const saved = localStorage.getItem("productionBoardSort");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        return DEFAULT_BOARD_SORT;
+      }
+    }
+    return DEFAULT_BOARD_SORT;
+  });
+
+  const saveBoardSort = (newSort: BoardSortConfig) => {
+    setBoardSort(newSort);
+    localStorage.setItem("productionBoardSort", JSON.stringify(newSort));
+  };
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOnlyProduction, setSearchOnlyProduction] = useState(true);
+  const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResults | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+
+  // Fit columns state
+  const [fitColumns, setFitColumns] = useState<boolean>(() => {
+    const saved = localStorage.getItem("titan.production.board.fitColumns");
+    return saved === "true";
+  });
+  const [boardWidth, setBoardWidth] = useState<number>(0);
+  const boardContainerRef = useRef<HTMLDivElement>(null);
+
+  const toggleFitColumns = () => {
+    const newValue = !fitColumns;
+    setFitColumns(newValue);
+    localStorage.setItem("titan.production.board.fitColumns", String(newValue));
+  };
+
+  // Measure board container width with ResizeObserver
+  useEffect(() => {
+    const container = boardContainerRef.current;
+    if (!container) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        // Use contentRect for the inner dimensions
+        setBoardWidth(entry.contentRect.width);
+      }
+    });
+
+    resizeObserver.observe(container);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  // Calculate column width when fit mode is enabled
+  const visibleColumnsCount = useMemo(() => {
+    return KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).length;
+  }, [boardColumnVisibility]);
+
+  const calculatedColumnWidth = useMemo(() => {
+    if (!fitColumns || visibleColumnsCount === 0 || boardWidth === 0) {
+      return DEFAULT_COLUMN_WIDTH;
+    }
+
+    // Available width = total width - gaps between columns
+    const totalGapWidth = BOARD_GAP * (visibleColumnsCount - 1);
+    const availableWidth = boardWidth - totalGapWidth;
+    
+    // Divide by number of columns and clamp
+    const width = availableWidth / visibleColumnsCount;
+    return Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.floor(width)));
+  }, [fitColumns, visibleColumnsCount, boardWidth]);
+
   const resetBoardCardConfig = () => {
     saveBoardCardConfig(DEFAULT_BOARD_CARD_CONFIG);
+  };
+
+  // Search handlers
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    
+    if (!value) {
+      setGlobalSearchResults(null);
+      return;
+    }
+
+    // If searching production only, no API call needed (local filter)
+    if (searchOnlyProduction) {
+      return;
+    }
+
+    // Global search with debounce
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    searchTimeoutRef.current = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(value)}`, {
+          credentials: "include",
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setGlobalSearchResults(data);
+        }
+      } catch (error) {
+        console.error("Search failed:", error);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+  };
+
+  const clearSearch = () => {
+    setSearchQuery("");
+    setGlobalSearchResults(null);
+  };
+
+  // Sort comparator for board cards
+  const sortBoardJobs = (jobs: ProductionJobListItem[]): ProductionJobListItem[] => {
+    const sorted = [...jobs].sort((a, b) => {
+      let comparison = 0;
+      
+      switch (boardSort.key) {
+        case "dueDate": {
+          const aDate = a.order.dueDate ? parseISO(a.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
+          const bDate = b.order.dueDate ? parseISO(b.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
+          comparison = aDate - bDate;
+          break;
+        }
+        case "customer":
+          comparison = (a.order.customerName || "").localeCompare(b.order.customerName || "");
+          break;
+        case "orderNumber":
+          comparison = (a.order.orderNumber || "").localeCompare(b.order.orderNumber || "");
+          break;
+        case "status":
+          comparison = (a.status || "").localeCompare(b.status || "");
+          break;
+      }
+      
+      // Stable sort: tie-break by orderNumber then jobId
+      if (comparison === 0) {
+        comparison = (a.order.orderNumber || "").localeCompare(b.order.orderNumber || "");
+      }
+      if (comparison === 0) {
+        comparison = (a.id || "").localeCompare(b.id || "");
+      }
+      
+      return boardSort.direction === "asc" ? comparison : -comparison;
+    });
+    return sorted;
+  };
+
+  // Filter jobs for production-only search
+  const matchesSearchQuery = (job: ProductionJobListItem, query: string): boolean => {
+    if (!query) return true;
+    const lowerQuery = query.toLowerCase();
+    return (
+      (job.order.customerName || "").toLowerCase().includes(lowerQuery) ||
+      (job.order.orderNumber || "").toLowerCase().includes(lowerQuery) ||
+      (job.jobDescription || "").toLowerCase().includes(lowerQuery) ||
+      (job.mediaLabel || "").toLowerCase().includes(lowerQuery) ||
+      (job.media || "").toLowerCase().includes(lowerQuery)
+    );
   };
 
   // Column configuration state (persist in localStorage)
@@ -484,10 +740,35 @@ export default function ProductionOverviewPage() {
     queryClient.setQueriesData<ProductionJobListItem[]>(
       { queryKey: ["/api/production/jobs"] },
       (old) => {
+        // Shape-safe update: handle array, envelope, or undefined
         if (!old) return old;
-        return old.map((j) =>
-          j.id === jobId ? { ...j, status: targetStatus, stepKey: targetStepKey } : j
-        );
+        
+        // Case 1: Direct array (expected shape)
+        if (Array.isArray(old)) {
+          return old.map((j) =>
+            j.id === jobId ? { ...j, status: targetStatus, stepKey: targetStepKey } : j
+          );
+        }
+        
+        // Case 2: Envelope { success, data: array }
+        if (typeof old === 'object' && old !== null && 'data' in old && Array.isArray((old as any).data)) {
+          return {
+            ...(old as object),
+            data: (old as any).data.map((j: ProductionJobListItem) =>
+              j.id === jobId ? { ...j, status: targetStatus, stepKey: targetStepKey } : j
+            ),
+          } as any;
+        }
+        
+        // Case 3: Unknown shape - log warning and return unchanged (fail-soft)
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('[ProductionOverview] Unexpected cache shape in optimistic update:', {
+            type: typeof old,
+            keys: typeof old === 'object' && old !== null ? Object.keys(old) : [],
+            isArray: Array.isArray(old),
+          });
+        }
+        return old;
       }
     );
 
@@ -613,7 +894,12 @@ export default function ProductionOverviewPage() {
     const grouped = new Map<string, ProductionJobListItem[]>();
     KANBAN_COLUMNS.forEach(col => grouped.set(col.id, []));
     
-    jobs.forEach(job => {
+    // Apply search filter if production-only mode
+    const filteredJobs = searchOnlyProduction && searchQuery 
+      ? jobs.filter(job => matchesSearchQuery(job, searchQuery))
+      : jobs;
+    
+    filteredJobs.forEach(job => {
       const columnId = getJobColumn(job);
       const column = grouped.get(columnId);
       if (column) {
@@ -621,13 +907,10 @@ export default function ProductionOverviewPage() {
       }
     });
     
-    // Sort within each column by due date
-    grouped.forEach(column => {
-      column.sort((a, b) => {
-        const aDate = a.order.dueDate ? parseISO(a.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
-        const bDate = b.order.dueDate ? parseISO(b.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
-        return aDate - bDate;
-      });
+    // Apply sorting within each column
+    grouped.forEach((columnJobs, columnId) => {
+      const sorted = sortBoardJobs(columnJobs);
+      grouped.set(columnId, sorted);
     });
     
     // Dev logging
@@ -636,11 +919,15 @@ export default function ProductionOverviewPage() {
       grouped.forEach((jobs, columnId) => {
         counts[columnId] = jobs.length;
       });
-      console.log('[ProductionBoard] Job grouping:', { total: jobs.length, byColumn: counts });
+      console.log('[ProductionBoard] Job grouping:', { 
+        total: filteredJobs.length, 
+        byColumn: counts,
+        searchActive: searchOnlyProduction && !!searchQuery,
+      });
     }
     
     return grouped;
-  }, [jobs]);
+  }, [jobs, searchQuery, searchOnlyProduction, boardSort]);
 
   const activeJob = activeJobId ? jobs.find(j => j.id === activeJobId) : null;
 
@@ -697,7 +984,75 @@ export default function ProductionOverviewPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Search */}
+          <div className="relative flex-1 min-w-[280px] max-w-md">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search production jobs..."
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              className="pl-9 pr-9 h-9"
+            />
+            {searchQuery && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearSearch}
+                className="absolute right-1 top-1/2 transform -translate-y-1/2 h-7 w-7 p-0"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            )}
+
+            {/* Global search results dropdown */}
+            {!searchOnlyProduction && globalSearchResults && searchQuery && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-background border rounded-md shadow-lg max-h-[400px] overflow-y-auto z-50">
+                {/* Results sections */}
+                {Object.entries(globalSearchResults).map(([category, results]) => {
+                  if (!results || results.length === 0) return null;
+                  return (
+                    <div key={category} className="p-2">
+                      <div className="text-xs font-semibold text-muted-foreground uppercase px-2 py-1">
+                        {category}
+                      </div>
+                      {results.map((result: SearchResult) => (
+                        <Link
+                          key={result.id}
+                          to={result.url}
+                          className="block px-3 py-2 hover:bg-accent rounded-md transition-colors"
+                          onClick={clearSearch}
+                        >
+                          <div className="font-medium text-sm">{result.title}</div>
+                          {result.subtitle && (
+                            <div className="text-xs text-muted-foreground">{result.subtitle}</div>
+                          )}
+                        </Link>
+                      ))}
+                    </div>
+                  );
+                })}
+                {Object.values(globalSearchResults).every(arr => arr.length === 0) && (
+                  <div className="p-4 text-center text-sm text-muted-foreground">
+                    No results found
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Search mode toggle */}
+          <div className="flex items-center gap-2 border rounded-md px-3 h-9">
+            <Checkbox
+              id="search-production-only"
+              checked={searchOnlyProduction}
+              onCheckedChange={(checked) => setSearchOnlyProduction(checked === true)}
+            />
+            <Label htmlFor="search-production-only" className="text-sm cursor-pointer whitespace-nowrap">
+              Only production
+            </Label>
+          </div>
+
           {/* View mode toggle */}
           <div className="flex items-center gap-1 border rounded-md p-1">
             <Button
@@ -720,14 +1075,38 @@ export default function ProductionOverviewPage() {
             </Button>
           </div>
 
-          {/* Board settings */}
+          {/* Board-specific controls */}
           {viewMode === "board" && (
             <>
+              {/* Board sorting */}
+              <Select
+                value={`${boardSort.key}-${boardSort.direction}`}
+                onValueChange={(value) => {
+                  const [key, direction] = value.split('-') as [BoardSortKey, 'asc' | 'desc'];
+                  saveBoardSort({ key, direction });
+                }}
+              >
+                <SelectTrigger className="w-[180px] h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="dueDate-asc">Due Date (Earliest)</SelectItem>
+                  <SelectItem value="dueDate-desc">Due Date (Latest)</SelectItem>
+                  <SelectItem value="customer-asc">Customer (A-Z)</SelectItem>
+                  <SelectItem value="customer-desc">Customer (Z-A)</SelectItem>
+                  <SelectItem value="orderNumber-asc">Order # (Asc)</SelectItem>
+                  <SelectItem value="orderNumber-desc">Order # (Desc)</SelectItem>
+                  <SelectItem value="status-asc">Status (A-Z)</SelectItem>
+                  <SelectItem value="status-desc">Status (Z-A)</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {/* Collapse all toggle */}
               <Button
                 variant="outline"
                 size="sm"
                 onClick={toggleGlobalCollapsed}
-                className="gap-2"
+                className="gap-2 h-9"
               >
                 {globalCollapsed ? (
                   <>
@@ -741,39 +1120,92 @@ export default function ProductionOverviewPage() {
                   </>
                 )}
               </Button>
+
+              {/* Fit columns toggle */}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={fitColumns ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={toggleFitColumns}
+                      className="gap-2 h-9"
+                    >
+                      <Maximize2 className="w-4 h-4" />
+                      Fit Columns
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Fit all columns to screen width</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              {/* Board settings dropdown */}
               <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8">
                   <Settings2 className="w-4 h-4 mr-1.5" />
-                  Board Settings
+                  Settings
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-80" align="end">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-medium">Card Display</h4>
-                    <Button variant="ghost" size="sm" onClick={resetBoardCardConfig} className="h-7 text-xs">
-                      Reset
-                    </Button>
-                  </div>
+                <div className="space-y-4">
+                  {/* Column visibility */}
                   <div className="space-y-3">
-                    {(Object.keys(boardCardConfig) as BoardCardField[]).map((field) => (
-                      <div key={field} className="flex items-center justify-between">
-                        <Label htmlFor={field} className="text-sm cursor-pointer capitalize">
-                          {field === "orderNumber" ? "Order #" : 
-                           field === "jobDescription" ? "Job Description" :
-                           field === "dueDate" ? "Due Date" :
-                           field}
-                        </Label>
-                        <Switch
-                          id={field}
-                          checked={boardCardConfig[field]}
-                          onCheckedChange={(checked) => {
-                            saveBoardCardConfig({ ...boardCardConfig, [field]: checked });
-                          }}
-                        />
-                      </div>
-                    ))}
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-medium">Column Visibility</h4>
+                      {hiddenColumnCount > 0 && (
+                        <Button variant="ghost" size="sm" onClick={showAllColumns} className="h-7 text-xs">
+                          Show All
+                        </Button>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      {KANBAN_COLUMNS.map((column) => (
+                        <div key={column.id} className="flex items-center justify-between">
+                          <Label htmlFor={`col-${column.id}`} className="text-sm cursor-pointer">
+                            {column.label}
+                          </Label>
+                          <Switch
+                            id={`col-${column.id}`}
+                            checked={boardColumnVisibility[column.id] ?? true}
+                            onCheckedChange={(checked) => {
+                              saveBoardColumnVisibility({ ...boardColumnVisibility, [column.id]: checked });
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Card display fields */}
+                  <div className="space-y-3 pt-3 border-t">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-medium">Card Display</h4>
+                      <Button variant="ghost" size="sm" onClick={resetBoardCardConfig} className="h-7 text-xs">
+                        Reset
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      {(Object.keys(boardCardConfig) as BoardCardField[]).map((field) => (
+                        <div key={field} className="flex items-center justify-between">
+                          <Label htmlFor={field} className="text-sm cursor-pointer capitalize">
+                            {field === "orderNumber" ? "Order #" : 
+                             field === "jobDescription" ? "Job Description" :
+                             field === "dueDate" ? "Due Date" :
+                             field}
+                          </Label>
+                          <Switch
+                            id={field}
+                            checked={boardCardConfig[field]}
+                            onCheckedChange={(checked) => {
+                              saveBoardCardConfig({ ...boardCardConfig, [field]: checked });
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </PopoverContent>
@@ -839,38 +1271,78 @@ export default function ProductionOverviewPage() {
 
       {/* Board view with drag and drop */}
       {viewMode === "board" && (
-        <DndContext
-          sensors={sensors}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        >
-          <div className="flex gap-4 overflow-x-auto pb-4">
-            {KANBAN_COLUMNS.map(column => {
-              const columnJobs = jobsByStatus.get(column.id) ?? [];
-              return (
-                <KanbanColumn
-                  key={column.id}
-                  column={column}
-                  jobs={columnJobs}
+        <>
+          {/* Hidden columns banner */}
+          {hiddenColumnCount > 0 && (
+            <div className="bg-muted/50 border rounded-md p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <EyeOff className="w-4 h-4 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">
+                  {hiddenColumnCount} {hiddenColumnCount === 1 ? 'column is' : 'columns are'} hidden
+                </span>
+              </div>
+              <Button variant="outline" size="sm" onClick={showAllColumns} className="h-8">
+                <Eye className="w-4 h-4 mr-1.5" />
+                Show All Columns
+              </Button>
+            </div>
+          )}
+
+          {/* Search results indicator */}
+          {searchOnlyProduction && searchQuery && (
+            <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-md p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Search className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span className="text-sm text-blue-900 dark:text-blue-100">
+                  Showing {jobs.filter(j => matchesSearchQuery(j, searchQuery)).length} matching jobs
+                </span>
+              </div>
+              <Button variant="ghost" size="sm" onClick={clearSearch} className="h-8">
+                Clear Filter
+              </Button>
+            </div>
+          )}
+
+          <DndContext
+            sensors={sensors}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          >
+            <div 
+              ref={boardContainerRef}
+              className={cn(
+                "flex gap-4 pb-4",
+                fitColumns ? "overflow-x-hidden" : "overflow-x-auto"
+              )}
+            >
+              {KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
+                const columnJobs = jobsByStatus.get(column.id) ?? [];
+                return (
+                  <KanbanColumn
+                    key={column.id}
+                    column={column}
+                    jobs={columnJobs}
+                    boardCardConfig={boardCardConfig}
+                    onArtworkClick={openArtworkModal}
+                    isCardExpanded={isCardExpanded}
+                    toggleCardExpanded={toggleCardExpanded}
+                    width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
+                  />
+                );
+              })}
+            </div>
+            <DragOverlay>
+              {activeJob && (
+                <JobCard
+                  job={activeJob}
                   boardCardConfig={boardCardConfig}
                   onArtworkClick={openArtworkModal}
-                  isCardExpanded={isCardExpanded}
-                  toggleCardExpanded={toggleCardExpanded}
+                  isDragOverlay
                 />
-              );
-            })}
-          </div>
-          <DragOverlay>
-            {activeJob && (
-              <JobCard
-                job={activeJob}
-                boardCardConfig={boardCardConfig}
-                onArtworkClick={openArtworkModal}
-                isDragOverlay
-              />
-            )}
-          </DragOverlay>
-        </DndContext>
+              )}
+            </DragOverlay>
+          </DndContext>
+        </>
       )}
 
       {/* List view */}
@@ -1043,6 +1515,7 @@ function KanbanColumn({
   onArtworkClick,
   isCardExpanded,
   toggleCardExpanded,
+  width = DEFAULT_COLUMN_WIDTH,
 }: {
   column: typeof KANBAN_COLUMNS[number];
   jobs: ProductionJobListItem[];
@@ -1050,11 +1523,15 @@ function KanbanColumn({
   onArtworkClick: (job: ProductionJobListItem) => void;
   isCardExpanded: (jobId: string) => boolean;
   toggleCardExpanded: (jobId: string) => void;
+  width?: number;
 }) {
   const { setNodeRef } = useDroppable({ id: column.id });
 
   return (
-    <Card className="flex flex-col flex-shrink-0 w-[420px]">
+    <Card 
+      className="flex flex-col flex-shrink-0" 
+      style={{ width: `${width}px`, flex: `0 0 ${width}px` }}
+    >
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium flex items-center justify-between">
           <span>{column.label}</span>
@@ -1680,18 +2157,18 @@ function PreviewThumb({ src, alt }: { src?: string; alt: string }) {
 
   if (!src || failed) {
     return (
-      <div className="w-24 h-24 rounded border border-dashed border-muted-foreground/30 bg-muted/20 flex items-center justify-center">
-        <FileText className="w-6 h-6 text-muted-foreground/50" />
+      <div className="w-12 h-12 rounded border border-dashed border-muted-foreground/30 bg-muted/20 flex items-center justify-center">
+        <FileText className="w-4 h-4 text-muted-foreground/50" />
       </div>
     );
   }
 
   return (
-    <div className="w-24 h-24 rounded border border-border overflow-hidden bg-muted">
+    <div className="w-12 h-12 rounded border border-border overflow-hidden bg-muted">
       <img
         src={src}
         alt={alt}
-        className="w-full h-full object-contain"
+        className="w-full h-full object-cover"
         onError={() => setFailed(true)}
       />
     </div>

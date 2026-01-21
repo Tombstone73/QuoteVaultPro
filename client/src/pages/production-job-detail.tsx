@@ -26,6 +26,7 @@ import {
   useUpdateProductionJobStatus,
   ProductionOrderArtworkSummary,
 } from "@/hooks/useProduction";
+import { deriveLaminationDisplay, isRollJob, formatDimensions } from "@/lib/productionHelpers";
 import {
   Play,
   Square,
@@ -241,6 +242,21 @@ export default function ProductionJobDetailPage() {
   const artwork = useMemo(() => {
     if (!data) return { front: null, back: null, showBackSlot: false, isSameArtwork: false };
     return normalizeArtworkForSides(String(data.sides || ""), data.order.artwork || []);
+  }, [data]);
+
+  // Lamination display (for Roll jobs)
+  const lamination = useMemo(() => {
+    if (!data) return null;
+    const isRoll = isRollJob(data.stationKey);
+    if (!isRoll) return null;
+
+    const primaryLineItem = data.order.lineItems?.primary ?? null;
+    const orderNotes = data.order as any; // May have notes field
+    
+    return deriveLaminationDisplay({
+      lineItem: primaryLineItem,
+      notes: orderNotes.notes || "",
+    });
   }, [data]);
 
   if (isLoading) {
@@ -604,6 +620,33 @@ export default function ProductionJobDetailPage() {
 
                   <div className="text-muted-foreground">Sides:</div>
                   <div>{sidesDisplay}</div>
+
+                  {lamination && (
+                    <>
+                      <div className="text-muted-foreground">Lamination:</div>
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant={lamination.kind === "none" ? "outline" : "default"}
+                          className={
+                            lamination.kind === "gloss"
+                              ? "bg-blue-500 hover:bg-blue-600"
+                              : lamination.kind === "matte"
+                                ? "bg-slate-500 hover:bg-slate-600"
+                                : lamination.kind === "textured_floor"
+                                  ? "bg-amber-500 hover:bg-amber-600"
+                                  : lamination.kind === "custom"
+                                    ? "bg-purple-500 hover:bg-purple-600"
+                                    : ""
+                          }
+                        >
+                          {lamination.label}
+                        </Badge>
+                        {lamination.source === "note" && (
+                          <span className="text-xs text-muted-foreground italic">(from notes)</span>
+                        )}
+                      </div>
+                    </>
+                  )}
 
                   <div className="text-muted-foreground">Station:</div>
                   <div className="capitalize">{data.stationKey || "—"}</div>

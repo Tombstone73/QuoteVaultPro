@@ -22,6 +22,7 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
+  LayoutGrid,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -85,7 +86,9 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     section: "PRODUCTION",
     sectionKey: "production",
     items: [
-      { id: "production", name: "Production (MVP)", icon: Factory, path: ROUTES.production.board },
+      { id: "production-overview", name: "Overview", icon: LayoutGrid, path: "/production" },
+      { id: "production-flatbed", name: "Flatbed", icon: Factory, path: "/production/flatbed" },
+      { id: "production-roll", name: "Roll", icon: Factory, path: "/production/roll" },
     ],
   },
   {
