@@ -39,6 +39,13 @@ import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/config/routes";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
+import { productionCardTheme, computeUrgency, statusColors } from "../theme/productionCardTheme";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   DndContext,
   DragEndEvent,
@@ -85,9 +92,12 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
 
 // Kanban column configuration (hardcoded for MVP, future org-config)
 const KANBAN_COLUMNS = [
-  { id: "queued", label: "Queued", status: "queued" },
-  { id: "in_progress", label: "Printing", status: "in_progress" },
-  { id: "done", label: "Done", status: "done" },
+  { id: "queued", label: "Queued", stepKey: null },
+  { id: "prepress", label: "Prepress", stepKey: "prepress" },
+  { id: "printing", label: "Printing", stepKey: "printing" },
+  { id: "finishing", label: "Finishing", stepKey: "finishing" },
+  { id: "fulfillment", label: "Fulfillment", stepKey: "fulfillment" },
+  { id: "production_complete", label: "Production Complete", stepKey: "production_complete" },
 ] as const;
 
 // Board card display configuration
@@ -105,8 +115,8 @@ const DEFAULT_BOARD_CARD_CONFIG: BoardCardConfig = {
   qty: true,
   sides: true,
   dueDate: true,
-  station: false,
-  status: false,
+  station: true,
+  status: true,
 };
 
 /**
@@ -238,6 +248,39 @@ export default function ProductionOverviewPage() {
     return DEFAULT_BOARD_CARD_CONFIG;
   });
 
+  // Global collapsed state for board cards
+  const [globalCollapsed, setGlobalCollapsed] = useState<boolean>(() => {
+    const saved = localStorage.getItem("production_board_collapsed");
+    return saved === "true";
+  });
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+
+  const toggleGlobalCollapsed = () => {
+    const newValue = !globalCollapsed;
+    setGlobalCollapsed(newValue);
+    localStorage.setItem("production_board_collapsed", String(newValue));
+    // Clear individual card states when changing global
+    setExpandedCards(new Set());
+  };
+
+  const toggleCardExpanded = (jobId: string) => {
+    setExpandedCards(prev => {
+      const next = new Set(prev);
+      if (next.has(jobId)) {
+        next.delete(jobId);
+      } else {
+        next.add(jobId);
+      }
+      return next;
+    });
+  };
+
+  const isCardExpanded = (jobId: string) => {
+    // If global is collapsed, check if this specific card is expanded
+    // If global is expanded, check if this specific card is NOT collapsed
+    return globalCollapsed ? expandedCards.has(jobId) : !expandedCards.has(jobId);
+  };
+
   const saveBoardCardConfig = (newConfig: BoardCardConfig) => {
     setBoardCardConfig(newConfig);
     localStorage.setItem("productionOverviewBoardCardConfig", JSON.stringify(newConfig));
@@ -338,6 +381,15 @@ export default function ProductionOverviewPage() {
       activationConstraint: {
         distance: 8, // Require 8px movement before drag starts
       },
+      // Exclude interactive elements from starting drag
+      onActivation: (event) => {
+        const target = event.event.target as HTMLElement;
+        // Don't start drag if clicking on interactive elements
+        if (target.closest('[data-no-dnd="true"]')) {
+          return false;
+        }
+        return true;
+      },
     })
   );
 
@@ -357,35 +409,50 @@ export default function ProductionOverviewPage() {
     const jobId = active.id as string;
     const overId = over.id as string;
     
-    // Determine target status from over.id
-    // over.id should be one of: "queued" | "in_progress" | "done" (droppable column IDs)
-    let targetStatus: "queued" | "in_progress" | "done" | null = null;
+    // Determine target column from over.id
+    let targetColumnId: string | null = null;
     
-    if (overId === "queued" || overId === "in_progress" || overId === "done") {
-      targetStatus = overId;
+    // Check if dropped directly on a column
+    const targetColumn = KANBAN_COLUMNS.find(col => col.id === overId);
+    if (targetColumn) {
+      targetColumnId = targetColumn.id;
     } else {
-      // If dropped over another job card, infer status from that card's status
+      // If dropped over another job card, infer column from that card
       const targetJob = jobs.find(j => j.id === overId);
       if (targetJob) {
-        targetStatus = targetJob.status;
+        targetColumnId = getJobColumn(targetJob);
       }
     }
     
-    if (!targetStatus) {
-      if (import.meta.env.DEV) console.debug('[DnD] Could not resolve target status', { activeId: jobId, overId });
+    if (!targetColumnId) {
+      if (import.meta.env.DEV) console.debug('[DnD] Could not resolve target column', { activeId: jobId, overId });
       return;
     }
     
-    // Find the job to check if status changed
+    // Find the job and check if column would change
     const job = jobs.find(j => j.id === jobId);
     if (!job) {
       if (import.meta.env.DEV) console.debug('[DnD] Job not found', { jobId });
       return;
     }
     
-    if (job.status === targetStatus) {
-      if (import.meta.env.DEV) console.debug('[DnD] No status change needed - same status', { jobId, status: job.status });
+    const currentColumn = getJobColumn(job);
+    if (currentColumn === targetColumnId) {
+      if (import.meta.env.DEV) console.debug('[DnD] No change needed - same column', { jobId, column: currentColumn });
       return;
+    }
+    
+    // Determine status and stepKey based on target column
+    const column = KANBAN_COLUMNS.find(col => col.id === targetColumnId)!;
+    let targetStatus: "queued" | "in_progress" | "done";
+    let targetStepKey: string | null = column.stepKey;
+    
+    if (targetColumnId === "queued") {
+      targetStatus = "queued";
+    } else if (targetColumnId === "production_complete") {
+      targetStatus = "done";
+    } else {
+      targetStatus = "in_progress";
     }
     
     // Prevent duplicate in-flight mutations for the same job
@@ -395,11 +462,14 @@ export default function ProductionOverviewPage() {
     }
     
     if (import.meta.env.DEV) {
-      console.debug('[DnD] Initiating status change', {
+      console.debug('[DnD] Initiating column change', {
         jobId,
+        fromColumn: currentColumn,
+        toColumn: targetColumnId,
         fromStatus: job.status,
         toStatus: targetStatus,
-        resolvedFrom: overId === targetStatus ? 'column' : 'card'
+        fromStepKey: job.stepKey,
+        toStepKey: targetStepKey,
       });
     }
 
@@ -416,7 +486,7 @@ export default function ProductionOverviewPage() {
       (old) => {
         if (!old) return old;
         return old.map((j) =>
-          j.id === jobId ? { ...j, status: targetStatus as "queued" | "in_progress" | "done" } : j
+          j.id === jobId ? { ...j, status: targetStatus, stepKey: targetStepKey } : j
         );
       }
     );
@@ -425,7 +495,7 @@ export default function ProductionOverviewPage() {
     fetch(`/api/production/jobs/${jobId}/status`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: targetStatus }),
+      body: JSON.stringify({ status: targetStatus, stepKey: targetStepKey }),
       credentials: "include",
     })
       .then(async (res) => {
@@ -518,13 +588,34 @@ export default function ProductionOverviewPage() {
     return sorted;
   }, [jobs, sort.field, sort.direction]);
 
-  // Group jobs by status for Kanban board
+  // Helper: Determine which column a job belongs to (SAFE fallback guaranteed)
+  const getJobColumn = (job: ProductionJobListItem): string => {
+    // Normalize stepKey to known column IDs
+    const stepKey = job.stepKey || job.stationKey;
+    if (stepKey) {
+      const normalizedKey = stepKey.toLowerCase().trim();
+      // Match to known column IDs
+      const knownColumns = ["queued", "prepress", "printing", "finishing", "fulfillment", "production_complete"];
+      if (knownColumns.includes(normalizedKey)) {
+        return normalizedKey;
+      }
+    }
+    
+    // Fallback based on status (guaranteed assignment)
+    if (job.status === "queued") return "queued";
+    if (job.status === "done") return "production_complete";
+    // Default to printing for in_progress jobs without stepKey
+    return "printing";
+  };
+
+  // Group jobs by column (using stepKey-based routing)
   const jobsByStatus = useMemo(() => {
     const grouped = new Map<string, ProductionJobListItem[]>();
-    KANBAN_COLUMNS.forEach(col => grouped.set(col.status, []));
+    KANBAN_COLUMNS.forEach(col => grouped.set(col.id, []));
     
     jobs.forEach(job => {
-      const column = grouped.get(job.status);
+      const columnId = getJobColumn(job);
+      const column = grouped.get(columnId);
       if (column) {
         column.push(job);
       }
@@ -538,6 +629,15 @@ export default function ProductionOverviewPage() {
         return aDate - bDate;
       });
     });
+    
+    // Dev logging
+    if (import.meta.env.DEV) {
+      const counts: Record<string, number> = {};
+      grouped.forEach((jobs, columnId) => {
+        counts[columnId] = jobs.length;
+      });
+      console.log('[ProductionBoard] Job grouping:', { total: jobs.length, byColumn: counts });
+    }
     
     return grouped;
   }, [jobs]);
@@ -622,7 +722,26 @@ export default function ProductionOverviewPage() {
 
           {/* Board settings */}
           {viewMode === "board" && (
-            <Popover>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={toggleGlobalCollapsed}
+                className="gap-2"
+              >
+                {globalCollapsed ? (
+                  <>
+                    <ChevronsUpDown className="w-4 h-4" />
+                    Expand All
+                  </>
+                ) : (
+                  <>
+                    <ChevronsUpDown className="w-4 h-4" />
+                    Collapse All
+                  </>
+                )}
+              </Button>
+              <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8">
                   <Settings2 className="w-4 h-4 mr-1.5" />
@@ -659,6 +778,7 @@ export default function ProductionOverviewPage() {
                 </div>
               </PopoverContent>
             </Popover>
+            </>
           )}
 
           {/* Column management for list view */}
@@ -724,9 +844,9 @@ export default function ProductionOverviewPage() {
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="flex gap-4 overflow-x-auto pb-4">
             {KANBAN_COLUMNS.map(column => {
-              const columnJobs = jobsByStatus.get(column.status) ?? [];
+              const columnJobs = jobsByStatus.get(column.id) ?? [];
               return (
                 <KanbanColumn
                   key={column.id}
@@ -734,6 +854,8 @@ export default function ProductionOverviewPage() {
                   jobs={columnJobs}
                   boardCardConfig={boardCardConfig}
                   onArtworkClick={openArtworkModal}
+                  isCardExpanded={isCardExpanded}
+                  toggleCardExpanded={toggleCardExpanded}
                 />
               );
             })}
@@ -919,16 +1041,20 @@ function KanbanColumn({
   jobs,
   boardCardConfig,
   onArtworkClick,
+  isCardExpanded,
+  toggleCardExpanded,
 }: {
   column: typeof KANBAN_COLUMNS[number];
   jobs: ProductionJobListItem[];
   boardCardConfig: BoardCardConfig;
   onArtworkClick: (job: ProductionJobListItem) => void;
+  isCardExpanded: (jobId: string) => boolean;
+  toggleCardExpanded: (jobId: string) => void;
 }) {
-  const { setNodeRef } = useDroppable({ id: column.status });
+  const { setNodeRef } = useDroppable({ id: column.id });
 
   return (
-    <Card className="flex flex-col">
+    <Card className="flex flex-col flex-shrink-0 w-[420px]">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium flex items-center justify-between">
           <span>{column.label}</span>
@@ -949,6 +1075,8 @@ function KanbanColumn({
               job={job}
               boardCardConfig={boardCardConfig}
               onArtworkClick={onArtworkClick}
+              isExpanded={isCardExpanded(job.id)}
+              toggleExpanded={() => toggleCardExpanded(job.id)}
             />
           ))
         )}
@@ -1028,17 +1156,132 @@ function ResizableTableHead({
   );
 }
 
+// Status bullet component for production card header
+function StatusBullet({
+  status,
+  disabled,
+  onChange,
+}: {
+  status: "queued" | "in_progress" | "done";
+  disabled: boolean;
+  onChange: (status: "queued" | "in_progress" | "done") => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const colors = statusColors[status];
+  
+  const statusLabels = {
+    queued: "Queued",
+    in_progress: "In Progress",
+    done: "Done",
+  };
+  
+  // Map current status to display label
+  const getCurrentLabel = () => {
+    if (status === "queued") return "Queued";
+    if (status === "done") return "Production Complete";
+    // For in_progress, we don't have stepKey here, so show generic label
+    return "In Progress";
+  };
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger
+        disabled={disabled}
+        data-no-dnd="true"
+        onPointerDownCapture={(e) => e.stopPropagation()}
+        onMouseDownCapture={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        className={cn(
+          "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[10px] font-semibold transition-all cursor-pointer",
+          "bg-muted/30 hover:bg-muted/50 border border-border/40",
+          "shadow-sm hover:shadow-md",
+          disabled && "opacity-50 cursor-not-allowed"
+        )}
+      >
+        <div className={cn("w-2 h-2 rounded-full shadow-sm", colors.dot)} />
+        <span className={colors.label}>{getCurrentLabel()}</span>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="center" className="w-40">
+        <DropdownMenuItem
+          onClick={() => {
+            onChange("queued");
+            setOpen(false);
+          }}
+          className="text-xs"
+        >
+          <div className={cn("w-1.5 h-1.5 rounded-full mr-2", statusColors.queued.dot)} />
+          Queued
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            onChange("in_progress");
+            setOpen(false);
+          }}
+          className="text-xs"
+        >
+          <div className={cn("w-1.5 h-1.5 rounded-full mr-2", statusColors.in_progress.dot)} />
+          Prepress
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            onChange("in_progress");
+            setOpen(false);
+          }}
+          className="text-xs"
+        >
+          <div className={cn("w-1.5 h-1.5 rounded-full mr-2", statusColors.in_progress.dot)} />
+          Printing
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            onChange("in_progress");
+            setOpen(false);
+          }}
+          className="text-xs"
+        >
+          <div className={cn("w-1.5 h-1.5 rounded-full mr-2", statusColors.in_progress.dot)} />
+          Finishing
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            onChange("in_progress");
+            setOpen(false);
+          }}
+          className="text-xs"
+        >
+          <div className={cn("w-1.5 h-1.5 rounded-full mr-2", statusColors.in_progress.dot)} />
+          Fulfillment
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            onChange("done");
+            setOpen(false);
+          }}
+          className="text-xs"
+        >
+          <div className={cn("w-1.5 h-1.5 rounded-full mr-2", statusColors.done.dot)} />
+          Production Complete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 // Job card component for Kanban board
 function JobCard({ 
   job, 
   boardCardConfig,
   onArtworkClick,
   isDragOverlay = false,
+  isExpanded = true,
+  toggleExpanded,
 }: { 
   job: ProductionJobListItem; 
   boardCardConfig: BoardCardConfig;
   onArtworkClick: (job: ProductionJobListItem) => void;
   isDragOverlay?: boolean;
+  isExpanded?: boolean;
+  toggleExpanded?: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: job.id,
@@ -1046,7 +1289,7 @@ function JobCard({
   const navigate = useNavigate();
   const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
-  const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
+  const urgency = computeUrgency(job.order.dueDate);
   const customerId = job.order.customerId;
   const orderId = job.order.id;
 
@@ -1062,133 +1305,241 @@ function JobCard({
     <Card 
       ref={setNodeRef}
       style={style}
+      {...attributes}
+      {...listeners}
       className={cn(
-        "relative",
-        "hover:shadow-md transition-shadow",
+        "relative cursor-grab active:cursor-grabbing",
+        "hover:shadow-md transition-all",
         (isDragging && !isDragOverlay) && "opacity-50",
-        isDragOverlay && "shadow-lg rotate-3"
+        isDragOverlay && "shadow-lg rotate-3",
+        // Urgency styling
+        urgency === 'overdue' && cn(productionCardTheme.overdue.outline, "shadow-lg", productionCardTheme.overdue.glow),
+        urgency === 'due_today' && cn(productionCardTheme.dueToday.outline, "shadow-lg", productionCardTheme.dueToday.glow),
       )}
     >
-      <CardContent className="p-3 space-y-2">
-        {/* Drag handle - separate from click areas */}
-        <div 
-          {...attributes}
-          {...listeners}
-          className="absolute top-2 right-2 cursor-grab active:cursor-grabbing p-1 hover:bg-muted/50 rounded"
-          title="Drag to move"
-        >
-          <GripVertical className="w-3 h-3 text-muted-foreground" />
-        </div>
+      <CardContent className="p-5 space-y-3">
+        {/* Header Row: Customer | Status Bullet | Order # | Expand/Collapse */}
+        <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-3">
+          {/* Left: Customer */}
+          {boardCardConfig.customer && (
+            <div className="justify-self-start min-w-0" data-no-dnd="true">
+              {customerId ? (
+                <Link
+                  to={ROUTES.customers.detail(customerId)}
+                  className="text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline inline-flex max-w-full truncate uppercase tracking-wide"
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDownCapture={(e) => e.stopPropagation()}
+                  onMouseDownCapture={(e) => e.stopPropagation()}
+                >
+                  {job.order.customerName}
+                </Link>
+              ) : (
+                <span className="text-xs font-semibold truncate block uppercase tracking-wide">
+                  {job.order.customerName}
+                </span>
+              )}
+            </div>
+          )}
 
-        {/* Clickable card body area - navigates to job detail */}
-        <div onClick={handleCardClick} className="cursor-pointer">
-          {/* Top row: customer (link) + order (link) */}
-          {(boardCardConfig.customer || boardCardConfig.orderNumber) && (
-            <div className="flex items-start justify-between gap-2 pr-6">
-            {boardCardConfig.customer && (
-              <div className="flex-1 min-w-0">
-                {customerId ? (
-                  <Link
-                    to={ROUTES.customers.detail(customerId)}
-                    className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline inline-flex max-w-full truncate"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {job.order.customerName}
-                  </Link>
-                ) : (
-                  <span className="text-xs font-medium truncate block">
-                    {job.order.customerName}
-                  </span>
-                )}
-              </div>
-            )}
-            {boardCardConfig.orderNumber && orderId && (
+          {/* Center: Status Bullet */}
+          {boardCardConfig.status && (
+            <div className="justify-self-center">
+              <StatusBullet
+                status={job.status}
+                disabled={updateStatus.isPending || isDragOverlay}
+                onChange={(nextStatus) => {
+                  if (nextStatus !== job.status) {
+                    updateStatus.mutate(nextStatus);
+                  }
+                }}
+              />
+            </div>
+          )}
+
+          {/* Right: Order # */}
+          {boardCardConfig.orderNumber && orderId && (
+            <div className="justify-self-end" data-no-dnd="true">
               <Link
                 to={ROUTES.orders.detail(orderId)}
-                className="text-xs text-blue-600 hover:text-blue-700 hover:underline shrink-0"
+                className="text-xs text-muted-foreground hover:text-foreground hover:underline shrink-0 font-medium"
                 onClick={(e) => e.stopPropagation()}
+                onPointerDownCapture={(e) => e.stopPropagation()}
+                onMouseDownCapture={(e) => e.stopPropagation()}
               >
                 #{job.order.orderNumber}
               </Link>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Middle: job description */}
-        {boardCardConfig.jobDescription && (
-          <div className="text-xs text-muted-foreground line-clamp-2">
-            {job.jobDescription || "—"}
-          </div>
-        )}
-
-        {/* Bottom: badges */}
-        <div className="flex items-center flex-wrap gap-1.5">
-          {boardCardConfig.media && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0.5">
-              {job.media || "—"}
-            </Badge>
-          )}
-          {boardCardConfig.qty && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0.5">
-              Qty: {job.qty || 0}
-            </Badge>
-          )}
-          {boardCardConfig.sides && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0.5">
-              {sides.toLowerCase().includes("double") ? "DS" : "SS"}
-            </Badge>
-          )}
-          {boardCardConfig.dueDate && job.order.dueDate && (
-            <Badge 
-              variant={isDueOverdue ? "destructive" : "secondary"}
-              className="text-[10px] px-1.5 py-0.5"
-            >
-              {format(parseISO(job.order.dueDate), "MMM d")}
-            </Badge>
-          )}
-          {boardCardConfig.station && (
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 capitalize">
-              {job.stationKey || "—"}
-            </Badge>
-          )}
-          {boardCardConfig.status && (
-            <div
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <Select
-                value={job.status}
-                onValueChange={(value) => {
-                  const next = value as "queued" | "in_progress" | "done";
-                  if (next !== job.status) updateStatus.mutate(next);
+          {/* Expand/Collapse Button */}
+          {toggleExpanded && (
+            <div className="justify-self-end" data-no-dnd="true">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleExpanded();
                 }}
-                disabled={updateStatus.isPending || isDragOverlay}
+                onPointerDownCapture={(e) => e.stopPropagation()}
+                onMouseDownCapture={(e) => e.stopPropagation()}
               >
-                <SelectTrigger className="h-6 px-1.5 text-[10px] w-[110px] capitalize">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="queued">Queued</SelectItem>
-                  <SelectItem value="in_progress">In Progress</SelectItem>
-                  <SelectItem value="done">Done</SelectItem>
-                </SelectContent>
-              </Select>
+                {isExpanded ? (
+                  <ChevronsUpDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronsUpDown className="w-3.5 h-3.5" />
+                )}
+              </Button>
             </div>
           )}
         </div>
-      </div>
 
-      {/* Artwork thumbnails - separate click zone for modal */}
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onArtworkClick(job);
-        }}
-        className="inline-flex w-fit cursor-pointer hover:opacity-80 transition-opacity p-0 bg-transparent"
-      >
-        <ThumbnailGroup job={job} sides={sides} />
-      </button>
+        {/* Collapsed View */}
+        {!isExpanded && (
+          <>
+            {/* Title */}
+            {boardCardConfig.jobDescription && (
+              <div className="text-sm font-medium truncate">
+                {job.jobDescription || "Untitled Job"}
+              </div>
+            )}
+            {/* Material + Due Date compact row */}
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>{job.media || "—"}</span>
+              {job.order.dueDate ? (
+                <span className={cn(
+                  "font-medium",
+                  urgency === 'overdue' && "text-red-500",
+                  urgency === 'due_today' && "text-amber-500"
+                )}>
+                  {format(parseISO(job.order.dueDate), "MMM d")}
+                </span>
+              ) : (
+                <span>—</span>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Expanded View */}
+        {isExpanded && (
+          <>
+            {/* Title: Job Description */}
+            {boardCardConfig.jobDescription && (
+              <h3 
+                className="text-lg font-semibold leading-tight cursor-pointer"
+                onClick={handleCardClick}
+              >
+                {job.jobDescription || "Untitled Job"}
+          </h3>
+        )}
+
+        {/* Metadata Grid: 2 columns */}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+          {/* Material */}
+          {boardCardConfig.media && (
+            <div>
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                Material
+              </div>
+              <div className="text-sm font-medium">
+                {job.media || "—"}
+              </div>
+            </div>
+          )}
+
+          {/* Quantity */}
+          {boardCardConfig.qty && (
+            <div>
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                Quantity
+              </div>
+              <div className="text-sm font-medium">
+                {job.qty ? `${job.qty} Units` : "—"}
+              </div>
+            </div>
+          )}
+
+          {/* Machine/Station */}
+          {boardCardConfig.station && job.stationKey && (
+            <div>
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                Machine
+              </div>
+              <div className="text-sm font-medium flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                <span className="capitalize">{job.stationKey}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Due Date - Always show with fallback */}
+          {boardCardConfig.dueDate && (
+            <div>
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                Due Date
+              </div>
+              {job.order.dueDate ? (
+                <div className={cn(
+                  "text-sm font-semibold",
+                  urgency === 'overdue' && "text-red-500",
+                  urgency === 'due_today' && "text-amber-500",
+                  urgency === 'normal' && "text-foreground"
+                )}>
+                  {format(parseISO(job.order.dueDate), "EEEE, h:mmaaa").replace("AM", "AM").replace("PM", "PM")}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  —
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Thumbnail + Badges Row */}
+        <div className="flex items-center gap-2">
+          {/* Thumbnail */}
+          <button
+            type="button"
+            data-no-dnd="true"
+            onClick={(e) => {
+              e.stopPropagation();
+              onArtworkClick(job);
+            }}
+            onPointerDownCapture={(e) => e.stopPropagation()}
+            onMouseDownCapture={(e) => e.stopPropagation()}
+            className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+          >
+            <ThumbnailGroup job={job} sides={sides} />
+          </button>
+
+          {/* Badges */}
+          <div className="flex items-center flex-wrap gap-1.5">
+            {boardCardConfig.sides && (
+              <Badge variant="outline" className="text-[10px] px-2 py-0.5 font-semibold uppercase">
+                {sides.toLowerCase().includes("double") ? "Double Side" : "Single Side"}
+              </Badge>
+            )}
+            {urgency === 'overdue' && (
+              <Badge variant="destructive" className="text-[10px] px-2 py-0.5 font-semibold uppercase">
+                Overdue
+              </Badge>
+            )}
+            {urgency === 'due_today' && (
+              <Badge variant="default" className="text-[10px] px-2 py-0.5 font-semibold uppercase bg-amber-500">
+                Due Today
+              </Badge>
+            )}
+            {/* Show PRIORITY badge for demo - can be made conditional later */}
+            <Badge variant="default" className="text-[10px] px-2 py-0.5 font-semibold uppercase bg-blue-600">
+              Priority
+            </Badge>
+          </div>
+        </div>
+          </>
+        )}
       </CardContent>
     </Card>
   );
