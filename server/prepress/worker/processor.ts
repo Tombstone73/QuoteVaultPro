@@ -36,7 +36,14 @@ export async function claimJob(): Promise<PrepressJob | null> {
     }
     
     console.log(`[Prepress Worker] Claimed job ${claimed.id}`);
-    return claimed;
+    
+    // Normalize JSONB fields from unknown to expected types
+    return {
+      ...claimed,
+      reportSummary: claimed.reportSummary as any,
+      outputManifest: claimed.outputManifest as any,
+      error: claimed.error as any,
+    };
     
   } catch (error) {
     console.error('[Prepress Worker] Failed to claim job:', error);
@@ -68,8 +75,8 @@ export async function processJob(job: PrepressJob): Promise<void> {
       .set({
         status: 'succeeded',
         finishedAt: new Date(),
-        reportSummary,
-        outputManifest,
+        reportSummary: reportSummary as any,
+        outputManifest: outputManifest as any,
         progressMessage: 'Completed successfully',
       })
       .where(eq(prepressJobs.id, job.id));

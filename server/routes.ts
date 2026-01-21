@@ -10613,6 +10613,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const job = jobRows[0];
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
 
+        // IDEMPOTENCY: If status unchanged, return success without DB writes
+        if (job.status === newStatus) {
+          if (process.env.NODE_ENV === "development") {
+            console.log(`[Production] Status update no-op (already ${newStatus}):`, {
+              organizationId,
+              jobId,
+              status: newStatus
+            });
+          }
+          return job;
+        }
+
         // If setting to done, stop timer if running
         if (newStatus === "done") {
           const lastTimer = await tx

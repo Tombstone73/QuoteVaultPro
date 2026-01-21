@@ -3853,3 +3853,29 @@ export const assetLinksRelations = relations(assetLinks, ({ one }) => ({
     references: [organizations.id],
   }),
 }));
+
+// ============================================================
+// PREPRESS TABLES (imported from server/prepress/schema.ts)
+// ============================================================
+// Re-export prepress tables so they're available in db.query
+export {
+  prepressJobs,
+  prepressFindings,
+  prepressFixLogs,
+  prepressJobStatusEnum,
+  prepressJobModeEnum,
+  prepressFindingTypeEnum,
+  prepressFixTypeEnum,
+  insertPrepressJobSchema,
+  selectPrepressJobSchema,
+  insertPrepressFindingSchema,
+  insertPrepressFixLogSchema,
+  type PrepressJob,
+  type InsertPrepressJob,
+  type PrepressJobStatus,
+  type PrepressJobMode,
+  type PrepressFinding,
+  type InsertPrepressFinding,
+  type PrepressFixLog,
+  type InsertPrepressFixLog,
+} from "../server/prepress/schema";

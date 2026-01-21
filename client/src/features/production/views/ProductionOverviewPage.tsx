@@ -328,30 +328,8 @@ export default function ProductionOverviewPage() {
   // Query client for optimistic updates
   const queryClient = useQueryClient();
   
-  // Mutation hook for drag & drop status updates (created dynamically when needed)
-  const [pendingStatusUpdate, setPendingStatusUpdate] = useState<{
-    jobId: string;
-    status: "queued" | "in_progress" | "done";
-    rollback: Array<[unknown, ProductionJobListItem[] | undefined]>;
-  } | null>(null);
-  
-  const statusUpdateMutation = useUpdateProductionJobStatus(pendingStatusUpdate?.jobId || '');
-  
-  // Execute pending status update
-  useEffect(() => {
-    if (pendingStatusUpdate && pendingStatusUpdate.jobId) {
-      statusUpdateMutation.mutate(pendingStatusUpdate.status, {
-        onError: () => {
-          for (const [queryKey, data] of pendingStatusUpdate.rollback) {
-            queryClient.setQueryData(queryKey as any, data);
-          }
-        },
-        onSettled: () => {
-          setPendingStatusUpdate(null);
-        }
-      });
-    }
-  }, [pendingStatusUpdate, statusUpdateMutation]);
+  // Track in-flight mutations to prevent duplicates
+  const inFlightMutations = useRef<Set<string>>(new Set());
 
   // Drag and drop state
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -372,7 +350,7 @@ export default function ProductionOverviewPage() {
     setActiveJobId(null);
 
     if (!over) {
-      if (import.meta.env.DEV) console.log('[DnD] Drag ended with no drop target');
+      if (import.meta.env.DEV) console.debug('[DnD] Drag ended with no drop target');
       return;
     }
 
@@ -394,31 +372,39 @@ export default function ProductionOverviewPage() {
     }
     
     if (!targetStatus) {
-      if (import.meta.env.DEV) console.log('[DnD] Could not resolve target status', { activeId: jobId, overId });
+      if (import.meta.env.DEV) console.debug('[DnD] Could not resolve target status', { activeId: jobId, overId });
       return;
     }
     
     // Find the job to check if status changed
     const job = jobs.find(j => j.id === jobId);
     if (!job) {
-      if (import.meta.env.DEV) console.log('[DnD] Job not found', { jobId });
+      if (import.meta.env.DEV) console.debug('[DnD] Job not found', { jobId });
       return;
     }
     
     if (job.status === targetStatus) {
-      if (import.meta.env.DEV) console.log('[DnD] No status change needed', { jobId, currentStatus: job.status });
+      if (import.meta.env.DEV) console.debug('[DnD] No status change needed - same status', { jobId, status: job.status });
+      return;
+    }
+    
+    // Prevent duplicate in-flight mutations for the same job
+    if (inFlightMutations.current.has(jobId)) {
+      if (import.meta.env.DEV) console.debug('[DnD] Skipping duplicate mutation - already in flight', { jobId });
       return;
     }
     
     if (import.meta.env.DEV) {
-      console.log('[DnD] Status change', {
+      console.debug('[DnD] Initiating status change', {
         jobId,
-        overId,
-        currentStatus: job.status,
-        targetStatus,
+        fromStatus: job.status,
+        toStatus: targetStatus,
         resolvedFrom: overId === targetStatus ? 'column' : 'card'
       });
     }
+
+    // Mark mutation as in-flight
+    inFlightMutations.current.add(jobId);
 
     // OPTIMISTIC UPDATE: update all production job list queries (any filters)
     const rollback = queryClient.getQueriesData<ProductionJobListItem[]>({
@@ -435,11 +421,34 @@ export default function ProductionOverviewPage() {
       }
     );
 
-    // MUTATION: Call API to persist change (rollback on failure)
-    setPendingStatusUpdate({ jobId, status: targetStatus, rollback });
-    
-    // Note: Rollback on error is handled by React Query's automatic invalidation
-    // The mutation hook already calls invalidateProduction on both success and error
+    // MUTATION: Call API directly
+    fetch(`/api/production/jobs/${jobId}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: targetStatus }),
+      credentials: "include",
+    })
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || "Failed to update status");
+        return json.data;
+      })
+      .then(() => {
+        // Success - invalidate queries
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs", jobId] });
+      })
+      .catch((error) => {
+        // Error - rollback optimistic update
+        console.error('[DnD] Status update failed:', error);
+        for (const [queryKey, data] of rollback) {
+          queryClient.setQueryData(queryKey as any, data);
+        }
+      })
+      .finally(() => {
+        // Clear in-flight flag
+        inFlightMutations.current.delete(jobId);
+      });
   };
 
   const jobs = useMemo(() => allJobs ?? [], [allJobs]);
