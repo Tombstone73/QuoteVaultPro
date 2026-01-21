@@ -10597,11 +10597,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const jobId = req.params.jobId;
       const statusSchema = z.object({
         status: z.enum(["queued", "in_progress", "done"]),
+        stepKey: z.string().nullable().optional(),
       });
       const parsed = statusSchema.safeParse(req.body || {});
       if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
 
       const newStatus = parsed.data.status;
+      const newStepKey = parsed.data.stepKey !== undefined ? parsed.data.stepKey : undefined;
       const now = new Date();
 
       const result = await db.transaction(async (tx) => {
@@ -10613,13 +10615,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const job = jobRows[0];
         if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
 
-        // IDEMPOTENCY: If status unchanged, return success without DB writes
-        if (job.status === newStatus) {
+        // IDEMPOTENCY: If status and stepKey unchanged, return success without DB writes
+        const stepKeyUnchanged = newStepKey === undefined || job.stepKey === newStepKey;
+        if (job.status === newStatus && stepKeyUnchanged) {
           if (process.env.NODE_ENV === "development") {
-            console.log(`[Production] Status update no-op (already ${newStatus}):`, {
+            console.log(`[Production] Status/stepKey update no-op (already ${newStatus}/${job.stepKey}):`, {
               organizationId,
               jobId,
-              status: newStatus
+              status: newStatus,
+              stepKey: newStepKey
             });
           }
           return job;
@@ -10657,8 +10661,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
 
-        // Update status
+        // Update status and stepKey
         const updateData: any = { status: newStatus, updatedAt: now };
+        if (newStepKey !== undefined) {
+          updateData.stepKey = newStepKey;
+        }
         if (newStatus === "done") {
           updateData.completedAt = now;
         } else if ((job.status as string) === "done" && (newStatus as string) !== "done") {
