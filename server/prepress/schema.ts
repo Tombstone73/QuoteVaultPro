@@ -73,7 +73,7 @@ export const prepressJobs = pgTable("prepress_jobs", {
   // Results (populated on completion)
   reportSummary: jsonb("report_summary").$type<{
     score: number;
-    counts: { blockers: number; warnings: number; info: number };
+    counts: { BLOCKER: number; WARNING: number; INFO: number };
     pageCount: number;
   } | null>(),
   outputManifest: jsonb("output_manifest").$type<{
@@ -118,6 +118,37 @@ export const insertPrepressJobSchema = createInsertSchema(prepressJobs).omit({
 export const selectPrepressJobSchema = createSelectSchema(prepressJobs);
 
 export type PrepressJob = z.infer<typeof selectPrepressJobSchema>;
+
+// Zod schemas for JSONB fields (aligned with types.ts)
+export const issueCountsSchema = z.object({
+  BLOCKER: z.number().int().nonnegative(),
+  WARNING: z.number().int().nonnegative(),
+  INFO: z.number().int().nonnegative(),
+});
+
+export const prepressReportSummarySchema = z.object({
+  score: z.number().min(0).max(100),
+  counts: issueCountsSchema,
+  pageCount: z.number().int().positive(),
+});
+
+export const prepressOutputManifestSchema = z.object({
+  report_json: z.boolean().optional(),
+  proof_png: z.boolean().optional(),
+  fixed_pdf: z.boolean().optional(),
+});
+
+export const prepressErrorSchema = z.object({
+  message: z.string(),
+  code: z.string(),
+  details: z.record(z.any()).optional(),
+  stack: z.string().optional(),
+});
+
+// Export types for use in other modules
+export type PrepressReportSummary = z.infer<typeof prepressReportSummarySchema>;
+export type PrepressOutputManifest = z.infer<typeof prepressOutputManifestSchema>;
+export type PrepressError = z.infer<typeof prepressErrorSchema>;
 export type InsertPrepressJob = z.infer<typeof insertPrepressJobSchema>;
 export type PrepressJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type PrepressJobMode = 'check' | 'check_and_fix';
