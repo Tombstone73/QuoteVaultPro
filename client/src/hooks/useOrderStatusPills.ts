@@ -74,6 +74,15 @@ export function useAssignOrderStatusPill(orderId: string) {
       queryClient.invalidateQueries({ queryKey: ordersListQueryKey() });
       queryClient.invalidateQueries({ queryKey: ['/api', 'timeline'] });
 
+      // If the pill implies production, the server may have scheduled jobs.
+      // Refresh all production job lists regardless of filters.
+      queryClient.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === '/api/production/jobs';
+        },
+      });
+
       // Show success toast
       toast({
         title: 'Status Updated',
