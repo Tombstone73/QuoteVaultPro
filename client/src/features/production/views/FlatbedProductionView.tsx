@@ -31,6 +31,8 @@ import {
   ProductionOrderArtworkSummary,
   ProductionOrderLineItemSummary,
   useAddProductionNote,
+  useEditProductionNote,
+  useDeleteProductionNote,
   useCompleteProductionJob,
   useProductionJob,
   useProductionJobs,
@@ -55,6 +57,8 @@ import {
   Undo2,
   Download,
   Upload,
+  Edit2,
+  Trash2,
 } from "lucide-react";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
@@ -545,11 +549,15 @@ function ActionRail({
   const reopen = useReopenProductionJob(job.id);
   const reprint = useReprintProductionJob(job.id);
   const addNote = useAddProductionNote(job.id);
+  const editNote = useEditProductionNote(job.id);
+  const deleteNote = useDeleteProductionNote(job.id);
   const setMedia = useSetProductionMediaUsed(job.id);
 
   const [skipCompleteOpen, setSkipCompleteOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [deleteConfirmNoteId, setDeleteConfirmNoteId] = useState<string | null>(null);
   const [wasteOpen, setWasteOpen] = useState(false);
   const [wasteText, setWasteText] = useState("");
   const [wasteQty, setWasteQty] = useState<string>("");
@@ -562,6 +570,8 @@ function ActionRail({
     reopen.isPending ||
     reprint.isPending ||
     addNote.isPending ||
+    editNote.isPending ||
+    deleteNote.isPending ||
     setMedia.isPending;
 
   const canAct = job.status !== "done";
@@ -668,36 +678,173 @@ function ActionRail({
         </Button>
 
         <AlertDialog open={noteOpen} onOpenChange={setNoteOpen}>
+          <AlertDialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Production Notes</AlertDialogTitle>
+              <AlertDialogDescription>Manage notes for this production job. All changes are logged to the timeline.</AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-4">
+              {job.notes && job.notes.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-muted-foreground">Existing Notes:</div>
+                  <div className="space-y-2">
+                    {job.notes.map((n) => {
+                      const date = new Date(n.createdAt);
+                      const timeStr = date.toLocaleString(undefined, { 
+                        month: 'short', 
+                        day: 'numeric', 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                      });
+                      const isEditing = editingNoteId === n.id;
+                      
+                      return (
+                        <div key={n.id} className="rounded-md border border-muted bg-muted/30 p-3">
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <div className="text-xs text-muted-foreground">
+                              {timeStr}
+                              {n.edited && <span className="ml-2 text-amber-600">(edited)</span>}
+                            </div>
+                            <div className="flex gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 p-0"
+                                onClick={() => {
+                                  if (isEditing) {
+                                    setEditingNoteId(null);
+                                    setNoteText("");
+                                  } else {
+                                    setEditingNoteId(n.id);
+                                    setNoteText(n.text);
+                                  }
+                                }}
+                                disabled={isBusy}
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                                onClick={() => setDeleteConfirmNoteId(n.id)}
+                                disabled={isBusy}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </div>
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <Textarea
+                                value={noteText}
+                                onChange={(e) => setNoteText(e.target.value)}
+                                className="min-h-[64px]"
+                                disabled={isBusy}
+                                autoFocus
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    const text = noteText.trim();
+                                    if (!text) return;
+                                    editNote.mutate({ noteId: n.id, text }, {
+                                      onSuccess: () => {
+                                        setEditingNoteId(null);
+                                        setNoteText("");
+                                      },
+                                    });
+                                  }}
+                                  disabled={isBusy || !noteText.trim()}
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setEditingNoteId(null);
+                                    setNoteText("");
+                                  }}
+                                  disabled={isBusy}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-sm text-foreground whitespace-pre-wrap">{n.text}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {!editingNoteId && (
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Add New Note:</div>
+                  <Textarea
+                    value={noteText}
+                    onChange={(e) => setNoteText(e.target.value)}
+                    placeholder="Enter new note here..."
+                    className="min-h-[96px]"
+                    disabled={isBusy}
+                  />
+                </div>
+              )}
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isBusy} onClick={() => {
+                setNoteText("");
+                setEditingNoteId(null);
+              }}>Close</AlertDialogCancel>
+              {!editingNoteId && (
+                <AlertDialogAction
+                  onClick={() => {
+                    const text = noteText.trim();
+                    if (!text) return;
+                    addNote.mutate(text, {
+                      onSuccess: () => {
+                        setNoteText("");
+                      },
+                    });
+                  }}
+                  disabled={isBusy || !noteText.trim()}
+                >
+                  Add Note
+                </AlertDialogAction>
+              )}
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* Delete confirmation dialog */}
+        <AlertDialog open={!!deleteConfirmNoteId} onOpenChange={(open) => !open && setDeleteConfirmNoteId(null)}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Add note</AlertDialogTitle>
-              <AlertDialogDescription>Attach a production note to this job.</AlertDialogDescription>
+              <AlertDialogTitle>Delete Note</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete this note? This action will be logged in the timeline.
+              </AlertDialogDescription>
             </AlertDialogHeader>
-            <div className="space-y-2">
-              <Textarea
-                value={noteText}
-                onChange={(e) => setNoteText(e.target.value)}
-                placeholder="Add operator note…"
-                className="min-h-[96px]"
-                disabled={isBusy}
-              />
-            </div>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={isBusy}>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
-                  const text = noteText.trim();
-                  if (!text) return;
-                  addNote.mutate(text, {
-                    onSuccess: () => {
-                      setNoteText("");
-                      setNoteOpen(false);
-                    },
-                  });
+                  if (deleteConfirmNoteId) {
+                    deleteNote.mutate(deleteConfirmNoteId, {
+                      onSuccess: () => {
+                        setDeleteConfirmNoteId(null);
+                      },
+                    });
+                  }
                 }}
-                disabled={isBusy || !noteText.trim()}
+                disabled={isBusy}
+                className="bg-destructive hover:bg-destructive/90"
               >
-                Add Note
+                Delete
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -823,7 +970,7 @@ function PreviewPanel({
   job: ProductionJobListItem;
   timerSeconds: number | null;
   timerIsRunning: boolean;
-  notes: Array<{ id: string; text: string; createdAt: string }>;
+  notes: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
   onPreviewArtwork: (side: "front" | "back") => void;
 }) {
   const li = primaryLineItem(job);
@@ -862,7 +1009,10 @@ function PreviewPanel({
   ].filter(Boolean);
   const jobRef = jobRefParts.length ? jobRefParts.join(" • ") : "—";
 
-  const noteText = (notes[0]?.text || "").trim() || "—";
+  // Display notes as plain text without timestamps (timestamps belong in timeline)
+  const formattedNotes = notes.length > 0 
+    ? notes.map(n => n.text).join('\n\n')
+    : "—";
 
   return (
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
@@ -947,7 +1097,9 @@ function PreviewPanel({
 
           <div className="rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-amber-200">Production notes</div>
-            <div className="text-sm font-semibold text-titan-text-primary line-clamp-2">{noteText}</div>
+            <div className="text-sm text-titan-text-primary max-h-24 overflow-y-auto whitespace-pre-wrap">
+              {formattedNotes}
+            </div>
           </div>
         </div>
 
@@ -1032,12 +1184,13 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const recentNotes = useMemo(() => {
     const events = selectedDetail?.events ?? [];
     return events
-      .filter((e) => e.type === "note")
+      .filter((e) => e.type === "note" && !(e.payload as any)?.deleted)
       .slice(0, 5)
       .map((e) => ({
         id: e.id,
         text: typeof e.payload?.text === "string" ? e.payload.text : "",
         createdAt: e.createdAt,
+        edited: !!(e.payload as any)?.edited,
       }))
       .filter((n) => n.text.trim());
   }, [selectedDetail]);
