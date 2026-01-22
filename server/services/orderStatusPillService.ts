@@ -11,6 +11,19 @@ import { eq, and, sql } from 'drizzle-orm';
 import type { OrderStatusPill, InsertOrderStatusPill } from '@shared/schema';
 import type { OrderState } from './orderStateService';
 
+function normalizePillValue(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function isInProductionPillValue(value: string | null | undefined) {
+  if (!value) return false;
+  return normalizePillValue(value) === 'in production';
+}
+
 /**
  * List status pills for an organization and state scope
  */
@@ -267,6 +280,10 @@ export async function assignOrderStatusPill(args: {
 
   const currentState = order.state as OrderState;
   const previousPillValue = order.statusPillValue;
+  const shouldScheduleProductionJobs =
+    currentState === 'open' &&
+    isInProductionPillValue(statusPillValue) &&
+    !isInProductionPillValue(previousPillValue);
 
   // If setting a pill (not clearing), validate it exists and matches state scope
   if (statusPillValue) {
@@ -287,6 +304,21 @@ export async function assignOrderStatusPill(args: {
     })
     .where(eq(orders.id, orderId));
 
+  if (shouldScheduleProductionJobs) {
+    const [{ scheduleOrderLineItemsForProduction }, { loadProductionLineItemStatusRulesForOrganization, appendEvent }] =
+      await Promise.all([
+        import('./productionScheduling'),
+        import('../productionHelpers'),
+      ]);
+
+    await scheduleOrderLineItemsForProduction({
+      organizationId,
+      orderId,
+      loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
+      appendEvent,
+    });
+  }
+
   // Create audit log entry
   try {
     await db.insert(orderAuditLog).values({
@@ -301,6 +333,7 @@ export async function assignOrderStatusPill(args: {
         : 'Status pill cleared',
       metadata: {
         currentState,
+        productionJobsScheduled: shouldScheduleProductionJobs,
         timestamp: new Date().toISOString(),
       },
     });
