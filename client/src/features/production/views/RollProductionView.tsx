@@ -537,10 +537,12 @@ function ActionRail({
   job,
   timerSeconds,
   timerIsRunning,
+  notes,
 }: {
   job: ProductionJobListItem;
   timerSeconds: number | null;
   timerIsRunning: boolean;
+  notes: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
 }) {
   const navigate = useNavigate();
   const start = useStartProductionTimer(job.id);
@@ -684,11 +686,11 @@ function ActionRail({
               <AlertDialogDescription>Manage notes for this production job. All changes are logged to the timeline.</AlertDialogDescription>
             </AlertDialogHeader>
             <div className="space-y-4">
-              {job.notes && job.notes.length > 0 && (
+              {notes && notes.length > 0 && (
                 <div className="space-y-2">
                   <div className="text-sm font-medium text-muted-foreground">Existing Notes:</div>
                   <div className="space-y-2">
-                    {job.notes.map((n) => {
+                    {notes.map((n) => {
                       const date = new Date(n.createdAt);
                       const timeStr = date.toLocaleString(undefined, { 
                         month: 'short', 
@@ -1324,7 +1326,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-4">
       <div className="space-y-4">
         {selectedJob ? (
-          <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} />
+          <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
         ) : (
           <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 text-sm text-titan-text-muted">
             Select a job to begin.
