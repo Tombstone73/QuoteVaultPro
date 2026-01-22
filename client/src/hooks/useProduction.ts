@@ -74,7 +74,7 @@ export type ProductionJobListItem = {
   backFileUrl?: string;
   // Artwork at job level (for Production Overview)
   artwork?: ProductionOrderArtworkSummary[];
-  notes?: Array<{ id: string; text: string; createdAt: string }>;
+  notes?: Array<{ id: string; text: string; createdAt: string; edited?: boolean }>;
   order: {
     id: string;    customerId: string;    orderNumber: string;
     customerName: string;
@@ -416,6 +416,54 @@ export function useAddProductionNote(jobId: string) {
     },
     onError: (e: Error) => {
       toast({ title: "Note failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useEditProductionNote(jobId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async ({ noteId, text }: { noteId: string; text: string }) => {
+      const res = await fetch(`/api/production/notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to edit note");
+      return json.data;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, jobId);
+      toast({ title: "Note updated" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Edit failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useDeleteProductionNote(jobId: string) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (noteId: string) => {
+      const res = await fetch(`/api/production/notes/${noteId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to delete note");
+      return json.data;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc, jobId);
+      toast({ title: "Note deleted" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Delete failed", description: e.message, variant: "destructive" });
     },
   });
 }
