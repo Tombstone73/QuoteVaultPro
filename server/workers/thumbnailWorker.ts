@@ -413,16 +413,16 @@ async function pollOnce(): Promise<void> {
   }
 }
 
-export function startThumbnailWorker(): void {
+export function startThumbnailWorker(): NodeJS.Timeout | null {
   if (workerInterval) {
     console.log("[Thumbnail Worker] Worker already running");
-    return;
+    return workerInterval;
   }
 
   if (!isWorkerEnabled()) {
     console.log("[Thumbnail Worker] Worker disabled via env (ATTACHMENT_THUMBNAIL_WORKER_ENABLED)"
     );
-    return;
+    return null;
   }
 
   const intervalMs = getPollIntervalMs();
@@ -432,6 +432,8 @@ export function startThumbnailWorker(): void {
   workerInterval = setInterval(() => {
     void pollOnce();
   }, intervalMs);
+  
+  return workerInterval;
 }
 
 export function stopThumbnailWorker(): void {

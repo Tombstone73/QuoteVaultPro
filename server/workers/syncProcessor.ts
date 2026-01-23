@@ -151,11 +151,12 @@ async function pollAndProcessJobs(): Promise<void> {
 
 /**
  * Start the background worker
+ * Returns the interval handle for graceful shutdown tracking
  */
-export function startSyncWorker(): void {
+export function startSyncWorker(): NodeJS.Timeout | null {
   if (workerInterval) {
     console.log('[Sync Worker] Worker already running');
-    return;
+    return workerInterval;
   }
 
   const intervalMs = getPollIntervalMs();
@@ -174,6 +175,7 @@ export function startSyncWorker(): void {
   }, intervalMs);
 
   console.log('[Sync Worker] Worker started successfully');
+  return workerInterval;
 }
 
 /**

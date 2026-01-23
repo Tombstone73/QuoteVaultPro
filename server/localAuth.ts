@@ -4,6 +4,7 @@ import type { Express, RequestHandler } from "express";
 import connectPg from "connect-pg-simple";
 import { Strategy as LocalStrategy } from "passport-local";
 import { storage } from "./storage";
+import { authRateLimit } from "./middleware/rateLimiting";
 
 export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000;
@@ -86,8 +87,8 @@ export async function setupAuth(app: Express) {
     res.redirect("/api/auto-login");
   });
 
-  // Simple login endpoint for local development
-  app.post("/api/login", passport.authenticate("local"), (req, res) => {
+  // Simple login endpoint for local development with rate limiting
+  app.post("/api/login", authRateLimit, passport.authenticate("local"), (req, res) => {
     res.json({ success: true, user: req.user });
   });
 
