@@ -45,11 +45,28 @@ import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } fr
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 
-// Use local auth for development, Replit auth for production
+// Auth provider selection (decoupled from NODE_ENV)
+// Environment variable:
+//   AUTH_PROVIDER="local"   - use localAuth (default)
+//   AUTH_PROVIDER="replit"  - use replitAuth (opt-in only)
 const nodeEnv = (process.env.NODE_ENV || '').trim();
-console.log('NODE_ENV in routes.ts:', JSON.stringify(nodeEnv));
-console.log('Using auth:', nodeEnv === "development" ? 'localAuth' : 'replitAuth');
-const auth = nodeEnv === "development" ? localAuth : replitAuth;
+const authProviderRaw = (process.env.AUTH_PROVIDER || '').trim().toLowerCase();
+
+let auth: typeof localAuth | typeof replitAuth;
+let authProvider: 'localAuth' | 'replitAuth';
+
+if (authProviderRaw === 'replit') {
+  auth = replitAuth;
+  authProvider = 'replitAuth';
+} else {
+  if (authProviderRaw && authProviderRaw !== 'local') {
+    console.warn(`[Auth] Unknown AUTH_PROVIDER="${authProviderRaw}", defaulting to localAuth`);
+  }
+  auth = localAuth;
+  authProvider = 'localAuth';
+}
+
+console.log('Using auth:', authProvider);
 const { setupAuth, isAuthenticated, isAdmin } = auth;
 
 // Role-based access control middleware

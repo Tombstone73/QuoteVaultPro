@@ -10,10 +10,36 @@ import { storage } from "./storage";
 
 const getOidcConfig = memoize(
   async () => {
-    return await client.discovery(
-      new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
-      process.env.REPL_ID!
-    );
+    try {
+      // Use REPLIT_OIDC_ISSUER for production, fallback to ISSUER_URL for backwards compat
+      const issuerUrl = process.env.REPLIT_OIDC_ISSUER || process.env.ISSUER_URL;
+      const replId = process.env.REPL_ID;
+      
+      if (!replId) {
+        throw new Error('[replitAuth] REPL_ID environment variable is required for Replit auth');
+      }
+      
+      if (!issuerUrl) {
+        throw new Error('[replitAuth] REPLIT_OIDC_ISSUER environment variable is required for Replit auth');
+      }
+      
+      console.log(`[replitAuth] Attempting OIDC discovery at ${issuerUrl}`);
+      const config = await client.discovery(
+        new URL(issuerUrl),
+        replId
+      );
+      console.log('[replitAuth] OIDC discovery successful');
+      return config;
+    } catch (error: any) {
+      const errorMsg = error.message || String(error);
+      const errorCode = error.code || 'UNKNOWN';
+      console.error('[replitAuth] OIDC discovery failed:', {
+        message: errorMsg,
+        code: errorCode,
+        status: error.cause?.status || error.status
+      });
+      throw error;
+    }
   },
   { maxAge: 3600 * 1000 }
 );
@@ -72,7 +98,35 @@ export async function setupAuth(app: Express) {
   app.use(passport.initialize());
   app.use(passport.session());
 
-  const config = await getOidcConfig();
+  let config;
+  try {
+    config = await getOidcConfig();
+  } catch (error: any) {
+    console.error('[replitAuth] ═══════════════════════════════════════');
+    console.error('[replitAuth] OIDC initialization failed');
+    console.error('[replitAuth] Error:', error.message || String(error));
+    console.error('[replitAuth] ═══════════════════════════════════════');
+    console.error('[replitAuth] Replit auth is NOT available.');
+    console.error('[replitAuth] Server continuing with stub auth routes.');
+    console.error('[replitAuth] To fix: Set AUTH_PROVIDER=local or configure Replit vars.');
+    console.error('[replitAuth] ═══════════════════════════════════════');
+    
+    // Setup minimal passport serialization to prevent crashes
+    passport.serializeUser((user: Express.User, cb) => cb(null, user));
+    passport.deserializeUser((user: Express.User, cb) => cb(null, user));
+    
+    // Stub routes that fail gracefully
+    app.get("/api/login", (req, res) => {
+      res.status(503).json({ error: "Authentication not configured. Set AUTH_PROVIDER=local to use local auth." });
+    });
+    app.get("/api/callback", (req, res) => {
+      res.status(503).json({ error: "Authentication not configured" });
+    });
+    app.get("/api/logout", (req, res) => {
+      req.logout(() => res.redirect("/"));
+    });
+    return;
+  }
 
   const verify: VerifyFunction = async (
     tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers,
