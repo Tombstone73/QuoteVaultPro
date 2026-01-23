@@ -12,6 +12,9 @@ import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerT
 import { randomUUID } from "crypto";
 import { logger, logError } from "./logger";
 import { TenantBoundaryError } from "./guards/tenantGuard";
+import { globalIpRateLimit } from "./middleware/rateLimiting";
+import { healthCheck, readinessCheck, validateDatabaseConnectivity } from "./middleware/healthChecks";
+import { setupGracefulShutdown, trackRequest, registerWorkerInterval } from "./middleware/gracefulShutdown";
 
 const app = express();
 
@@ -20,17 +23,39 @@ declare module 'http' {
     rawBody: unknown
   }
 }
+
+// Parse max body size from env with fallback
+const maxBodySize = process.env.MAX_JSON_BODY_SIZE || '100kb';
+
 app.use(express.json({
+  limit: maxBodySize,
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   }
 }));
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: maxBodySize }));
+
+// Health check endpoints (must be registered early, before rate limiting)
+// These are ALWAYS ON and cannot be disabled
+app.get('/health', healthCheck);
+app.get('/ready', readinessCheck);
+
+// Global IP-based rate limiting (excludes /health, /ready, static assets)
+// Protects against volumetric attacks and abuse
+app.use(globalIpRateLimit);
 
 // Request correlation ID middleware - attach requestId to every request
 app.use((req, res, next) => {
   req.requestId = randomUUID();
   res.setHeader('X-Request-Id', req.requestId);
+  next();
+});
+
+// Track in-flight requests for graceful shutdown
+app.use((req, res, next) => {
+  const cleanup = trackRequest();
+  res.on('finish', cleanup);
+  res.on('close', cleanup);
   next();
 });
 
@@ -84,6 +109,15 @@ process.on('uncaughtException', (error) => {
     // Probe database schema before starting server
     const { probeDatabaseSchema } = await import('./db');
     await probeDatabaseSchema();
+    
+    // Validate database connectivity for readiness probe
+    logger.info('Validating database connectivity');
+    const dbConnected = await validateDatabaseConnectivity();
+    if (!dbConnected) {
+      logger.warn('Database not reachable at startup - /ready will return 503 until connected');
+    } else {
+      logger.info('Database connectivity validated');
+    }
 
     // DEV-ONLY: Log redacted DATABASE_URL on startup
     if (app.get("env") === "development") {
@@ -193,6 +227,15 @@ process.on('uncaughtException', (error) => {
     server.listen(listenOptions, () => {
       log(`serving on port ${port}`);
       console.log('[Server] Ready to accept connections');
+      
+      // Setup graceful shutdown handlers
+      setupGracefulShutdown(server, async () => {
+        const { db } = await import('./db');
+        // Close database connection pool (if supported by Drizzle/Neon)
+        if (typeof (db as any).$client?.end === 'function') {
+          await (db as any).$client.end();
+        }
+      });
 
       // ===== BACKGROUND WORKERS INITIALIZATION =====
       // All workers gated by workerGates.ts for dev/preview cost control
@@ -206,7 +249,8 @@ process.on('uncaughtException', (error) => {
       );
       if (thumbnailsEnabled) {
         try {
-          startThumbnailWorker();
+          const workerInterval = startThumbnailWorker();
+          if (workerInterval) registerWorkerInterval(workerInterval);
         } catch (error) {
           console.error('[Server] Thumbnail worker failed to start:', error);
         }
@@ -259,7 +303,8 @@ process.on('uncaughtException', (error) => {
         );
         if (qbSyncEnabled) {
           console.log('[Server] Starting QuickBooks sync worker...');
-          startSyncWorker();
+          const workerInterval = startSyncWorker();
+          if (workerInterval) registerWorkerInterval(workerInterval);
         }
 
         // QB Queue Worker (invoice/payment outbox sync)
@@ -283,7 +328,7 @@ process.on('uncaughtException', (error) => {
             policy: 'interval=pending-only, flush=pending+failed',
           });
 
-          setInterval(async () => {
+          const qbQueueIntervalHandle = setInterval(async () => {
             const tickStart = Date.now();
             try {
               const orgIds = await listQuickBooksConnectedOrganizationIds();
@@ -312,6 +357,8 @@ process.on('uncaughtException', (error) => {
               logWorkerTick('qb_queue', Date.now() - tickStart);
             }
           }, qbQueueInterval);
+          
+          registerWorkerInterval(qbQueueIntervalHandle);
         }
       } else {
         logWorkerStatus('QuickBooks Sync', false, undefined, 'no QB credentials');

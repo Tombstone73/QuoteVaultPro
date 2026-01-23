@@ -36,6 +36,9 @@ import {
   APPROVED_LOCK_MESSAGE,
   CONVERTED_LOCK_MESSAGE,
 } from "@shared/quoteWorkflow";
+import { calculateRateLimit, emailRateLimit, writeOperationsRateLimit } from "./middleware/rateLimiting";
+import { concurrentUploadLimiter, validateMimeType, sanitizeFilename } from "./middleware/uploadSafety";
+import { checkBodySize } from "./middleware/bodySizeLimits";
 import { registerAttachmentRoutes } from "./routes/attachments.routes";
 import { registerOrderRoutes } from "./routes/orders.routes";
 import { registerPrepressRoutes } from "./prepress/routes";
@@ -2313,7 +2316,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/quotes/calculate", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/quotes/calculate", isAuthenticated, tenantContext, calculateRateLimit, checkBodySize(process.env.MAX_CALCULATE_BODY_SIZE || '500kb'), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -5301,7 +5304,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Attach file to a quote line item
-  app.post("/api/quotes/:quoteId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/quotes/:quoteId/line-items/:lineItemId/files", isAuthenticated, tenantContext, concurrentUploadLimiter, async (req: any, res) => {
     try {
       const { quoteId, lineItemId } = req.params;
       const organizationId = getRequestOrganizationId(req);
@@ -6420,7 +6423,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Email sending routes
-  app.post("/api/email/test", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  app.post("/api/email/test", isAuthenticated, tenantContext, isAdmin, emailRateLimit, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -6439,7 +6442,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/quotes/:id/email", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/quotes/:id/email", isAuthenticated, tenantContext, emailRateLimit, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -11091,7 +11094,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Send shipment notification email
-  app.post('/api/orders/:id/send-shipping-email', isAuthenticated, async (req: any, res) => {
+  app.post('/api/orders/:id/send-shipping-email', isAuthenticated, emailRateLimit, async (req: any, res) => {
     try {
       const orderId = req.params.id;
       const { shipmentId, subject, customMessage } = req.body;
@@ -11190,7 +11193,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Upload file to an order line item (asset pipeline, multipart upload)
-  app.post("/api/orders/:orderId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.post("/api/orders/:orderId/line-items/:lineItemId/files", isAuthenticated, tenantContext, concurrentUploadLimiter, async (req: any, res) => {
     try {
       const { orderId, lineItemId } = req.params;
       const organizationId = getRequestOrganizationId(req);

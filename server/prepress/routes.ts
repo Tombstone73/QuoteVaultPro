@@ -7,6 +7,7 @@ import { initializeJobDirectory, writeFile, getJobPaths, fileExists, readFile } 
 import { getJobFindings, getJobFixLogs } from "./findings-service";
 import { z } from "zod";
 import path from "path";
+import { prepressRateLimit } from "../middleware/rateLimiting";
 
 /**
  * Prepress API Routes
@@ -131,7 +132,7 @@ export function registerPrepressRoutes(app: Express): void {
   });
   
   // POST /api/prepress/jobs - Create new preflight job
-  app.post('/api/prepress/jobs', async (req: Request, res: Response) => {
+  app.post('/api/prepress/jobs', prepressRateLimit, async (req: Request, res: Response) => {
     try {
       // Parse multipart upload
       const { file, fields } = await parseMultipartUpload(req);
