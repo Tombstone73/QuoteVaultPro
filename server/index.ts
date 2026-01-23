@@ -9,6 +9,7 @@ import { assetPreviewWorker } from "./workers/assetPreviewWorker";
 import { assertStripeServerConfig } from "./lib/stripe";
 import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
+import { randomUUID } from "crypto";
 
 const app = express();
 
@@ -24,30 +25,39 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false }));
 
+// Request correlation ID middleware - attach requestId to every request
+app.use((req, res, next) => {
+  req.requestId = randomUUID();
+  res.setHeader('X-Request-Id', req.requestId);
+  next();
+});
+
+// Production-safe logging middleware - no response bodies, only metadata
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      // Production-safe: log only metadata, never bodies/headers/cookies
+      const logParts = [
+        req.method,
+        path,
+        res.statusCode,
+        `${duration}ms`,
+        `reqId=${req.requestId}`
+      ];
+
+      // Include tenant context if available (ids only, no names/emails)
+      if (req.organizationId) {
+        logParts.push(`orgId=${req.organizationId}`);
+      }
+      if (req.user && (req.user as any).id) {
+        logParts.push(`userId=${(req.user as any).id}`);
       }
 
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
-      }
-
-      log(logLine);
+      log(logParts.join(' '));
     }
   });
 
@@ -99,11 +109,40 @@ process.on('uncaughtException', (error) => {
       }
     }
 
-    app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    // Centralized error handler with requestId and production-safe responses
+    app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
-      const message = err.message || "Internal Server Error";
-      console.error('[Server] Error handler:', err);
-      res.status(status).json({ message });
+      const isProduction = app.get("env") === "production";
+      
+      // Production-safe message: only show err.message for expected errors (4xx)
+      // For 5xx errors in production, use generic message
+      let message: string;
+      if (status < 500) {
+        message = err.message || "Bad Request";
+      } else if (isProduction) {
+        message = "Internal Server Error";
+      } else {
+        message = err.message || "Internal Server Error";
+      }
+
+      // Server-side logging with full context (never sent to client)
+      console.error('[Server] Error:', {
+        requestId: req.requestId,
+        method: req.method,
+        path: req.path,
+        status,
+        message: err.message,
+        stack: isProduction ? undefined : err.stack,
+        organizationId: req.organizationId,
+        userId: (req.user as any)?.id,
+      });
+
+      // Consistent error response envelope with requestId
+      res.status(status).json({
+        success: false,
+        message,
+        requestId: req.requestId
+      });
     });
 
     // Setup Vite in development mode

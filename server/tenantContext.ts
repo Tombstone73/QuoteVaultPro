@@ -19,12 +19,13 @@ import { eq, and } from 'drizzle-orm';
 export const DEFAULT_ORGANIZATION_ID = 'org_titan_001';
 export const DEFAULT_ORGANIZATION_SLUG = 'titan';
 
-// Extend Express Request to include organizationId
+// Extend Express Request to include organizationId and requestId
 declare global {
   namespace Express {
     interface Request {
       organizationId?: string;
       organizationSlug?: string;
+      requestId?: string;
     }
   }
 }

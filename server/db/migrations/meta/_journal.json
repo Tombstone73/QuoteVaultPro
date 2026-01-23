@@ -169,6 +169,13 @@
       "when": 0,
       "tag": "0031_prepress_findings_and_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1737676800000,
+      "tag": "0032_repair_quote_attachment_pages_table",
+      "breakpoints": true
     }
   ]
 }
