@@ -2,6 +2,8 @@ import nodemailer from "nodemailer";
 import { google } from "googleapis";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
+import { isEmailEnabled } from "./workers/workerGates";
+import { logger } from "./logger";
 
 interface EmailConfig {
   provider: string;
@@ -91,6 +93,12 @@ class EmailService {
    * Send a test email to verify configuration
    */
   async sendTestEmail(organizationId: string, recipientEmail: string): Promise<void> {
+    // Operational kill switch: disable email during provider outages, bounce storms, or template issues
+    if (!isEmailEnabled()) {
+      logger.warn('Email disabled - sendTestEmail aborted', { organizationId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
+      throw new Error('Email sending temporarily disabled');
+    }
+
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
@@ -123,6 +131,11 @@ class EmailService {
    * Send quote email to recipient
    */
   async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string): Promise<void> {
+    // Operational kill switch: disable email during provider outages, bounce storms, or template issues
+    if (!isEmailEnabled()) {
+      logger.warn('Email disabled - sendQuoteEmail aborted', { organizationId, quoteId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
+      throw new Error('Email sending temporarily disabled');
+    }
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
@@ -152,6 +165,12 @@ class EmailService {
    * Send generic email with custom content
    */
   async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string }): Promise<void> {
+    // Operational kill switch: disable email during provider outages, bounce storms, or template issues
+    if (!isEmailEnabled()) {
+      logger.warn('Email disabled - sendEmail aborted', { organizationId, to: options.to, subject: options.subject, feature: 'FEATURE_EMAIL_ENABLED' });
+      throw new Error('Email sending temporarily disabled');
+    }
+
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");

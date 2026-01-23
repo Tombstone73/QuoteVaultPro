@@ -10,6 +10,8 @@ import { assertStripeServerConfig } from "./lib/stripe";
 import { listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from "./services/quickbooksSyncQueueWorker";
 import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerTick } from "./workers/workerGates";
 import { randomUUID } from "crypto";
+import { logger, logError } from "./logger";
+import { TenantBoundaryError } from "./guards/tenantGuard";
 
 const app = express();
 
@@ -114,6 +116,28 @@ process.on('uncaughtException', (error) => {
       const status = err.status || err.statusCode || 500;
       const isProduction = app.get("env") === "production";
       
+      // Handle TenantBoundaryError specially (production-safety guards)
+      if (err instanceof TenantBoundaryError) {
+        // Log server-side with full details for security audit
+        logger.error('Tenant boundary violation', {
+          requestId: req.requestId,
+          organizationId: req.organizationId,
+          userId: (req.user as any)?.id,
+          method: req.method,
+          path: req.path,
+          status: err.statusCode,
+          internalMessage: err.message,
+          safeMessage: err.safeMessage,
+        });
+        
+        // Return safe message to client (no details)
+        return res.status(err.statusCode).json({
+          success: false,
+          message: err.safeMessage,
+          requestId: req.requestId
+        });
+      }
+      
       // Production-safe message: only show err.message for expected errors (4xx)
       // For 5xx errors in production, use generic message
       let message: string;
@@ -125,14 +149,12 @@ process.on('uncaughtException', (error) => {
         message = err.message || "Internal Server Error";
       }
 
-      // Server-side logging with full context (never sent to client)
-      console.error('[Server] Error:', {
+      // Server-side logging with structured logger
+      logError(err, {
         requestId: req.requestId,
         method: req.method,
         path: req.path,
         status,
-        message: err.message,
-        stack: isProduction ? undefined : err.stack,
         organizationId: req.organizationId,
         userId: (req.user as any)?.id,
       });
