@@ -132,6 +132,8 @@ export function registerPrepressRoutes(app: Express): void {
   });
   
   // POST /api/prepress/jobs - Create new preflight job
+  // TODO: Authentication unclear - Is prepress intentionally public for anonymous file preflight?
+  // If not, add isAuthenticated + tenantContext middleware to prevent unauthorized resource consumption.
   app.post('/api/prepress/jobs', prepressRateLimit, async (req: Request, res: Response) => {
     try {
       // Parse multipart upload
