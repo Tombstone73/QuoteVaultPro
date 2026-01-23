@@ -1,5 +1,6 @@
 import { assetPreviewGenerator } from '../services/assets/AssetPreviewGenerator';
-import { getWorkerIntervalOverride, logWorkerTick } from './workerGates';
+import { getWorkerIntervalOverride, logWorkerTick, isAssetProcessingEnabled } from './workerGates';
+import { logger } from '../logger';
 
 /**
  * Asset Preview Worker
@@ -58,6 +59,12 @@ export class AssetPreviewWorker {
   private async processQueue(): Promise<void> {
     if (this.isRunning) {
       console.log('[AssetPreviewWorker] Previous run still in progress, skipping');
+      return;
+    }
+
+    // Operational kill switch: disable asset processing during storage outages, CPU/memory incidents
+    if (!isAssetProcessingEnabled()) {
+      logger.debug('Asset processing disabled - skipping queue processing', { feature: 'FEATURE_ASSET_PROCESSING_ENABLED' });
       return;
     }
 

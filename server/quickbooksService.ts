@@ -5,6 +5,8 @@ import { oauthConnections, accountingSyncJobs, customers, invoices, orders, paym
 import { eq, and, desc, or, isNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { DEFAULT_ORGANIZATION_ID } from './tenantContext';
+import { isQuickBooksSyncEnabled } from './workers/workerGates';
+import { logger } from './logger';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -1145,6 +1147,20 @@ export async function syncSinglePaymentToQuickBooksForOrganization(organizationI
  * Process pull sync: Fetch customers from QuickBooks and upsert into local DB
  */
 export async function processPullCustomers(jobId: string): Promise<void> {
+  // Operational kill switch: disable QB sync during incidents (API outages, rate limits, data quality issues)
+  if (!isQuickBooksSyncEnabled()) {
+    logger.warn('QB sync disabled - processPullCustomers aborted', { jobId, feature: 'FEATURE_QB_SYNC_ENABLED' });
+    await db
+      .update(accountingSyncJobs)
+      .set({ 
+        status: 'error', 
+        error: 'QuickBooks sync temporarily disabled',
+        updatedAt: new Date() 
+      })
+      .where(eq(accountingSyncJobs.id, jobId));
+    return;
+  }
+
   try {
     console.log(`[QB Pull Customers] Starting job ${jobId}`);
 
@@ -1253,6 +1269,20 @@ export async function processPullCustomers(jobId: string): Promise<void> {
  * Process push sync: Push local customers to QuickBooks
  */
 export async function processPushCustomers(jobId: string): Promise<void> {
+  // Operational kill switch: disable QB sync during incidents (API outages, rate limits, data quality issues)
+  if (!isQuickBooksSyncEnabled()) {
+    logger.warn('QB sync disabled - processPushCustomers aborted', { jobId, feature: 'FEATURE_QB_SYNC_ENABLED' });
+    await db
+      .update(accountingSyncJobs)
+      .set({ 
+        status: 'error', 
+        error: 'QuickBooks sync temporarily disabled',
+        updatedAt: new Date() 
+      })
+      .where(eq(accountingSyncJobs.id, jobId));
+    return;
+  }
+
   try {
     console.log(`[QB Push Customers] Starting job ${jobId}`);
 
@@ -1362,6 +1392,20 @@ export async function processPushCustomers(jobId: string): Promise<void> {
  * Process pull sync: Fetch invoices from QuickBooks
  */
 export async function processPullInvoices(jobId: string): Promise<void> {
+  // Operational kill switch: disable QB sync during incidents (API outages, rate limits, data quality issues)
+  if (!isQuickBooksSyncEnabled()) {
+    logger.warn('QB sync disabled - processPullInvoices aborted', { jobId, feature: 'FEATURE_QB_SYNC_ENABLED' });
+    await db
+      .update(accountingSyncJobs)
+      .set({ 
+        status: 'error', 
+        error: 'QuickBooks sync temporarily disabled',
+        updatedAt: new Date() 
+      })
+      .where(eq(accountingSyncJobs.id, jobId));
+    return;
+  }
+
   try {
     console.log(`[QB Pull Invoices] Starting job ${jobId}`);
 
@@ -1485,6 +1529,20 @@ export async function processPullInvoices(jobId: string): Promise<void> {
  * Process push sync: Push local invoices to QuickBooks
  */
 export async function processPushInvoices(jobId: string): Promise<void> {
+  // Operational kill switch: disable QB sync during incidents (API outages, rate limits, data quality issues)
+  if (!isQuickBooksSyncEnabled()) {
+    logger.warn('QB sync disabled - processPushInvoices aborted', { jobId, feature: 'FEATURE_QB_SYNC_ENABLED' });
+    await db
+      .update(accountingSyncJobs)
+      .set({ 
+        status: 'error', 
+        error: 'QuickBooks sync temporarily disabled',
+        updatedAt: new Date() 
+      })
+      .where(eq(accountingSyncJobs.id, jobId));
+    return;
+  }
+
   try {
     console.log(`[QB Push Invoices] Starting job ${jobId}`);
 
@@ -1601,6 +1659,20 @@ function mapQBInvoiceStatus(qbStatus: string): string {
  * Process pull sync: Fetch orders/sales receipts from QuickBooks
  */
 export async function processPullOrders(jobId: string): Promise<void> {
+  // Operational kill switch: disable QB sync during incidents (API outages, rate limits, data quality issues)
+  if (!isQuickBooksSyncEnabled()) {
+    logger.warn('QB sync disabled - processPullOrders aborted', { jobId, feature: 'FEATURE_QB_SYNC_ENABLED' });
+    await db
+      .update(accountingSyncJobs)
+      .set({ 
+        status: 'error', 
+        error: 'QuickBooks sync temporarily disabled',
+        updatedAt: new Date() 
+      })
+      .where(eq(accountingSyncJobs.id, jobId));
+    return;
+  }
+
   try {
     console.log(`[QB Pull Orders] Starting job ${jobId}`);
 
@@ -1726,6 +1798,20 @@ export async function processPullOrders(jobId: string): Promise<void> {
  * Process push sync: Push local orders to QuickBooks as SalesReceipts
  */
 export async function processPushOrders(jobId: string): Promise<void> {
+  // Operational kill switch: disable QB sync during incidents (API outages, rate limits, data quality issues)
+  if (!isQuickBooksSyncEnabled()) {
+    logger.warn('QB sync disabled - processPushOrders aborted', { jobId, feature: 'FEATURE_QB_SYNC_ENABLED' });
+    await db
+      .update(accountingSyncJobs)
+      .set({ 
+        status: 'error', 
+        error: 'QuickBooks sync temporarily disabled',
+        updatedAt: new Date() 
+      })
+      .where(eq(accountingSyncJobs.id, jobId));
+    return;
+  }
+
   try {
     console.log(`[QB Push Orders] Starting job ${jobId}`);
 

@@ -8,6 +8,7 @@ import { accountingSyncJobs } from '../../shared/schema';
 import { eq } from 'drizzle-orm';
 import * as qbService from '../quickbooksService';
 import { getWorkerIntervalOverride, logWorkerTick } from './workerGates';
+import { logger } from '../logger';
 
 // Track if worker is running to prevent multiple instances
 let isRunning = false;
@@ -31,7 +32,30 @@ function getPollIntervalMs(): number {
  * Process a single sync job based on resource type and direction
  */
 async function processSyncJob(job: any): Promise<void> {
-  console.log(`[Sync Worker] Processing job ${job.id}: ${job.direction} ${job.resourceType}`);
+  // Production-safety: ensure job has organizationId (tenant isolation)
+  if (!job.organizationId) {
+    logger.error('Sync job missing organizationId - skipping for safety', { 
+      jobId: job.id, 
+      resourceType: job.resourceType,
+      direction: job.direction 
+    });
+    await db
+      .update(accountingSyncJobs)
+      .set({
+        status: 'error',
+        error: 'Job missing organizationId - security check failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(accountingSyncJobs.id, job.id));
+    return;
+  }
+
+  logger.info('Processing sync job', { 
+    jobId: job.id, 
+    organizationId: job.organizationId,
+    resourceType: job.resourceType,
+    direction: job.direction 
+  });
 
   try {
     // Route to appropriate processor based on resource type and direction
@@ -57,9 +81,13 @@ async function processSyncJob(job: any): Promise<void> {
       throw new Error(`Unknown resource type: ${job.resourceType}`);
     }
 
-    console.log(`[Sync Worker] Job ${job.id} completed successfully`);
+    logger.info('Sync job completed', { jobId: job.id, organizationId: job.organizationId });
   } catch (error: any) {
-    console.error(`[Sync Worker] Job ${job.id} failed:`, error);
+    logger.error('Sync job failed', { 
+      jobId: job.id, 
+      organizationId: job.organizationId,
+      error: error.message 
+    });
     
     // Update job with error status (processor should have already done this, but as fallback)
     await db

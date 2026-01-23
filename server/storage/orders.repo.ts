@@ -37,6 +37,7 @@ import {
     type InsertJobStatusLog,
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
+import { enforceOrgScope } from "../guards/tenantGuard";
 
 const ORDER_ATTACHMENT_SAFE_SELECT = {
     id: orderAttachments.id,
@@ -384,8 +385,13 @@ export class OrdersRepository {
     }
 
     async getOrderById(organizationId: string, id: string): Promise<OrderWithRelations | undefined> {
+        // Production-safety: enforce org boundary - fail closed if org mismatch (returns undefined, same as not found)
         const [order] = await this.dbInstance.select().from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
         if (!order) return undefined;
+        
+        // Defensive assertion: verify org match (should never fail if query is correct)
+        enforceOrgScope(order.organizationId, organizationId, 'order');
+        
         const rawLineItems = await this.dbInstance.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
 
         const acceptedComponents = await this.dbInstance

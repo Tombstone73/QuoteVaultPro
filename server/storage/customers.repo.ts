@@ -19,6 +19,7 @@ import {
     type User,
 } from "@shared/schema";
 import { eq, and, or, ilike, desc, sql, inArray } from "drizzle-orm";
+import { enforceOrgScope } from "../guards/tenantGuard";
 
 export class CustomersRepository {
     constructor(private readonly dbInstance = db) { }
@@ -163,11 +164,15 @@ export class CustomersRepository {
     }
 
     async getCustomerById(organizationId: string, id: string): Promise<CustomerWithRelations | undefined> {
+        // Production-safety: enforce org boundary - fail closed if org mismatch (returns undefined, same as not found)
         const [customer] = await this.dbInstance.select().from(customers).where(and(eq(customers.organizationId, organizationId), eq(customers.id, id)));
 
         if (!customer) {
             return undefined;
         }
+
+        // Defensive assertion: verify org match (should never fail if query is correct)
+        enforceOrgScope(customer.organizationId, organizationId, 'customer');
 
         // Fetch related data with user relations
         const contacts = await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.customerId, id)).catch(() => []);
