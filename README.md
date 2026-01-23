@@ -105,6 +105,47 @@ Every data query must:
 - Validate all input using Zod schemas
 - Apply role-based access controls
 
+## ⚙️ Environment Variables
+
+### Core Configuration
+
+- `DATABASE_URL` - PostgreSQL connection string (required)
+- `SESSION_SECRET` - Express session secret (required)
+- `NODE_ENV` - `development` or `production`
+- `PORT` - Server port (default: 5000)
+
+### Authentication
+
+- `AUTH_PROVIDER` - Auth provider: `replit` (explicit) or omit for localAuth
+- `REPL_ID` - Replit deployment ID (required if `AUTH_PROVIDER=replit`)
+- `ISSUER_URL` - OIDC issuer URL (default: `https://replit.com/oidc`)
+- `DEMO_MODE` - Set to `1` to bypass auth checks (development/demo only)
+
+**Railway/Production Deployments**: If `AUTH_PROVIDER` is not set or `REPL_ID` is missing, the server will safely fall back to `localAuth` and continue booting. This prevents crashes when Replit-specific auth is unavailable.
+
+### File Storage
+
+- `GCS_BUCKET_NAME` - Google Cloud Storage bucket name
+- `GCS_PROJECT_ID` - GCP project ID
+- `GCS_KEY_FILE` - Path to GCS service account key (optional)
+
+### Integrations
+
+- `STRIPE_SECRET_KEY` - Stripe API secret key
+- `QUICKBOOKS_CLIENT_ID` - QuickBooks OAuth client ID
+- `QUICKBOOKS_CLIENT_SECRET` - QuickBooks OAuth client secret
+
+### Email
+
+- `SMTP_HOST` - SMTP server hostname
+- `SMTP_PORT` - SMTP server port
+- `SMTP_USER` - SMTP username
+- `SMTP_PASS` - SMTP password
+
+### Workers
+
+- `PREPRESS_WORKER_IN_PROCESS` - Set to `true` to run prepress worker in-process (dev only)
+
 ## 🧪 Testing
 
 ```bash
