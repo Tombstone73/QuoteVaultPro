@@ -616,30 +616,41 @@ export function EmailSettingsTab() {
       setTestEmailAddress("");
     },
     onError: (error: any) => {
-      // Extract error details from structured error
+      // Extract error details from structured error response
       let errorMessage = "Failed to send test email";
       let requestId: string | undefined;
+      let errorCode: string | undefined;
+      let errorCategory: string | undefined;
 
       // Check if error has structured data (from throwIfResNotOk)
       if (error.data) {
         errorMessage = error.data.message || errorMessage;
         requestId = error.data.requestId;
+        errorCode = error.data.error?.code;
+        errorCategory = error.data.error?.category;
       } else if (error.message) {
         // Handle timeout or network errors
         if (error.message.includes("timed out")) {
           errorMessage = "Request timed out. Please check your internet connection and try again.";
+          errorCode = "CLIENT_TIMEOUT";
         } else if (error.name === "AbortError") {
           errorMessage = "Request timed out after 20 seconds. Please try again.";
+          errorCode = "CLIENT_TIMEOUT";
         } else {
           errorMessage = error.message;
         }
       }
 
+      // Build description with error code and requestId for diagnosis
+      const details = [
+        errorMessage,
+        errorCode && `Error: ${errorCode}`,
+        requestId && `Request ID: ${requestId}`
+      ].filter(Boolean).join("\n");
+
       toast({
         title: "Test Email Failed",
-        description: requestId 
-          ? `${errorMessage} (Request ID: ${requestId})`
-          : errorMessage,
+        description: details,
         variant: "destructive",
       });
     },

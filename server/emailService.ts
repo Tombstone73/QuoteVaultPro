@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 import { isEmailEnabled } from "./workers/workerGates";
 import { logger } from "./logger";
+import { classifyEmailError, createSafeErrorContext, EMAIL_ERRORS } from "./emailErrors";
 
 interface EmailConfig {
   provider: string;
@@ -46,9 +47,17 @@ class EmailService {
    * Create Nodemailer transporter with OAuth2 or SMTP
    * Includes timeout configuration to prevent hanging
    */
-  private async createTransporter(config: EmailConfig) {
+  private async createTransporter(config: EmailConfig, requestId?: string) {
     if (config.provider === "gmail" && config.clientId && config.clientSecret && config.refreshToken) {
       // Gmail OAuth2 setup
+      logger.info('email_oauth_refresh_start', {
+        requestId,
+        provider: 'gmail',
+        hasClientId: !!config.clientId,
+        hasClientSecret: !!config.clientSecret,
+        hasRefreshToken: !!config.refreshToken,
+      });
+
       const OAuth2 = google.auth.OAuth2;
       const oauth2Client = new OAuth2(
         config.clientId,
@@ -61,30 +70,54 @@ class EmailService {
       });
 
       // Get access token with timeout
-      const accessTokenPromise = oauth2Client.getAccessToken();
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('OAuth token refresh timed out')), 8000);
-      });
-      
-      const accessToken = await Promise.race([accessTokenPromise, timeoutPromise]);
+      try {
+        const accessTokenPromise = oauth2Client.getAccessToken();
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('OAuth token refresh timed out')), 8000);
+        });
+        
+        const accessToken = await Promise.race([accessTokenPromise, timeoutPromise]);
 
-      return nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          type: "OAuth2",
-          user: config.fromAddress,
-          clientId: config.clientId,
-          clientSecret: config.clientSecret,
-          refreshToken: config.refreshToken,
-          accessToken: accessToken.token || undefined,
-        },
-        // Nodemailer timeout settings
-        connectionTimeout: 5000, // 5 seconds to establish connection
-        greetingTimeout: 5000,   // 5 seconds to receive greeting
-        socketTimeout: 10000,    // 10 seconds for socket inactivity
-      });
+        logger.info('email_oauth_refresh_success', {
+          requestId,
+          hasAccessToken: !!accessToken.token,
+        });
+
+        return nodemailer.createTransport({
+          service: "gmail",
+          auth: {
+            type: "OAuth2",
+            user: config.fromAddress,
+            clientId: config.clientId,
+            clientSecret: config.clientSecret,
+            refreshToken: config.refreshToken,
+            accessToken: accessToken.token || undefined,
+          },
+          // Nodemailer timeout settings
+          connectionTimeout: 5000, // 5 seconds to establish connection
+          greetingTimeout: 5000,   // 5 seconds to receive greeting
+          socketTimeout: 10000,    // 10 seconds for socket inactivity
+        });
+      } catch (error: any) {
+        // Log OAuth refresh failure with safe context
+        logger.error('email_oauth_refresh_error', {
+          requestId,
+          ...createSafeErrorContext(error),
+        });
+        
+        // Re-throw with context preserved
+        throw error;
+      }
     } else if (config.provider === "smtp" && config.smtpHost && config.smtpPort) {
       // SMTP setup
+      logger.info('email_smtp_setup', {
+        requestId,
+        provider: 'smtp',
+        host: config.smtpHost,
+        port: config.smtpPort,
+        hasAuth: !!(config.smtpUsername && config.smtpPassword),
+      });
+
       return nodemailer.createTransport({
         host: config.smtpHost,
         port: config.smtpPort,
@@ -107,19 +140,45 @@ class EmailService {
    * Send a test email to verify configuration
    * Includes timeout handling to prevent hanging
    */
-  async sendTestEmail(organizationId: string, recipientEmail: string): Promise<void> {
+  async sendTestEmail(organizationId: string, recipientEmail: string, requestId?: string): Promise<void> {
     // Operational kill switch: disable email during provider outages, bounce storms, or template issues
     if (!isEmailEnabled()) {
-      logger.warn('Email disabled - sendTestEmail aborted', { organizationId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
+      logger.warn('email_disabled', { 
+        requestId, 
+        organizationId, 
+        recipientEmail: this.maskEmail(recipientEmail),
+        feature: 'FEATURE_EMAIL_ENABLED' 
+      });
       throw new Error('Email sending temporarily disabled');
     }
 
+    logger.info('email_send_prep', {
+      requestId,
+      organizationId,
+      recipientDomain: recipientEmail.split('@')[1], // Only log domain for privacy
+    });
+
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
+      logger.warn('email_config_missing', { requestId, organizationId });
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
 
-    const transporter = await this.createTransporter(config);
+    // Log config presence (booleans only, no secrets)
+    logger.info('email_config_loaded', {
+      requestId,
+      organizationId,
+      provider: config.provider,
+      hasFromAddress: !!config.fromAddress,
+      hasFromName: !!config.fromName,
+      hasClientId: !!config.clientId,
+      hasClientSecret: !!config.clientSecret,
+      hasRefreshToken: !!config.refreshToken,
+      hasSmtpHost: !!config.smtpHost,
+      hasSmtpPort: !!config.smtpPort,
+    });
+
+    const transporter = await this.createTransporter(config, requestId);
 
     const mailOptions = {
       from: `"${config.fromName}" <${config.fromAddress}>`,
@@ -139,13 +198,47 @@ class EmailService {
       `,
     };
 
-    // Send with timeout (transporter already has connection timeouts, but add overall timeout)
-    const sendPromise = transporter.sendMail(mailOptions);
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Email send operation timed out')), 12000); // 12s for actual send
+    logger.info('email_send_start', {
+      requestId,
+      organizationId,
+      provider: config.provider,
+      fromAddress: config.fromAddress,
+      recipientDomain: recipientEmail.split('@')[1],
     });
 
-    await Promise.race([sendPromise, timeoutPromise]);
+    try {
+      // Send with timeout (transporter already has connection timeouts, but add overall timeout)
+      const sendPromise = transporter.sendMail(mailOptions);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Email send operation timed out')), 12000); // 12s for actual send
+      });
+
+      const result = await Promise.race([sendPromise, timeoutPromise]);
+
+      logger.info('email_send_success', {
+        requestId,
+        organizationId,
+        messageId: result.messageId,
+        response: result.response?.substring(0, 100), // Truncate response
+      });
+    } catch (error: any) {
+      logger.error('email_send_error', {
+        requestId,
+        organizationId,
+        provider: config.provider,
+        ...createSafeErrorContext(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Mask email address for privacy in logs
+   */
+  private maskEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    if (local.length <= 2) return `${local[0]}***@${domain}`;
+    return `${local.substring(0, 2)}***@${domain}`;
   }
 
   /**
