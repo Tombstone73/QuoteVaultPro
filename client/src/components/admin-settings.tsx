@@ -579,13 +579,15 @@ export function EmailSettingsTab() {
         return apiRequest("POST", "/api/email-settings", data);
       }
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/email-settings/default"] });
+    onSuccess: () => {
+      // Show success toast ONLY when save mutation completes
       toast({
         title: "Success",
         description: "Email settings saved successfully",
       });
       setIsEditing(false);
+      // Invalidate after UI update to refetch latest
+      queryClient.invalidateQueries({ queryKey: ["/api/email-settings/default"] });
     },
     onError: (error: Error) => {
       toast({
