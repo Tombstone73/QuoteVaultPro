@@ -598,22 +598,48 @@ export function EmailSettingsTab() {
     },
   });
 
-  // Test email mutation
+  // Test email mutation with timeout
   const testEmailMutation = useMutation({
     mutationFn: async (recipientEmail: string) => {
-      return apiRequest("POST", "/api/email/test", { recipientEmail });
+      // Set aggressive timeout for test email (20s max)
+      const response = await apiRequest("POST", "/api/email/test", 
+        { recipientEmail },
+        { timeout: 20000 } // 20 second timeout
+      );
+      return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       toast({
         title: "Success",
         description: "Test email sent successfully! Check your inbox.",
       });
       setTestEmailAddress("");
     },
-    onError: (error: Error) => {
+    onError: (error: any) => {
+      // Extract error details from structured error
+      let errorMessage = "Failed to send test email";
+      let requestId: string | undefined;
+
+      // Check if error has structured data (from throwIfResNotOk)
+      if (error.data) {
+        errorMessage = error.data.message || errorMessage;
+        requestId = error.data.requestId;
+      } else if (error.message) {
+        // Handle timeout or network errors
+        if (error.message.includes("timed out")) {
+          errorMessage = "Request timed out. Please check your internet connection and try again.";
+        } else if (error.name === "AbortError") {
+          errorMessage = "Request timed out after 20 seconds. Please try again.";
+        } else {
+          errorMessage = error.message;
+        }
+      }
+
       toast({
-        title: "Error",
-        description: error.message || "Failed to send test email",
+        title: "Test Email Failed",
+        description: requestId 
+          ? `${errorMessage} (Request ID: ${requestId})`
+          : errorMessage,
         variant: "destructive",
       });
     },
