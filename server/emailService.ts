@@ -50,9 +50,15 @@ class EmailService {
   private async createTransporter(config: EmailConfig, requestId?: string) {
     if (config.provider === "gmail" && config.clientId && config.clientSecret && config.refreshToken) {
       // Gmail OAuth2 setup
+      // CRITICAL: redirectUri must match Google Cloud Console OAuth Authorized Redirect URIs
+      // For tokens generated via OAuth Playground, use the playground URL
+      // For production, this should match your configured redirect URI
+      const redirectUri = process.env.GMAIL_OAUTH_REDIRECT_URI || "https://developers.google.com/oauthplayground";
+      
       logger.info('email_oauth_refresh_start', {
         requestId,
         provider: 'gmail',
+        redirectUri, // Log the redirect URI being used
         hasClientId: !!config.clientId,
         hasClientSecret: !!config.clientSecret,
         hasRefreshToken: !!config.refreshToken,
@@ -62,7 +68,7 @@ class EmailService {
       const oauth2Client = new OAuth2(
         config.clientId,
         config.clientSecret,
-        "https://developers.google.com/oauthplayground" // Redirect URL
+        redirectUri
       );
 
       oauth2Client.setCredentials({

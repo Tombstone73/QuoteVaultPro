@@ -6722,12 +6722,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const requestId = req.requestId || `test-${Date.now()}`;
     const organizationId = getRequestOrganizationId(req);
     
-    // Structured logging with requestId and environment
+    // Deployment config sanity check (safe diagnostic logging)
+    const deploymentConfig = {
+      environment: process.env.NODE_ENV || 'development',
+      requestHost: req.get('host'),
+      requestProtocol: req.protocol,
+      trustProxy: app.get('trust proxy'),
+      publicAppUrl: process.env.PUBLIC_APP_URL,
+      gmailOAuthRedirectUri: process.env.GMAIL_OAUTH_REDIRECT_URI || 'https://developers.google.com/oauthplayground',
+      hasSessionSecret: !!process.env.SESSION_SECRET,
+      hasDatabaseUrl: !!process.env.DATABASE_URL,
+    };
+    
+    // Structured logging with requestId and deployment config
     logger.info('email_test_start', { 
       requestId, 
       organizationId,
       route: '/api/email/test',
-      environment: process.env.NODE_ENV || 'development',
+      ...deploymentConfig,
     });
 
     try {
