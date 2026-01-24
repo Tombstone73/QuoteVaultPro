@@ -93,6 +93,7 @@ function Router() {
         
         {/* Prepress (standalone PDF preflight tool) */}
         <Route path="/prepress" element={<PrepressPage />} />
+        <Route path="/production/prepress" element={<PrepressPage />} />
 
         {/* Customer routes */}
         <Route path="/customers/:id" element={<CustomerDetail />} />
