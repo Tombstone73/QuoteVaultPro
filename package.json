@@ -16,6 +16,7 @@
     "db:verify:stripe": "tsx scripts/db-verify-stripe.ts",
     "db:pbv2:check": "tsx scripts/db/pbv2-schema-check.ts",
     "db:sync-users": "tsx sync-users-customers.ts",
+    "email:check": "tsx server/diagnostics/emailConfigCheck.ts",
     "pbv2:smoke": "tsx scripts/pbv2-smoke.ts",
     "pbv2:http:smoke": "tsx scripts/pbv2-http-smoke.ts",
     "pdf:smoke": "tsx scripts/pdf-smoke.ts",
