@@ -61,7 +61,7 @@ export function ObjectUploader({
           throw new Error("Failed to get upload URL");
         }
 
-        const { method, url } = await presignedResponse.json();
+        const { method, url, path: objectPath } = await presignedResponse.json();
 
         const uploadResponse = await fetch(url, {
           method,
@@ -75,13 +75,12 @@ export function ObjectUploader({
           throw new Error("Failed to upload file");
         }
 
-        const uploadedPath = url.split("?")[0];
-
+        // Use object path from presigned response, not the upload URL
         const aclResponse = await fetch("/api/objects/acl", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ objectPath: uploadedPath }),
+          body: JSON.stringify({ objectPath }),
         });
 
         if (!aclResponse.ok) {
