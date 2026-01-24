@@ -747,6 +747,13 @@ export function EmailSettingsTab() {
                     </ul>
                   </div>
                   
+                  <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+                    <h4 className="font-semibold mb-2 text-amber-900 dark:text-amber-100">⚠️ Production Deployment Note</h4>
+                    <p className="text-sm text-amber-800 dark:text-amber-200">
+                      If you moved from localhost to production (e.g., Railway, Vercel, or your own domain), you must update your Google Cloud OAuth Authorized Redirect URIs to include your production URL. The redirect URI configured in Google Cloud Console must match the <code className="bg-amber-100 dark:bg-amber-900 px-1 py-0.5 rounded">GMAIL_OAUTH_REDIRECT_URI</code> environment variable on your server.
+                    </p>
+                  </div>
+                  
                   <div>
                     <h4 className="font-semibold mb-2">Step 4: Generate Refresh Token</h4>
                     <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
