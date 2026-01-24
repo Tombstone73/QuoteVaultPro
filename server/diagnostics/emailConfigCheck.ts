@@ -11,12 +11,10 @@
  * 2. OAuth redirect URI configuration
  * 3. Express trust proxy setting
  * 4. Session cookie configuration
- * 5. Database email settings
+ * 5. Database email settings (if DATABASE_URL is available)
  */
 
 import "dotenv/config";
-import { storage } from "../storage";
-import { DEFAULT_ORGANIZATION_ID } from "../tenantContext";
 
 interface ConfigCheck {
   name: string;
@@ -135,45 +133,58 @@ async function runDiagnostics(): Promise<ConfigCheck[]> {
     fix: nodeEnv !== "production" ? "Set NODE_ENV=production for production deployment" : undefined
   });
 
-  // Check 6: Database email settings
-  try {
-    const emailSettings = await storage.getDefaultEmailSettings(DEFAULT_ORGANIZATION_ID);
-    if (!emailSettings) {
-      checks.push({
-        name: "Email Settings (DB)",
-        status: "WARN",
-        message: "No email settings found in database",
-        fix: "Configure email settings in Admin Settings → Email tab"
-      });
-    } else {
-      const hasAllFields = !!(
-        emailSettings.fromAddress &&
-        emailSettings.clientId &&
-        emailSettings.clientSecret &&
-        emailSettings.refreshToken
-      );
+  // Check 6: Database email settings (only if DATABASE_URL is available)
+  if (databaseUrl) {
+    try {
+      // Dynamically import storage to avoid db.ts initialization errors
+      const { storage } = await import("../storage");
+      const { DEFAULT_ORGANIZATION_ID } = await import("../tenantContext");
       
-      if (!hasAllFields) {
+      const emailSettings = await storage.getDefaultEmailSettings(DEFAULT_ORGANIZATION_ID);
+      if (!emailSettings) {
         checks.push({
           name: "Email Settings (DB)",
           status: "WARN",
-          message: "Email settings incomplete (missing fields)",
-          fix: "Fill in all required fields: Gmail Address, Client ID, Client Secret, Refresh Token"
+          message: "No email settings found in database",
+          fix: "Configure email settings in Admin Settings → Email tab"
         });
       } else {
-        checks.push({
-          name: "Email Settings (DB)",
-          status: "OK",
-          message: `Email configured for ${emailSettings.fromAddress}`
-        });
+        const hasAllFields = !!(
+          emailSettings.fromAddress &&
+          emailSettings.clientId &&
+          emailSettings.clientSecret &&
+          emailSettings.refreshToken
+        );
+        
+        if (!hasAllFields) {
+          checks.push({
+            name: "Email Settings (DB)",
+            status: "WARN",
+            message: "Email settings incomplete (missing fields)",
+            fix: "Fill in all required fields: Gmail Address, Client ID, Client Secret, Refresh Token"
+          });
+        } else {
+          checks.push({
+            name: "Email Settings (DB)",
+            status: "OK",
+            message: `Email configured for ${emailSettings.fromAddress}`
+          });
+        }
       }
+    } catch (error: any) {
+      checks.push({
+        name: "Email Settings (DB)",
+        status: "FAIL",
+        message: `Database query failed: ${error.message}`,
+        fix: "Check DATABASE_URL and database connectivity"
+      });
     }
-  } catch (error: any) {
+  } else {
     checks.push({
       name: "Email Settings (DB)",
-      status: "FAIL",
-      message: `Database query failed: ${error.message}`,
-      fix: "Check DATABASE_URL and database connectivity"
+      status: "WARN",
+      message: "Skipped (DATABASE_URL not set)",
+      fix: "Set DATABASE_URL to check database email settings"
     });
   }
 
