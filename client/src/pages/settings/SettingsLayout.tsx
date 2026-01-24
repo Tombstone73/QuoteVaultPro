@@ -43,6 +43,8 @@ import {
   Palette,
   PlugZap,
   Sliders,
+  Mail,
+  Image,
   type LucideIcon,
 } from "lucide-react";
 
@@ -70,22 +72,10 @@ type SettingsNavItem = {
 
 const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { 
-    label: "Company", 
-    path: "/settings/company", 
-    icon: Settings,
-    description: "Company info and defaults"
-  },
-  { 
     label: "Preferences", 
     path: "/settings/preferences", 
     icon: Sliders,
     description: "Workflow and behavior preferences"
-  },
-  { 
-    label: "Users & Roles", 
-    path: "/settings/users", 
-    icon: Users,
-    description: "User management and permissions"
   },
   { 
     label: "Product Catalog", 
@@ -112,22 +102,22 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     description: "QuickBooks and other integrations"
   },
   { 
+    label: "Media Library", 
+    path: "/settings/media-library", 
+    icon: Image,
+    description: "Upload and manage product images"
+  },
+  { 
+    label: "Email Provider", 
+    path: "/settings/email", 
+    icon: Mail,
+    description: "Configure Gmail OAuth or SMTP"
+  },
+  { 
     label: "Production & Operations", 
     path: "/settings/production", 
     icon: Factory,
     description: "Production workflow settings"
-  },
-  { 
-    label: "Inventory & Procurement", 
-    path: "/settings/inventory", 
-    icon: Boxes,
-    description: "Inventory and vendor settings"
-  },
-  { 
-    label: "Notifications", 
-    path: "/settings/notifications", 
-    icon: Bell,
-    description: "Email and notification preferences"
   },
   { 
     label: "Appearance / Themes", 
