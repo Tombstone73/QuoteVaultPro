@@ -6756,6 +6756,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Check if email is configured before attempting to send
+      const emailConfigCheck = await emailService.isEmailConfigured(organizationId);
+      if (!emailConfigCheck.configured) {
+        logger.warn('email_test_not_configured', { 
+          requestId, 
+          organizationId,
+          reason: emailConfigCheck.reason,
+        });
+        return res.status(400).json({
+          success: false,
+          message: emailConfigCheck.reason || "Email is not configured",
+          error: {
+            category: 'CONFIG',
+            code: 'EMAIL_NOT_CONFIGURED',
+          },
+          requestId,
+        });
+      }
+
       const { recipientEmail } = req.body;
       if (!recipientEmail) {
         logger.warn('email_test_missing_recipient', { requestId, organizationId });
@@ -6830,9 +6849,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/quotes/:id/email", isAuthenticated, tenantContext, emailRateLimit, async (req: any, res) => {
+    const requestId = req.requestId || `quote-email-${Date.now()}`;
+    
     try {
       const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context", requestId });
+
+      logger.info('quote_email_start', { 
+        requestId, 
+        organizationId,
+        quoteId: req.params.id,
+      });
+
+      // Check if email is configured before attempting to send
+      const emailConfigCheck = await emailService.isEmailConfigured(organizationId);
+      if (!emailConfigCheck.configured) {
+        logger.warn('quote_email_not_configured', { 
+          requestId, 
+          organizationId,
+          quoteId: req.params.id,
+          reason: emailConfigCheck.reason,
+        });
+        return res.status(400).json({
+          success: false,
+          message: emailConfigCheck.reason || "Email is not configured",
+          error: {
+            category: 'CONFIG',
+            code: 'EMAIL_NOT_CONFIGURED',
+          },
+          requestId,
+        });
+      }
+
       const { id } = req.params;
       const { recipientEmail } = req.body;
 

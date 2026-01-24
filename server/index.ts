@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import { validateAndExit } from "./envValidation";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { syncUsersToCustomers } from "./db/syncUsersToCustomers";
@@ -15,6 +16,9 @@ import { TenantBoundaryError } from "./guards/tenantGuard";
 import { globalIpRateLimit } from "./middleware/rateLimiting";
 import { healthCheck, readinessCheck, validateDatabaseConnectivity } from "./middleware/healthChecks";
 import { setupGracefulShutdown, trackRequest, registerWorkerInterval } from "./middleware/gracefulShutdown";
+
+// Environment validation - fail fast if misconfigured (runs before any DB access)
+validateAndExit();
 
 const app = express();
 

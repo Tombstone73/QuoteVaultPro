@@ -21,6 +21,51 @@ interface EmailConfig {
 
 class EmailService {
   /**
+   * Check if email is configured for an organization
+   * Returns { configured: boolean, reason?: string }
+   */
+  async isEmailConfigured(organizationId: string): Promise<{ configured: boolean; reason?: string }> {
+    // Check if email feature is globally enabled
+    if (!isEmailEnabled()) {
+      return {
+        configured: false,
+        reason: "Email feature is disabled. Check WORKERS_ENABLED and email-related environment variables.",
+      };
+    }
+
+    // Check if organization has email settings
+    const config = await this.getEmailConfig(organizationId);
+    if (!config) {
+      return {
+        configured: false,
+        reason: "Email provider not configured for this organization. Configure in Admin Settings → Email.",
+      };
+    }
+
+    // Check Gmail OAuth completeness
+    if (config.provider === "gmail") {
+      if (!config.clientId || !config.clientSecret || !config.refreshToken) {
+        return {
+          configured: false,
+          reason: "Gmail OAuth credentials incomplete. Required: Client ID, Client Secret, and Refresh Token.",
+        };
+      }
+    }
+
+    // Check SMTP completeness
+    if (config.provider === "smtp") {
+      if (!config.smtpHost || !config.smtpPort) {
+        return {
+          configured: false,
+          reason: "SMTP configuration incomplete. Required: Host and Port.",
+        };
+      }
+    }
+
+    return { configured: true };
+  }
+
+  /**
    * Get email configuration from database
    */
   private async getEmailConfig(organizationId: string): Promise<EmailConfig | null> {
