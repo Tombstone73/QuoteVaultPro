@@ -514,6 +514,7 @@ export function EmailSettingsTab() {
   const [isEditing, setIsEditing] = useState(false);
   const [testEmailAddress, setTestEmailAddress] = useState("");
   const [hasHydrated, setHasHydrated] = useState(false);
+  const [lastFetchedSettings, setLastFetchedSettings] = useState<EmailSettings | null>(null);
 
   // Fetch email settings
   const { data: emailSettings, isLoading } = useQuery<EmailSettings | null>({
@@ -546,10 +547,10 @@ export function EmailSettingsTab() {
     },
   });
 
-  // Update form when data loads (only once on initial load or when not editing)
+  // Update form when data loads (only when not editing and data exists)
   useEffect(() => {
-    if (emailSettings && (!hasHydrated || !isEditing)) {
-      form.reset({
+    if (emailSettings && !isEditing) {
+      const mappedSettings = {
         provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
         fromAddress: emailSettings.fromAddress,
         fromName: emailSettings.fromName,
@@ -558,10 +559,16 @@ export function EmailSettingsTab() {
         refreshToken: emailSettings.refreshToken || "",
         isActive: emailSettings.isActive,
         isDefault: emailSettings.isDefault,
-      });
-      setHasHydrated(true);
+      };
+      
+      form.reset(mappedSettings);
+      setLastFetchedSettings(emailSettings);
+      
+      if (!hasHydrated) {
+        setHasHydrated(true);
+      }
     }
-  }, [emailSettings, hasHydrated, isEditing, form]);
+  }, [emailSettings, isEditing, hasHydrated]);
 
   // Create/Update mutation
   const saveMutation = useMutation({
@@ -628,16 +635,16 @@ export function EmailSettingsTab() {
 
   const handleCancel = () => {
     setIsEditing(false);
-    if (emailSettings) {
+    if (lastFetchedSettings) {
       form.reset({
-        provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
-        fromAddress: emailSettings.fromAddress,
-        fromName: emailSettings.fromName,
-        clientId: emailSettings.clientId || "",
-        clientSecret: emailSettings.clientSecret || "",
-        refreshToken: emailSettings.refreshToken || "",
-        isActive: emailSettings.isActive,
-        isDefault: emailSettings.isDefault,
+        provider: lastFetchedSettings.provider as "gmail" | "sendgrid" | "smtp",
+        fromAddress: lastFetchedSettings.fromAddress,
+        fromName: lastFetchedSettings.fromName,
+        clientId: lastFetchedSettings.clientId || "",
+        clientSecret: lastFetchedSettings.clientSecret || "",
+        refreshToken: lastFetchedSettings.refreshToken || "",
+        isActive: lastFetchedSettings.isActive,
+        isDefault: lastFetchedSettings.isDefault,
       });
     }
   };
@@ -887,7 +894,14 @@ export function EmailSettingsTab() {
                       </Button>
                     </>
                   ) : (
-                    <Button type="button" onClick={() => setIsEditing(true)}>
+                    <Button 
+                      type="button" 
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsEditing(true);
+                      }}
+                    >
                       <Edit className="w-4 h-4 mr-2" />
                       Edit Settings
                     </Button>
