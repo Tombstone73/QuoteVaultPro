@@ -47,6 +47,7 @@ import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolic
 import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } from "@shared/inventoryPolicyPreferences";
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
+import { classifyEmailError, createSafeErrorContext, type EmailErrorSpec } from "./emailErrors";
 
 // Auth provider selection (decoupled from NODE_ENV)
 // Environment variable:
@@ -6721,11 +6722,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const requestId = req.requestId || `test-${Date.now()}`;
     const organizationId = getRequestOrganizationId(req);
     
-    // Structured logging with requestId
+    // Structured logging with requestId and environment
     logger.info('email_test_start', { 
       requestId, 
       organizationId,
-      route: '/api/email/test'
+      route: '/api/email/test',
+      environment: process.env.NODE_ENV || 'development',
     });
 
     try {
@@ -6734,6 +6736,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ 
           success: false,
           message: "Missing organization context",
+          error: {
+            category: 'CONFIG',
+            code: 'MISSING_ORG_CONTEXT',
+          },
           requestId 
         });
       }
@@ -6744,6 +6750,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ 
           success: false,
           message: "Recipient email is required",
+          error: {
+            category: 'CONFIG',
+            code: 'MISSING_RECIPIENT',
+          },
           requestId 
         });
       }
@@ -6758,14 +6768,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Race between email send and timeout
       await Promise.race([
-        emailService.sendTestEmail(organizationId, recipientEmail),
+        emailService.sendTestEmail(organizationId, recipientEmail, requestId),
         timeoutPromise
       ]);
 
       logger.info('email_test_success', { 
         requestId, 
         organizationId,
-        recipientEmail: recipientEmail.replace(/(?<=.{2}).*(?=@)/, '***') // Mask email for privacy
       });
 
       res.json({ 
@@ -6775,59 +6784,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
     } catch (error: any) {
-      // Classify and sanitize errors
-      let statusCode = 500;
-      let message = "Failed to send test email";
-      let errorCategory = "unknown_error";
+      // Classify error using taxonomy
+      const classified: EmailErrorSpec = classifyEmailError(error);
 
-      if (error.message === 'EMAIL_TIMEOUT') {
-        statusCode = 504;
-        message = "Email test timed out contacting Gmail. Check your internet connection and try again.";
-        errorCategory = "timeout";
-      } else if (error.message?.includes('Email settings not configured')) {
-        statusCode = 400;
-        message = "Email provider not configured. Please configure Gmail OAuth settings first.";
-        errorCategory = "config_missing";
-      } else if (error.message?.includes('temporarily disabled')) {
-        statusCode = 503;
-        message = "Email sending is temporarily disabled. Please try again later.";
-        errorCategory = "service_disabled";
-      } else if (error.message?.includes('invalid_grant') || 
-                 error.message?.includes('unauthorized_client') ||
-                 error.message?.includes('invalid_client')) {
-        statusCode = 401;
-        message = "Gmail OAuth credentials are invalid or expired. Please reconfigure your OAuth settings.";
-        errorCategory = "oauth_invalid";
-      } else if (error.message?.includes('insufficient') && error.message?.includes('scope')) {
-        statusCode = 403;
-        message = "Gmail OAuth scopes are insufficient. Please ensure the refresh token has mail.send scope.";
-        errorCategory = "oauth_scopes";
-      } else if (error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
-        statusCode = 504;
-        message = "Unable to reach Gmail servers. Check your network connection.";
-        errorCategory = "network_error";
-      } else if (error.message) {
-        // Use error message if it's safe (already sanitized in emailService)
-        message = error.message;
-        errorCategory = "service_error";
-      }
-
-      logger.error('email_test_error', {
+      // Log failure with safe context
+      logger.error('email_test_fail', {
         requestId,
         organizationId,
-        errorCategory,
-        errorCode: error.code,
-        errorType: error.constructor?.name,
-        // Never log sensitive fields like tokens or credentials
-        message: error.message?.substring(0, 200) // Truncate long messages
+        errorCategory: classified.category,
+        errorCode: classified.code,
+        httpStatus: classified.httpStatus,
+        ...createSafeErrorContext(error),
       });
 
-      res.status(statusCode).json({
+      // Return structured error response
+      res.status(classified.httpStatus).json({
         success: false,
-        message,
+        message: classified.userMessage,
+        error: {
+          category: classified.category,
+          code: classified.code,
+        },
         requestId,
-        // Only in development, include error category for debugging
-        ...(process.env.NODE_ENV !== 'production' && { errorCategory })
+        // Only in development, include additional debug info
+        ...(process.env.NODE_ENV !== 'production' && { 
+          debug: {
+            errorName: error.name,
+            errorCode: error.code,
+          }
+        })
       });
     }
   });
