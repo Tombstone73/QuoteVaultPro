@@ -242,7 +242,9 @@ export function validateEnvironment(): ValidationResult {
   };
 }
 
-  }
+export function validateAndExit(): void {
+  const nodeEnv = (process.env.NODE_ENV || "development").trim();
+  const result = validateEnvironment();
 
   console.log("═══════════════════════════════════════════════════════════");
   console.log("   Environment Configuration Status");
@@ -265,13 +267,9 @@ export function validateEnvironment(): ValidationResult {
   console.log("🟡 TIER 2 - Optional Features (warns only, won't block startup):");
   console.log(`   PUBLIC_APP_URL: ${process.env.PUBLIC_APP_URL || "(not set)"}`);
   console.log(`   GMAIL_OAUTH_REDIRECT_URI: ${process.env.GMAIL_OAUTH_REDIRECT_URI || "(not set, using default)"}`);
-  console.log(`   SUPABASE_URL: ${process.env.SUPABASE_URL ? "✓ set" : "(not set)"}`);onsole.log(`DATABASE_URL: ${process.env.DATABASE_URL ? "✓ set" : "✗ not set"}`);
-  console.log(`SESSION_SECRET: ${process.env.SESSION_SECRET ? `✓ set (${process.env.SESSION_SECRET.length} chars)` : "✗ not set"}`);
+  console.log(`   SUPABASE_URL: ${process.env.SUPABASE_URL ? "✓ set" : "(not set)"}`);
+  console.log("");
   
-  if (process.env.AUTH_PROVIDER?.toLowerCase() === "replit") {
-    console.log(`REPLIT_OIDC_ISSUER: ${process.env.REPLIT_OIDC_ISSUER || process.env.ISSUER_URL ? "✓ set" : "✗ not set"}`);
-    console.log(`REPL_ID: ${process.env.REPL_ID ? "✓ set" : "✗ not set"}`);
-  }
   // Log Tier 2 warnings (non-fatal)
   if (result.tier2Warnings.length > 0) {
     console.warn("⚠️  TIER 2 - Optional Feature Warnings (server will start):");
@@ -304,13 +302,4 @@ export function validateEnvironment(): ValidationResult {
   } else {
     console.log("✓ TIER 2 validation passed - All optional features configured\n");
   }
-    }
-    console.error("═══════════════════════════════════════════════════════════");
-    console.error("Server cannot start with invalid environment configuration.");
-    console.error("Fix the errors above and restart the server.");
-    console.error("═══════════════════════════════════════════════════════════\n");
-    process.exit(1);
-  }
-
-  console.log("✓ Environment validation passed\n");
 }
