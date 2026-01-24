@@ -6718,20 +6718,116 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Email sending routes
   app.post("/api/email/test", isAuthenticated, tenantContext, isAdmin, emailRateLimit, async (req: any, res) => {
+    const requestId = req.requestId || `test-${Date.now()}`;
+    const organizationId = getRequestOrganizationId(req);
+    
+    // Structured logging with requestId
+    logger.info('email_test_start', { 
+      requestId, 
+      organizationId,
+      route: '/api/email/test'
+    });
+
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const { recipientEmail } = req.body;
-      if (!recipientEmail) {
-        return res.status(400).json({ message: "Recipient email is required" });
+      if (!organizationId) {
+        logger.warn('email_test_missing_org', { requestId });
+        return res.status(500).json({ 
+          success: false,
+          message: "Missing organization context",
+          requestId 
+        });
       }
 
-      await emailService.sendTestEmail(organizationId, recipientEmail);
-      res.json({ message: "Test email sent successfully" });
-    } catch (error) {
-      console.error("Error sending test email:", error);
-      res.status(500).json({
-        message: error instanceof Error ? error.message : "Failed to send test email"
+      const { recipientEmail } = req.body;
+      if (!recipientEmail) {
+        logger.warn('email_test_missing_recipient', { requestId, organizationId });
+        return res.status(400).json({ 
+          success: false,
+          message: "Recipient email is required",
+          requestId 
+        });
+      }
+
+      // Hard timeout: 15 seconds (Railway typically allows 30s, we want to respond before that)
+      const TIMEOUT_MS = 15000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('EMAIL_TIMEOUT'));
+        }, TIMEOUT_MS);
+      });
+
+      // Race between email send and timeout
+      await Promise.race([
+        emailService.sendTestEmail(organizationId, recipientEmail),
+        timeoutPromise
+      ]);
+
+      logger.info('email_test_success', { 
+        requestId, 
+        organizationId,
+        recipientEmail: recipientEmail.replace(/(?<=.{2}).*(?=@)/, '***') // Mask email for privacy
+      });
+
+      res.json({ 
+        success: true,
+        message: "Test email sent successfully",
+        requestId 
+      });
+
+    } catch (error: any) {
+      // Classify and sanitize errors
+      let statusCode = 500;
+      let message = "Failed to send test email";
+      let errorCategory = "unknown_error";
+
+      if (error.message === 'EMAIL_TIMEOUT') {
+        statusCode = 504;
+        message = "Email test timed out contacting Gmail. Check your internet connection and try again.";
+        errorCategory = "timeout";
+      } else if (error.message?.includes('Email settings not configured')) {
+        statusCode = 400;
+        message = "Email provider not configured. Please configure Gmail OAuth settings first.";
+        errorCategory = "config_missing";
+      } else if (error.message?.includes('temporarily disabled')) {
+        statusCode = 503;
+        message = "Email sending is temporarily disabled. Please try again later.";
+        errorCategory = "service_disabled";
+      } else if (error.message?.includes('invalid_grant') || 
+                 error.message?.includes('unauthorized_client') ||
+                 error.message?.includes('invalid_client')) {
+        statusCode = 401;
+        message = "Gmail OAuth credentials are invalid or expired. Please reconfigure your OAuth settings.";
+        errorCategory = "oauth_invalid";
+      } else if (error.message?.includes('insufficient') && error.message?.includes('scope')) {
+        statusCode = 403;
+        message = "Gmail OAuth scopes are insufficient. Please ensure the refresh token has mail.send scope.";
+        errorCategory = "oauth_scopes";
+      } else if (error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
+        statusCode = 504;
+        message = "Unable to reach Gmail servers. Check your network connection.";
+        errorCategory = "network_error";
+      } else if (error.message) {
+        // Use error message if it's safe (already sanitized in emailService)
+        message = error.message;
+        errorCategory = "service_error";
+      }
+
+      logger.error('email_test_error', {
+        requestId,
+        organizationId,
+        errorCategory,
+        errorCode: error.code,
+        errorType: error.constructor?.name,
+        // Never log sensitive fields like tokens or credentials
+        message: error.message?.substring(0, 200) // Truncate long messages
+      });
+
+      res.status(statusCode).json({
+        success: false,
+        message,
+        requestId,
+        // Only in development, include error category for debugging
+        ...(process.env.NODE_ENV !== 'production' && { errorCategory })
       });
     }
   });

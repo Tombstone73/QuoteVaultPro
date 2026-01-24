@@ -44,6 +44,7 @@ class EmailService {
 
   /**
    * Create Nodemailer transporter with OAuth2 or SMTP
+   * Includes timeout configuration to prevent hanging
    */
   private async createTransporter(config: EmailConfig) {
     if (config.provider === "gmail" && config.clientId && config.clientSecret && config.refreshToken) {
@@ -59,8 +60,13 @@ class EmailService {
         refresh_token: config.refreshToken,
       });
 
-      // Get access token
-      const accessToken = await oauth2Client.getAccessToken();
+      // Get access token with timeout
+      const accessTokenPromise = oauth2Client.getAccessToken();
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('OAuth token refresh timed out')), 8000);
+      });
+      
+      const accessToken = await Promise.race([accessTokenPromise, timeoutPromise]);
 
       return nodemailer.createTransport({
         service: "gmail",
@@ -72,6 +78,10 @@ class EmailService {
           refreshToken: config.refreshToken,
           accessToken: accessToken.token || undefined,
         },
+        // Nodemailer timeout settings
+        connectionTimeout: 5000, // 5 seconds to establish connection
+        greetingTimeout: 5000,   // 5 seconds to receive greeting
+        socketTimeout: 10000,    // 10 seconds for socket inactivity
       });
     } else if (config.provider === "smtp" && config.smtpHost && config.smtpPort) {
       // SMTP setup
@@ -83,6 +93,10 @@ class EmailService {
           user: config.smtpUsername,
           pass: config.smtpPassword,
         } : undefined,
+        // Timeout settings for SMTP
+        connectionTimeout: 5000,
+        greetingTimeout: 5000,
+        socketTimeout: 10000,
       });
     } else {
       throw new Error(`Unsupported email provider: ${config.provider} or missing configuration`);
@@ -91,6 +105,7 @@ class EmailService {
 
   /**
    * Send a test email to verify configuration
+   * Includes timeout handling to prevent hanging
    */
   async sendTestEmail(organizationId: string, recipientEmail: string): Promise<void> {
     // Operational kill switch: disable email during provider outages, bounce storms, or template issues
@@ -124,7 +139,13 @@ class EmailService {
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    // Send with timeout (transporter already has connection timeouts, but add overall timeout)
+    const sendPromise = transporter.sendMail(mailOptions);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Email send operation timed out')), 12000); // 12s for actual send
+    });
+
+    await Promise.race([sendPromise, timeoutPromise]);
   }
 
   /**
