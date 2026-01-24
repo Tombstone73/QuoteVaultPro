@@ -123,13 +123,30 @@ function SelectChoicesInput({ value, onChange }: { value: string; onChange: (val
  * Helper: Convert storage path to browsable URL
  * Storage paths can be:
  * - Already prefixed with /objects/ -> use as-is
- * - Raw storage key (bucket/path) -> prefix with /objects/
+ * - Raw storage key (bucket/path or just path) -> prefix with /objects/
  * - Full HTTP URL -> use as-is
+ * 
+ * NOTE: Server should now return proper view URLs, but this provides fallback protection
  */
 function getMediaUrl(url: string): string {
   if (!url) return '';
+  
+  // Full HTTP/HTTPS URL - use as-is
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  
+  // Already prefixed with /objects/ - use as-is
   if (url.startsWith('/objects/')) return url;
+  
+  // Upload/sign URLs should never reach here (server converts them), but handle as fallback
+  if (url.includes('/upload/sign/')) {
+    console.warn('Client received upload/sign URL - this should be fixed server-side:', url);
+    // Try to extract object path
+    const pathMatch = url.match(/\/upload\/sign\/[^\/]+\/(.+?)(?:\?|$)/);
+    if (pathMatch && pathMatch[1]) {
+      return `/objects/${pathMatch[1]}`;
+    }
+  }
+  
   // Raw storage path - prefix with /objects/
   return `/objects/${url}`;
 }

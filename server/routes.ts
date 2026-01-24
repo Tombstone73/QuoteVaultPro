@@ -874,7 +874,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const assets = await storage.getAllMediaAssets(organizationId);
-      res.json(assets);
+      
+      // Transform stored paths into proper view URLs
+      const { SupabaseStorageService, isSupabaseConfigured } = await import("./supabaseStorage");
+      const assetsWithViewUrls = assets.map(asset => {
+        let viewUrl = asset.url;
+        
+        // If url contains upload/sign, extract object path and generate proper view URL
+        if (asset.url.includes('/upload/sign/')) {
+          try {
+            const pathMatch = asset.url.match(/\/upload\/sign\/[^\/]+\/(.+?)(?:\?|$)/);
+            if (pathMatch && pathMatch[1]) {
+              const objectPath = pathMatch[1];
+              if (isSupabaseConfigured()) {
+                const supabaseService = new SupabaseStorageService();
+                viewUrl = supabaseService.getPublicUrl(objectPath);
+              } else {
+                viewUrl = `/objects/${objectPath}`;
+              }
+            }
+          } catch (e) {
+            console.error('Error extracting object path from URL:', asset.url, e);
+          }
+        } else if (!asset.url.startsWith('http://') && !asset.url.startsWith('https://') && !asset.url.startsWith('/objects/')) {
+          // Plain object path - add /objects/ prefix for local viewing
+          viewUrl = `/objects/${asset.url}`;
+        }
+        
+        return { ...asset, url: viewUrl };
+      });
+      
+      res.json(assetsWithViewUrls);
     } catch (error) {
       console.error("Error fetching media assets:", error);
       res.status(500).json({ message: "Failed to fetch media assets" });
