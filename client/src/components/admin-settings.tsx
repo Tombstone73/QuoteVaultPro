@@ -813,7 +813,12 @@ export function EmailSettingsTab() {
 const isValidHttpUrl = (v: unknown): v is string =>
   typeof v === "string" && (v.startsWith("http://") || v.startsWith("https://"));
 
-export default function AdminSettings() {
+type AdminSettingsProps = {
+  defaultTab?: string;
+  hideTabs?: boolean;
+};
+
+export default function AdminSettings({ defaultTab = "products", hideTabs = false }: AdminSettingsProps = {}) {
   const { toast } = useToast();
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showQuoteNumbering, setShowQuoteNumbering] = useState(false);
@@ -1658,7 +1663,8 @@ export default function AdminSettings() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="products" data-testid="tabs-admin-settings">
+          <Tabs defaultValue={defaultTab} data-testid="tabs-admin-settings">
+            {!hideTabs && (
             <TabsList className="grid w-full grid-cols-6">
               <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
               <TabsTrigger value="media" data-testid="tab-media">Media Library</TabsTrigger>
@@ -1667,6 +1673,7 @@ export default function AdminSettings() {
               <TabsTrigger value="email" data-testid="tab-email">Email Settings</TabsTrigger>
               <TabsTrigger value="workflow" data-testid="tab-workflow">Workflow</TabsTrigger>
             </TabsList>
+            )}
 
             <TabsContent value="products" className="space-y-4">
               <Card>

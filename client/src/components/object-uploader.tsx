@@ -199,7 +199,6 @@ export function ObjectUploader({
             multiple
             accept={allowedFileTypes.join(",")}
             onChange={(e) => handleFileSelect(e.target.files)}
-            onClick={stopBubbling}
             className="hidden"
             data-testid="file-input"
           />
