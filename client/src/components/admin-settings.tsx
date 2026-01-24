@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
@@ -13,13 +13,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send, Link as LinkIcon } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send, Link as LinkIcon, BookOpen, ChevronDown } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { ObjectUploader } from "@/components/object-uploader";
 import { MediaPicker } from "@/components/media-picker";
 import UserManagement from "@/components/user-management";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import type {
   Product,
   InsertProduct,
@@ -512,7 +513,7 @@ export function EmailSettingsTab() {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [testEmailAddress, setTestEmailAddress] = useState("");
-  const [isSendingTest, setIsSendingTest] = useState(false);
+  const [hasHydrated, setHasHydrated] = useState(false);
 
   // Fetch email settings
   const { data: emailSettings, isLoading } = useQuery<EmailSettings | null>({
@@ -545,9 +546,9 @@ export function EmailSettingsTab() {
     },
   });
 
-  // Update form when data loads
-  useState(() => {
-    if (emailSettings) {
+  // Update form when data loads (only once on initial load or when not editing)
+  useEffect(() => {
+    if (emailSettings && (!hasHydrated || !isEditing)) {
       form.reset({
         provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
         fromAddress: emailSettings.fromAddress,
@@ -558,8 +559,9 @@ export function EmailSettingsTab() {
         isActive: emailSettings.isActive,
         isDefault: emailSettings.isDefault,
       });
+      setHasHydrated(true);
     }
-  });
+  }, [emailSettings, hasHydrated, isEditing, form]);
 
   // Create/Update mutation
   const saveMutation = useMutation({
@@ -570,8 +572,8 @@ export function EmailSettingsTab() {
         return apiRequest("POST", "/api/email-settings", data);
       }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/email-settings/default"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/email-settings/default"] });
       toast({
         title: "Success",
         description: "Email settings saved successfully",
@@ -598,7 +600,6 @@ export function EmailSettingsTab() {
         description: "Test email sent successfully! Check your inbox.",
       });
       setTestEmailAddress("");
-      setIsSendingTest(false);
     },
     onError: (error: Error) => {
       toast({
@@ -606,7 +607,6 @@ export function EmailSettingsTab() {
         description: error.message || "Failed to send test email",
         variant: "destructive",
       });
-      setIsSendingTest(false);
     },
   });
 
@@ -626,6 +626,22 @@ export function EmailSettingsTab() {
     testEmailMutation.mutate(testEmailAddress);
   };
 
+  const handleCancel = () => {
+    setIsEditing(false);
+    if (emailSettings) {
+      form.reset({
+        provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
+        fromAddress: emailSettings.fromAddress,
+        fromName: emailSettings.fromName,
+        clientId: emailSettings.clientId || "",
+        clientSecret: emailSettings.clientSecret || "",
+        refreshToken: emailSettings.refreshToken || "",
+        isActive: emailSettings.isActive,
+        isDefault: emailSettings.isDefault,
+      });
+    }
+  };
+
   if (isLoading) {
     return (
       <Card>
@@ -642,6 +658,83 @@ export function EmailSettingsTab() {
 
   return (
     <div className="space-y-4">
+      {/* Setup Guide */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BookOpen className="w-5 h-5" />
+            Gmail OAuth Setup Guide
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Accordion type="single" collapsible className="w-full">
+            <AccordionItem value="setup-guide">
+              <AccordionTrigger className="text-base font-medium">
+                How to configure Gmail OAuth for sending emails
+              </AccordionTrigger>
+              <AccordionContent className="space-y-4 pt-4">
+                <div className="space-y-3 text-sm">
+                  <div>
+                    <h4 className="font-semibold mb-2">Step 1: Create a Google Cloud Project</h4>
+                    <p className="text-muted-foreground">
+                      Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Google Cloud Console</a> and create a new project (or select an existing one).
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-semibold mb-2">Step 2: Enable Gmail API</h4>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li>Navigate to "APIs & Services" → "Library"</li>
+                      <li>Search for "Gmail API"</li>
+                      <li>Click "Enable"</li>
+                    </ul>
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-semibold mb-2">Step 3: Create OAuth 2.0 Client ID</h4>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li>Go to "APIs & Services" → "Credentials"</li>
+                      <li>Click "Create Credentials" → "OAuth client ID"</li>
+                      <li>Select "Web application" as application type</li>
+                      <li>Add authorized redirect URI: <code className="bg-muted px-1 py-0.5 rounded">https://developers.google.com/oauthplayground</code></li>
+                      <li>Save your Client ID and Client Secret</li>
+                    </ul>
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-semibold mb-2">Step 4: Generate Refresh Token</h4>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li>Go to <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">OAuth 2.0 Playground</a></li>
+                      <li>Click the gear icon (⚙️) in the top right</li>
+                      <li>Check "Use your own OAuth credentials"</li>
+                      <li>Enter your Client ID and Client Secret</li>
+                      <li>In the left panel, select "Gmail API v1" → expand and check <code className="bg-muted px-1 py-0.5 rounded">https://mail.google.com/</code></li>
+                      <li>Click "Authorize APIs" and sign in with the Gmail account you want to use</li>
+                      <li>Click "Exchange authorization code for tokens"</li>
+                      <li>Copy the "Refresh token" value</li>
+                    </ul>
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-semibold mb-2">Step 5: Configure Settings Below</h4>
+                    <p className="text-muted-foreground">
+                      Fill in the form fields below with your Gmail address, Client ID, Client Secret, and Refresh Token.
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-semibold mb-2">Step 6: Test Your Configuration</h4>
+                    <p className="text-muted-foreground">
+                      After saving, use the "Test Email" section to verify your settings are working correctly.
+                    </p>
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -660,7 +753,7 @@ export function EmailSettingsTab() {
               <p className="text-muted-foreground mb-4">
                 Set up your Gmail OAuth credentials to start sending quote emails
               </p>
-              <Button onClick={() => setIsEditing(true)}>
+              <Button type="button" onClick={() => setIsEditing(true)}>
                 <Plus className="w-4 h-4 mr-2" />
                 Configure Email
               </Button>
@@ -722,8 +815,8 @@ export function EmailSettingsTab() {
                       <FormControl>
                         <Input
                           {...field}
-                          type="password"
-                          placeholder="••••••••••••••••"
+                          type={isEditing ? "text" : "password"}
+                          placeholder={isEditing ? "Your Client ID" : "••••••••••••••••"}
                           disabled={!isEditing}
                         />
                       </FormControl>
@@ -745,7 +838,7 @@ export function EmailSettingsTab() {
                         <Input
                           {...field}
                           type="password"
-                          placeholder="••••••••••••••••"
+                          placeholder={isEditing ? "Your Client Secret" : "••••••••••••••••"}
                           disabled={!isEditing}
                         />
                       </FormControl>
@@ -766,7 +859,7 @@ export function EmailSettingsTab() {
                       <FormControl>
                         <Textarea
                           {...field}
-                          placeholder="1//••••••••••••••••"
+                          placeholder={isEditing ? "1//..." : "••••••••••••••••"}
                           disabled={!isEditing}
                           rows={3}
                         />
@@ -788,21 +881,7 @@ export function EmailSettingsTab() {
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => {
-                          setIsEditing(false);
-                          if (emailSettings) {
-                            form.reset({
-                              provider: emailSettings.provider as "gmail" | "sendgrid" | "smtp",
-                              fromAddress: emailSettings.fromAddress,
-                              fromName: emailSettings.fromName,
-                              clientId: emailSettings.clientId || "",
-                              clientSecret: emailSettings.clientSecret || "",
-                              refreshToken: emailSettings.refreshToken || "",
-                              isActive: emailSettings.isActive,
-                              isDefault: emailSettings.isDefault,
-                            });
-                          }
-                        }}
+                        onClick={handleCancel}
                       >
                         Cancel
                       </Button>
@@ -838,13 +917,13 @@ export function EmailSettingsTab() {
                 placeholder="test@example.com"
                 value={testEmailAddress}
                 onChange={(e) => setTestEmailAddress(e.target.value)}
-                disabled={isSendingTest}
+                disabled={testEmailMutation.isPending}
               />
               <Button
                 onClick={handleSendTest}
-                disabled={isSendingTest || !testEmailAddress}
+                disabled={testEmailMutation.isPending || !testEmailAddress}
               >
-                {isSendingTest ? "Sending..." : "Send Test"}
+                {testEmailMutation.isPending ? "Sending..." : "Send Test"}
               </Button>
             </div>
           </CardContent>
