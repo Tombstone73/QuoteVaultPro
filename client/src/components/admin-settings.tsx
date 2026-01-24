@@ -771,6 +771,19 @@ export function EmailSettingsTab() {
                       <li>Click "Exchange authorization code for tokens"</li>
                       <li>Copy the "Refresh token" value</li>
                     </ul>
+                    
+                    <div className="mt-4 pl-4 border-l-2 border-primary/30">
+                      <h5 className="font-semibold text-sm mb-2">If you moved from localhost to production</h5>
+                      <p className="text-xs text-muted-foreground mb-2">
+                        When migrating to a production domain (Railway, Vercel, custom domain), your old refresh token may stop working. Generate a new one:
+                      </p>
+                      <ul className="list-disc list-inside space-y-1 text-xs text-muted-foreground ml-2">
+                        <li>In Google Cloud Console → "Credentials" → Edit your OAuth client → Add both <code className="bg-muted px-1 py-0.5 rounded">https://developers.google.com/oauthplayground</code> AND your production callback URL (e.g., <code className="bg-muted px-1 py-0.5 rounded">https://yourdomain.com/api/oauth/gmail/callback</code>) to Authorized Redirect URIs</li>
+                        <li>Visit <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">OAuth 2.0 Playground</a> and click the gear icon → "Use your own OAuth credentials"</li>
+                        <li>Authorize scope <code className="bg-muted px-1 py-0.5 rounded">https://mail.google.com/</code> and exchange the authorization code for tokens</li>
+                        <li>Copy the new refresh token and paste it into TitanOS settings below (old tokens will be revoked)</li>
+                      </ul>
+                    </div>
                   </div>
                   
                   <div>

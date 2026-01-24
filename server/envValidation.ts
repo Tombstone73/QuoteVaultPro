@@ -49,15 +49,40 @@ const TIER1_CHECKS: EnvCheck[] = [
     productionOnly: true,
     validator: (value) => {
       const nodeEnv = process.env.NODE_ENV?.trim();
+      const deployTarget = process.env.DEPLOY_TARGET?.trim().toLowerCase();
+      
       if (nodeEnv === "production") {
-        if (!value || value.toLowerCase() === "local") {
-          return 'AUTH_PROVIDER must NOT be "local" in production. Set AUTH_PROVIDER=replit for Railway/Replit deployments.';
+        // In production, AUTH_PROVIDER must be set
+        if (!value) {
+          return 'AUTH_PROVIDER must be set in production. Use "standard" for Railway or "replit" for Replit platform.';
         }
-        if (value.toLowerCase() !== "replit") {
-          return `AUTH_PROVIDER should be "replit" for production (got: ${value})`;
+        
+        const authProvider = value.toLowerCase();
+        
+        // Reject localAuth in production (security risk)
+        if (authProvider === "local") {
+          return 'AUTH_PROVIDER="local" is NOT allowed in production (insecure auto-login). Use AUTH_PROVIDER="standard" for Railway.';
         }
+        
+        // Validate standard auth (recommended for Railway)
+        if (authProvider === "standard") {
+          // standardAuth only requires DATABASE_URL and SESSION_SECRET (already validated above)
+          return null; // Valid for production
+        }
+        
+        // Validate replit auth (requires DEPLOY_TARGET=replit)
+        if (authProvider === "replit") {
+          if (deployTarget !== "replit") {
+            return 'AUTH_PROVIDER="replit" requires DEPLOY_TARGET="replit". Replit OIDC only works on Replit platform. For Railway, use AUTH_PROVIDER="standard".';
+          }
+          return null; // Valid for Replit deployment
+        }
+        
+        // Unknown AUTH_PROVIDER value
+        return `AUTH_PROVIDER="${value}" is not recognized. Valid values: "standard" (Railway), "replit" (Replit platform only)`;
       }
-      return null;
+      
+      return null; // Development: any provider allowed
     },
   },
   {
@@ -68,11 +93,15 @@ const TIER1_CHECKS: EnvCheck[] = [
     validator: (value) => {
       const nodeEnv = process.env.NODE_ENV?.trim();
       const authProvider = process.env.AUTH_PROVIDER?.trim().toLowerCase();
-      if (nodeEnv === "production" && authProvider === "replit") {
+      const deployTarget = process.env.DEPLOY_TARGET?.trim().toLowerCase();
+      
+      // Only required when using replitAuth on Replit platform
+      if (nodeEnv === "production" && authProvider === "replit" && deployTarget === "replit") {
         if (!value && !process.env.ISSUER_URL) {
-          return "REPLIT_OIDC_ISSUER (or ISSUER_URL) must be set when AUTH_PROVIDER=replit";
+          return "REPLIT_OIDC_ISSUER (or ISSUER_URL) must be set when AUTH_PROVIDER=replit on Replit platform";
         }
       }
+      
       return null;
     },
   },
@@ -84,11 +113,15 @@ const TIER1_CHECKS: EnvCheck[] = [
     validator: (value) => {
       const nodeEnv = process.env.NODE_ENV?.trim();
       const authProvider = process.env.AUTH_PROVIDER?.trim().toLowerCase();
-      if (nodeEnv === "production" && authProvider === "replit") {
+      const deployTarget = process.env.DEPLOY_TARGET?.trim().toLowerCase();
+      
+      // Only required when using replitAuth on Replit platform
+      if (nodeEnv === "production" && authProvider === "replit" && deployTarget === "replit") {
         if (!value) {
-          return "REPL_ID must be set when AUTH_PROVIDER=replit";
+          return "REPL_ID must be set when AUTH_PROVIDER=replit on Replit platform";
         }
       }
+      
       return null;
     },
   },

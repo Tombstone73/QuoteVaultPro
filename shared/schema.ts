@@ -155,13 +155,14 @@ export const sessions = pgTable(
   (table) => [index("IDX_session_expire").on(table.expire)],
 );
 
-// User storage table (required for Replit Auth)
+// User storage table (supports both OAuth and password auth)
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: varchar("email").unique(),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
+  passwordHash: text("password_hash"), // For standard auth (bcrypt), null for OAuth users
   isAdmin: boolean("is_admin").default(false).notNull(),
   role: varchar("role", { length: 50 }).default("employee").notNull(), // owner, admin, manager, employee
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -187,8 +188,22 @@ export const updateUserSchema = createInsertSchema(users).pick({
   role: true,
 }).partial();
 
+// Server-side only: for bootstrap scripts and admin password management
+// NEVER expose this schema to public client-facing APIs
+export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  email: z.string().email().min(1, "Email is required"),
+  passwordHash: z.string().optional(), // Optional: null for OAuth users, required for standard auth
+  role: z.enum(['owner', 'admin', 'manager', 'employee']).default('employee'),
+  isAdmin: z.boolean().default(false),
+});
+
 export type UpsertUser = z.infer<typeof upsertUserSchema>;
 export type UpdateUser = z.infer<typeof updateUserSchema>;
+export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
 // Media Assets table
