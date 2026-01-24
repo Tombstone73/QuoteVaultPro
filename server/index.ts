@@ -95,13 +95,37 @@ app.use((req, res, next) => {
   next();
 });
 
-// Handle unhandled rejections
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+// Handle unhandled rejections - log and exit cleanly for Railway restart
+process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
+  try {
+    logger.error('Unhandled Promise Rejection - exiting for clean restart', {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+      promise: String(promise),
+    });
+  } catch (logError) {
+    // Fallback if logger fails
+    console.error('[FATAL] Unhandled Rejection (logger failed):', reason);
+  }
+  
+  // Exit cleanly so Railway restarts the service
+  process.exit(1);
 });
 
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
+process.on('uncaughtException', (error: Error) => {
+  try {
+    logger.error('Uncaught Exception - exiting for clean restart', {
+      error: error.message,
+      stack: error.stack,
+      name: error.name,
+    });
+  } catch (logError) {
+    // Fallback if logger fails
+    console.error('[FATAL] Uncaught Exception (logger failed):', error);
+  }
+  
+  // Exit cleanly so Railway restarts the service
+  process.exit(1);
 });
 
 // Register routes and start server

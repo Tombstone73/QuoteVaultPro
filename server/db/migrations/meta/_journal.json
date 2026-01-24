@@ -176,6 +176,13 @@
       "when": 1737676800000,
       "tag": "0032_repair_quote_attachment_pages_table",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1737705600000,
+      "tag": "0033_add_password_hash",
+      "breakpoints": true
     }
   ]
 }
