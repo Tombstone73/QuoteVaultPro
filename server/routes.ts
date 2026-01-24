@@ -11,6 +11,7 @@ import { customers, users, quotes, orders, invoices, invoiceLineItems, payments,
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
+import * as standardAuth from "./auth/standardAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
 import NestingCalculator from "./NestingCalculator.js";
 import { emailService } from "./emailService";
@@ -49,26 +50,121 @@ import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBoo
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 import { classifyEmailError, createSafeErrorContext, type EmailErrorSpec } from "./emailErrors";
 
-// Auth provider selection (decoupled from NODE_ENV)
-// Environment variable:
-//   AUTH_PROVIDER="local"   - use localAuth (default)
-//   AUTH_PROVIDER="replit"  - use replitAuth (opt-in only)
+// ═══════════════════════════════════════════════════════════════
+// AUTH PROVIDER SELECTION
+// ═══════════════════════════════════════════════════════════════
+// Supported AUTH_PROVIDER values:
+//   "local"    - Development only (auto-login, no passwords)
+//   "standard" - Production (email/password with bcrypt) - RECOMMENDED FOR RAILWAY
+//   "replit"   - Replit platform only (OIDC, requires DEPLOY_TARGET=replit)
+
 const nodeEnv = (process.env.NODE_ENV || '').trim();
 const authProviderRaw = (process.env.AUTH_PROVIDER || '').trim().toLowerCase();
+const deployTarget = (process.env.DEPLOY_TARGET || '').trim().toLowerCase();
 
-let auth: typeof localAuth | typeof replitAuth;
-let authProvider: 'localAuth' | 'replitAuth';
+let auth: typeof localAuth | typeof replitAuth | typeof standardAuth;
+let authProvider: 'localAuth' | 'replitAuth' | 'standardAuth';
 
-if (authProviderRaw === 'replit') {
-  auth = replitAuth;
-  authProvider = 'replitAuth';
-} else {
-  if (authProviderRaw && authProviderRaw !== 'local') {
-    console.warn(`[Auth] Unknown AUTH_PROVIDER="${authProviderRaw}", defaulting to localAuth`);
+console.log('═══════════════════════════════════════════════════════════════');
+console.log('🔐 AUTH PROVIDER INITIALIZATION');
+console.log('═══════════════════════════════════════════════════════════════');
+console.log(`NODE_ENV:          ${nodeEnv || '(not set)'}`);
+console.log(`AUTH_PROVIDER:     ${process.env.AUTH_PROVIDER || '(not set - will default to "local")'}`);
+console.log(`DEPLOY_TARGET:     ${deployTarget || '(not set)'}`);
+console.log(`Raw value:         "${authProviderRaw}"`);
+console.log('');
+
+// Provider selection logic
+if (authProviderRaw === 'standard') {
+  // Standard auth: Email/password (recommended for Railway/production)
+  auth = standardAuth;
+  authProvider = 'standardAuth';
+  
+  console.log('✅ Selected:        standardAuth (Email/Password)');
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('📋 STANDARD AUTH (Production-Ready):');
+  console.log('  Authentication:  Email/password with bcrypt');
+  console.log('  Session store:   PostgreSQL (connect-pg-simple)');
+  console.log('  Cookie secure:   true (HTTPS only in production)');
+  console.log('  Cookie sameSite: lax (CSRF protection)');
+  console.log('  Trust proxy:     1 (Railway compatible)');
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('📋 REQUIRED ENVIRONMENT VARIABLES:');
+  console.log(`  DATABASE_URL:    ${process.env.DATABASE_URL ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+  console.log(`  SESSION_SECRET:  ${process.env.SESSION_SECRET ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('✅ This is the RECOMMENDED auth provider for Railway production');
+  
+} else if (authProviderRaw === 'replit') {
+  // Replit auth: OIDC (platform-specific, requires DEPLOY_TARGET=replit)
+  
+  if (deployTarget !== 'replit') {
+    console.error('───────────────────────────────────────────────────────────────');
+    console.error('❌ CRITICAL: AUTH_PROVIDER=replit requires DEPLOY_TARGET=replit');
+    console.error('   Replit OIDC only works on Replit platform.');
+    console.error('   For Railway, use AUTH_PROVIDER=standard instead.');
+    console.error('───────────────────────────────────────────────────────────────');
+    console.error('🔄 Falling back to: standardAuth (safe default)');
+    auth = standardAuth;
+    authProvider = 'standardAuth';
+  } else {
+    auth = replitAuth;
+    authProvider = 'replitAuth';
+    
+    console.log('✅ Selected:        replitAuth (Replit OIDC)');
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('📋 REPLIT AUTH REQUIREMENTS:');
+    console.log(`  REPL_ID:           ${process.env.REPL_ID ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+    console.log(`  REPLIT_OIDC_ISSUER: ${process.env.REPLIT_OIDC_ISSUER || '❌ NOT SET (REQUIRED)'}`);
+    console.log(`  DATABASE_URL:      ${process.env.DATABASE_URL ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+    console.log(`  SESSION_SECRET:    ${process.env.SESSION_SECRET ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('🔧 SESSION CONFIG:');
+    console.log('  Store type:        PostgreSQL (connect-pg-simple)');
+    console.log('  Cookie secure:     true (HTTPS only)');
+    console.log('  Cookie sameSite:   lax');
+    console.log('  Trust proxy:       1 (platform compatible)');
+    console.log('───────────────────────────────────────────────────────────────');
+    
+    if (!process.env.REPL_ID || !process.env.REPLIT_OIDC_ISSUER) {
+      console.error('❌ CRITICAL: Missing required Replit auth variables');
+      console.error('   This will cause OIDC discovery to fail and auth to timeout.');
+      console.error('   See setupAuth() logs below for actual failure details.');
+    }
   }
+  
+} else {
+  // Default: localAuth (development only)
+  
+  if (authProviderRaw && authProviderRaw !== 'local') {
+    console.warn(`⚠️  Unknown AUTH_PROVIDER="${authProviderRaw}", defaulting to localAuth`);
+  }
+  
   auth = localAuth;
   authProvider = 'localAuth';
+  
+  console.log('✅ Selected:        localAuth (Development mode)');
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('⚠️  WARNING: localAuth is for DEVELOPMENT ONLY');
+  console.log('   - No real authentication (auto-login)');
+  console.log('   - Insecure cookies (secure: false)');
+  console.log('   - Creates test users on-the-fly');
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('🔧 SESSION CONFIG:');
+  console.log('  Store type:        PostgreSQL (connect-pg-simple)');
+  console.log('  Cookie secure:     false (HTTP allowed for localhost)');
+  console.log('  Trust proxy:       1');
+  console.log('───────────────────────────────────────────────────────────────');
+  
+  if (nodeEnv === 'production') {
+    console.error('❌ CRITICAL: localAuth is active in NODE_ENV=production');
+    console.error('   This is a SECURITY RISK!');
+    console.error('   Set AUTH_PROVIDER=standard for Railway production.');
+  }
 }
+
+console.log('═══════════════════════════════════════════════════════════════');
+console.log('');
 
 console.log('Using auth:', authProvider);
 const { setupAuth, isAuthenticated, isAdmin } = auth;
