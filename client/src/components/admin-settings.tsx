@@ -119,8 +119,24 @@ function SelectChoicesInput({ value, onChange }: { value: string; onChange: (val
   );
 }
 
+/**
+ * Helper: Convert storage path to browsable URL
+ * Storage paths can be:
+ * - Already prefixed with /objects/ -> use as-is
+ * - Raw storage key (bucket/path) -> prefix with /objects/
+ * - Full HTTP URL -> use as-is
+ */
+function getMediaUrl(url: string): string {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (url.startsWith('/objects/')) return url;
+  // Raw storage path - prefix with /objects/
+  return `/objects/${url}`;
+}
+
 export function MediaLibraryTab() {
   const { toast } = useToast();
+  const [uploadQueue, setUploadQueue] = useState<string[]>([]);
 
   const { data: mediaAssets, isLoading } = useQuery<MediaAsset[]>({
     queryKey: ["/api/media"],
@@ -167,10 +183,16 @@ export function MediaLibraryTab() {
   });
 
   const handleUploadChange = async (urls: string[]) => {
+    // Update local upload queue
+    setUploadQueue(urls);
+    
+    // Only save new URLs that aren't already in the library
     const existingUrls = mediaAssets?.map(a => a.url) || [];
     const newUrls = urls.filter(url => !existingUrls.includes(url));
     
     console.log('handleUploadChange called', { allUrls: urls, existingUrls, newUrls });
+    
+    if (newUrls.length === 0) return;
     
     for (const url of newUrls) {
       const filename = url.split('/').pop() || 'unknown.jpg';
@@ -207,6 +229,9 @@ export function MediaLibraryTab() {
         });
       }
     }
+    
+    // Clear upload queue after processing
+    setUploadQueue([]);
   };
 
   const formatFileSize = (bytes: number) => {
@@ -235,11 +260,14 @@ export function MediaLibraryTab() {
         </CardHeader>
         <CardContent>
           <ObjectUploader
-            value={mediaAssets?.map(a => a.url) || []}
+            value={uploadQueue}
             onChange={handleUploadChange}
-            maxFiles={10}
+            maxFiles={25}
             allowedFileTypes={["image/*"]}
           />
+          <p className="text-xs text-muted-foreground mt-2">
+            Upload up to 25 images per batch. You can upload multiple batches for larger libraries.
+          </p>
         </CardContent>
       </Card>
 
@@ -263,7 +291,7 @@ export function MediaLibraryTab() {
                 <Card key={asset.id} className="overflow-hidden" data-testid={`media-asset-${asset.id}`}>
                   <div className="aspect-square relative bg-muted">
                     <img
-                      src={asset.url}
+                      src={getMediaUrl(asset.url)}
                       alt={asset.filename}
                       className="w-full h-full object-cover"
                       data-testid={`media-image-${asset.id}`}
@@ -820,8 +848,6 @@ type AdminSettingsProps = {
 
 export default function AdminSettings({ defaultTab = "products", hideTabs = false }: AdminSettingsProps = {}) {
   const { toast } = useToast();
-  const [showUserManagement, setShowUserManagement] = useState(false);
-  const [showQuoteNumbering, setShowQuoteNumbering] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingOption, setEditingOption] = useState<ProductOption | null>(null);
@@ -1565,73 +1591,10 @@ export default function AdminSettings({ defaultTab = "products", hideTabs = fals
     );
   }
 
-  // Show user management if requested
-  if (showUserManagement) {
-    return (
-      <div className="space-y-6">
-        <UserManagement onClose={() => setShowUserManagement(false)} />
-      </div>
-    );
-  }
-
-  // Show quote numbering if requested
-  if (showQuoteNumbering) {
-    return (
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Hash className="w-5 h-5" />
-                <CardTitle>Quote Numbering System</CardTitle>
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setShowQuoteNumbering(false)}>
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-            <CardDescription>
-              Configure the starting number for new quotes
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <QuoteNumberSettings />
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
-      {/* Quick Access Buttons */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card>
-          <CardContent className="pt-6">
-            <Button
-              onClick={() => setShowUserManagement(true)}
-              className="w-full"
-              variant="outline"
-            >
-              <Users className="w-4 h-4 mr-2" />
-              Manage Users
-            </Button>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <Button
-              onClick={() => setShowQuoteNumbering(true)}
-              className="w-full"
-              variant="outline"
-            >
-              <Hash className="w-4 h-4 mr-2" />
-              Quote Numbering
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Integrations Card */}
+      {/* Integrations Card - only show in Dashboard context, not in Settings pages */}
+      {!hideTabs && (
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -1651,6 +1614,7 @@ export default function AdminSettings({ defaultTab = "products", hideTabs = fals
           </Link>
         </CardContent>
       </Card>
+      )}
 
       <Card data-testid="card-admin-settings">
         <CardHeader>

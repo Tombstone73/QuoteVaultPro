@@ -34,6 +34,7 @@ import {
 import {
   Settings,
   Users,
+  UserCog,
   Package,
   Tag,
   DollarSign,
@@ -72,10 +73,22 @@ type SettingsNavItem = {
 
 const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   { 
+    label: "Base Settings", 
+    path: "/settings/base", 
+    icon: Settings,
+    description: "Quote numbering and core settings"
+  },
+  { 
     label: "Preferences", 
     path: "/settings/preferences", 
     icon: Sliders,
     description: "Workflow and behavior preferences"
+  },
+  { 
+    label: "Users & Roles", 
+    path: "/settings/users", 
+    icon: UserCog,
+    description: "Manage users and permissions"
   },
   { 
     label: "Product Catalog", 
