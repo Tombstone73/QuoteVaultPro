@@ -21,6 +21,7 @@ const ROLE_ICONS = {
   admin: Shield,
   manager: Briefcase,
   employee: UserCircle,
+  member: UserCircle,
   customer: Users,
 };
 
@@ -29,22 +30,47 @@ const ROLE_COLORS = {
   admin: "text-blue-600 dark:text-blue-400",
   manager: "text-purple-600 dark:text-purple-400",
   employee: "text-green-600 dark:text-green-400",
+  member: "text-green-600 dark:text-green-400",
   customer: "text-gray-600 dark:text-gray-400",
 };
+
+const ROLE_LABELS = {
+  owner: "Owner",
+  admin: "Admin",
+  manager: "Manager",
+  member: "Member",
+  employee: "Employee",
+  customer: "Customer",
+};
+
+interface OrgUser {
+  id: string;
+  email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  profileImageUrl: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  role: 'owner' | 'admin' | 'manager' | 'member';
+}
 
 export default function UsersSettings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editingUser, setEditingUser] = useState<OrgUser | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isInviteDialogOpen, setIsInviteDialogOpen] = useState(false);
   const [editForm, setEditForm] = useState({
+    role: "member" as 'owner' | 'admin' | 'manager' | 'member',
+  });
+  const [inviteForm, setInviteForm] = useState({
     email: "",
     firstName: "",
     lastName: "",
-    role: "employee",
+    role: "member" as 'owner' | 'admin' | 'manager' | 'member',
   });
 
-  const { data: users, isLoading } = useQuery<User[]>({
+  const { data: users, isLoading } = useQuery<OrgUser[]>({
     queryKey: ["/api/users"],
   });
 
@@ -52,8 +78,30 @@ export default function UsersSettings() {
     queryKey: ["/api/auth/user"],
   });
 
+  const inviteUserMutation = useMutation({
+    mutationFn: async (data: typeof inviteForm) => {
+      return await apiRequest("POST", "/api/users", data);
+    },
+    onSuccess: () => {
+      toast({
+        title: "User Invited",
+        description: "User has been added to the organization successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setIsInviteDialogOpen(false);
+      setInviteForm({ email: "", firstName: "", lastName: "", role: "member" });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const updateUserMutation = useMutation({
-    mutationFn: async ({ id, updates }: { id: string; updates: Partial<User> }) => {
+    mutationFn: async ({ id, updates }: { id: string; updates: { role?: string } }) => {
       return await apiRequest("PATCH", `/api/users/${id}`, updates);
     },
     onSuccess: () => {
@@ -80,8 +128,8 @@ export default function UsersSettings() {
     },
     onSuccess: () => {
       toast({
-        title: "User Deleted",
-        description: "User has been deleted successfully.",
+        title: "User Removed",
+        description: "User has been removed from the organization successfully.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
     },
@@ -94,13 +142,22 @@ export default function UsersSettings() {
     },
   });
 
-  const handleEditUser = (user: User) => {
+  const handleInviteUser = () => {
+    if (!inviteForm.email) {
+      toast({
+        title: "Email Required",
+        description: "Please enter an email address",
+        variant: "destructive",
+      });
+      return;
+    }
+    inviteUserMutation.mutate(inviteForm);
+  };
+
+  const handleEditUser = (user: OrgUser) => {
     setEditingUser(user);
     setEditForm({
-      email: user.email || "",
-      firstName: user.firstName || "",
-      lastName: user.lastName || "",
-      role: user.role || "employee",
+      role: user.role,
     });
     setIsEditDialogOpen(true);
   };
@@ -118,8 +175,8 @@ export default function UsersSettings() {
   const handleDeleteUser = (id: string) => {
     if (currentUser?.id === id) {
       toast({
-        title: "Cannot delete",
-        description: "You cannot delete your own account.",
+        title: "Cannot Remove",
+        description: "You cannot remove yourself from the organization.",
         variant: "destructive",
       });
       return;
@@ -130,11 +187,12 @@ export default function UsersSettings() {
   const getRoleBadge = (role: string) => {
     const Icon = ROLE_ICONS[role as keyof typeof ROLE_ICONS] || UserCircle;
     const color = ROLE_COLORS[role as keyof typeof ROLE_COLORS] || "text-gray-600";
+    const label = ROLE_LABELS[role as keyof typeof ROLE_LABELS] || role;
     
     return (
       <Badge variant="outline" className="gap-1">
         <Icon className={`w-3 h-3 ${color}`} />
-        <span className="capitalize">{role}</span>
+        <span className="capitalize">{label}</span>
       </Badge>
     );
   };
@@ -150,13 +208,12 @@ export default function UsersSettings() {
                 Users & Roles
               </CardTitle>
               <CardDescription>
-                Manage user accounts and permissions. Only admins and owners can modify roles.
+                Manage user accounts and permissions for your organization.
               </CardDescription>
             </div>
-            <Button variant="outline" disabled>
+            <Button onClick={() => setIsInviteDialogOpen(true)}>
               <UserPlus className="w-4 h-4 mr-2" />
               Invite User
-              <Badge variant="secondary" className="ml-2 text-xs">Coming Soon</Badge>
             </Button>
           </div>
         </CardHeader>
@@ -189,7 +246,7 @@ export default function UsersSettings() {
                       </div>
                     </TableCell>
                     <TableCell>{user.email}</TableCell>
-                    <TableCell>{getRoleBadge(user.role || "employee")}</TableCell>
+                    <TableCell>{getRoleBadge(user.role)}</TableCell>
                     <TableCell>
                       {user.createdAt ? format(new Date(user.createdAt), "MMM d, yyyy") : "—"}
                     </TableCell>
@@ -200,6 +257,7 @@ export default function UsersSettings() {
                           size="icon"
                           onClick={() => handleEditUser(user)}
                           disabled={currentUser?.id === user.id}
+                          title="Edit role"
                         >
                           <Edit className="w-4 h-4" />
                         </Button>
@@ -209,15 +267,16 @@ export default function UsersSettings() {
                               variant="ghost"
                               size="icon"
                               disabled={currentUser?.id === user.id}
+                              title="Remove from organization"
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </AlertDialogTrigger>
                           <AlertDialogContent>
                             <AlertDialogHeader>
-                              <AlertDialogTitle>Delete User</AlertDialogTitle>
+                              <AlertDialogTitle>Remove User</AlertDialogTitle>
                               <AlertDialogDescription>
-                                Are you sure you want to delete {user.email}? This action cannot be undone.
+                                Are you sure you want to remove {user.email} from this organization? They will lose access to all organization resources.
                               </AlertDialogDescription>
                             </AlertDialogHeader>
                             <AlertDialogFooter>
@@ -226,7 +285,7 @@ export default function UsersSettings() {
                                 onClick={() => handleDeleteUser(user.id)}
                                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                               >
-                                Delete
+                                Remove
                               </AlertDialogAction>
                             </AlertDialogFooter>
                           </AlertDialogContent>
@@ -239,12 +298,102 @@ export default function UsersSettings() {
             </Table>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No users found
+              No users found in this organization
             </div>
           )}
         </CardContent>
       </Card>
 
+      {/* Invite User Dialog */}
+      <Dialog open={isInviteDialogOpen} onOpenChange={setIsInviteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Invite User</DialogTitle>
+            <DialogDescription>
+              Add a new user to your organization. If they don't have an account, one will be created.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="invite-email">Email *</Label>
+              <Input
+                id="invite-email"
+                type="email"
+                placeholder="user@example.com"
+                value={inviteForm.email}
+                onChange={(e) => setInviteForm({ ...inviteForm, email: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="invite-firstName">First Name</Label>
+                <Input
+                  id="invite-firstName"
+                  placeholder="John"
+                  value={inviteForm.firstName}
+                  onChange={(e) => setInviteForm({ ...inviteForm, firstName: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="invite-lastName">Last Name</Label>
+                <Input
+                  id="invite-lastName"
+                  placeholder="Doe"
+                  value={inviteForm.lastName}
+                  onChange={(e) => setInviteForm({ ...inviteForm, lastName: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="invite-role">Role</Label>
+              <Select value={inviteForm.role} onValueChange={(value: any) => setInviteForm({ ...inviteForm, role: value })}>
+                <SelectTrigger id="invite-role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="owner">
+                    <div className="flex items-center gap-2">
+                      <Crown className="w-4 h-4 text-yellow-600" />
+                      Owner - Full access
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="admin">
+                    <div className="flex items-center gap-2">
+                      <Shield className="w-4 h-4 text-blue-600" />
+                      Admin - Manage users & settings
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="manager">
+                    <div className="flex items-center gap-2">
+                      <Briefcase className="w-4 h-4 text-purple-600" />
+                      Manager - Operations & reporting
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="member">
+                    <div className="flex items-center gap-2">
+                      <UserCircle className="w-4 h-4 text-green-600" />
+                      Member - Standard access
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Owners and admins can manage users and organization settings
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsInviteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleInviteUser} disabled={inviteUserMutation.isPending}>
+              {inviteUserMutation.isPending ? "Inviting..." : "Invite User"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit User Role Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -257,13 +406,17 @@ export default function UsersSettings() {
             <div className="space-y-2">
               <Label>User</Label>
               <Input
-                value={`${editForm.firstName || ""} ${editForm.lastName || ""}`.trim() || editForm.email}
+                value={
+                  editingUser?.firstName || editingUser?.lastName
+                    ? `${editingUser.firstName || ""} ${editingUser.lastName || ""}`.trim()
+                    : editingUser?.email || ""
+                }
                 disabled
               />
             </div>
             <div className="space-y-2">
               <Label>Role</Label>
-              <Select value={editForm.role} onValueChange={(value) => setEditForm({ ...editForm, role: value })}>
+              <Select value={editForm.role} onValueChange={(value: any) => setEditForm({ ...editForm, role: value })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -286,22 +439,16 @@ export default function UsersSettings() {
                       Manager
                     </div>
                   </SelectItem>
-                  <SelectItem value="employee">
+                  <SelectItem value="member">
                     <div className="flex items-center gap-2">
                       <UserCircle className="w-4 h-4 text-green-600" />
-                      Employee
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="customer">
-                    <div className="flex items-center gap-2">
-                      <Users className="w-4 h-4 text-gray-600" />
-                      Customer (Portal Only)
+                      Member
                     </div>
                   </SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Owner/Admin: Full system access • Manager: Operations management • Employee: Day-to-day tasks • Customer: Portal only
+                Owner/Admin: Full system access • Manager: Operations management • Member: Standard access
               </p>
             </div>
           </div>

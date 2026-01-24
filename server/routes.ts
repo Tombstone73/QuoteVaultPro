@@ -563,51 +563,315 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // User management routes (admin only)
-  app.get("/api/users", isAuthenticated, isAdmin, async (req, res) => {
+  // ============================================================
+  // USER MANAGEMENT ROUTES (Multi-Tenant, Admin/Owner Only)
+  // ============================================================
+
+  /**
+   * GET /api/users
+   * List all users in the current organization with their roles
+   * Returns users with their organization-specific role from userOrganizations table
+   */
+  app.get("/api/users", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const users = await storage.getAllUsers();
-      res.json(users);
+      const organizationId = getRequestOrganizationId(req);
+
+      // Query users through userOrganizations join to get org-specific data
+      const orgUsers = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          profileImageUrl: users.profileImageUrl,
+          createdAt: users.createdAt,
+          updatedAt: users.updatedAt,
+          role: userOrganizations.role,
+          isDisabled: sql<boolean>`COALESCE(${users.isAdmin}, false) = false AND ${userOrganizations.role} = 'member' AND false`, // Placeholder for disabled status
+        })
+        .from(userOrganizations)
+        .innerJoin(users, eq(userOrganizations.userId, users.id))
+        .where(eq(userOrganizations.organizationId, organizationId))
+        .orderBy(users.email);
+
+      res.json(orgUsers);
     } catch (error) {
       console.error("Error fetching users:", error);
       res.status(500).json({ message: "Failed to fetch users" });
     }
   });
 
-  app.patch("/api/users/:id", isAuthenticated, isAdmin, async (req, res) => {
+  /**
+   * POST /api/users
+   * Create/invite a new user and add them to the current organization
+   * Body: { email, firstName?, lastName?, role }
+   */
+  app.post("/api/users", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const { id } = req.params;
-      const updates = req.body;
-
-      // Prevent users from removing their own admin status
+      const organizationId = getRequestOrganizationId(req);
       const currentUserId = getUserId(req.user);
-      if (id === currentUserId && updates.isAdmin === false) {
-        return res.status(400).json({ message: "You cannot remove your own admin status" });
+      const { email, firstName, lastName, role = 'member' } = req.body;
+
+      if (!email) {
+        return res.status(400).json({ message: "Email is required" });
       }
 
-      const user = await storage.updateUser(id, updates);
-      res.json(user);
+      // Validate role
+      const validRoles = ['owner', 'admin', 'manager', 'member'];
+      if (!validRoles.includes(role)) {
+        return res.status(400).json({ message: "Invalid role. Must be: owner, admin, manager, or member" });
+      }
+
+      // Check if user already exists
+      let user = await storage.getUserByEmail(email);
+
+      if (user) {
+        // User exists - check if already in this org
+        const [existingMembership] = await db
+          .select()
+          .from(userOrganizations)
+          .where(
+            and(
+              eq(userOrganizations.userId, user.id),
+              eq(userOrganizations.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+
+        if (existingMembership) {
+          return res.status(400).json({ message: "User already exists in this organization" });
+        }
+
+        // Add existing user to this organization
+        await db.insert(userOrganizations).values({
+          userId: user.id,
+          organizationId,
+          role,
+          isDefault: false,
+        });
+      } else {
+        // Create new user
+        const [newUser] = await db.insert(users).values({
+          email,
+          firstName: firstName || null,
+          lastName: lastName || null,
+          isAdmin: role === 'owner' || role === 'admin',
+          role: role === 'member' ? 'employee' : role, // Map member to employee in users table
+        }).returning();
+
+        user = newUser;
+
+        // Add to organization
+        await db.insert(userOrganizations).values({
+          userId: user.id,
+          organizationId,
+          role,
+          isDefault: true, // First org is default for new user
+        });
+      }
+
+      // Return user with org role
+      const [userWithRole] = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          profileImageUrl: users.profileImageUrl,
+          createdAt: users.createdAt,
+          updatedAt: users.updatedAt,
+          role: userOrganizations.role,
+        })
+        .from(users)
+        .innerJoin(userOrganizations, eq(users.id, userOrganizations.userId))
+        .where(
+          and(
+            eq(users.id, user.id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      res.json(userWithRole);
+    } catch (error) {
+      console.error("Error creating user:", error);
+      res.status(500).json({ message: "Failed to create user" });
+    }
+  });
+
+  /**
+   * PATCH /api/users/:id
+   * Update a user's role or disabled status within the current organization
+   * Body: { role?, isDisabled? }
+   */
+  app.patch("/api/users/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const currentUserId = getUserId(req.user);
+      const { id } = req.params;
+      const { role, isDisabled } = req.body;
+
+      // Prevent modifying yourself
+      if (id === currentUserId) {
+        return res.status(400).json({ message: "You cannot modify your own account" });
+      }
+
+      // Verify user exists in this organization
+      const [membership] = await db
+        .select()
+        .from(userOrganizations)
+        .where(
+          and(
+            eq(userOrganizations.userId, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!membership) {
+        return res.status(404).json({ message: "User not found in this organization" });
+      }
+
+      // If changing role, validate and check for last owner
+      if (role) {
+        const validRoles = ['owner', 'admin', 'manager', 'member'];
+        if (!validRoles.includes(role)) {
+          return res.status(400).json({ message: "Invalid role" });
+        }
+
+        // Prevent removing last owner
+        if (membership.role === 'owner' && role !== 'owner') {
+          const ownerCount = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(userOrganizations)
+            .where(
+              and(
+                eq(userOrganizations.organizationId, organizationId),
+                eq(userOrganizations.role, 'owner')
+              )
+            );
+
+          if (Number(ownerCount[0]?.count) <= 1) {
+            return res.status(400).json({ message: "Cannot remove the last owner from the organization" });
+          }
+        }
+
+        // Update role in userOrganizations
+        await db
+          .update(userOrganizations)
+          .set({ role, updatedAt: new Date() })
+          .where(
+            and(
+              eq(userOrganizations.userId, id),
+              eq(userOrganizations.organizationId, organizationId)
+            )
+          );
+
+        // Update isAdmin in users table if role is owner/admin
+        await db
+          .update(users)
+          .set({ 
+            isAdmin: role === 'owner' || role === 'admin',
+            role: role === 'member' ? 'employee' : role,
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, id));
+      }
+
+      // Note: isDisabled functionality would require adding a disabled column to users table
+      // For now, we'll skip this to avoid schema changes
+
+      // Return updated user
+      const [updatedUser] = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          profileImageUrl: users.profileImageUrl,
+          createdAt: users.createdAt,
+          updatedAt: users.updatedAt,
+          role: userOrganizations.role,
+        })
+        .from(users)
+        .innerJoin(userOrganizations, eq(users.id, userOrganizations.userId))
+        .where(
+          and(
+            eq(users.id, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      res.json(updatedUser);
     } catch (error) {
       console.error("Error updating user:", error);
       res.status(500).json({ message: "Failed to update user" });
     }
   });
 
-  app.delete("/api/users/:id", isAuthenticated, isAdmin, async (req: any, res) => {
+  /**
+   * DELETE /api/users/:id
+   * Remove a user from the current organization
+   */
+  app.delete("/api/users/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
     try {
-      const { id } = req.params;
+      const organizationId = getRequestOrganizationId(req);
       const currentUserId = getUserId(req.user);
+      const { id } = req.params;
 
-      // Prevent users from deleting themselves
+      // Prevent deleting yourself
       if (id === currentUserId) {
-        return res.status(400).json({ message: "You cannot delete your own account" });
+        return res.status(400).json({ message: "You cannot remove yourself from the organization" });
       }
 
-      await storage.deleteUser(id);
+      // Verify user exists in this organization
+      const [membership] = await db
+        .select()
+        .from(userOrganizations)
+        .where(
+          and(
+            eq(userOrganizations.userId, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!membership) {
+        return res.status(404).json({ message: "User not found in this organization" });
+      }
+
+      // Prevent removing last owner
+      if (membership.role === 'owner') {
+        const ownerCount = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(userOrganizations)
+          .where(
+            and(
+              eq(userOrganizations.organizationId, organizationId),
+              eq(userOrganizations.role, 'owner')
+            )
+          );
+
+        if (Number(ownerCount[0]?.count) <= 1) {
+          return res.status(400).json({ message: "Cannot remove the last owner from the organization" });
+        }
+      }
+
+      // Remove user from organization
+      await db
+        .delete(userOrganizations)
+        .where(
+          and(
+            eq(userOrganizations.userId, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        );
+
       res.json({ success: true });
     } catch (error) {
-      console.error("Error deleting user:", error);
-      res.status(500).json({ message: "Failed to delete user" });
+      console.error("Error removing user:", error);
+      res.status(500).json({ message: "Failed to remove user" });
     }
   });
 
