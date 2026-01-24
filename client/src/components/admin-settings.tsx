@@ -628,6 +628,11 @@ export function EmailSettingsTab() {
         requestId = error.data.requestId;
         errorCode = error.data.error?.code;
         errorCategory = error.data.error?.category;
+
+        // Special handling for configuration errors
+        if (errorCode === 'EMAIL_NOT_CONFIGURED') {
+          errorMessage = error.data.message; // Use the detailed reason from server
+        }
       } else if (error.message) {
         // Handle timeout or network errors
         if (error.message.includes("timed out")) {
