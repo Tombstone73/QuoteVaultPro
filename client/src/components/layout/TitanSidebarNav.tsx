@@ -123,7 +123,6 @@ export const NAV_CONFIG: NavSectionConfig[] = [
     sectionKey: "system",
     items: [
       { id: "settings", name: "Settings", icon: Settings, path: ROUTES.settings.root, roles: ["admin", "owner"] },
-      { id: "users", name: "Users", icon: UserCog, path: ROUTES.users.list, roles: ["admin", "owner"] },
     ],
   },
 ];

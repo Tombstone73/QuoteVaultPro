@@ -39,6 +39,8 @@ import PricingFormulasSettings from "@/pages/settings/pricing-formulas";
 import SettingsIntegrations from "@/pages/settings/integrations";
 import MediaLibrarySettings from "@/pages/settings/media-library";
 import EmailProviderSettings from "@/pages/settings/email";
+import UsersSettingsPage from "@/pages/settings/users";
+import BaseSettingsPage from "@/pages/settings/base";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
 import MaterialsListPage from "@/pages/materials";
@@ -145,8 +147,9 @@ function Router() {
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<CompanySettings />} />
           <Route path="company" element={<CompanySettings />} />
+          <Route path="base" element={<BaseSettingsPage />} />
           <Route path="preferences" element={<PreferencesSettings />} />
-          <Route path="users" element={<UsersSettings />} />
+          <Route path="users" element={<UsersSettingsPage />} />
           <Route path="products" element={<ProductsPage />} />
           <Route path="product-types" element={<ProductTypesSettings />} />
           <Route path="pricing-formulas" element={<PricingFormulasSettings />} />
