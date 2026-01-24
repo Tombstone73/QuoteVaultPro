@@ -50,25 +50,49 @@ function parseWindowMinutes(envVar: string | undefined, defaultMinutes: number):
 
 /**
  * Custom handler for rate limit exceeded
+ * CRITICAL: This function must NEVER throw - it's the last line of defense
  */
 function rateLimitHandler(req: Request, res: Response) {
-  const userId = (req.user as any)?.id;
-  const orgId = req.organizationId;
-  
-  logger.warn('Rate limit exceeded', {
-    requestId: req.requestId,
-    userId,
-    organizationId: orgId,
-    ip: req.ip,
-    path: req.path,
-    method: req.method,
-  });
-  
-  res.status(429).json({
-    success: false,
-    message: 'Too many requests. Please try again later.',
-    requestId: req.requestId,
-  });
+  try {
+    const userId = (req.user as any)?.id;
+    const orgId = req.organizationId;
+    const requestId = req.requestId || 'unknown';
+    
+    // Safe logging - never throw if logger fails
+    try {
+      logger.warn('Rate limit exceeded', {
+        requestId,
+        userId,
+        organizationId: orgId,
+        ip: req.ip,
+        path: req.path,
+        method: req.method,
+      });
+    } catch (logError) {
+      // Fallback to console if structured logger fails
+      console.warn('[rateLimitHandler] Logger failed:', logError);
+      console.warn('[rateLimitHandler] Rate limit exceeded:', { requestId, path: req.path, method: req.method });
+    }
+    
+    // Return 429 response - always succeed
+    res.status(429).json({
+      success: false,
+      message: 'Too many requests. Please try again later.',
+      requestId,
+    });
+  } catch (error) {
+    // Ultimate fallback - never let rate limit handler crash
+    console.error('[rateLimitHandler] CRITICAL: Handler failed:', error);
+    try {
+      res.status(429).json({
+        success: false,
+        message: 'Too many requests. Please try again later.',
+      });
+    } catch (resError) {
+      // Response already sent or connection closed - nothing we can do
+      console.error('[rateLimitHandler] CRITICAL: Could not send response:', resError);
+    }
+  }
 }
 
 /**

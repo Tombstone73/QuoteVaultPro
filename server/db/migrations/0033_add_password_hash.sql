@@ -33,4 +33,9 @@ END $$;
 COMMENT ON COLUMN users.password_hash IS 
   'Bcrypt password hash for standard auth (AUTH_PROVIDER=standard). NULL for OAuth-only users (Replit Auth, etc.). Cost factor: 10.';
 
+-- Track this migration in Drizzle's migration table
+INSERT INTO public.__drizzle_migrations (id, hash, created_at)
+VALUES (33, '0033_add_password_hash', 1737705600000)
+ON CONFLICT (id) DO NOTHING;
+
 -- Migration complete: Users table now supports both OAuth and password authentication
