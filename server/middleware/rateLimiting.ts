@@ -17,9 +17,15 @@
 
 import rateLimit from 'express-rate-limit';
 import type { Request, Response } from 'express';
-import { logger } from '../logger';
+import { logger as structuredLogger } from '../logger';
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+/**
+ * Safe logger with guaranteed fallback to console
+ * DEFENSIVE: Protects against module initialization order issues or circular deps
+ */
+const logger = structuredLogger ?? console;
 
 /**
  * Check if rate limiting is enabled
@@ -58,9 +64,11 @@ function rateLimitHandler(req: Request, res: Response) {
     const orgId = req.organizationId;
     const requestId = req.requestId || 'unknown';
     
-    // Safe logging - never throw if logger fails
+    // Safe logging - use runtime fallback if logger is undefined
+    const safeLogger = typeof logger?.warn === 'function' ? logger : console;
+    
     try {
-      logger.warn('Rate limit exceeded', {
+      safeLogger.warn('Rate limit exceeded', {
         requestId,
         userId,
         organizationId: orgId,
@@ -113,6 +121,20 @@ function shouldSkipRateLimit(req: Request): boolean {
 }
 
 /**
+ * Safe key generator wrapper - never throws
+ */
+function safeKeyGenerator(keyFn: (req: Request) => string) {
+  return (req: Request): string => {
+    try {
+      return keyFn(req);
+    } catch (error) {
+      console.warn('[rateLimit] keyGenerator failed, using IP fallback:', error);
+      return req.ip || 'unknown';
+    }
+  };
+}
+
+/**
  * Global IP-based rate limit (anti-DDoS baseline)
  * Applies to ALL routes with exclusions
  */
@@ -127,9 +149,7 @@ export const globalIpRateLimit = rateLimit({
     return shouldSkipRateLimit(req);
   },
   handler: rateLimitHandler,
-  keyGenerator: (req) => {
-    return req.ip || 'unknown';
-  },
+  keyGenerator: safeKeyGenerator((req) => req.ip || 'unknown'),
 });
 
 /**
@@ -144,9 +164,7 @@ export const authRateLimit = rateLimit({
   legacyHeaders: false,
   skip: () => !isRateLimitingEnabled(),
   handler: rateLimitHandler,
-  keyGenerator: (req) => {
-    return req.ip || 'unknown';
-  },
+  keyGenerator: safeKeyGenerator((req) => req.ip || 'unknown'),
 });
 
 /**
@@ -161,10 +179,10 @@ export const calculateRateLimit = rateLimit({
   legacyHeaders: false,
   skip: () => !isRateLimitingEnabled(),
   handler: rateLimitHandler,
-  keyGenerator: (req) => {
+  keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
     return userId ? `user:${userId}` : req.ip || 'unknown';
-  },
+  }),
 });
 
 /**
@@ -179,10 +197,10 @@ export const emailRateLimit = rateLimit({
   legacyHeaders: false,
   skip: () => !isRateLimitingEnabled(),
   handler: rateLimitHandler,
-  keyGenerator: (req) => {
+  keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
     return userId ? `user:${userId}` : req.ip || 'unknown';
-  },
+  }),
 });
 
 /**
@@ -197,10 +215,10 @@ export const prepressRateLimit = rateLimit({
   legacyHeaders: false,
   skip: () => !isRateLimitingEnabled(),
   handler: rateLimitHandler,
-  keyGenerator: (req) => {
+  keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
     return userId ? `user:${userId}` : req.ip || 'unknown';
-  },
+  }),
 });
 
 /**
@@ -215,8 +233,8 @@ export const writeOperationsRateLimit = rateLimit({
   legacyHeaders: false,
   skip: () => !isRateLimitingEnabled(),
   handler: rateLimitHandler,
-  keyGenerator: (req) => {
+  keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
     return userId ? `user:${userId}` : req.ip || 'unknown';
-  },
+  }),
 });
