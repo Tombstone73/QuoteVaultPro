@@ -119,7 +119,7 @@ function SelectChoicesInput({ value, onChange }: { value: string; onChange: (val
   );
 }
 
-function MediaLibraryTab() {
+export function MediaLibraryTab() {
   const { toast } = useToast();
 
   const { data: mediaAssets, isLoading } = useQuery<MediaAsset[]>({
@@ -463,7 +463,7 @@ function QuoteNumberSettings() {
 }
 
 // Email Settings Tab Component
-function EmailSettingsTab() {
+export function EmailSettingsTab() {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [testEmailAddress, setTestEmailAddress] = useState("");
