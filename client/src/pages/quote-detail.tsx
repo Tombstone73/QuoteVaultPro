@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, Edit, Package, FileText, Mail } from "lucide-react";
+import { ArrowLeft, Edit, Package, FileText, Mail, Download, Eye } from "lucide-react";
 import { format } from "date-fns";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
@@ -22,6 +22,7 @@ import { TimelinePanel } from "@/components/TimelinePanel";
 import { QuoteWorkflowBadge } from "@/components/QuoteWorkflowBadge";
 import { QuoteWorkflowActions } from "@/components/QuoteWorkflowActions";
 import { useQuoteWorkflowState } from "@/hooks/useQuoteWorkflowState";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
 import type { QuoteWithRelations } from "@shared/schema";
 
 type QuoteDetailRouteParams = {
@@ -72,6 +73,13 @@ export default function QuoteDetail() {
   // Some deployments return a `convertedToOrderId` field; keep this optional in the UI without changing backend types.
   const convertedToOrderId =
     (quote as (QuoteWithRelations & { convertedToOrderId?: string | null }) | undefined)?.convertedToOrderId ?? null;
+
+  // PDF URLs for preview and download
+  const quotePdfViewUrl = quoteId ? `/api/quotes/${encodeURIComponent(quoteId)}/pdf` : '';
+  const quotePdfDownloadUrl = quoteId ? `/api/quotes/${encodeURIComponent(quoteId)}/pdf?download=1` : '';
+  const quotePdfFilename = quote?.quoteNumber
+    ? `Quote-${String(quote.quoteNumber)}.pdf`
+    : 'quote.pdf';
 
   // Get effective workflow state
   const workflowState = useQuoteWorkflowState(quote);
@@ -266,18 +274,38 @@ export default function QuoteDetail() {
               </Button>
             )}
             {isInternalUser && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setRecipientEmail('');
-                  setShowEmailDialog(true);
-                }}
-                className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-              >
-                <Mail className="w-4 h-4 mr-2" />
-                Send Email
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => window.open(quotePdfViewUrl, '_blank')}
+                  className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+                >
+                  <Eye className="w-4 h-4 mr-2" />
+                  Preview
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void downloadFileFromUrl(quotePdfDownloadUrl, quotePdfFilename)}
+                  className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Download PDF
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setRecipientEmail('');
+                    setShowEmailDialog(true);
+                  }}
+                  className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+                >
+                  <Mail className="w-4 h-4 mr-2" />
+                  Send Email
+                </Button>
+              </>
             )}
             {quote.status !== 'canceled' && !convertedToOrderId && (
               <Button

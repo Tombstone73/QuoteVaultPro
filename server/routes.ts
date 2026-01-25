@@ -324,6 +324,7 @@ import {
 import type { FileRole, FileSide } from "./lib/supabaseObjectHelpers";
 import { getInvoiceWithRelations, applyPayment, refreshInvoiceStatus } from './invoicesService';
 import { generatePackingSlipHTML, sendShipmentEmail, updateOrderFulfillmentStatus } from './fulfillmentService';
+import { generateInvoicePdfBytes } from './lib/invoicePdf';
 import { registerMvpInvoicingRoutes } from './routes/mvpInvoicing.routes';
 import { getQuickBooksSyncQueueCountsForOrg, listQuickBooksConnectedOrganizationIds, runQuickBooksSyncWorkerForOrg } from './services/quickbooksSyncQueueWorker';
 
@@ -7127,6 +7128,139 @@ export async function registerRoutes(app: Express): Promise<Server> {
           sendError: sendError?.message || String(sendError),
         });
       }
+    }
+  });
+
+  /**
+   * GET /api/quotes/:id/pdf
+   * Returns the quote as a PDF document (inline or download).
+   * Multi-tenant scoped by organizationId.
+   * Query param: ?download=1 to force download instead of inline view.
+   */
+  app.get("/api/quotes/:id/pdf", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ error: 'Missing organization context' });
+      }
+
+      const { id } = req.params;
+      const userId = getUserId(req.user);
+      const userRole = req.user.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+
+      // Load quote with org scoping
+      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
+      if (!quote) {
+        return res.status(404).json({ error: 'Quote not found' });
+      }
+
+      // Load line items
+      const lineItems = await db
+        .select()
+        .from(quoteLineItems)
+        .where(eq(quoteLineItems.quoteId, id))
+        .orderBy(quoteLineItems.displayOrder, desc(quoteLineItems.createdAt));
+
+      // Load customer (for billing info)
+      let customer = null;
+      if (quote.customerId) {
+        const [cust] = await db
+          .select()
+          .from(customers)
+          .where(and(eq(customers.id, quote.customerId), eq(customers.organizationId, organizationId)))
+          .limit(1);
+        customer = cust || null;
+      }
+
+      // Load company settings
+      const [orgCompany] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      // Generate PDF using invoice PDF generator (quotes and invoices have similar structure)
+      // Map quote fields to invoice-compatible structure
+      const pdfBytes = await generateInvoicePdfBytes({
+        invoice: {
+          invoiceNumber: quote.quoteNumber,
+          issueDate: quote.createdAt,
+          dueDate: null, // Quotes don't have due dates
+          status: quote.status || 'draft',
+          currency: 'USD',
+          subtotalCents: Math.round(parseFloat(quote.subtotal || '0') * 100),
+          taxCents: quote.taxRate ? Math.round(parseFloat(quote.subtotal || '0') * parseFloat(quote.taxRate) * 100) : 0,
+          shippingCents: 0,
+          totalCents: Math.round(parseFloat(quote.totalPrice || '0') * 100),
+          notesPublic: null,
+          terms: null,
+          customTerms: null,
+        },
+        customer: customer ? {
+          companyName: customer.companyName,
+          email: customer.email,
+          phone: customer.phone,
+          billingStreet1: customer.billingStreet1,
+          billingStreet2: customer.billingStreet2,
+          billingCity: customer.billingCity,
+          billingState: customer.billingState,
+          billingPostalCode: customer.billingPostalCode,
+          billingCountry: customer.billingCountry,
+          shippingStreet1: customer.shippingStreet1,
+          shippingStreet2: customer.shippingStreet2,
+          shippingCity: customer.shippingCity,
+          shippingState: customer.shippingState,
+          shippingPostalCode: customer.shippingPostalCode,
+          shippingCountry: customer.shippingCountry,
+          billingAddress: null,
+          shippingAddress: null,
+        } : null,
+        companySettings: orgCompany ? {
+          companyName: (orgCompany as any).name || null,
+          address: (orgCompany as any).address || null,
+          phone: (orgCompany as any).phone || null,
+          email: (orgCompany as any).email || null,
+          website: (orgCompany as any).website || null,
+          logoUrl: null,
+        } : null,
+        paymentSummary: {
+          amountPaidCents: 0,
+          amountDueCents: Math.round(parseFloat(quote.totalPrice || '0') * 100),
+          statusLabel: 'Quote',
+        },
+        lineItems: lineItems.map((item: any) => ({
+          description: item.productName || null,
+          quantity: item.quantity || 0,
+          unitPriceCents: Math.round((parseFloat(item.linePrice || '0') / (item.quantity || 1)) * 100),
+          lineTotalCents: Math.round(parseFloat(item.linePrice || '0') * 100),
+          unitPrice: null,
+          totalPrice: null,
+          name: item.productName || null,
+          sku: null,
+          thumbnailDataUrl: null,
+        })),
+        job: null,
+        overrides: {
+          watermarkText: 'QUOTE',
+        },
+      });
+
+      const quoteNumber = quote.quoteNumber ? String(quote.quoteNumber) : id;
+      const filename = `Quote-${quoteNumber}.pdf`;
+      const wantsDownload = String(req.query.download || '') === '1';
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader(
+        'Content-Disposition',
+        `${wantsDownload ? 'attachment' : 'inline'}; filename="${filename}"`
+      );
+
+      return res.status(200).send(Buffer.from(pdfBytes));
+    } catch (error: any) {
+      console.error('Error generating quote PDF:', error);
+      return res.status(500).json({ error: error.message || 'Failed to generate PDF' });
     }
   });
 
