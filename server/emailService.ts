@@ -90,76 +90,11 @@ class EmailService {
 
   /**
    * Create Nodemailer transporter with OAuth2 or SMTP
-   * Includes timeout configuration to prevent hanging
+   * NOTE: For Gmail, we use Gmail API directly (see sendViaGmailAPI)
+   * This method is only used for SMTP providers now
    */
   private async createTransporter(config: EmailConfig, requestId?: string) {
-    if (config.provider === "gmail" && config.clientId && config.clientSecret && config.refreshToken) {
-      // Gmail OAuth2 setup
-      // CRITICAL: redirectUri must match Google Cloud Console OAuth Authorized Redirect URIs
-      // For tokens generated via OAuth Playground, use the playground URL
-      // For production, this should match your configured redirect URI
-      const redirectUri = process.env.GMAIL_OAUTH_REDIRECT_URI || "https://developers.google.com/oauthplayground";
-      
-      logger.info('email_oauth_refresh_start', {
-        requestId,
-        provider: 'gmail',
-        redirectUri, // Log the redirect URI being used
-        hasClientId: !!config.clientId,
-        hasClientSecret: !!config.clientSecret,
-        hasRefreshToken: !!config.refreshToken,
-      });
-
-      const OAuth2 = google.auth.OAuth2;
-      const oauth2Client = new OAuth2(
-        config.clientId,
-        config.clientSecret,
-        redirectUri
-      );
-
-      oauth2Client.setCredentials({
-        refresh_token: config.refreshToken,
-      });
-
-      // Get access token with timeout
-      try {
-        const accessTokenPromise = oauth2Client.getAccessToken();
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('OAuth token refresh timed out')), 8000);
-        });
-        
-        const accessToken = await Promise.race([accessTokenPromise, timeoutPromise]);
-
-        logger.info('email_oauth_refresh_success', {
-          requestId,
-          hasAccessToken: !!accessToken.token,
-        });
-
-        return nodemailer.createTransport({
-          service: "gmail",
-          auth: {
-            type: "OAuth2",
-            user: config.fromAddress,
-            clientId: config.clientId,
-            clientSecret: config.clientSecret,
-            refreshToken: config.refreshToken,
-            accessToken: accessToken.token || undefined,
-          },
-          // Nodemailer timeout settings
-          connectionTimeout: 5000, // 5 seconds to establish connection
-          greetingTimeout: 5000,   // 5 seconds to receive greeting
-          socketTimeout: 10000,    // 10 seconds for socket inactivity
-        });
-      } catch (error: any) {
-        // Log OAuth refresh failure with safe context
-        logger.error('email_oauth_refresh_error', {
-          requestId,
-          ...createSafeErrorContext(error),
-        });
-        
-        // Re-throw with context preserved
-        throw error;
-      }
-    } else if (config.provider === "smtp" && config.smtpHost && config.smtpPort) {
+    if (config.provider === "smtp" && config.smtpHost && config.smtpPort) {
       // SMTP setup
       logger.info('email_smtp_setup', {
         requestId,
@@ -185,6 +120,94 @@ class EmailService {
     } else {
       throw new Error(`Unsupported email provider: ${config.provider} or missing configuration`);
     }
+  }
+
+  /**
+   * Send email via Gmail API (not SMTP)
+   * More reliable on Railway where SMTP connections often timeout
+   */
+  private async sendViaGmailAPI(
+    config: EmailConfig,
+    to: string,
+    subject: string,
+    htmlBody: string,
+    requestId?: string
+  ): Promise<void> {
+    if (!config.clientId || !config.clientSecret || !config.refreshToken) {
+      throw new Error('Gmail OAuth credentials missing');
+    }
+
+    const redirectUri = process.env.GMAIL_OAUTH_REDIRECT_URI || "https://developers.google.com/oauthplayground";
+    
+    logger.info('email_gmail_api_start', {
+      requestId,
+      provider: 'gmail-api',
+      redirectUri,
+      hasClientId: !!config.clientId,
+      hasClientSecret: !!config.clientSecret,
+      hasRefreshToken: !!config.refreshToken,
+    });
+
+    const OAuth2 = google.auth.OAuth2;
+    const oauth2Client = new OAuth2(
+      config.clientId,
+      config.clientSecret,
+      redirectUri
+    );
+
+    oauth2Client.setCredentials({
+      refresh_token: config.refreshToken,
+    });
+
+    // Create Gmail API client
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    // Build raw RFC822 email message
+    const messageParts = [
+      `From: "${config.fromName}" <${config.fromAddress}>`,
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      htmlBody,
+    ];
+    const rawMessage = messageParts.join('\r\n');
+
+    // Base64url encode (RFC 4648 Section 5)
+    const base64UrlEncode = (str: string): string => {
+      return Buffer.from(str, 'utf8')
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+    };
+
+    const encodedMessage = base64UrlEncode(rawMessage);
+
+    // Send with timeout
+    const sendPromise = gmail.users.messages.send({
+      userId: 'me',
+      requestBody: {
+        raw: encodedMessage,
+      },
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        const timeoutError = new Error('Gmail API send timed out');
+        (timeoutError as any).code = 'ETIMEDOUT';
+        reject(timeoutError);
+      }, 10000); // 10 second timeout
+    });
+
+    const result = await Promise.race([sendPromise, timeoutPromise]);
+
+    logger.info('email_gmail_api_success', {
+      requestId,
+      messageId: result.data.id,
+      threadId: result.data.threadId,
+    });
   }
 
   /**
@@ -229,25 +252,19 @@ class EmailService {
       hasSmtpPort: !!config.smtpPort,
     });
 
-    const transporter = await this.createTransporter(config, requestId);
-
-    const mailOptions = {
-      from: `"${config.fromName}" <${config.fromAddress}>`,
-      to: recipientEmail,
-      subject: "Test Email from QuoteVaultPro",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #333;">Email Configuration Test</h2>
-          <p>This is a test email from QuoteVaultPro.</p>
-          <p>If you're receiving this, your email configuration is working correctly! ✅</p>
-          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-          <p style="color: #666; font-size: 12px;">
-            Sent from QuoteVaultPro<br>
-            Provider: ${config.provider}
-          </p>
-        </div>
-      `,
-    };
+    const subject = "Test Email from QuoteVaultPro";
+    const htmlBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #333;">Email Configuration Test</h2>
+        <p>This is a test email from QuoteVaultPro.</p>
+        <p>If you're receiving this, your email configuration is working correctly! ✅</p>
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+        <p style="color: #666; font-size: 12px;">
+          Sent from QuoteVaultPro<br>
+          Provider: ${config.provider}
+        </p>
+      </div>
+    `;
 
     logger.info('email_send_start', {
       requestId,
@@ -258,20 +275,40 @@ class EmailService {
     });
 
     try {
-      // Send with timeout (transporter already has connection timeouts, but add overall timeout)
-      const sendPromise = transporter.sendMail(mailOptions);
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Email send operation timed out')), 12000); // 12s for actual send
-      });
+      // Use Gmail API for Gmail provider (more reliable on Railway)
+      if (config.provider === 'gmail') {
+        await this.sendViaGmailAPI(config, recipientEmail, subject, htmlBody, requestId);
+        
+        logger.info('email_send_success', {
+          requestId,
+          organizationId,
+          provider: 'gmail-api',
+        });
+      } else {
+        // Use SMTP for other providers
+        const transporter = await this.createTransporter(config, requestId);
+        
+        const mailOptions = {
+          from: `"${config.fromName}" <${config.fromAddress}>`,
+          to: recipientEmail,
+          subject: subject,
+          html: htmlBody,
+        };
 
-      const result = await Promise.race([sendPromise, timeoutPromise]);
+        const sendPromise = transporter.sendMail(mailOptions);
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Email send operation timed out')), 12000);
+        });
 
-      logger.info('email_send_success', {
-        requestId,
-        organizationId,
-        messageId: result.messageId,
-        response: result.response?.substring(0, 100), // Truncate response
-      });
+        const result = await Promise.race([sendPromise, timeoutPromise]);
+
+        logger.info('email_send_success', {
+          requestId,
+          organizationId,
+          messageId: result.messageId,
+          response: result.response?.substring(0, 100),
+        });
+      }
     } catch (error: any) {
       logger.error('email_send_error', {
         requestId,
@@ -312,18 +349,22 @@ class EmailService {
       throw new Error("Quote not found");
     }
 
-    const transporter = await this.createTransporter(config);
-
+    const subject = `Quote #${quote.quoteNumber} from ${config.fromName}`;
     const htmlContent = this.generateQuoteEmailHTML(quote);
 
-    const mailOptions = {
-      from: `"${config.fromName}" <${config.fromAddress}>`,
-      to: recipientEmail,
-      subject: `Quote #${quote.quoteNumber} from ${config.fromName}`,
-      html: htmlContent,
-    };
-
-    await transporter.sendMail(mailOptions);
+    // Use Gmail API for Gmail provider
+    if (config.provider === 'gmail') {
+      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent);
+    } else {
+      const transporter = await this.createTransporter(config);
+      const mailOptions = {
+        from: `"${config.fromName}" <${config.fromAddress}>`,
+        to: recipientEmail,
+        subject: subject,
+        html: htmlContent,
+      };
+      await transporter.sendMail(mailOptions);
+    }
   }
 
   /**
@@ -340,14 +381,20 @@ class EmailService {
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
-    const transporter = await this.createTransporter(config);
-    const mailOptions = {
-      from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
-      to: options.to,
-      subject: options.subject,
-      html: options.html,
-    };
-    await transporter.sendMail(mailOptions);
+
+    // Use Gmail API for Gmail provider
+    if (config.provider === 'gmail') {
+      await this.sendViaGmailAPI(config, options.to, options.subject, options.html);
+    } else {
+      const transporter = await this.createTransporter(config);
+      const mailOptions = {
+        from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
+        to: options.to,
+        subject: options.subject,
+        html: options.html,
+      };
+      await transporter.sendMail(mailOptions);
+    }
   }
 
   /**
