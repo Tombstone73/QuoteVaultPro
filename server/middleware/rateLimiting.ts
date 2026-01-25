@@ -15,7 +15,7 @@
  * For horizontal scaling, consider Redis-backed store.
  */
 
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import type { Request, Response } from 'express';
 import { logger as structuredLogger } from '../logger';
 
@@ -122,6 +122,7 @@ function shouldSkipRateLimit(req: Request): boolean {
 
 /**
  * Safe key generator wrapper - never throws
+ * Uses ipKeyGenerator for IPv6-safe IP-based keys
  */
 function safeKeyGenerator(keyFn: (req: Request) => string) {
   return (req: Request): string => {
@@ -129,7 +130,7 @@ function safeKeyGenerator(keyFn: (req: Request) => string) {
       return keyFn(req);
     } catch (error) {
       console.warn('[rateLimit] keyGenerator failed, using IP fallback:', error);
-      return req.ip || 'unknown';
+      return `ip:${ipKeyGenerator(req.ip || 'unknown')}`;
     }
   };
 }
@@ -149,7 +150,7 @@ export const globalIpRateLimit = rateLimit({
     return shouldSkipRateLimit(req);
   },
   handler: rateLimitHandler,
-  keyGenerator: safeKeyGenerator((req) => req.ip || 'unknown'),
+  keyGenerator: safeKeyGenerator((req) => `ip:${ipKeyGenerator(req.ip || 'unknown')}`),
 });
 
 /**
@@ -164,7 +165,7 @@ export const authRateLimit = rateLimit({
   legacyHeaders: false,
   skip: () => !isRateLimitingEnabled(),
   handler: rateLimitHandler,
-  keyGenerator: safeKeyGenerator((req) => req.ip || 'unknown'),
+  keyGenerator: safeKeyGenerator((req) => `ip:${ipKeyGenerator(req.ip || 'unknown')}`),
 });
 
 /**
@@ -181,7 +182,7 @@ export const calculateRateLimit = rateLimit({
   handler: rateLimitHandler,
   keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
-    return userId ? `user:${userId}` : req.ip || 'unknown';
+    return userId ? `user:${userId}` : `ip:${ipKeyGenerator(req.ip || 'unknown')}`;
   }),
 });
 
@@ -199,7 +200,7 @@ export const emailRateLimit = rateLimit({
   handler: rateLimitHandler,
   keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
-    return userId ? `user:${userId}` : req.ip || 'unknown';
+    return userId ? `user:${userId}` : `ip:${ipKeyGenerator(req.ip || 'unknown')}`;
   }),
 });
 
@@ -217,7 +218,7 @@ export const prepressRateLimit = rateLimit({
   handler: rateLimitHandler,
   keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
-    return userId ? `user:${userId}` : req.ip || 'unknown';
+    return userId ? `user:${userId}` : `ip:${ipKeyGenerator(req.ip || 'unknown')}`;
   }),
 });
 
@@ -235,6 +236,6 @@ export const writeOperationsRateLimit = rateLimit({
   handler: rateLimitHandler,
   keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
-    return userId ? `user:${userId}` : req.ip || 'unknown';
+    return userId ? `user:${userId}` : `ip:${ipKeyGenerator(req.ip || 'unknown')}`;
   }),
 });
