@@ -7074,8 +7074,123 @@ export async function registerRoutes(app: Express): Promise<Server> {
         setTimeout(() => reject(new Error('EMAIL_PROVIDER_TIMEOUT')), TIMEOUT_MS);
       });
 
+      // Load customer (for PDF billing info)
+      let customer = null;
+      if (quote.customerId) {
+        const [cust] = await db
+          .select()
+          .from(customers)
+          .where(and(eq(customers.id, quote.customerId), eq(customers.organizationId, organizationId)))
+          .limit(1);
+        customer = cust || null;
+      }
+
+      // Load company settings
+      const [orgCompany] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      // Load line items for PDF
+      const lineItems = await db
+        .select()
+        .from(quoteLineItems)
+        .where(eq(quoteLineItems.quoteId, id))
+        .orderBy(quoteLineItems.displayOrder, desc(quoteLineItems.createdAt));
+
+      // Generate PDF attachment with documentType: 'quote'
+      let pdfBytes: Uint8Array;
+      try {
+        pdfBytes = await generateInvoicePdfBytes({
+          documentType: 'quote',
+          invoice: {
+            invoiceNumber: quote.quoteNumber,
+            issueDate: quote.createdAt,
+            dueDate: null,
+            status: quote.status || 'draft',
+            currency: 'USD',
+            subtotalCents: Math.round(parseFloat(quote.subtotal || '0') * 100),
+            taxCents: quote.taxRate ? Math.round(parseFloat(quote.subtotal || '0') * parseFloat(quote.taxRate) * 100) : 0,
+            shippingCents: 0,
+            totalCents: Math.round(parseFloat(quote.totalPrice || '0') * 100),
+            notesPublic: null,
+            terms: null,
+            customTerms: null,
+          },
+          customer: customer ? {
+            companyName: customer.companyName,
+            email: customer.email,
+            phone: customer.phone,
+            billingStreet1: customer.billingStreet1,
+            billingStreet2: customer.billingStreet2,
+            billingCity: customer.billingCity,
+            billingState: customer.billingState,
+            billingPostalCode: customer.billingPostalCode,
+            billingCountry: customer.billingCountry,
+            shippingStreet1: customer.shippingStreet1,
+            shippingStreet2: customer.shippingStreet2,
+            shippingCity: customer.shippingCity,
+            shippingState: customer.shippingState,
+            shippingPostalCode: customer.shippingPostalCode,
+            shippingCountry: customer.shippingCountry,
+            billingAddress: null,
+            shippingAddress: null,
+          } : null,
+          companySettings: orgCompany ? {
+            companyName: (orgCompany as any).name || null,
+            address: (orgCompany as any).address || null,
+            phone: (orgCompany as any).phone || null,
+            email: (orgCompany as any).email || null,
+            website: (orgCompany as any).website || null,
+            logoUrl: null,
+          } : null,
+          paymentSummary: {
+            amountPaidCents: 0,
+            amountDueCents: Math.round(parseFloat(quote.totalPrice || '0') * 100),
+            statusLabel: 'Quote',
+          },
+          lineItems: lineItems.map((item: any) => ({
+            description: item.productName || null,
+            quantity: item.quantity || 0,
+            unitPriceCents: Math.round((parseFloat(item.linePrice || '0') / (item.quantity || 1)) * 100),
+            lineTotalCents: Math.round(parseFloat(item.linePrice || '0') * 100),
+            unitPrice: null,
+            totalPrice: null,
+            name: item.productName || null,
+            sku: null,
+            thumbnailDataUrl: null,
+          })),
+          validUntil: quote.validUntil || null,
+        });
+      } catch (pdfError: any) {
+        logger.error('quote_pdf_generation_failed', {
+          requestId,
+          organizationId,
+          quoteId: id,
+          errorMessage: pdfError?.message || String(pdfError),
+        });
+        if (res.headersSent) return;
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to generate PDF attachment',
+          error: {
+            category: 'GENERATION',
+            code: 'PDF_GENERATION_FAILED',
+          },
+          requestId,
+        });
+      }
+
+      const quoteNumber = quote.quoteNumber || id;
+      const attachments = [{
+        filename: `Quote-${quoteNumber}.pdf`,
+        contentType: 'application/pdf',
+        content: Buffer.from(pdfBytes),
+      }];
+
       await Promise.race([
-        emailService.sendQuoteEmail(organizationId, id, to, isInternalUser ? undefined : userId),
+        emailService.sendQuoteEmail(organizationId, id, to, isInternalUser ? undefined : userId, attachments),
         timeoutPromise
       ]);
 
@@ -7339,8 +7454,91 @@ export async function registerRoutes(app: Express): Promise<Server> {
         setTimeout(() => reject(new Error('EMAIL_PROVIDER_TIMEOUT')), TIMEOUT_MS);
       });
 
+      // Load customer (for PDF billing info)
+      let customer = null;
+      if (invoice.customerId) {
+        const [cust] = await db
+          .select()
+          .from(customers)
+          .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, organizationId)))
+          .limit(1);
+        customer = cust || null;
+      }
+
+      // Load company settings
+      const [orgCompany] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      // Generate PDF attachment
+      let pdfBytes: Uint8Array;
+      try {
+        pdfBytes = await generateInvoicePdfBytes({
+          invoice: invoice,
+          customer: customer ? {
+            companyName: customer.companyName,
+            email: customer.email,
+            phone: customer.phone,
+            billingStreet1: customer.billingStreet1,
+            billingStreet2: customer.billingStreet2,
+            billingCity: customer.billingCity,
+            billingState: customer.billingState,
+            billingPostalCode: customer.billingPostalCode,
+            billingCountry: customer.billingCountry,
+            shippingStreet1: customer.shippingStreet1,
+            shippingStreet2: customer.shippingStreet2,
+            shippingCity: customer.shippingCity,
+            shippingState: customer.shippingState,
+            shippingPostalCode: customer.shippingPostalCode,
+            shippingCountry: customer.shippingCountry,
+            billingAddress: null,
+            shippingAddress: null,
+          } : null,
+          companySettings: orgCompany ? {
+            companyName: (orgCompany as any).name || null,
+            address: (orgCompany as any).address || null,
+            phone: (orgCompany as any).phone || null,
+            email: (orgCompany as any).email || null,
+            website: (orgCompany as any).website || null,
+            logoUrl: null,
+          } : null,
+          lineItems: rel.lineItems || [],
+          paymentSummary: {
+            amountPaidCents: 0,
+            amountDueCents: invoice.totalCents || 0,
+            statusLabel: invoice.status || null,
+          },
+        });
+      } catch (pdfError: any) {
+        logger.error('invoice_pdf_generation_failed', {
+          requestId,
+          organizationId,
+          invoiceId: id,
+          errorMessage: pdfError?.message || String(pdfError),
+        });
+        if (res.headersSent) return;
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to generate PDF attachment',
+          error: {
+            category: 'GENERATION',
+            code: 'PDF_GENERATION_FAILED',
+          },
+          requestId,
+        });
+      }
+
+      const invoiceNumber = invoice.invoiceNumber || id;
+      const attachments = [{
+        filename: `Invoice-${invoiceNumber}.pdf`,
+        contentType: 'application/pdf',
+        content: Buffer.from(pdfBytes),
+      }];
+
       await Promise.race([
-        emailService.sendInvoiceEmail(organizationId, id, to),
+        emailService.sendInvoiceEmail(organizationId, id, to, attachments),
         timeoutPromise
       ]);
 
