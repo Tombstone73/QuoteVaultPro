@@ -7001,10 +7001,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/quotes/:id/email", isAuthenticated, tenantContext, emailRateLimit, async (req: any, res) => {
     const requestId = req.requestId || `quote-email-${Date.now()}`;
+    const organizationId = getRequestOrganizationId(req);
     
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ message: "Missing organization context", requestId });
+      if (!organizationId) {
+        if (res.headersSent) return;
+        return res.status(500).json({ success: false, message: "Missing organization context", requestId });
+      }
 
       logger.info('quote_email_start', { 
         requestId, 
@@ -7021,6 +7024,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           quoteId: req.params.id,
           reason: emailConfigCheck.reason,
         });
+        if (res.headersSent) return;
         return res.status(400).json({
           success: false,
           message: emailConfigCheck.reason || "Email is not configured",
@@ -7033,11 +7037,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { id } = req.params;
-      const { recipientEmail } = req.body;
-
-      if (!recipientEmail) {
-        return res.status(400).json({ message: "Recipient email is required" });
-      }
+      let { to } = req.body;
 
       // Verify user has access to this quote
       const userId = getUserId(req.user);
@@ -7046,16 +7046,217 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
 
       if (!quote) {
-        return res.status(404).json({ message: "Quote not found" });
+        logger.warn('quote_email_not_found', { requestId, organizationId, quoteId: id });
+        if (res.headersSent) return;
+        return res.status(404).json({ success: false, message: "Quote not found", requestId });
       }
 
-      await emailService.sendQuoteEmail(organizationId, id, recipientEmail, isInternalUser ? undefined : userId);
-      res.json({ message: "Quote email sent successfully" });
-    } catch (error) {
-      console.error("Error sending quote email:", error);
-      res.status(500).json({
-        message: error instanceof Error ? error.message : "Failed to send quote email"
+      // Determine recipient: explicit email, customer email, or error
+      if (!to && quote.customerId) {
+        const customer = await storage.getCustomerById(organizationId, quote.customerId);
+        to = customer?.email;
+      }
+
+      if (!to) {
+        logger.warn('quote_email_no_recipient', { requestId, organizationId, quoteId: id });
+        if (res.headersSent) return;
+        return res.status(400).json({ 
+          success: false, 
+          message: "Recipient email is required (provide 'to' or set customer email).",
+          requestId 
+        });
+      }
+
+      // Hard timeout: 8 seconds
+      const TIMEOUT_MS = 8000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('EMAIL_PROVIDER_TIMEOUT')), TIMEOUT_MS);
       });
+
+      await Promise.race([
+        emailService.sendQuoteEmail(organizationId, id, to, isInternalUser ? undefined : userId),
+        timeoutPromise
+      ]);
+
+      logger.info('quote_email_success', { 
+        requestId, 
+        organizationId,
+        quoteId: id,
+        recipientDomain: to.split('@')[1],
+      });
+
+      if (res.headersSent) return;
+      res.json({ 
+        success: true,
+        message: "Quote email sent successfully",
+        requestId 
+      });
+
+    } catch (error: any) {
+      const classified: EmailErrorSpec = classifyEmailError(error);
+
+      logger.error('quote_email_fail', {
+        requestId,
+        organizationId,
+        quoteId: req.params.id,
+        errorCategory: classified.category,
+        errorCode: classified.code,
+        httpStatus: classified.httpStatus,
+        ...createSafeErrorContext(error),
+      });
+
+      if (res.headersSent) {
+        logger.warn('quote_email_headers_already_sent', { requestId, organizationId });
+        return;
+      }
+
+      try {
+        res.status(classified.httpStatus).json({
+          success: false,
+          message: classified.userMessage,
+          error: {
+            category: classified.category,
+            code: classified.code,
+          },
+          requestId,
+        });
+      } catch (sendError: any) {
+        logger.error('quote_email_response_failed', {
+          requestId,
+          organizationId,
+          sendError: sendError?.message || String(sendError),
+        });
+      }
+    }
+  });
+
+  app.post("/api/invoices/:id/email", isAuthenticated, tenantContext, emailRateLimit, async (req: any, res) => {
+    const requestId = req.requestId || `invoice-email-${Date.now()}`;
+    const organizationId = getRequestOrganizationId(req);
+    
+    try {
+      if (!organizationId) {
+        if (res.headersSent) return;
+        return res.status(500).json({ success: false, message: "Missing organization context", requestId });
+      }
+
+      logger.info('invoice_email_start', { 
+        requestId, 
+        organizationId,
+        invoiceId: req.params.id,
+      });
+
+      // Check if email is configured
+      const emailConfigCheck = await emailService.isEmailConfigured(organizationId);
+      if (!emailConfigCheck.configured) {
+        logger.warn('invoice_email_not_configured', { 
+          requestId, 
+          organizationId,
+          invoiceId: req.params.id,
+          reason: emailConfigCheck.reason,
+        });
+        if (res.headersSent) return;
+        return res.status(400).json({
+          success: false,
+          message: emailConfigCheck.reason || "Email is not configured",
+          error: {
+            category: 'CONFIG',
+            code: 'EMAIL_NOT_CONFIGURED',
+          },
+          requestId,
+        });
+      }
+
+      const { id } = req.params;
+      let { to } = req.body;
+
+      // Get invoice with relations
+      const rel = await getInvoiceWithRelations(id);
+
+      if (!rel || rel.invoice.organizationId !== organizationId) {
+        logger.warn('invoice_email_not_found', { requestId, organizationId, invoiceId: id });
+        if (res.headersSent) return;
+        return res.status(404).json({ success: false, message: "Invoice not found", requestId });
+      }
+
+      const invoice = rel.invoice;
+
+      // Determine recipient: explicit email, customer email, or error
+      if (!to && invoice.customerId) {
+        const customer = await storage.getCustomerById(organizationId, invoice.customerId);
+        to = customer?.email;
+      }
+
+      if (!to) {
+        logger.warn('invoice_email_no_recipient', { requestId, organizationId, invoiceId: id });
+        if (res.headersSent) return;
+        return res.status(400).json({ 
+          success: false, 
+          message: "Recipient email is required (provide 'to' or set customer email).",
+          requestId 
+        });
+      }
+
+      // Hard timeout: 8 seconds
+      const TIMEOUT_MS = 8000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('EMAIL_PROVIDER_TIMEOUT')), TIMEOUT_MS);
+      });
+
+      await Promise.race([
+        emailService.sendInvoiceEmail(organizationId, id, to),
+        timeoutPromise
+      ]);
+
+      logger.info('invoice_email_success', { 
+        requestId, 
+        organizationId,
+        invoiceId: id,
+        recipientDomain: to.split('@')[1],
+      });
+
+      if (res.headersSent) return;
+      res.json({ 
+        success: true,
+        message: "Invoice email sent successfully",
+        requestId 
+      });
+
+    } catch (error: any) {
+      const classified: EmailErrorSpec = classifyEmailError(error);
+
+      logger.error('invoice_email_fail', {
+        requestId,
+        organizationId,
+        invoiceId: req.params.id,
+        errorCategory: classified.category,
+        errorCode: classified.code,
+        httpStatus: classified.httpStatus,
+        ...createSafeErrorContext(error),
+      });
+
+      if (res.headersSent) {
+        logger.warn('invoice_email_headers_already_sent', { requestId, organizationId });
+        return;
+      }
+
+      try {
+        res.status(classified.httpStatus).json({
+          success: false,
+          message: classified.userMessage,
+          error: {
+            category: classified.category,
+            code: classified.code,
+          },
+          requestId,
+        });
+      } catch (sendError: any) {
+        logger.error('invoice_email_response_failed', {
+          requestId,
+          organizationId,
+          sendError: sendError?.message || String(sendError),
+        });
+      }
     }
   });
 

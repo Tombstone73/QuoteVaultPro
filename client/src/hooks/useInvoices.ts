@@ -316,10 +316,10 @@ export function useSendInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, toEmail }: { id: string; toEmail?: string }) => {
-      const res = await fetch(`/api/invoices/${id}/send`, {
+      const res = await fetch(`/api/invoices/${id}/email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ toEmail }),
+        body: JSON.stringify({ to: toEmail }),
         credentials: 'include',
       });
       if (!res.ok) {

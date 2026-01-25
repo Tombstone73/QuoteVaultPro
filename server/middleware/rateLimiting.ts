@@ -200,7 +200,10 @@ export const emailRateLimit = rateLimit({
   handler: rateLimitHandler,
   keyGenerator: safeKeyGenerator((req) => {
     const userId = (req.user as any)?.id;
-    return userId ? `user:${userId}` : `ip:${ipKeyGenerator(req.ip || 'unknown')}`;
+    const orgId = (req as any).organizationId;
+    if (userId && orgId) return `org:${orgId}:user:${userId}`;
+    if (userId) return `user:${userId}`;
+    return `ip:${ipKeyGenerator(req.ip || 'unknown')}`;
   }),
 });
 

@@ -5,6 +5,7 @@ import type { EmailSettings } from "@shared/schema";
 import { isEmailEnabled } from "./workers/workerGates";
 import { logger } from "./logger";
 import { classifyEmailError, createSafeErrorContext, EMAIL_ERRORS } from "./emailErrors";
+import { getInvoiceWithRelations } from "./invoicesService";
 
 interface EmailConfig {
   provider: string;
@@ -395,6 +396,153 @@ class EmailService {
       };
       await transporter.sendMail(mailOptions);
     }
+  }
+
+  /**
+   * Send invoice email to recipient
+   * TODO: Add PDF attachment when invoice PDF generation is implemented
+   */
+  async sendInvoiceEmail(organizationId: string, invoiceId: string, recipientEmail: string): Promise<void> {
+    // Operational kill switch
+    if (!isEmailEnabled()) {
+      logger.warn('Email disabled - sendInvoiceEmail aborted', { organizationId, invoiceId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
+      throw new Error('Email sending temporarily disabled');
+    }
+
+    const config = await this.getEmailConfig(organizationId);
+    if (!config) {
+      throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
+    }
+
+    // Get invoice data with relations
+    const rel = await getInvoiceWithRelations(invoiceId);
+    if (!rel || rel.invoice.organizationId !== organizationId) {
+      throw new Error("Invoice not found");
+    }
+
+    const invoice = rel.invoice;
+
+    const subject = `Invoice #${invoice.invoiceNumber} from ${config.fromName}`;
+    const htmlContent = this.generateInvoiceEmailHTML(invoice);
+
+    // Use Gmail API for Gmail provider
+    if (config.provider === 'gmail') {
+      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent);
+    } else {
+      const transporter = await this.createTransporter(config);
+      const mailOptions = {
+        from: `"${config.fromName}" <${config.fromAddress}>`,
+        to: recipientEmail,
+        subject: subject,
+        html: htmlContent,
+      };
+      await transporter.sendMail(mailOptions);
+    }
+  }
+
+  /**
+   * Generate HTML email content for an invoice
+   * TODO: Include link to customer portal when portal URLs are finalized
+   * TODO: Add payment instructions/link when payment processing is implemented
+   */
+  private generateInvoiceEmailHTML(invoice: any): string {
+    const lineItemsHTML = invoice.lineItems
+      ?.map((item: any) => {
+        return `
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #eee;">
+              <strong>${item.description || item.product?.name || "Item"}</strong>
+              ${item.quantity ? `<br><span style="color: #666; font-size: 14px;">Quantity: ${item.quantity}</span>` : ""}
+            </td>
+            <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">
+              $${parseFloat(item.amount || item.linePrice || "0").toFixed(2)}
+            </td>
+          </tr>
+        `;
+      })
+      .join("") || `<tr><td colspan="2" style="padding: 12px;">No items</td></tr>`;
+
+    const subtotal = parseFloat(invoice.subtotal || "0");
+    const tax = parseFloat(invoice.tax || "0");
+    const total = parseFloat(invoice.total || invoice.totalAmount || "0");
+    const dueDate = invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : "Upon receipt";
+    const status = invoice.status || "pending";
+    const publicAppUrl = process.env.PUBLIC_APP_URL || "";
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Invoice #${invoice.invoiceNumber}</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px;">
+        <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
+          <h1 style="margin: 0 0 10px 0; color: #2563eb;">Invoice #${invoice.invoiceNumber}</h1>
+          <p style="margin: 0; color: #666;">
+            Date: ${new Date(invoice.createdAt || invoice.issueDate).toLocaleDateString()}<br>
+            Due Date: ${dueDate}<br>
+            ${invoice.customerName ? `Customer: ${invoice.customerName}` : ""}
+          </p>
+        </div>
+
+        ${status === 'pending' || status === 'overdue' ? `
+        <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-bottom: 30px;">
+          <p style="margin: 0; color: #856404;">
+            <strong>Payment Due:</strong> This invoice is ${status === 'overdue' ? 'overdue' : 'pending payment'}.
+            ${status === 'overdue' ? ' Please submit payment as soon as possible.' : ''}
+          </p>
+        </div>
+        ` : ''}
+
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px;">
+          <thead>
+            <tr style="background-color: #f8f9fa;">
+              <th style="padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6;">Item</th>
+              <th style="padding: 12px; text-align: right; border-bottom: 2px solid #dee2e6;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lineItemsHTML}
+          </tbody>
+        </table>
+
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
+          <table style="width: 100%; max-width: 300px; margin-left: auto;">
+            <tr>
+              <td style="padding: 8px 0;"><strong>Subtotal:</strong></td>
+              <td style="padding: 8px 0; text-align: right;">$${subtotal.toFixed(2)}</td>
+            </tr>
+            ${tax > 0 ? `
+            <tr>
+              <td style="padding: 8px 0;">Tax:</td>
+              <td style="padding: 8px 0; text-align: right;">$${tax.toFixed(2)}</td>
+            </tr>
+            ` : ""}
+            <tr style="border-top: 2px solid #dee2e6;">
+              <td style="padding: 12px 0 0 0;"><strong style="font-size: 18px;">Total Due:</strong></td>
+              <td style="padding: 12px 0 0 0; text-align: right;"><strong style="font-size: 18px; color: #2563eb;">$${total.toFixed(2)}</strong></td>
+            </tr>
+          </table>
+        </div>
+
+        ${publicAppUrl ? `
+        <div style="margin-top: 30px; text-align: center;">
+          <a href="${publicAppUrl}/portal/invoices/${invoice.id}" 
+             style="display: inline-block; background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">
+            View Invoice Online
+          </a>
+        </div>
+        ` : ''}
+
+        <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
+          <p>Thank you for your business!</p>
+          <p style="margin: 0;">If you have any questions about this invoice, please don't hesitate to contact us.</p>
+        </div>
+      </body>
+      </html>
+    `;
   }
 
   /**
