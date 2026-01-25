@@ -132,7 +132,8 @@ class EmailService {
     to: string,
     subject: string,
     htmlBody: string,
-    requestId?: string
+    requestId?: string,
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer }>
   ): Promise<void> {
     if (!config.clientId || !config.clientSecret || !config.refreshToken) {
       throw new Error('Gmail OAuth credentials missing');
@@ -147,6 +148,7 @@ class EmailService {
       hasClientId: !!config.clientId,
       hasClientSecret: !!config.clientSecret,
       hasRefreshToken: !!config.refreshToken,
+      attachmentCount: attachments?.length || 0,
     });
 
     const OAuth2 = google.auth.OAuth2;
@@ -163,17 +165,51 @@ class EmailService {
     // Create Gmail API client
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    // Build raw RFC822 email message
-    const messageParts = [
-      `From: "${config.fromName}" <${config.fromAddress}>`,
-      `To: ${to}`,
-      `Subject: ${subject}`,
-      'MIME-Version: 1.0',
-      'Content-Type: text/html; charset=utf-8',
-      '',
-      htmlBody,
-    ];
-    const rawMessage = messageParts.join('\r\n');
+    // Build raw RFC822 email message with attachments
+    let rawMessage: string;
+    
+    if (attachments && attachments.length > 0) {
+      // Multipart message with attachments
+      const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      
+      const messageParts = [
+        `From: "${config.fromName}" <${config.fromAddress}>`,
+        `To: ${to}`,
+        `Subject: ${subject}`,
+        'MIME-Version: 1.0',
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        '',
+        `--${boundary}`,
+        'Content-Type: text/html; charset=utf-8',
+        '',
+        htmlBody,
+      ];
+
+      // Add each attachment
+      for (const attachment of attachments) {
+        messageParts.push(`--${boundary}`);
+        messageParts.push(`Content-Type: ${attachment.contentType}`);
+        messageParts.push(`Content-Disposition: attachment; filename="${attachment.filename}"`);
+        messageParts.push('Content-Transfer-Encoding: base64');
+        messageParts.push('');
+        messageParts.push(attachment.content.toString('base64'));
+      }
+
+      messageParts.push(`--${boundary}--`);
+      rawMessage = messageParts.join('\r\n');
+    } else {
+      // Simple HTML message without attachments
+      const messageParts = [
+        `From: "${config.fromName}" <${config.fromAddress}>`,
+        `To: ${to}`,
+        `Subject: ${subject}`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/html; charset=utf-8',
+        '',
+        htmlBody,
+      ];
+      rawMessage = messageParts.join('\r\n');
+    }
 
     // Base64url encode (RFC 4648 Section 5)
     const base64UrlEncode = (str: string): string => {
@@ -333,7 +369,7 @@ class EmailService {
   /**
    * Send quote email to recipient
    */
-  async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string): Promise<void> {
+  async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>): Promise<void> {
     // Operational kill switch: disable email during provider outages, bounce storms, or template issues
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendQuoteEmail aborted', { organizationId, quoteId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -355,15 +391,21 @@ class EmailService {
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {
-      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent);
+      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments);
     } else {
       const transporter = await this.createTransporter(config);
-      const mailOptions = {
+      const mailOptions: any = {
         from: `"${config.fromName}" <${config.fromAddress}>`,
         to: recipientEmail,
         subject: subject,
         html: htmlContent,
       };
+      
+      // Add attachments if provided
+      if (attachments && attachments.length > 0) {
+        mailOptions.attachments = attachments;
+      }
+      
       await transporter.sendMail(mailOptions);
     }
   }
@@ -371,7 +413,7 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string }): Promise<void> {
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; attachments?: Array<{ filename: string; contentType: string; content: Buffer }> }): Promise<void> {
     // Operational kill switch: disable email during provider outages, bounce storms, or template issues
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendEmail aborted', { organizationId, to: options.to, subject: options.subject, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -385,24 +427,29 @@ class EmailService {
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {
-      await this.sendViaGmailAPI(config, options.to, options.subject, options.html);
+      await this.sendViaGmailAPI(config, options.to, options.subject, options.html, undefined, options.attachments);
     } else {
       const transporter = await this.createTransporter(config);
-      const mailOptions = {
+      const mailOptions: any = {
         from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
         to: options.to,
         subject: options.subject,
         html: options.html,
       };
+      
+      // Add attachments if provided
+      if (options.attachments && options.attachments.length > 0) {
+        mailOptions.attachments = options.attachments;
+      }
+      
       await transporter.sendMail(mailOptions);
     }
   }
 
   /**
-   * Send invoice email to recipient
-   * TODO: Add PDF attachment when invoice PDF generation is implemented
+   * Send invoice email to recipient with PDF attachment
    */
-  async sendInvoiceEmail(organizationId: string, invoiceId: string, recipientEmail: string): Promise<void> {
+  async sendInvoiceEmail(organizationId: string, invoiceId: string, recipientEmail: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>): Promise<void> {
     // Operational kill switch
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendInvoiceEmail aborted', { organizationId, invoiceId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -427,15 +474,21 @@ class EmailService {
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {
-      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent);
+      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments);
     } else {
       const transporter = await this.createTransporter(config);
-      const mailOptions = {
+      const mailOptions: any = {
         from: `"${config.fromName}" <${config.fromAddress}>`,
         to: recipientEmail,
         subject: subject,
         html: htmlContent,
       };
+      
+      // Add attachments if provided
+      if (attachments && attachments.length > 0) {
+        mailOptions.attachments = attachments;
+      }
+      
       await transporter.sendMail(mailOptions);
     }
   }
