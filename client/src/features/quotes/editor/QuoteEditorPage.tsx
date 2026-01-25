@@ -978,6 +978,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
                         {/* Quote Summary / Totals - Moved to left column */}
                         <SummaryCard
+                            quoteId={state.quoteId}
                             lineItems={state.lineItems}
                             products={state.products}
                             subtotal={state.subtotal}
