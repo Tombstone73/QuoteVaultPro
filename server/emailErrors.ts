@@ -144,6 +144,12 @@ export const EMAIL_ERRORS = {
     httpStatus: 504,
     userMessage: 'Email test operation timed out after 15 seconds. Check your network and Gmail configuration.',
   },
+  EMAIL_PROVIDER_TIMEOUT: {
+    code: 'EMAIL_PROVIDER_TIMEOUT',
+    category: 'TIMEOUT' as EmailErrorCategory,
+    httpStatus: 504,
+    userMessage: 'Email provider timeout. The send operation took too long. Please retry.',
+  },
 
   // Unknown/unexpected
   UNKNOWN_ERROR: {
@@ -228,6 +234,9 @@ export function classifyEmailError(error: any): EmailErrorSpec {
   }
   if (errorMessage.includes('email send operation timed out')) {
     return EMAIL_ERRORS.SEND_TIMEOUT;
+  }
+  if (errorMessage.includes('email_provider_timeout')) {
+    return EMAIL_ERRORS.EMAIL_PROVIDER_TIMEOUT;
   }
   if (errorMessage.includes('email_timeout') || errorName === 'AbortError') {
     return EMAIL_ERRORS.OPERATION_TIMEOUT;

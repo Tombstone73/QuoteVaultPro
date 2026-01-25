@@ -6,7 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Edit, Package, FileText } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ArrowLeft, Edit, Package, FileText, Mail } from "lucide-react";
 import { format } from "date-fns";
 import { QuoteSourceBadge } from "@/components/quote-source-badge";
 import { useAuth } from "@/hooks/useAuth";
@@ -35,6 +38,9 @@ export default function QuoteDetail() {
   const queryClient = useQueryClient();
   const [isRevising, setIsRevising] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [showEmailDialog, setShowEmailDialog] = useState(false);
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
 
   const isInternalUser = user && ['admin', 'owner', 'manager', 'employee'].includes(user.role || '');
 
@@ -164,6 +170,46 @@ export default function QuoteDetail() {
     }
   };
 
+  const handleSendEmail = async () => {
+    if (!quote?.id || isSendingEmail) return;
+    const emailToUse = recipientEmail.trim();
+    if (!emailToUse) {
+      toast({
+        title: 'No email address',
+        description: 'Please enter a recipient email address.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setIsSendingEmail(true);
+    try {
+      const response = await fetch(`/api/quotes/${quote.id}/email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ to: emailToUse }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(json?.error || 'Failed to send email');
+      }
+      toast({
+        title: 'Email sent',
+        description: `Quote sent to ${emailToUse}`,
+      });
+      setShowEmailDialog(false);
+      setRecipientEmail('');
+    } catch (err: any) {
+      toast({
+        title: 'Could not send email',
+        description: err?.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
   return (
     <Page>
       <PageHeader
@@ -217,6 +263,20 @@ export default function QuoteDetail() {
                 className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
               >
                 {isRevising ? 'Revising...' : 'Revise Quote'}
+              </Button>
+            )}
+            {isInternalUser && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setRecipientEmail('');
+                  setShowEmailDialog(true);
+                }}
+                className="border-titan-border text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+              >
+                <Mail className="w-4 h-4 mr-2" />
+                Send Email
               </Button>
             )}
             {quote.status !== 'canceled' && !convertedToOrderId && (
@@ -512,6 +572,48 @@ export default function QuoteDetail() {
         isLoading={convertToOrder.isPending}
         onSubmit={handleConvertToOrder}
       />
+      <Dialog open={showEmailDialog} onOpenChange={setShowEmailDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Send Quote via Email</DialogTitle>
+            <DialogDescription>
+              Enter the recipient's email address to send this quote.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Recipient Email</Label>
+              <Input
+                id="email"
+                type="email"
+                placeholder="customer@example.com"
+                value={recipientEmail}
+                onChange={(e) => setRecipientEmail(e.target.value)}
+                disabled={isSendingEmail}
+              />
+              <p className="text-xs text-titan-text-muted">
+                Enter the email address where the quote should be sent.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowEmailDialog(false)}
+              disabled={isSendingEmail}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSendEmail}
+              disabled={isSendingEmail}
+              className="bg-titan-accent hover:bg-titan-accent-hover text-white"
+            >
+              {isSendingEmail ? 'Sending...' : 'Send Email'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Page>
   );
 }
