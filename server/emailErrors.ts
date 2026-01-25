@@ -159,20 +159,32 @@ export const EMAIL_ERRORS = {
  */
 export function classifyEmailError(error: any): EmailErrorSpec {
   const errorMessage = error.message?.toLowerCase() || '';
-  const errorCode = error.code?.toUpperCase() || '';
   const errorName = error.name || '';
+  
+  // Safely normalize error.code (can be string, number, or undefined)
+  let errorCode = '';
+  if (typeof error.code === 'string') {
+    errorCode = error.code.toUpperCase();
+  } else if (typeof error.code === 'number') {
+    errorCode = String(error.code);
+  }
+  
+  // Check for Google/Gaxios API errors with nested structure
+  const googleError = error.response?.data?.error;
+  const googleErrorCode = typeof googleError === 'string' ? googleError.toLowerCase() : '';
+  const httpStatus = error.response?.status || error.status;
 
-  // OAuth errors (from Google OAuth2 client)
-  if (errorMessage.includes('invalid_grant') || errorCode.includes('INVALID_GRANT')) {
+  // OAuth errors (from Google OAuth2 client or API response)
+  if (errorMessage.includes('invalid_grant') || errorCode.includes('INVALID_GRANT') || googleErrorCode === 'invalid_grant') {
     return EMAIL_ERRORS.GMAIL_INVALID_GRANT;
   }
-  if (errorMessage.includes('unauthorized_client') || errorCode.includes('UNAUTHORIZED_CLIENT')) {
+  if (errorMessage.includes('unauthorized_client') || errorCode.includes('UNAUTHORIZED_CLIENT') || googleErrorCode === 'unauthorized_client') {
     return EMAIL_ERRORS.GMAIL_UNAUTHORIZED_CLIENT;
   }
-  if (errorMessage.includes('invalid_client') || errorCode.includes('INVALID_CLIENT')) {
+  if (errorMessage.includes('invalid_client') || errorCode.includes('INVALID_CLIENT') || googleErrorCode === 'invalid_client') {
     return EMAIL_ERRORS.GMAIL_INVALID_CLIENT;
   }
-  if (errorMessage.includes('access_denied') || errorCode.includes('ACCESS_DENIED')) {
+  if (errorMessage.includes('access_denied') || errorCode.includes('ACCESS_DENIED') || googleErrorCode === 'access_denied') {
     return EMAIL_ERRORS.GMAIL_ACCESS_DENIED;
   }
   if (errorMessage.includes('insufficient') && errorMessage.includes('scope')) {

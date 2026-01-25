@@ -6919,6 +6919,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Classify error using taxonomy
       const classified: EmailErrorSpec = classifyEmailError(error);
 
+      // Special handling for invalid_grant: alert operator to regenerate token
+      if (classified.code === 'GMAIL_INVALID_GRANT') {
+        logger.warn('email_test_invalid_grant_detected', {
+          requestId,
+          organizationId,
+          action: 'REGENERATE_REFRESH_TOKEN',
+          instructions: 'OAuth refresh token expired or revoked. Go to Settings > Email Provider and follow the Gmail OAuth setup guide to regenerate the refresh token using Google OAuth Playground.',
+        });
+      }
+
       // Log failure with safe context
       logger.error('email_test_fail', {
         requestId,
