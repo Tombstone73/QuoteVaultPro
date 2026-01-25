@@ -7244,6 +7244,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         overrides: {
           watermarkText: 'QUOTE',
         },
+        documentType: 'quote',
+        validUntil: quote.validUntil || null,
       });
 
       const quoteNumber = quote.quoteNumber ? String(quote.quoteNumber) : id;
