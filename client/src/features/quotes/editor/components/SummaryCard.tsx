@@ -4,7 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2, Download, Eye } from "lucide-react";
+import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { useToast } from "@/hooks/use-toast";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
@@ -40,6 +43,7 @@ type SummaryCardProps = {
     readOnly?: boolean;
     showConvertToOrder?: boolean;
     showDiscard?: boolean;
+    quoteId?: string | null;
     quoteNumber?: number | null;
     quoteStatus?: string | null;
     onSave: () => void;
@@ -85,6 +89,7 @@ export function SummaryCard({
     readOnly = false,
     showConvertToOrder = true,
     showDiscard = true,
+    quoteId,
     quoteNumber,
     quoteStatus,
     onSave,
@@ -110,6 +115,56 @@ export function SummaryCard({
     isApprovingAndSending = false,
     isRequestingApproval = false,
 }: SummaryCardProps) {
+    const { toast } = useToast();
+    const [showEmailDialog, setShowEmailDialog] = useState(false);
+    const [recipientEmail, setRecipientEmail] = useState('');
+    const [isSendingEmail, setIsSendingEmail] = useState(false);
+
+    // PDF URLs
+    const quotePdfViewUrl = quoteId ? `/api/quotes/${encodeURIComponent(quoteId)}/pdf` : '';
+    const quotePdfDownloadUrl = quoteId ? `/api/quotes/${encodeURIComponent(quoteId)}/pdf?download=1` : '';
+    const quotePdfFilename = quoteNumber ? `Quote-${String(quoteNumber)}.pdf` : 'quote.pdf';
+
+    const handleSendEmail = async () => {
+        if (!quoteId || isSendingEmail) return;
+        const emailToUse = recipientEmail.trim();
+        if (!emailToUse) {
+            toast({
+                title: 'No email address',
+                description: 'Please enter a recipient email address.',
+                variant: 'destructive',
+            });
+            return;
+        }
+        setIsSendingEmail(true);
+        try {
+            const response = await fetch(`/api/quotes/${quoteId}/email`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ to: emailToUse }),
+            });
+            const json = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(json?.error || 'Failed to send email');
+            }
+            toast({
+                title: 'Email sent',
+                description: `Quote sent to ${emailToUse}`,
+            });
+            setShowEmailDialog(false);
+            setRecipientEmail('');
+        } catch (err: any) {
+            toast({
+                title: 'Could not send email',
+                description: err?.message || 'Please try again.',
+                variant: 'destructive',
+            });
+        } finally {
+            setIsSendingEmail(false);
+        }
+    };
+
     const [showTaxOverride, setShowTaxOverride] = useState(false);
     const safeDiscount = Number.isFinite(discountAmount) ? Math.max(0, discountAmount) : 0;
     const isTaxExempt = quoteTaxExempt === true || (quoteTaxExempt === null && selectedCustomer?.isTaxExempt);
@@ -445,14 +500,37 @@ export function SummaryCard({
                 ) : (
                     <>
                         {/* VIEW MODE */}
-                        {/* Row 1: Small button row - Email Quote + Preview */}
-                        <div className="grid grid-cols-2 gap-2 w-full">
-                            <Button variant="outline" className="w-full" disabled>
+                        {/* Row 1: Email Quote + Preview + Download PDF */}
+                        <div className="grid grid-cols-3 gap-2 w-full">
+                            <Button
+                                variant="outline"
+                                className="w-full"
+                                onClick={() => {
+                                    setRecipientEmail('');
+                                    setShowEmailDialog(true);
+                                }}
+                                disabled={!quoteId}
+                            >
                                 <Mail className="w-4 h-4 mr-2" />
-                                Email Quote
+                                Email
                             </Button>
-                            <Button variant="outline" className="w-full" disabled>
+                            <Button
+                                variant="outline"
+                                className="w-full"
+                                onClick={() => window.open(quotePdfViewUrl, '_blank')}
+                                disabled={!quoteId}
+                            >
+                                <Eye className="w-4 h-4 mr-2" />
                                 Preview
+                            </Button>
+                            <Button
+                                variant="outline"
+                                className="w-full"
+                                onClick={() => void downloadFileFromUrl(quotePdfDownloadUrl, quotePdfFilename)}
+                                disabled={!quoteId}
+                            >
+                                <Download className="w-4 h-4 mr-2" />
+                                PDF
                             </Button>
                         </div>
 
@@ -468,6 +546,46 @@ export function SummaryCard({
                     </>
                 )}
             </CardFooter>
+            
+            {/* Email Dialog */}
+            <Dialog open={showEmailDialog} onOpenChange={setShowEmailDialog}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Send Quote via Email</DialogTitle>
+                        <DialogDescription>
+                            Enter the recipient's email address to send this quote.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="email">Recipient Email</Label>
+                            <Input
+                                id="email"
+                                type="email"
+                                placeholder="customer@example.com"
+                                value={recipientEmail}
+                                onChange={(e) => setRecipientEmail(e.target.value)}
+                                disabled={isSendingEmail}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => setShowEmailDialog(false)}
+                            disabled={isSendingEmail}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleSendEmail}
+                            disabled={isSendingEmail}
+                        >
+                            {isSendingEmail ? 'Sending...' : 'Send Email'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </Card>
     );
 }
