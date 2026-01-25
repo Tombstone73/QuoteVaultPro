@@ -6842,6 +6842,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       if (!organizationId) {
         logger.warn('email_test_missing_org', { requestId });
+        if (res.headersSent) return;
         return res.status(500).json({ 
           success: false,
           message: "Missing organization context",
@@ -6861,6 +6862,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           organizationId,
           reason: emailConfigCheck.reason,
         });
+        if (res.headersSent) return;
         return res.status(400).json({
           success: false,
           message: emailConfigCheck.reason || "Email is not configured",
@@ -6875,6 +6877,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { recipientEmail } = req.body;
       if (!recipientEmail) {
         logger.warn('email_test_missing_recipient', { requestId, organizationId });
+        if (res.headersSent) return;
         return res.status(400).json({ 
           success: false,
           message: "Recipient email is required",
@@ -6886,8 +6889,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Hard timeout: 15 seconds (Railway typically allows 30s, we want to respond before that)
-      const TIMEOUT_MS = 15000;
+      // Hard timeout: 8 seconds (must respond before Railway 502s)
+      const TIMEOUT_MS = 8000;
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => {
           reject(new Error('EMAIL_TIMEOUT'));
@@ -6905,6 +6908,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         organizationId,
       });
 
+      if (res.headersSent) return;
       res.json({ 
         success: true,
         message: "Test email sent successfully",
@@ -6925,25 +6929,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...createSafeErrorContext(error),
       });
 
-      // Return structured error response
-      res.status(classified.httpStatus).json({
-        success: false,
-        message: classified.userMessage,
-        error: {
-          category: classified.category,
-          code: classified.code,
-        },
-        requestId,
-        // Only in development, include additional debug info
-        ...(process.env.NODE_ENV !== 'production' && { 
-          debug: {
-            errorName: error.name,
-            errorCode: error.code,
-          }
-        })
-      });
+      // Defensive: prevent double-send and Railway 502
+      if (res.headersSent) {
+        logger.warn('email_test_headers_already_sent', { requestId, organizationId });
+        return;
+      }
+
+      // Return structured error response - wrap in try/catch to never throw
+      try {
+        res.status(classified.httpStatus).json({
+          success: false,
+          message: classified.userMessage,
+          error: {
+            category: classified.category,
+            code: classified.code,
+          },
+          requestId,
+          // Only in development, include additional debug info
+          ...(process.env.NODE_ENV !== 'production' && { 
+            debug: {
+              errorName: error.name,
+              errorCode: error.code,
+            }
+          })
+        });
+      } catch (sendError: any) {
+        // Ultimate fallback: log but don't crash the process
+        logger.error('email_test_response_failed', {
+          requestId,
+          organizationId,
+          sendError: sendError?.message || String(sendError),
+        });
+      }
     }
   });
+
+  /**
+   * MANUAL TEST for POST /api/email/test:
+   * 
+   * 1. Ensure you're authenticated (login first to get session cookie)
+   * 2. Test with curl (Windows PowerShell):
+   * 
+   *    curl.exe -X POST http://localhost:5000/api/email/test `
+   *      -H "Content-Type: application/json" `
+   *      -d '{"recipientEmail":"your-test@example.com"}' `
+   *      --cookie-jar cookies.txt `
+   *      --cookie cookies.txt
+   * 
+   * 3. Expected responses:
+   *    - Success (200): {"success":true,"message":"Test email sent successfully","requestId":"..."}
+   *    - Config missing (400): {"success":false,"message":"...","error":{"category":"CONFIG","code":"EMAIL_NOT_CONFIGURED"},"requestId":"..."}
+   *    - Timeout (504): {"success":false,"message":"...","error":{"category":"NETWORK","code":"EMAIL_TIMEOUT"},"requestId":"..."}
+   *    - Auth invalid (401): {"success":false,"message":"...","error":{"category":"AUTH","code":"GMAIL_AUTH_INVALID"},"requestId":"..."}
+   * 
+   * 4. Check Railway logs for:
+   *    - email_test_start (with deployment config)
+   *    - email_test_success OR email_test_fail (with requestId)
+   *    - No unhandled promise rejections
+   *    - Response always within 8 seconds
+   */
 
   app.post("/api/quotes/:id/email", isAuthenticated, tenantContext, emailRateLimit, async (req: any, res) => {
     const requestId = req.requestId || `quote-email-${Date.now()}`;
