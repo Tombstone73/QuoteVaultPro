@@ -81,6 +81,8 @@ type InvoicePdfParams = {
     // Overrides watermark text when enabled
     watermarkText?: string | null;
   };
+  documentType?: 'invoice' | 'quote';
+  validUntil?: Date | string | null;
 };
 
 const toRgb = (c: Rgb) => rgb(c[0], c[1], c[2]);
@@ -537,7 +539,10 @@ export async function generateInvoicePdfBytes(
   if (maybeLogoPromise instanceof Promise) await maybeLogoPromise;
 
   const rightX = width - margin;
-  const invoiceTitle = invoiceNumber ? `INVOICE #${invoiceNumber}` : 'INVOICE';
+  const isQuote = params.documentType === 'quote';
+  const invoiceTitle = isQuote
+    ? (invoiceNumber ? `QUOTE #${invoiceNumber}` : 'QUOTE')
+    : (invoiceNumber ? `INVOICE #${invoiceNumber}` : 'INVOICE');
   drawTextRight(invoiceTitle, { rightX, y: headerTopY - theme.header.titleOffsetY, size: theme.fontSizes.title, bold: true });
 
   const statusLabel = String(params.paymentSummary?.statusLabel || '').trim();
@@ -550,7 +555,13 @@ export async function generateInvoicePdfBytes(
     drawTextRight(`ISSUE: ${issueDate}`, { rightX, y: metaY, size: theme.fontSizes.small, color: theme.colors.mutedText });
     metaY -= theme.header.metaLineHeight;
   }
-  if (dueDate) {
+  if (isQuote) {
+    const validUntilDate = fmtDate(params.validUntil);
+    if (validUntilDate) {
+      drawTextRight(`VALID UNTIL: ${validUntilDate}`, { rightX, y: metaY, size: theme.fontSizes.small, color: theme.colors.mutedText });
+      metaY -= theme.header.metaLineHeight;
+    }
+  } else if (dueDate) {
     drawTextRight(`DUE: ${dueDate}`, { rightX, y: metaY, size: theme.fontSizes.small, color: theme.colors.mutedText });
     metaY -= theme.header.metaLineHeight;
   }
@@ -839,8 +850,10 @@ export async function generateInvoicePdfBytes(
   y -= 2;
   drawTotalRow('Total', fmtMoney(totalCents, currency), { bold: true });
 
-  drawTotalRow('Paid', fmtMoney(paidCents, currency));
-  drawTotalRow('Remaining', fmtMoney(dueCents, currency), { bold: true });
+  if (!isQuote) {
+    drawTotalRow('Paid', fmtMoney(paidCents, currency));
+    drawTotalRow('Remaining', fmtMoney(dueCents, currency), { bold: true });
+  }
 
   // -----------------
   // Notes (public)
