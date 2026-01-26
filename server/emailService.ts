@@ -170,14 +170,19 @@ class EmailService {
     // Build raw RFC822 email message with attachments
     let rawMessage: string;
     
+    // Reply-To: For now, always set to From (deterministic behavior)
+    // Future: Can be overridden for per-rep routing
+    const fromHeader = `"${config.fromName}" <${config.fromAddress}>`;
+    const replyToHeader = replyTo || fromHeader;
+    
     if (attachments && attachments.length > 0) {
       // Multipart message with attachments
       const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       
       const messageParts = [
-        `From: "${config.fromName}" <${config.fromAddress}>`,
+        `From: ${fromHeader}`,
         `To: ${to}`,
-        ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
+        `Reply-To: ${replyToHeader}`,
         `Subject: ${subject}`,
         'MIME-Version: 1.0',
         `Content-Type: multipart/mixed; boundary="${boundary}"`,
@@ -203,9 +208,9 @@ class EmailService {
     } else {
       // Simple HTML message without attachments
       const messageParts = [
-        `From: "${config.fromName}" <${config.fromAddress}>`,
+        `From: ${fromHeader}`,
         `To: ${to}`,
-        ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
+        `Reply-To: ${replyToHeader}`,
         `Subject: ${subject}`,
         'MIME-Version: 1.0',
         'Content-Type: text/html; charset=utf-8',
@@ -248,6 +253,7 @@ class EmailService {
       requestId,
       messageId: result.data.id,
       threadId: result.data.threadId,
+      replyToSet: true,
     });
   }
 
@@ -398,17 +404,15 @@ class EmailService {
       await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments, replyTo);
     } else {
       const transporter = await this.createTransporter(config);
+      const fromValue = `"${config.fromName}" <${config.fromAddress}>`;
       const mailOptions: any = {
-        from: `"${config.fromName}" <${config.fromAddress}>`,
+        from: fromValue,
         to: recipientEmail,
         subject: subject,
         html: htmlContent,
+        // Reply-To: For now, always set to From (deterministic behavior)
+        replyTo: replyTo || fromValue,
       };
-      
-      // Add Reply-To if provided
-      if (replyTo) {
-        mailOptions.replyTo = replyTo;
-      }
       
       // Add attachments if provided
       if (attachments && attachments.length > 0) {
@@ -416,6 +420,11 @@ class EmailService {
       }
       
       await transporter.sendMail(mailOptions);
+      
+      logger.info('email_smtp_success', {
+        provider: 'smtp',
+        replyToSet: true,
+      });
     }
   }
 
@@ -439,17 +448,16 @@ class EmailService {
       await this.sendViaGmailAPI(config, options.to, options.subject, options.html, undefined, options.attachments, options.replyTo);
     } else {
       const transporter = await this.createTransporter(config);
+      const fromValue = options.from || `"${config.fromName}" <${config.fromAddress}>`;
       const mailOptions: any = {
-        from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
+        from: fromValue,
         to: options.to,
         subject: options.subject,
         html: options.html,
+        // Reply-To: For now, always set to From (deterministic behavior)
+        replyTo: options.replyTo || fromValue,
       };
-      
-      // Add Reply-To if provided
-      if (options.replyTo) {
-        mailOptions.replyTo = options.replyTo;
-      }
+      };
       
       // Add attachments if provided
       if (options.attachments && options.attachments.length > 0) {
@@ -457,6 +465,11 @@ class EmailService {
       }
       
       await transporter.sendMail(mailOptions);
+      
+      logger.info('email_smtp_success', {
+        provider: 'smtp',
+        replyToSet: true,
+      });
     }
   }
 
@@ -491,17 +504,15 @@ class EmailService {
       await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments, replyTo);
     } else {
       const transporter = await this.createTransporter(config);
+      const fromValue = `"${config.fromName}" <${config.fromAddress}>`;
       const mailOptions: any = {
-        from: `"${config.fromName}" <${config.fromAddress}>`,
+        from: fromValue,
         to: recipientEmail,
         subject: subject,
         html: htmlContent,
+        // Reply-To: For now, always set to From (deterministic behavior)
+        replyTo: replyTo || fromValue,
       };
-      
-      // Add Reply-To if provided
-      if (replyTo) {
-        mailOptions.replyTo = replyTo;
-      }
       
       // Add attachments if provided
       if (attachments && attachments.length > 0) {
@@ -509,6 +520,11 @@ class EmailService {
       }
       
       await transporter.sendMail(mailOptions);
+      
+      logger.info('email_smtp_success', {
+        provider: 'smtp',
+        replyToSet: true,
+      });
     }
   }
 
