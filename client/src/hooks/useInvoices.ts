@@ -315,11 +315,11 @@ export function useMarkInvoiceSent() {
 export function useSendInvoice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, toEmail }: { id: string; toEmail?: string }) => {
+    mutationFn: async ({ id, toEmail, subject, body }: { id: string; toEmail?: string; subject?: string; body?: string }) => {
       const res = await fetch(`/api/invoices/${id}/email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: toEmail }),
+        body: JSON.stringify({ to: toEmail, subject, body }),
         credentials: 'include',
       });
       if (!res.ok) {

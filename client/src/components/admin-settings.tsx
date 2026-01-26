@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { ObjectUploader } from "@/components/object-uploader";
 import { MediaPicker } from "@/components/media-picker";
 import UserManagement from "@/components/user-management";
+import { EmailTemplatesSettings } from "@/components/email-templates-settings";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import type {
   Product,
@@ -1007,6 +1008,9 @@ export function EmailSettingsTab() {
           </CardContent>
         </Card>
       )}
+
+      {/* Email Templates Section */}
+      <EmailTemplatesSettings />
     </div>
   );
 }

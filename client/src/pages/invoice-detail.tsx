@@ -13,6 +13,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PdfViewer } from "@/components/media/PdfViewer";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { apiRequest } from "@/lib/queryClient";
+import { renderTemplate, type EmailTemplates } from "@shared/emailTemplates";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -161,7 +163,41 @@ export default function InvoiceDetailPage() {
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
   const [senderEmail, setSenderEmail] = useState<{ fromAddress: string; fromName: string } | null>(null);
+
+  // Fetch email templates
+  const { data: templates } = useQuery<EmailTemplates>({
+    queryKey: ["/api/settings/email-templates"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/settings/email-templates");
+      return await response.json();
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+
+  // Prefill subject/body when dialog opens
+  useEffect(() => {
+    if (emailDialogOpen && templates && data?.invoice) {
+      const context = {
+        "org.name": "QuoteVaultPro", // TODO: fetch from org settings
+        "customer.name": selectedCustomer?.companyName || "",
+        "customer.company": selectedCustomer?.companyName || "",
+        "customer.email": selectedCustomer?.email || "",
+        "invoice.number": data.invoice.invoiceNumber?.toString() || "",
+        "invoice.total": ((data.invoice.totalCents || 0) / 100).toFixed(2),
+        "invoice.dueDate": data.invoice.dueDate ? format(new Date(data.invoice.dueDate), 'M/d/yyyy') : "",
+        "invoice.issueDate": data.invoice.issueDate ? format(new Date(data.invoice.issueDate), 'M/d/yyyy') : "",
+      };
+      
+      const renderedSubject = renderTemplate(templates.invoice.subject, context);
+      const renderedBody = renderTemplate(templates.invoice.body, context);
+      
+      setEmailSubject(renderedSubject);
+      setEmailBody(renderedBody);
+    }
+  }, [emailDialogOpen, templates, data]);
 
   // Fetch sender email info when dialog opens
   useEffect(() => {
@@ -733,10 +769,17 @@ export default function InvoiceDetailPage() {
     }
     
     try {
-      await sendInvoice.mutateAsync({ id: invoiceId, toEmail: resolvedEmail });
+      await sendInvoice.mutateAsync({ 
+        id: invoiceId, 
+        toEmail: resolvedEmail,
+        subject: emailSubject || undefined,
+        body: emailBody || undefined,
+      });
       toast({ title: "Success", description: "Invoice sent successfully" });
       setEmailDialogOpen(false);
       setRecipientEmail("");
+      setEmailSubject("");
+      setEmailBody("");
       refetch();
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1220,6 +1263,36 @@ export default function InvoiceDetailPage() {
                                 </p>
                               ) : null;
                             })()}
+                          </div>
+
+                          {/* Subject */}
+                          <div className="space-y-2">
+                            <Label htmlFor="invoice-subject">Subject</Label>
+                            <Input
+                              id="invoice-subject"
+                              type="text"
+                              value={emailSubject}
+                              onChange={(e) => setEmailSubject(e.target.value)}
+                              disabled={sendInvoice.isPending}
+                              placeholder="Invoice subject..."
+                            />
+                          </div>
+
+                          {/* Body */}
+                          <div className="space-y-2">
+                            <Label htmlFor="invoice-body">Message</Label>
+                            <Textarea
+                              id="invoice-body"
+                              value={emailBody}
+                              onChange={(e) => setEmailBody(e.target.value)}
+                              disabled={sendInvoice.isPending}
+                              placeholder="Email body..."
+                              rows={8}
+                              className="font-sans"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              HTML is supported. Edit as needed before sending.
+                            </p>
                           </div>
                         </div>
                         <DialogFooter>
