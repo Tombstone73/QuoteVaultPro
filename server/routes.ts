@@ -6815,6 +6815,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/email/sender - Get organization's default sender email info (non-admin accessible)
+  app.get("/api/email/sender", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(500).json({ message: "Missing organization context" });
+      }
+      
+      const settings = await storage.getDefaultEmailSettings(organizationId);
+      if (!settings) {
+        return res.json({ 
+          configured: false,
+          fromAddress: null,
+          fromName: null,
+        });
+      }
+      
+      // Return only safe sender info (no credentials)
+      res.json({
+        configured: true,
+        fromAddress: settings.fromAddress,
+        fromName: settings.fromName,
+      });
+    } catch (error) {
+      console.error("Error fetching sender email info:", error);
+      res.status(500).json({ message: "Failed to fetch sender email info" });
+    }
+  });
+
   // Email sending routes
   app.post("/api/email/test", isAuthenticated, tenantContext, isAdmin, emailRateLimit, async (req: any, res) => {
     const requestId = req.requestId || `test-${Date.now()}`;
@@ -7189,8 +7218,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         content: Buffer.from(pdfBytes),
       }];
 
+      // Extract user email for Reply-To (internal users only)
+      let replyTo: string | undefined;
+      if (isInternalUser && req.user) {
+        // Handle both Replit auth (claims.email) and local auth (email)
+        const userEmail = (req.user as any).claims?.email || (req.user as any).email;
+        if (userEmail && typeof userEmail === 'string') {
+          replyTo = userEmail;
+        }
+      }
+
       await Promise.race([
-        emailService.sendQuoteEmail(organizationId, id, to, isInternalUser ? undefined : userId, attachments),
+        emailService.sendQuoteEmail(organizationId, id, to, isInternalUser ? undefined : userId, attachments, replyTo),
         timeoutPromise
       ]);
 
@@ -7537,8 +7576,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         content: Buffer.from(pdfBytes),
       }];
 
+      // Extract user email for Reply-To (internal users only)
+      let replyTo: string | undefined;
+      const userRole = req.user?.role || 'customer';
+      const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
+      if (isInternalUser && req.user) {
+        // Handle both Replit auth (claims.email) and local auth (email)
+        const userEmail = (req.user as any).claims?.email || (req.user as any).email;
+        if (userEmail && typeof userEmail === 'string') {
+          replyTo = userEmail;
+        }
+      }
+
       await Promise.race([
-        emailService.sendInvoiceEmail(organizationId, id, to, attachments),
+        emailService.sendInvoiceEmail(organizationId, id, to, attachments, replyTo),
         timeoutPromise
       ]);
 

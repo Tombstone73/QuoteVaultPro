@@ -133,7 +133,8 @@ class EmailService {
     subject: string,
     htmlBody: string,
     requestId?: string,
-    attachments?: Array<{ filename: string; contentType: string; content: Buffer }>
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer }>,
+    replyTo?: string
   ): Promise<void> {
     if (!config.clientId || !config.clientSecret || !config.refreshToken) {
       throw new Error('Gmail OAuth credentials missing');
@@ -149,6 +150,7 @@ class EmailService {
       hasClientSecret: !!config.clientSecret,
       hasRefreshToken: !!config.refreshToken,
       attachmentCount: attachments?.length || 0,
+      hasReplyTo: !!replyTo,
     });
 
     const OAuth2 = google.auth.OAuth2;
@@ -175,6 +177,7 @@ class EmailService {
       const messageParts = [
         `From: "${config.fromName}" <${config.fromAddress}>`,
         `To: ${to}`,
+        ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
         `Subject: ${subject}`,
         'MIME-Version: 1.0',
         `Content-Type: multipart/mixed; boundary="${boundary}"`,
@@ -202,6 +205,7 @@ class EmailService {
       const messageParts = [
         `From: "${config.fromName}" <${config.fromAddress}>`,
         `To: ${to}`,
+        ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
         `Subject: ${subject}`,
         'MIME-Version: 1.0',
         'Content-Type: text/html; charset=utf-8',
@@ -369,7 +373,7 @@ class EmailService {
   /**
    * Send quote email to recipient
    */
-  async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>): Promise<void> {
+  async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>, replyTo?: string): Promise<void> {
     // Operational kill switch: disable email during provider outages, bounce storms, or template issues
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendQuoteEmail aborted', { organizationId, quoteId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -391,7 +395,7 @@ class EmailService {
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {
-      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments);
+      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments, replyTo);
     } else {
       const transporter = await this.createTransporter(config);
       const mailOptions: any = {
@@ -400,6 +404,11 @@ class EmailService {
         subject: subject,
         html: htmlContent,
       };
+      
+      // Add Reply-To if provided
+      if (replyTo) {
+        mailOptions.replyTo = replyTo;
+      }
       
       // Add attachments if provided
       if (attachments && attachments.length > 0) {
@@ -413,7 +422,7 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; attachments?: Array<{ filename: string; contentType: string; content: Buffer }> }): Promise<void> {
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; attachments?: Array<{ filename: string; contentType: string; content: Buffer }>; replyTo?: string }): Promise<void> {
     // Operational kill switch: disable email during provider outages, bounce storms, or template issues
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendEmail aborted', { organizationId, to: options.to, subject: options.subject, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -427,7 +436,7 @@ class EmailService {
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {
-      await this.sendViaGmailAPI(config, options.to, options.subject, options.html, undefined, options.attachments);
+      await this.sendViaGmailAPI(config, options.to, options.subject, options.html, undefined, options.attachments, options.replyTo);
     } else {
       const transporter = await this.createTransporter(config);
       const mailOptions: any = {
@@ -436,6 +445,11 @@ class EmailService {
         subject: options.subject,
         html: options.html,
       };
+      
+      // Add Reply-To if provided
+      if (options.replyTo) {
+        mailOptions.replyTo = options.replyTo;
+      }
       
       // Add attachments if provided
       if (options.attachments && options.attachments.length > 0) {
@@ -449,7 +463,7 @@ class EmailService {
   /**
    * Send invoice email to recipient with PDF attachment
    */
-  async sendInvoiceEmail(organizationId: string, invoiceId: string, recipientEmail: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>): Promise<void> {
+  async sendInvoiceEmail(organizationId: string, invoiceId: string, recipientEmail: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>, replyTo?: string): Promise<void> {
     // Operational kill switch
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendInvoiceEmail aborted', { organizationId, invoiceId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -474,7 +488,7 @@ class EmailService {
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {
-      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments);
+      await this.sendViaGmailAPI(config, recipientEmail, subject, htmlContent, undefined, attachments, replyTo);
     } else {
       const transporter = await this.createTransporter(config);
       const mailOptions: any = {
@@ -483,6 +497,11 @@ class EmailService {
         subject: subject,
         html: htmlContent,
       };
+      
+      // Add Reply-To if provided
+      if (replyTo) {
+        mailOptions.replyTo = replyTo;
+      }
       
       // Add attachments if provided
       if (attachments && attachments.length > 0) {

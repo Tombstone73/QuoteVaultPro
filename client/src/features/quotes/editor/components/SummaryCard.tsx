@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -119,6 +119,26 @@ export function SummaryCard({
     const [showEmailDialog, setShowEmailDialog] = useState(false);
     const [recipientEmail, setRecipientEmail] = useState('');
     const [isSendingEmail, setIsSendingEmail] = useState(false);
+    const [senderEmail, setSenderEmail] = useState<{ fromAddress: string; fromName: string } | null>(null);
+
+    // Fetch sender email info when dialog opens
+    useEffect(() => {
+        if (showEmailDialog && !senderEmail) {
+            fetch('/api/email/sender', {
+                method: 'GET',
+                credentials: 'include',
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.configured && data.fromAddress) {
+                        setSenderEmail({ fromAddress: data.fromAddress, fromName: data.fromName || '' });
+                    }
+                })
+                .catch(() => {
+                    // Silent fail - sender info is optional
+                });
+        }
+    }, [showEmailDialog, senderEmail]);
 
     // PDF URLs
     const quotePdfViewUrl = quoteId ? `/api/quotes/${encodeURIComponent(quoteId)}/pdf` : '';
@@ -127,7 +147,10 @@ export function SummaryCard({
 
     const handleSendEmail = async () => {
         if (!quoteId || isSendingEmail) return;
-        const emailToUse = recipientEmail.trim();
+        
+        // Resolve recipient: input value or customer email
+        const emailToUse = recipientEmail.trim() || selectedCustomer?.email;
+        
         if (!emailToUse) {
             toast({
                 title: 'No email address',
@@ -136,6 +159,7 @@ export function SummaryCard({
             });
             return;
         }
+        
         setIsSendingEmail(true);
         try {
             const response = await fetch(`/api/quotes/${quoteId}/email`, {
@@ -553,20 +577,50 @@ export function SummaryCard({
                     <DialogHeader>
                         <DialogTitle>Send Quote via Email</DialogTitle>
                         <DialogDescription>
-                            Enter the recipient's email address to send this quote.
+                            Send this quote with PDF attachment
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
+                        {/* From Address */}
+                        {senderEmail && (
+                            <div className="space-y-2">
+                                <Label className="text-sm text-muted-foreground">From</Label>
+                                <div className="text-sm">
+                                    {senderEmail.fromName ? `${senderEmail.fromName} <${senderEmail.fromAddress}>` : senderEmail.fromAddress}
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* To Address */}
                         <div className="space-y-2">
-                            <Label htmlFor="email">Recipient Email</Label>
+                            <div className="flex items-center gap-2">
+                                <Label htmlFor="email">To</Label>
+                                {(() => {
+                                    const inputValue = recipientEmail.trim();
+                                    const customerEmail = selectedCustomer?.email;
+                                    const resolvedEmail = inputValue || customerEmail;
+                                    const source = inputValue ? 'Entered' : (customerEmail ? 'Customer default' : null);
+                                    
+                                    return source ? (
+                                        <Badge variant={inputValue ? 'default' : 'secondary'} className="text-xs">
+                                            {source}
+                                        </Badge>
+                                    ) : null;
+                                })()}
+                            </div>
                             <Input
                                 id="email"
                                 type="email"
-                                placeholder="customer@example.com"
+                                placeholder={selectedCustomer?.email || "customer@example.com"}
                                 value={recipientEmail}
                                 onChange={(e) => setRecipientEmail(e.target.value)}
                                 disabled={isSendingEmail}
                             />
+                            {!recipientEmail.trim() && !selectedCustomer?.email && (
+                                <p className="text-sm text-destructive">
+                                    No recipient email available. Please enter an email address.
+                                </p>
+                            )}
                         </div>
                     </div>
                     <DialogFooter>
@@ -579,7 +633,7 @@ export function SummaryCard({
                         </Button>
                         <Button
                             onClick={handleSendEmail}
-                            disabled={isSendingEmail}
+                            disabled={isSendingEmail || (!recipientEmail.trim() && !selectedCustomer?.email)}
                         >
                             {isSendingEmail ? 'Sending...' : 'Send Email'}
                         </Button>
