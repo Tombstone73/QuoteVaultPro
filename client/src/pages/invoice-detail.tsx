@@ -161,6 +161,26 @@ export default function InvoiceDetailPage() {
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
+  const [senderEmail, setSenderEmail] = useState<{ fromAddress: string; fromName: string } | null>(null);
+
+  // Fetch sender email info when dialog opens
+  useEffect(() => {
+    if (emailDialogOpen && !senderEmail) {
+      fetch('/api/email/sender', {
+        method: 'GET',
+        credentials: 'include',
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data.configured && data.fromAddress) {
+            setSenderEmail({ fromAddress: data.fromAddress, fromName: data.fromName || '' });
+          }
+        })
+        .catch(() => {
+          // Silent fail - sender info is optional
+        });
+    }
+  }, [emailDialogOpen, senderEmail]);
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const isStaffUser = !!user && user.role !== 'customer';
@@ -1114,19 +1134,52 @@ export default function InvoiceDetailPage() {
                           <DialogTitle>Send Invoice</DialogTitle>
                         </DialogHeader>
                         <div className="space-y-4">
-                          <div>
-                            <Label htmlFor="email">Recipient Email (optional)</Label>
+                          {/* From Address */}
+                          {senderEmail && (
+                            <div className="space-y-2">
+                              <Label className="text-sm text-muted-foreground">From</Label>
+                              <div className="text-sm">
+                                {senderEmail.fromName ? `${senderEmail.fromName} <${senderEmail.fromAddress}>` : senderEmail.fromAddress}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* To Address */}
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Label htmlFor="email">To</Label>
+                              {(() => {
+                                const inputValue = recipientEmail.trim();
+                                const customerEmail = selectedCustomer?.email;
+                                const resolvedEmail = inputValue || customerEmail;
+                                const source = inputValue ? 'Entered' : (customerEmail ? 'Customer default' : null);
+                                
+                                return source ? (
+                                  <Badge variant={inputValue ? 'default' : 'secondary'} className="text-xs">
+                                    {source}
+                                  </Badge>
+                                ) : null;
+                              })()}
+                            </div>
                             <Input
                               id="email"
                               type="email"
                               value={recipientEmail}
                               onChange={(e) => setRecipientEmail(e.target.value)}
-                              placeholder="Leave blank to use customer email"
+                              placeholder={selectedCustomer?.email || "customer@example.com"}
                             />
+                            {!recipientEmail.trim() && !selectedCustomer?.email && (
+                              <p className="text-sm text-destructive">
+                                No recipient email available. Please enter an email address.
+                              </p>
+                            )}
                           </div>
                         </div>
                         <DialogFooter>
-                          <Button onClick={handleSendEmail} disabled={sendInvoice.isPending}>
+                          <Button 
+                            onClick={handleSendEmail} 
+                            disabled={sendInvoice.isPending || (!recipientEmail.trim() && !selectedCustomer?.email)}
+                          >
                             {sendInvoice.isPending ? "Sending..." : "Send"}
                           </Button>
                         </DialogFooter>
