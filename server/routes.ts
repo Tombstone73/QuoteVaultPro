@@ -7238,6 +7238,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         organizationId,
         quoteId: id,
         recipientDomain: to.split('@')[1],
+        replyToSet: !!replyTo,
       });
 
       if (res.headersSent) return;
@@ -7598,6 +7599,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         organizationId,
         invoiceId: id,
         recipientDomain: to.split('@')[1],
+        replyToSet: !!replyTo,
       });
 
       if (res.headersSent) return;

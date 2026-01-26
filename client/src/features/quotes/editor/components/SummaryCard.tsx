@@ -8,7 +8,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Save, X, ArrowLeft, Ban, Mail, CheckCircle, Loader2, Download, Eye } from "lucide-react";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { Label } from "@/components/ui/label";
+import { resolveRecipientEmail } from "@/lib/emailRecipientHelper";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 import {
@@ -116,6 +118,7 @@ export function SummaryCard({
     isRequestingApproval = false,
 }: SummaryCardProps) {
     const { toast } = useToast();
+    const { user } = useAuth();
     const [showEmailDialog, setShowEmailDialog] = useState(false);
     const [recipientEmail, setRecipientEmail] = useState('');
     const [isSendingEmail, setIsSendingEmail] = useState(false);
@@ -148,10 +151,17 @@ export function SummaryCard({
     const handleSendEmail = async () => {
         if (!quoteId || isSendingEmail) return;
         
-        // Resolve recipient: input value or customer email
-        const emailToUse = recipientEmail.trim() || selectedCustomer?.email;
+        // Get selected contact from customer's contacts array
+        const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
         
-        if (!emailToUse) {
+        // Resolve recipient: input value > contact email > customer email
+        const resolved = resolveRecipientEmail({
+            toInput: recipientEmail,
+            contact: selectedContact,
+            customer: selectedCustomer,
+        });
+        
+        if (!resolved.email) {
             toast({
                 title: 'No email address',
                 description: 'Please enter a recipient email address.',
@@ -581,12 +591,22 @@ export function SummaryCard({
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
-                        {/* From Address */}
+                        {/* From Address (Read-Only) */}
                         {senderEmail && (
                             <div className="space-y-2">
-                                <Label className="text-sm text-muted-foreground">From</Label>
-                                <div className="text-sm">
+                                <Label className="text-sm text-muted-foreground">From (Configured Sender)</Label>
+                                <div className="text-sm font-medium px-3 py-2 bg-muted/50 rounded-md border">
                                     {senderEmail.fromName ? `${senderEmail.fromName} <${senderEmail.fromAddress}>` : senderEmail.fromAddress}
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* Reply-To (Read-Only, shown only for internal users with email) */}
+                        {user && user.email && ['owner', 'admin', 'manager', 'employee'].includes(user.role || '') && (
+                            <div className="space-y-2">
+                                <Label className="text-sm text-muted-foreground">Reply-To</Label>
+                                <div className="text-sm px-3 py-2 bg-muted/50 rounded-md border">
+                                    {user.email}
                                 </div>
                             </div>
                         )}
@@ -596,14 +616,25 @@ export function SummaryCard({
                             <div className="flex items-center gap-2">
                                 <Label htmlFor="email">To</Label>
                                 {(() => {
-                                    const inputValue = recipientEmail.trim();
-                                    const customerEmail = selectedCustomer?.email;
-                                    const resolvedEmail = inputValue || customerEmail;
-                                    const source = inputValue ? 'Entered' : (customerEmail ? 'Customer default' : null);
+                                    const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
+                                    const resolved = resolveRecipientEmail({
+                                        toInput: recipientEmail,
+                                        contact: selectedContact,
+                                        customer: selectedCustomer,
+                                    });
                                     
-                                    return source ? (
-                                        <Badge variant={inputValue ? 'default' : 'secondary'} className="text-xs">
-                                            {source}
+                                    const sourceLabels = {
+                                        entered: 'Entered',
+                                        contact: 'Contact',
+                                        customer: 'Customer',
+                                        missing: null,
+                                    };
+                                    
+                                    const sourceLabel = sourceLabels[resolved.source];
+                                    
+                                    return sourceLabel ? (
+                                        <Badge variant={resolved.source === 'entered' ? 'default' : 'secondary'} className="text-xs">
+                                            {sourceLabel}
                                         </Badge>
                                     ) : null;
                                 })()}
@@ -611,16 +642,32 @@ export function SummaryCard({
                             <Input
                                 id="email"
                                 type="email"
-                                placeholder={selectedCustomer?.email || "customer@example.com"}
+                                placeholder={(() => {
+                                    const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
+                                    const resolved = resolveRecipientEmail({
+                                        toInput: '',
+                                        contact: selectedContact,
+                                        customer: selectedCustomer,
+                                    });
+                                    return resolved.email || "customer@example.com";
+                                })()}
                                 value={recipientEmail}
                                 onChange={(e) => setRecipientEmail(e.target.value)}
                                 disabled={isSendingEmail}
                             />
-                            {!recipientEmail.trim() && !selectedCustomer?.email && (
-                                <p className="text-sm text-destructive">
-                                    No recipient email available. Please enter an email address.
-                                </p>
-                            )}
+                            {(() => {
+                                const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
+                                const resolved = resolveRecipientEmail({
+                                    toInput: recipientEmail,
+                                    contact: selectedContact,
+                                    customer: selectedCustomer,
+                                });
+                                return resolved.source === 'missing' ? (
+                                    <p className="text-sm text-destructive">
+                                        No recipient email available. Please enter an email address.
+                                    </p>
+                                ) : null;
+                            })()}
                         </div>
                     </div>
                     <DialogFooter>
@@ -633,7 +680,15 @@ export function SummaryCard({
                         </Button>
                         <Button
                             onClick={handleSendEmail}
-                            disabled={isSendingEmail || (!recipientEmail.trim() && !selectedCustomer?.email)}
+                            disabled={(() => {
+                                const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
+                                const resolved = resolveRecipientEmail({
+                                    toInput: recipientEmail,
+                                    contact: selectedContact,
+                                    customer: selectedCustomer,
+                                });
+                                return isSendingEmail || resolved.source === 'missing';
+                            })()}
                         >
                             {isSendingEmail ? 'Sending...' : 'Send Email'}
                         </Button>
