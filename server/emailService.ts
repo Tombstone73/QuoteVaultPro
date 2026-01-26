@@ -379,7 +379,16 @@ class EmailService {
   /**
    * Send quote email to recipient
    */
-  async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>, replyTo?: string): Promise<void> {
+  async sendQuoteEmail(
+    organizationId: string, 
+    quoteId: string, 
+    recipientEmail: string, 
+    userId?: string, 
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer }>, 
+    replyTo?: string,
+    customSubject?: string,
+    customBody?: string
+  ): Promise<void> {
     // Operational kill switch: disable email during provider outages, bounce storms, or template issues
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendQuoteEmail aborted', { organizationId, quoteId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -396,8 +405,8 @@ class EmailService {
       throw new Error("Quote not found");
     }
 
-    const subject = `Quote #${quote.quoteNumber} from ${config.fromName}`;
-    const htmlContent = this.generateQuoteEmailHTML(quote);
+    const subject = customSubject || `Quote #${quote.quoteNumber} from ${config.fromName}`;
+    const htmlContent = customBody || this.generateQuoteEmailHTML(quote);
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {
@@ -457,7 +466,6 @@ class EmailService {
         // Reply-To: For now, always set to From (deterministic behavior)
         replyTo: options.replyTo || fromValue,
       };
-      };
       
       // Add attachments if provided
       if (options.attachments && options.attachments.length > 0) {
@@ -476,7 +484,15 @@ class EmailService {
   /**
    * Send invoice email to recipient with PDF attachment
    */
-  async sendInvoiceEmail(organizationId: string, invoiceId: string, recipientEmail: string, attachments?: Array<{ filename: string; contentType: string; content: Buffer }>, replyTo?: string): Promise<void> {
+  async sendInvoiceEmail(
+    organizationId: string, 
+    invoiceId: string, 
+    recipientEmail: string, 
+    attachments?: Array<{ filename: string; contentType: string; content: Buffer }>, 
+    replyTo?: string,
+    customSubject?: string,
+    customBody?: string
+  ): Promise<void> {
     // Operational kill switch
     if (!isEmailEnabled()) {
       logger.warn('Email disabled - sendInvoiceEmail aborted', { organizationId, invoiceId, recipientEmail, feature: 'FEATURE_EMAIL_ENABLED' });
@@ -496,8 +512,8 @@ class EmailService {
 
     const invoice = rel.invoice;
 
-    const subject = `Invoice #${invoice.invoiceNumber} from ${config.fromName}`;
-    const htmlContent = this.generateInvoiceEmailHTML(invoice);
+    const subject = customSubject || `Invoice #${invoice.invoiceNumber} from ${config.fromName}`;
+    const htmlContent = customBody || this.generateInvoiceEmailHTML(invoice);
 
     // Use Gmail API for Gmail provider
     if (config.provider === 'gmail') {

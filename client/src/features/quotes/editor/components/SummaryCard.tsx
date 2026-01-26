@@ -11,6 +11,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
+import { renderTemplate, type EmailTemplates } from "@shared/emailTemplates";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 import {
     Tooltip,
@@ -120,8 +124,41 @@ export function SummaryCard({
     const { user } = useAuth();
     const [showEmailDialog, setShowEmailDialog] = useState(false);
     const [recipientEmail, setRecipientEmail] = useState('');
+    const [emailSubject, setEmailSubject] = useState('');
+    const [emailBody, setEmailBody] = useState('');
     const [isSendingEmail, setIsSendingEmail] = useState(false);
     const [senderEmail, setSenderEmail] = useState<{ fromAddress: string; fromName: string } | null>(null);
+
+    // Fetch email templates
+    const { data: templates } = useQuery<EmailTemplates>({
+        queryKey: ["/api/settings/email-templates"],
+        queryFn: async () => {
+            const response = await apiRequest("GET", "/api/settings/email-templates");
+            return await response.json();
+        },
+        staleTime: 5 * 60 * 1000, // 5 minutes
+    });
+
+    // Prefill subject/body when dialog opens
+    useEffect(() => {
+        if (showEmailDialog && templates && selectedCustomer) {
+            const context = {
+                "org.name": "QuoteVaultPro", // TODO: fetch from org settings
+                "customer.name": selectedCustomer.companyName || "",
+                "customer.company": selectedCustomer.companyName || "",
+                "customer.email": selectedCustomer.email || "",
+                "quote.number": quoteNumber?.toString() || "",
+                "quote.total": grandTotal.toFixed(2),
+                "quote.date": new Date().toLocaleDateString(),
+            };
+            
+            const renderedSubject = renderTemplate(templates.quote.subject, context);
+            const renderedBody = renderTemplate(templates.quote.body, context);
+            
+            setEmailSubject(renderedSubject);
+            setEmailBody(renderedBody);
+        }
+    }, [showEmailDialog, templates, selectedCustomer, quoteNumber, grandTotal]);
 
     // Fetch sender email info when dialog opens
     useEffect(() => {
@@ -172,7 +209,11 @@ export function SummaryCard({
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ to: resolvedEmail }),
+                body: JSON.stringify({ 
+                    to: resolvedEmail,
+                    subject: emailSubject || undefined,
+                    body: emailBody || undefined,
+                }),
             });
             const json = await response.json().catch(() => ({}));
             if (!response.ok) {
@@ -184,6 +225,8 @@ export function SummaryCard({
             });
             setShowEmailDialog(false);
             setRecipientEmail('');
+            setEmailSubject('');
+            setEmailBody('');
         } catch (err: any) {
             toast({
                 title: 'Could not send email',
@@ -661,6 +704,36 @@ export function SummaryCard({
                                     </p>
                                 ) : null;
                             })()}
+                        </div>
+
+                        {/* Subject */}
+                        <div className="space-y-2">
+                            <Label htmlFor="subject">Subject</Label>
+                            <Input
+                                id="subject"
+                                type="text"
+                                value={emailSubject}
+                                onChange={(e) => setEmailSubject(e.target.value)}
+                                disabled={isSendingEmail}
+                                placeholder="Quote subject..."
+                            />
+                        </div>
+
+                        {/* Body */}
+                        <div className="space-y-2">
+                            <Label htmlFor="body">Message</Label>
+                            <Textarea
+                                id="body"
+                                value={emailBody}
+                                onChange={(e) => setEmailBody(e.target.value)}
+                                disabled={isSendingEmail}
+                                placeholder="Email body..."
+                                rows={8}
+                                className="font-sans"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                HTML is supported. Edit as needed before sending.
+                            </p>
                         </div>
                     </div>
                     <DialogFooter>

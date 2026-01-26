@@ -1127,6 +1127,104 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get email templates (from settings.preferences.emailTemplates)
+  app.get('/api/settings/email-templates', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        return res.status(404).json({ message: "Organization not found" });
+      }
+
+      // Extract email templates from settings.preferences.emailTemplates
+      const preferences = (org.settings as any)?.preferences || {};
+      const templates = preferences.emailTemplates || {};
+
+      // Import defaults
+      const { DEFAULT_EMAIL_TEMPLATES } = await import('@shared/emailTemplates');
+
+      // Return stored templates or defaults
+      res.json({
+        quote: templates.quote || DEFAULT_EMAIL_TEMPLATES.quote,
+        invoice: templates.invoice || DEFAULT_EMAIL_TEMPLATES.invoice,
+      });
+    } catch (error) {
+      console.error("Error fetching email templates:", error);
+      res.status(500).json({ message: "Failed to fetch email templates" });
+    }
+  });
+
+  // Update email templates (in settings.preferences.emailTemplates)
+  app.put('/api/settings/email-templates', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+
+      // Only allow owners/admins to update templates
+      const userRole = req.user?.role || 'customer';
+      if (!['owner', 'admin'].includes(userRole)) {
+        return res.status(403).json({ message: "Only owners and admins can update email templates" });
+      }
+
+      const { validateEmailTemplates } = await import('@shared/emailTemplates');
+      const validation = validateEmailTemplates(req.body);
+      
+      if (!validation.valid) {
+        return res.status(400).json({ 
+          message: "Invalid template format",
+          errors: validation.errors 
+        });
+      }
+
+      // Get current settings
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org) {
+        return res.status(404).json({ message: "Organization not found" });
+      }
+
+      // Merge email templates into existing preferences
+      const currentSettings = (org.settings || {}) as any;
+      const currentPreferences = currentSettings.preferences || {};
+      const updatedPreferences = {
+        ...currentPreferences,
+        emailTemplates: req.body,
+      };
+
+      // Update organization settings
+      await db
+        .update(organizations)
+        .set({
+          settings: {
+            ...currentSettings,
+            preferences: updatedPreferences,
+          } as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, organizationId));
+
+      res.json({ success: true, templates: req.body });
+    } catch (error) {
+      console.error("Error updating email templates:", error);
+      res.status(500).json({ message: "Failed to update email templates" });
+    }
+  });
+
   // Safely patch ONLY the inventory policy preferences (does not overwrite other keys)
   app.patch('/api/organization/preferences/inventory-policy', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -7067,7 +7165,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { id } = req.params;
-      let { to } = req.body;
+      let { to, subject, body } = req.body;
 
       // Verify user has access to this quote
       const userId = getUserId(req.user);
@@ -7229,7 +7327,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await Promise.race([
-        emailService.sendQuoteEmail(organizationId, id, to, isInternalUser ? undefined : userId, attachments, replyTo),
+        emailService.sendQuoteEmail(organizationId, id, to, isInternalUser ? undefined : userId, attachments, replyTo, subject, body),
         timeoutPromise
       ]);
 
@@ -7459,7 +7557,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { id } = req.params;
-      let { to } = req.body;
+      let { to, subject, body } = req.body;
 
       // Get invoice with relations
       const rel = await getInvoiceWithRelations(id);
@@ -7590,7 +7688,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await Promise.race([
-        emailService.sendInvoiceEmail(organizationId, id, to, attachments, replyTo),
+        emailService.sendInvoiceEmail(organizationId, id, to, attachments, replyTo, subject, body),
         timeoutPromise
       ]);
 
