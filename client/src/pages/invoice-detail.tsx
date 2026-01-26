@@ -720,23 +720,20 @@ export default function InvoiceDetailPage() {
   const handleSendEmail = async () => {
     if (!invoiceId) return;
     
-    // Get selected contact from customer's contacts array
-    const selectedContact = selectedCustomer?.contacts?.find(c => c.id === (contactIdDraft || linkedOrderContactId));
-    
     // Resolve recipient: input value > contact email > customer email
-    const resolved = resolveRecipientEmail({
-      toInput: recipientEmail,
-      contact: selectedContact,
-      customer: selectedCustomer,
-    });
+    const trimmedTo = (recipientEmail || "").trim();
+    const selectedContact = selectedCustomer?.contacts?.find(c => c.id === (contactIdDraft || linkedOrderContactId));
+    const contactEmail = (selectedContact?.email || "").trim();
+    const customerEmail = (selectedCustomer?.email || "").trim();
+    const resolvedEmail = trimmedTo || contactEmail || customerEmail;
     
-    if (!resolved.email) {
+    if (!resolvedEmail) {
       toast({ title: "Error", description: "No recipient email available", variant: "destructive" });
       return;
     }
     
     try {
-      await sendInvoice.mutateAsync({ id: invoiceId, toEmail: resolved.email });
+      await sendInvoice.mutateAsync({ id: invoiceId, toEmail: resolvedEmail });
       toast({ title: "Success", description: "Invoice sent successfully" });
       setEmailDialogOpen(false);
       setRecipientEmail("");
@@ -1175,24 +1172,24 @@ export default function InvoiceDetailPage() {
                             <div className="flex items-center gap-2">
                               <Label htmlFor="email">To</Label>
                               {(() => {
+                                const trimmedTo = (recipientEmail || "").trim();
                                 const selectedContact = selectedCustomer?.contacts?.find(c => c.id === (contactIdDraft || linkedOrderContactId));
-                                const resolved = resolveRecipientEmail({
-                                  toInput: recipientEmail,
-                                  contact: selectedContact,
-                                  customer: selectedCustomer,
-                                });
+                                const contactEmail = (selectedContact?.email || "").trim();
+                                const customerEmail = (selectedCustomer?.email || "").trim();
                                 
-                                const sourceLabels = {
-                                  entered: 'Entered',
-                                  contact: 'Contact',
-                                  customer: 'Customer',
-                                  missing: null,
-                                };
-                                
-                                const sourceLabel = sourceLabels[resolved.source];
+                                let sourceLabel = null;
+                                let isEntered = false;
+                                if (trimmedTo) {
+                                  sourceLabel = 'Entered';
+                                  isEntered = true;
+                                } else if (contactEmail) {
+                                  sourceLabel = 'Contact';
+                                } else if (customerEmail) {
+                                  sourceLabel = 'Customer';
+                                }
                                 
                                 return sourceLabel ? (
-                                  <Badge variant={resolved.source === 'entered' ? 'default' : 'secondary'} className="text-xs">
+                                  <Badge variant={isEntered ? 'default' : 'secondary'} className="text-xs">
                                     {sourceLabel}
                                   </Badge>
                                 ) : null;
@@ -1205,22 +1202,19 @@ export default function InvoiceDetailPage() {
                               onChange={(e) => setRecipientEmail(e.target.value)}
                               placeholder={(() => {
                                 const selectedContact = selectedCustomer?.contacts?.find(c => c.id === (contactIdDraft || linkedOrderContactId));
-                                const resolved = resolveRecipientEmail({
-                                  toInput: '',
-                                  contact: selectedContact,
-                                  customer: selectedCustomer,
-                                });
-                                return resolved.email || "customer@example.com";
+                                const contactEmail = (selectedContact?.email || "").trim();
+                                const customerEmail = (selectedCustomer?.email || "").trim();
+                                return contactEmail || customerEmail || "customer@example.com";
                               })()}
                             />
                             {(() => {
+                              const trimmedTo = (recipientEmail || "").trim();
                               const selectedContact = selectedCustomer?.contacts?.find(c => c.id === (contactIdDraft || linkedOrderContactId));
-                              const resolved = resolveRecipientEmail({
-                                toInput: recipientEmail,
-                                contact: selectedContact,
-                                customer: selectedCustomer,
-                              });
-                              return resolved.source === 'missing' ? (
+                              const contactEmail = (selectedContact?.email || "").trim();
+                              const customerEmail = (selectedCustomer?.email || "").trim();
+                              const hasEmail = trimmedTo || contactEmail || customerEmail;
+                              
+                              return !hasEmail ? (
                                 <p className="text-sm text-destructive">
                                   No recipient email available. Please enter an email address.
                                 </p>
@@ -1232,13 +1226,12 @@ export default function InvoiceDetailPage() {
                           <Button 
                             onClick={handleSendEmail} 
                             disabled={(() => {
+                              const trimmedTo = (recipientEmail || "").trim();
                               const selectedContact = selectedCustomer?.contacts?.find(c => c.id === (contactIdDraft || linkedOrderContactId));
-                              const resolved = resolveRecipientEmail({
-                                toInput: recipientEmail,
-                                contact: selectedContact,
-                                customer: selectedCustomer,
-                              });
-                              return sendInvoice.isPending || resolved.source === 'missing';
+                              const contactEmail = (selectedContact?.email || "").trim();
+                              const customerEmail = (selectedCustomer?.email || "").trim();
+                              const hasEmail = trimmedTo || contactEmail || customerEmail;
+                              return sendInvoice.isPending || !hasEmail;
                             })()}
                           >
                             {sendInvoice.isPending ? "Sending..." : "Send"}

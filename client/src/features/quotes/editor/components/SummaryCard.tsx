@@ -10,7 +10,6 @@ import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { Label } from "@/components/ui/label";
-import { resolveRecipientEmail } from "@/lib/emailRecipientHelper";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { QuoteWorkflowState } from "@shared/quoteWorkflow";
 import {
@@ -151,17 +150,14 @@ export function SummaryCard({
     const handleSendEmail = async () => {
         if (!quoteId || isSendingEmail) return;
         
-        // Get selected contact from customer's contacts array
-        const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
-        
         // Resolve recipient: input value > contact email > customer email
-        const resolved = resolveRecipientEmail({
-            toInput: recipientEmail,
-            contact: selectedContact,
-            customer: selectedCustomer,
-        });
+        const trimmedTo = (recipientEmail || "").trim();
+        const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
+        const contactEmail = (selectedContact?.email || "").trim();
+        const customerEmail = (selectedCustomer?.email || "").trim();
+        const resolvedEmail = trimmedTo || contactEmail || customerEmail;
         
-        if (!resolved.email) {
+        if (!resolvedEmail) {
             toast({
                 title: 'No email address',
                 description: 'Please enter a recipient email address.',
@@ -176,7 +172,7 @@ export function SummaryCard({
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ to: emailToUse }),
+                body: JSON.stringify({ to: resolvedEmail }),
             });
             const json = await response.json().catch(() => ({}));
             if (!response.ok) {
@@ -184,7 +180,7 @@ export function SummaryCard({
             }
             toast({
                 title: 'Email sent',
-                description: `Quote sent to ${emailToUse}`,
+                description: `Quote sent to ${resolvedEmail}`,
             });
             setShowEmailDialog(false);
             setRecipientEmail('');
@@ -616,24 +612,24 @@ export function SummaryCard({
                             <div className="flex items-center gap-2">
                                 <Label htmlFor="email">To</Label>
                                 {(() => {
+                                    const trimmedTo = (recipientEmail || "").trim();
                                     const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
-                                    const resolved = resolveRecipientEmail({
-                                        toInput: recipientEmail,
-                                        contact: selectedContact,
-                                        customer: selectedCustomer,
-                                    });
+                                    const contactEmail = (selectedContact?.email || "").trim();
+                                    const customerEmail = (selectedCustomer?.email || "").trim();
                                     
-                                    const sourceLabels = {
-                                        entered: 'Entered',
-                                        contact: 'Contact',
-                                        customer: 'Customer',
-                                        missing: null,
-                                    };
-                                    
-                                    const sourceLabel = sourceLabels[resolved.source];
+                                    let sourceLabel = null;
+                                    let isEntered = false;
+                                    if (trimmedTo) {
+                                        sourceLabel = 'Entered';
+                                        isEntered = true;
+                                    } else if (contactEmail) {
+                                        sourceLabel = 'Contact';
+                                    } else if (customerEmail) {
+                                        sourceLabel = 'Customer';
+                                    }
                                     
                                     return sourceLabel ? (
-                                        <Badge variant={resolved.source === 'entered' ? 'default' : 'secondary'} className="text-xs">
+                                        <Badge variant={isEntered ? 'default' : 'secondary'} className="text-xs">
                                             {sourceLabel}
                                         </Badge>
                                     ) : null;
@@ -644,25 +640,22 @@ export function SummaryCard({
                                 type="email"
                                 placeholder={(() => {
                                     const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
-                                    const resolved = resolveRecipientEmail({
-                                        toInput: '',
-                                        contact: selectedContact,
-                                        customer: selectedCustomer,
-                                    });
-                                    return resolved.email || "customer@example.com";
+                                    const contactEmail = (selectedContact?.email || "").trim();
+                                    const customerEmail = (selectedCustomer?.email || "").trim();
+                                    return contactEmail || customerEmail || "customer@example.com";
                                 })()}
                                 value={recipientEmail}
                                 onChange={(e) => setRecipientEmail(e.target.value)}
                                 disabled={isSendingEmail}
                             />
                             {(() => {
+                                const trimmedTo = (recipientEmail || "").trim();
                                 const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
-                                const resolved = resolveRecipientEmail({
-                                    toInput: recipientEmail,
-                                    contact: selectedContact,
-                                    customer: selectedCustomer,
-                                });
-                                return resolved.source === 'missing' ? (
+                                const contactEmail = (selectedContact?.email || "").trim();
+                                const customerEmail = (selectedCustomer?.email || "").trim();
+                                const hasEmail = trimmedTo || contactEmail || customerEmail;
+                                
+                                return !hasEmail ? (
                                     <p className="text-sm text-destructive">
                                         No recipient email available. Please enter an email address.
                                     </p>
@@ -681,13 +674,12 @@ export function SummaryCard({
                         <Button
                             onClick={handleSendEmail}
                             disabled={(() => {
+                                const trimmedTo = (recipientEmail || "").trim();
                                 const selectedContact = selectedCustomer?.contacts?.find(c => c.id === selectedContactId);
-                                const resolved = resolveRecipientEmail({
-                                    toInput: recipientEmail,
-                                    contact: selectedContact,
-                                    customer: selectedCustomer,
-                                });
-                                return isSendingEmail || resolved.source === 'missing';
+                                const contactEmail = (selectedContact?.email || "").trim();
+                                const customerEmail = (selectedCustomer?.email || "").trim();
+                                const hasEmail = trimmedTo || contactEmail || customerEmail;
+                                return isSendingEmail || !hasEmail;
                             })()}
                         >
                             {isSendingEmail ? 'Sending...' : 'Send Email'}
