@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -16,10 +16,12 @@ import { SubjectVariableInput } from "@/components/email/SubjectVariableInput";
 
 export function EmailTemplatesSettings() {
   const { toast } = useToast();
-  const [quoteSubject, setQuoteSubject] = useState("");
-  const [quoteBody, setQuoteBody] = useState("");
-  const [invoiceSubject, setInvoiceSubject] = useState("");
-  const [invoiceBody, setInvoiceBody] = useState("");
+  // Initialize with defaults immediately to avoid empty state
+  const [quoteSubject, setQuoteSubject] = useState(DEFAULT_EMAIL_TEMPLATES.quote.subject);
+  const [quoteBody, setQuoteBody] = useState(DEFAULT_EMAIL_TEMPLATES.quote.body);
+  const [invoiceSubject, setInvoiceSubject] = useState(DEFAULT_EMAIL_TEMPLATES.invoice.subject);
+  const [invoiceBody, setInvoiceBody] = useState(DEFAULT_EMAIL_TEMPLATES.invoice.body);
+  const didInitialize = useRef(false);
   
   // Convert TEMPLATE_VARIABLES to array format for components
   const allowedTokens = Object.entries(TEMPLATE_VARIABLES).map(([token, label]) => ({
@@ -33,16 +35,20 @@ export function EmailTemplatesSettings() {
     queryFn: async () => {
       const response = await apiRequest("GET", "/api/settings/email-templates");
       const data = await response.json();
-      
-      // Initialize form state
-      setQuoteSubject(data.quote.subject);
-      setQuoteBody(data.quote.body);
-      setInvoiceSubject(data.invoice.subject);
-      setInvoiceBody(data.invoice.body);
-      
       return data;
     },
   });
+  
+  // Initialize state from API data once
+  useEffect(() => {
+    if (templates && !didInitialize.current) {
+      setQuoteSubject(templates.quote.subject);
+      setQuoteBody(templates.quote.body);
+      setInvoiceSubject(templates.invoice.subject);
+      setInvoiceBody(templates.invoice.body);
+      didInitialize.current = true;
+    }
+  }, [templates]);
 
   // Save templates mutation
   const saveMutation = useMutation({
@@ -109,7 +115,7 @@ export function EmailTemplatesSettings() {
       <CardHeader>
         <CardTitle>Email Templates</CardTitle>
         <CardDescription>
-          Customize subject and body templates for quote and invoice emails. Use variables like {"{{quote.number}}"} or {"{{customer.name}}"}.
+          Customize subject and body templates for quote and invoice emails. Type your email normally and use Insert Variable to add fields like {"{{quote.number}}"} or {"{{customer.name}}"}.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">

@@ -1008,9 +1008,6 @@ export function EmailSettingsTab() {
           </CardContent>
         </Card>
       )}
-
-      {/* Email Templates Section */}
-      <EmailTemplatesSettings />
     </div>
   );
 }
