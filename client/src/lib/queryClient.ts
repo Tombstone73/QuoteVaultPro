@@ -1,4 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { getApiUrl, parseJsonResponse } from "./apiConfig";
 
 interface ApiRequestInit extends RequestInit {
   timeout?: number;
@@ -43,7 +44,7 @@ export async function apiRequest(
   }, init?.timeout || 30000); // Default 30s timeout, can be overridden
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch(getApiUrl(url), {
       method,
       credentials: "include",
       ...init,
@@ -72,7 +73,7 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
+    const res = await fetch(getApiUrl(queryKey.join("/") as string), {
       credentials: "include",
     });
 

@@ -13,6 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { getApiUrl } from "@/lib/apiConfig";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ROUTES } from "@/config/routes";
 import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
@@ -113,7 +114,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
 
   const handleLogout = async () => {
     try {
-      await fetch("/api/auth/logout", {
+      await fetch(getApiUrl("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
       });

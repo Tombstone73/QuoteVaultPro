@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Zap, Lock } from "lucide-react";
 import { useNavigate, Link } from "react-router-dom";
+import { getApiUrl, parseJsonResponse } from "@/lib/apiConfig";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -16,8 +17,8 @@ export default function Login() {
 
   useEffect(() => {
     // Fetch auth provider config
-    fetch("/api/auth/config", { credentials: "include" })
-      .then((res) => res.json())
+    fetch(getApiUrl("/api/auth/config"), { credentials: "include" })
+      .then((res) => parseJsonResponse(res))
       .then((data) => setAuthProvider(data.provider))
       .catch(() => setAuthProvider(null));
   }, []);
@@ -26,7 +27,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/dev-login", {
+      const response = await fetch(getApiUrl("/api/auth/dev-login"), {
         method: "POST",
         credentials: "include",
       });
@@ -35,7 +36,7 @@ export default function Login() {
         throw new Error("Dev login failed");
       }
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (data.success) {
         toast({
@@ -81,14 +82,14 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch(getApiUrl("/api/auth/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
         credentials: "include",
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (response.ok && data.success) {
         toast({
