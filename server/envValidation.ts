@@ -54,17 +54,29 @@ const TIER1_CHECKS: EnvCheck[] = [
       if (nodeEnv === "production") {
         // In production, AUTH_PROVIDER must be set
         if (!value) {
-          return 'AUTH_PROVIDER must be set in production. Use "standard" for Railway or "replit" for Replit platform.';
+          return 'AUTH_PROVIDER must be set in production. Valid values: "magiclink" (passwordless), "standard" (email/password), "replit" (Replit platform only)';
         }
         
         const authProvider = value.toLowerCase();
         
-        // Reject localAuth in production (security risk)
-        if (authProvider === "local") {
-          return 'AUTH_PROVIDER="local" is NOT allowed in production (insecure auto-login). Use AUTH_PROVIDER="standard" for Railway.';
+        // Reject dev in production (security risk)
+        if (authProvider === "dev") {
+          return 'AUTH_PROVIDER="dev" is NOT allowed in production (instant login with no authentication). Use AUTH_PROVIDER="magiclink" or "standard" instead.';
         }
         
-        // Validate standard auth (recommended for Railway)
+        // Reject localAuth in production (security risk)
+        if (authProvider === "local") {
+          return 'AUTH_PROVIDER="local" is NOT allowed in production (insecure auto-login). Use AUTH_PROVIDER="magiclink" or "standard" instead.';
+        }
+        
+        // Validate magiclink auth (passwordless, recommended for printershero.com)
+        if (authProvider === "magiclink") {
+          // magiclink requires DATABASE_URL and SESSION_SECRET (already validated above)
+          // PUBLIC_APP_URL is optional (defaults to "quotevaultpro" in token issuer)
+          return null; // Valid for production
+        }
+        
+        // Validate standard auth (email/password, recommended for Railway)
         if (authProvider === "standard") {
           // standardAuth only requires DATABASE_URL and SESSION_SECRET (already validated above)
           return null; // Valid for production
@@ -73,13 +85,13 @@ const TIER1_CHECKS: EnvCheck[] = [
         // Validate replit auth (requires DEPLOY_TARGET=replit)
         if (authProvider === "replit") {
           if (deployTarget !== "replit") {
-            return 'AUTH_PROVIDER="replit" requires DEPLOY_TARGET="replit". Replit OIDC only works on Replit platform. For Railway, use AUTH_PROVIDER="standard".';
+            return 'AUTH_PROVIDER="replit" requires DEPLOY_TARGET="replit". Replit OIDC only works on Replit platform. For Railway, use AUTH_PROVIDER="standard" or "magiclink".';
           }
           return null; // Valid for Replit deployment
         }
         
         // Unknown AUTH_PROVIDER value
-        return `AUTH_PROVIDER="${value}" is not recognized. Valid values: "standard" (Railway), "replit" (Replit platform only)`;
+        return `AUTH_PROVIDER="${value}" is not recognized. Valid values: "magiclink" (passwordless), "standard" (email/password), "replit" (Replit platform only). Note: "dev" is only allowed in development.`;
       }
       
       return null; // Development: any provider allowed
