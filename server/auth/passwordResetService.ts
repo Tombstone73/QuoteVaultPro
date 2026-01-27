@@ -17,7 +17,7 @@
 import crypto from 'crypto';
 import { db } from '../db';
 import { users, passwordResetTokens, authIdentities, userOrganizations } from '@shared/schema';
-import { eq, and, sql, gt } from 'drizzle-orm';
+import { eq, and, sql, gt, isNull } from 'drizzle-orm';
 import { hashPassword } from './passwordUtils';
 import { emailService } from '../emailService';
 
@@ -187,7 +187,7 @@ export async function resetPasswordWithToken(
       .where(
         and(
           eq(passwordResetTokens.tokenHash, tokenHash),
-          eq(passwordResetTokens.usedAt, null), // Not used
+          isNull(passwordResetTokens.usedAt), // Not used
           gt(passwordResetTokens.expiresAt, new Date()) // Not expired
         )
       )
