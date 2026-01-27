@@ -26,10 +26,12 @@ import type { Express, RequestHandler } from "express";
 import connectPg from "connect-pg-simple";
 import { Strategy as LocalStrategy } from "passport-local";
 import { db } from "../db";
-import { users, userOrganizations } from "@shared/schema";
-import { eq, sql } from "drizzle-orm";
+import { users, userOrganizations, authIdentities } from "@shared/schema";
+import { eq, sql, and } from "drizzle-orm";
 import { verifyPassword } from "./passwordUtils";
 import { authRateLimit } from "../middleware/rateLimiting";
+import { requestPasswordReset, resetPasswordWithToken } from "./passwordResetService";
+import { validatePasswordStrength } from "./passwordUtils";
 
 const DEFAULT_ORGANIZATION_ID = "org_titan_001";
 
@@ -111,24 +113,48 @@ export async function setupAuth(app: Express) {
             return done(null, false, { message: "Invalid email or password" });
           }
 
-          // Check if user has password set (null for OAuth-only users)
-          if (!user.passwordHash) {
+          // Check if user has at least one org membership (multi-tenant safety)
+          const memberships = await db
+            .select()
+            .from(userOrganizations)
+            .where(eq(userOrganizations.userId, user.id))
+            .limit(1);
+
+          if (memberships.length === 0) {
             return done(null, false, {
-              message: "Password not set for this user. Please use OAuth login or contact admin to set a password.",
+              message: "User has no organization memberships. Please contact support.",
+            });
+          }
+
+          // Lookup password identity in auth_identities
+          const identityResult = await db
+            .select()
+            .from(authIdentities)
+            .where(
+              and(
+                eq(authIdentities.userId, user.id),
+                eq(authIdentities.provider, 'password')
+              )
+            )
+            .limit(1);
+
+          const passwordIdentity = identityResult[0];
+
+          if (!passwordIdentity || !passwordIdentity.passwordHash) {
+            return done(null, false, {
+              message: "Password not set. Use 'Forgot password' to set it.",
             });
           }
 
           // Verify password with bcrypt
-          const isValidPassword = await verifyPassword(password, user.passwordHash);
+          const isValidPassword = await verifyPassword(password, passwordIdentity.passwordHash);
 
           if (!isValidPassword) {
             return done(null, false, { message: "Invalid email or password" });
           }
 
-          // Password verified successfully
-          // Return user without passwordHash
-          const { passwordHash: _, ...safeUser } = user;
-          return done(null, safeUser);
+          // Password verified successfully - return user profile
+          return done(null, user);
         } catch (error: any) {
           console.error("[standardAuth] Login error:", error.message);
           return done(error);
@@ -148,9 +174,8 @@ export async function setupAuth(app: Express) {
         return cb(new Error("User not found"));
       }
 
-      // Never include passwordHash in session
-      const { passwordHash: _, ...safeUser } = user;
-      cb(null, safeUser);
+      // Return user profile (no sensitive fields in users table)
+      cb(null, user);
     } catch (error: any) {
       console.error("[standardAuth] Deserialize error:", error.message);
       cb(error);
@@ -257,11 +282,126 @@ export async function setupAuth(app: Express) {
     });
   });
 
+  /**
+   * POST /api/auth/forgot-password
+   * 
+   * Request password reset email
+   * Body: { email: string }
+   * Response: { success: true, message: string }
+   * 
+   * SECURITY: Always returns success to prevent email enumeration
+   */
+  app.post("/api/auth/forgot-password", authRateLimit, async (req, res) => {
+    const { email } = req.body;
+
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    // Always returns success (no enumeration)
+    await requestPasswordReset(email);
+
+    res.json({
+      success: true,
+      message: "If an account exists with that email, a password reset link has been sent.",
+    });
+  });
+
+  /**
+   * POST /api/auth/reset-password
+   * 
+   * Reset password using token from email
+   * Body: { token: string, newPassword: string }
+   * Response: { success: true } or { success: false, message: string }
+   * 
+   * OPTIONAL: Auto-login user after successful reset
+   */
+  app.post("/api/auth/reset-password", authRateLimit, async (req, res) => {
+    const { token, newPassword } = req.body;
+
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: "Reset token is required",
+      });
+    }
+
+    if (!newPassword || typeof newPassword !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: "New password is required",
+      });
+    }
+
+    // Validate password strength
+    const validation = validatePasswordStrength(newPassword);
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+      });
+    }
+
+    // Reset password
+    const result = await resetPasswordWithToken(token, newPassword);
+
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.message || "Failed to reset password",
+      });
+    }
+
+    // Auto-login user after successful reset (optional but recommended UX)
+    if (result.userId) {
+      try {
+        const userResult = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, result.userId))
+          .limit(1);
+
+        const user = userResult[0];
+
+        if (user) {
+          // Create session
+          const { passwordHash: _, ...safeUser } = user;
+          
+          await new Promise<void>((resolve, reject) => {
+            req.login(safeUser, (err) => {
+              if (err) reject(err);
+              else resolve();
+            });
+          });
+
+          return res.json({
+            success: true,
+            message: "Password reset successfully. You are now logged in.",
+            data: { user: safeUser },
+          });
+        }
+      } catch (loginError: any) {
+        console.error("[standardAuth] Auto-login after reset failed:", loginError.message);
+        // Still return success for password reset (login can be done manually)
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Password reset successfully. You can now log in with your new password.",
+    });
+  });
+
   console.log("[standardAuth] Auth endpoints registered:");
   console.log("  POST /api/auth/login");
   console.log("  POST /api/auth/logout");
   console.log("  GET /api/auth/me");
   console.log("  GET /api/auth/config");
+  console.log("  POST /api/auth/forgot-password");
+  console.log("  POST /api/auth/reset-password");
 }
 
 /**

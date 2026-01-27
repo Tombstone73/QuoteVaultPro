@@ -10,6 +10,8 @@ import { ThemeProvider } from "@/hooks/useTheme";
 import { ROUTES } from "@/config/routes";
 import Landing from "@/pages/landing";
 import Login from "@/pages/login";
+import ForgotPassword from "@/pages/forgot-password";
+import ResetPassword from "@/pages/reset-password";
 import AuthMagicLink from "@/pages/auth-magic-link";
 import Home from "@/pages/home";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
@@ -63,6 +65,8 @@ function Router() {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/auth/magic-link" element={<AuthMagicLink />} />
         <Route path="*" element={<Landing />} />
       </Routes>
