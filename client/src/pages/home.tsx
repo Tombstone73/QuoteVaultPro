@@ -70,11 +70,11 @@ export default function Home() {
         variant: "destructive",
       });
       setTimeout(() => {
-        window.location.href = "/api/login";
+        navigate("/login");
       }, 500);
       return;
     }
-  }, [isAuthenticated, isLoading, toast]);
+  }, [isAuthenticated, isLoading, toast, navigate]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
