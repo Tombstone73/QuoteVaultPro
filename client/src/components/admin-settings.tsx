@@ -1008,6 +1008,9 @@ export function EmailSettingsTab() {
           </CardContent>
         </Card>
       )}
+
+      {/* Email Templates Section */}
+      <EmailTemplatesSettings />
     </div>
   );
 }
@@ -1804,12 +1807,11 @@ export default function AdminSettings({ defaultTab = "products", hideTabs = fals
         <CardContent>
           <Tabs defaultValue={defaultTab} data-testid="tabs-admin-settings">
             {!hideTabs && (
-            <TabsList className="grid w-full grid-cols-6">
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
               <TabsTrigger value="media" data-testid="tab-media">Media Library</TabsTrigger>
               <TabsTrigger value="variables" data-testid="tab-variables">Pricing Variables</TabsTrigger>
               <TabsTrigger value="formulas" data-testid="tab-formulas">Formula Templates</TabsTrigger>
-              <TabsTrigger value="email" data-testid="tab-email">Email Settings</TabsTrigger>
               <TabsTrigger value="workflow" data-testid="tab-workflow">Workflow</TabsTrigger>
             </TabsList>
             )}
