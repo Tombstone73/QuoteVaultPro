@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Mail, ArrowLeft } from "lucide-react";
 import { Link } from "react-router-dom";
+import { getApiUrl, parseJsonResponse } from "@/lib/apiConfig";
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
@@ -27,14 +28,14 @@ export default function ForgotPassword() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/forgot-password", {
+      const response = await fetch(getApiUrl("/api/auth/forgot-password"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
         credentials: "include",
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (response.ok && data.success) {
         setSent(true);

@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, CheckCircle, Lock } from "lucide-react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import { getApiUrl, parseJsonResponse } from "@/lib/apiConfig";
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams();
@@ -60,14 +61,14 @@ export default function ResetPassword() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/reset-password", {
+      const response = await fetch(getApiUrl("/api/auth/reset-password"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, newPassword: password }),
         credentials: "include",
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (response.ok && data.success) {
         setSuccess(true);
