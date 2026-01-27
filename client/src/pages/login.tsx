@@ -3,13 +3,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Mail, Zap } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Loader2, Zap, Lock } from "lucide-react";
+import { useNavigate, Link } from "react-router-dom";
 
 export default function Login() {
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [sent, setSent] = useState(false);
   const [authProvider, setAuthProvider] = useState<string | null>(null);
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -69,29 +69,44 @@ export default function Login() {
       return;
     }
 
+    if (!password) {
+      toast({
+        title: "Password required",
+        description: "Please enter your password.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/magic-link/request", {
+      const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, password }),
         credentials: "include",
       });
 
-      if (!response.ok) {
-        throw new Error("Failed to send magic link");
-      }
+      const data = await response.json();
 
-      setSent(true);
-      toast({
-        title: "Check your email",
-        description: "We've sent you a sign-in link. Check your inbox!",
-      });
+      if (response.ok && data.success) {
+        toast({
+          title: "Logged in",
+          description: "Welcome back!",
+        });
+        navigate("/");
+      } else {
+        toast({
+          title: "Login failed",
+          description: data.message || "Invalid email or password",
+          variant: "destructive",
+        });
+      }
     } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to send sign-in link. Please try again.",
+        description: "Failed to sign in. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -105,90 +120,86 @@ export default function Login() {
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold">Sign In</CardTitle>
           <CardDescription>
-            {sent
-              ? "Check your email for a sign-in link"
-              : "Enter your email to receive a sign-in link"}
+            Enter your email and password to sign in
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {sent ? (
-            <div className="space-y-4 text-center">
-              <div className="flex justify-center">
-                <div className="rounded-full bg-primary/10 p-4">
-                  <Mail className="h-8 w-8 text-primary" />
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                We've sent a sign-in link to <strong>{email}</strong>. Click the link in the
-                email to sign in.
-              </p>
-              <p className="text-xs text-muted-foreground">
-                The link will expire in 15 minutes.
-              </p>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setSent(false);
-                  setEmail("");
-                }}
-                className="w-full"
-              >
-                Send another link
-              </Button>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <label htmlFor="email" className="text-sm font-medium">
+                Email
+              </label>
+              <Input
+                id="email"
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={loading}
+                required
+                autoFocus
+              />
             </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <label htmlFor="email" className="text-sm font-medium">
-                  Email
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label htmlFor="password" className="text-sm font-medium">
+                  Password
                 </label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={loading}
-                  required
-                  autoFocus
-                />
+                <Link
+                  to="/forgot-password"
+                  className="text-xs text-primary hover:underline"
+                >
+                  Forgot password?
+                </Link>
               </div>
-              <Button type="submit" disabled={loading} className="w-full">
-                {loading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Sending...
-                  </>
-                ) : (
-                  "Send Sign-in Link"
-                )}
-              </Button>
-              {authProvider === "dev" && (
+              <Input
+                id="password"
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={loading}
+                required
+              />
+            </div>
+            <Button type="submit" disabled={loading} className="w-full">
+              {loading ? (
                 <>
-                  <div className="relative">
-                    <div className="absolute inset-0 flex items-center">
-                      <span className="w-full border-t" />
-                    </div>
-                    <div className="relative flex justify-center text-xs uppercase">
-                      <span className="bg-background px-2 text-muted-foreground">
-                        Or
-                      </span>
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleDevLogin}
-                    disabled={loading}
-                    className="w-full"
-                  >
-                    <Zap className="mr-2 h-4 w-4" />
-                    Dev Login (Instant)
-                  </Button>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Signing in...
+                </>
+              ) : (
+                <>
+                  <Lock className="mr-2 h-4 w-4" />
+                  Sign In
                 </>
               )}
-            </form>
-          )}
+            </Button>
+            {authProvider === "dev" && (
+              <>
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-background px-2 text-muted-foreground">
+                      Or
+                    </span>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleDevLogin}
+                  disabled={loading}
+                  className="w-full"
+                >
+                  <Zap className="mr-2 h-4 w-4" />
+                  Dev Login (Instant)
+                </Button>
+              </>
+            )}
+          </form>
         </CardContent>
       </Card>
     </div>
