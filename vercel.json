@@ -5,8 +5,19 @@
       "destination": "https://quotevaultpro-production.up.railway.app/api/:path*"
     },
     {
-      "source": "/:path*",
+      "source": "/(.*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/api/:path*",
+      "headers": [
+        {
+          "key": "X-Forwarded-Host",
+          "value": "www.printershero.com"
+        }
+      ]
     }
   ]
 }

@@ -105,6 +105,36 @@ Every data query must:
 - Validate all input using Zod schemas
 - Apply role-based access controls
 
+## 🌐 Production Deployment
+
+### Architecture
+
+**Frontend**: Vercel at https://www.printershero.com  
+**Backend**: Railway at https://quotevaultpro-production.up.railway.app
+
+The Vercel frontend proxies all `/api/*` requests to Railway using `vercel.json` rewrites. This creates same-origin cookies and eliminates CORS issues.
+
+### Required Configuration
+
+**Railway Backend**:
+```bash
+PUBLIC_APP_URL=https://www.printershero.com
+```
+
+**Vercel Frontend**:
+- No environment variables needed
+- `vercel.json` handles API proxy automatically
+- Client code uses relative paths (`/api/*`)
+
+### How It Works
+
+1. Browser requests `www.printershero.com/api/login`
+2. Vercel rewrites to `quotevaultpro-production.up.railway.app/api/login`
+3. Railway sets cookie for `www.printershero.com` domain
+4. All API calls use same first-party cookie
+
+See [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) for detailed deployment guide.
+
 ## ⚙️ Environment Variables
 
 ### Core Configuration
@@ -113,21 +143,16 @@ Every data query must:
 - `SESSION_SECRET` - Express session secret (required)
 - `NODE_ENV` - `development` or `production`
 - `PORT` - Server port (default: 5000)
+- `PUBLIC_APP_URL` - Public frontend URL (required in production, e.g., `https://www.printershero.com`)
 
 ### Authentication
 
-- `AUTH_PROVIDER` - Auth provider: `replit` (explicit) or omit for localAuth
-- `REPL_ID` - Replit deployment ID (required if `AUTH_PROVIDER=replit`)
-- `ISSUER_URL` - OIDC issuer URL (default: `https://replit.com/oidc`)
 - `DEMO_MODE` - Set to `1` to bypass auth checks (development/demo only)
-
-**Railway/Production Deployments**: If `AUTH_PROVIDER` is not set or `REPL_ID` is missing, the server will safely fall back to `localAuth` and continue booting. This prevents crashes when Replit-specific auth is unavailable.
 
 ### File Storage
 
-- `GCS_BUCKET_NAME` - Google Cloud Storage bucket name
-- `GCS_PROJECT_ID` - GCP project ID
-- `GCS_KEY_FILE` - Path to GCS service account key (optional)
+- `SUPABASE_URL` - Supabase project URL (for image storage)
+- `SUPABASE_SERVICE_KEY` - Supabase service role key
 
 ### Integrations
 
