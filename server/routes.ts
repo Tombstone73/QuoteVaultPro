@@ -12,6 +12,8 @@ import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
 import * as standardAuth from "./auth/standardAuth";
+import * as magicLinkAuth from "./auth/magicLinkAuth";
+import * as devAuth from "./auth/devAuth";
 // @ts-ignore - NestingCalculator.js is a plain JS file without types
 import NestingCalculator from "./NestingCalculator.js";
 import { emailService } from "./emailService";
@@ -55,16 +57,18 @@ import { classifyEmailError, createSafeErrorContext, type EmailErrorSpec } from 
 // AUTH PROVIDER SELECTION
 // ═══════════════════════════════════════════════════════════════
 // Supported AUTH_PROVIDER values:
-//   "local"    - Development only (auto-login, no passwords)
-//   "standard" - Production (email/password with bcrypt) - RECOMMENDED FOR RAILWAY
-//   "replit"   - Replit platform only (OIDC, requires DEPLOY_TARGET=replit)
+//   "dev"        - Development only (instant login, no passwords) - NEVER USE IN PRODUCTION
+//   "local"      - Development only (auto-login, no passwords)
+//   "standard"   - Production (email/password with bcrypt) - RECOMMENDED FOR RAILWAY
+//   "magiclink"  - Production (passwordless via email) - RECOMMENDED FOR PRINTERSHERO.COM
+//   "replit"     - Replit platform only (OIDC, requires DEPLOY_TARGET=replit)
 
 const nodeEnv = (process.env.NODE_ENV || '').trim();
 const authProviderRaw = (process.env.AUTH_PROVIDER || '').trim().toLowerCase();
 const deployTarget = (process.env.DEPLOY_TARGET || '').trim().toLowerCase();
 
-let auth: typeof localAuth | typeof replitAuth | typeof standardAuth;
-let authProvider: 'localAuth' | 'replitAuth' | 'standardAuth';
+let auth: typeof localAuth | typeof replitAuth | typeof standardAuth | typeof magicLinkAuth | typeof devAuth;
+let authProvider: 'localAuth' | 'replitAuth' | 'standardAuth' | 'magicLinkAuth' | 'devAuth';
 
 console.log('═══════════════════════════════════════════════════════════════');
 console.log('🔐 AUTH PROVIDER INITIALIZATION');
@@ -76,7 +80,45 @@ console.log(`Raw value:         "${authProviderRaw}"`);
 console.log('');
 
 // Provider selection logic
-if (authProviderRaw === 'standard') {
+if (authProviderRaw === 'dev') {
+  // Dev auth: Instant login (development only - NEVER in production)
+  
+  if (nodeEnv === 'production') {
+    console.error('═══════════════════════════════════════════════════════════════');
+    console.error('❌ CRITICAL: AUTH_PROVIDER=dev is FORBIDDEN in production');
+    console.error('   This is a SECURITY RISK!');
+    console.error('   Dev auth provides instant login with no authentication.');
+    console.error('   Use AUTH_PROVIDER=magiclink or AUTH_PROVIDER=standard instead.');
+    console.error('═══════════════════════════════════════════════════════════════');
+    console.error('🔄 Falling back to: magicLinkAuth (safe default)');
+    auth = magicLinkAuth;
+    authProvider = 'magicLinkAuth';
+  } else {
+    auth = devAuth;
+    authProvider = 'devAuth';
+    
+    console.log('✅ Selected:        devAuth (Instant Login)');
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('⚠️  WARNING: devAuth is for DEVELOPMENT ONLY');
+    console.log('   - Instant login as dev@local.test (owner role)');
+    console.log('   - No authentication required');
+    console.log('   - Returns 404 in production');
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('📋 DEV AUTH:');
+    console.log('  Authentication:  None (instant login)');
+    console.log('  Session store:   PostgreSQL (connect-pg-simple)');
+    console.log('  Cookie secure:   false (HTTP allowed for localhost)');
+    console.log('  Cookie sameSite: lax');
+    console.log('  Trust proxy:     1');
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('📋 REQUIRED ENVIRONMENT VARIABLES:');
+    console.log(`  DATABASE_URL:    ${process.env.DATABASE_URL ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+    console.log(`  SESSION_SECRET:  ${process.env.SESSION_SECRET ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('🚨 DO NOT USE IN PRODUCTION!');
+  }
+  
+} else if (authProviderRaw === 'standard') {
   // Standard auth: Email/password (recommended for Railway/production)
   auth = standardAuth;
   authProvider = 'standardAuth';
@@ -95,6 +137,32 @@ if (authProviderRaw === 'standard') {
   console.log(`  SESSION_SECRET:  ${process.env.SESSION_SECRET ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
   console.log('───────────────────────────────────────────────────────────────');
   console.log('✅ This is the RECOMMENDED auth provider for Railway production');
+  
+} else if (authProviderRaw === 'magiclink') {
+  // Magic link auth: Passwordless email (recommended for printershero.com)
+  auth = magicLinkAuth;
+  authProvider = 'magicLinkAuth';
+  
+  console.log('✅ Selected:        magicLinkAuth (Passwordless Email)');
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('📋 MAGIC LINK AUTH (Passwordless):');
+  console.log('  Authentication:  Email with magic link (no passwords)');
+  console.log('  Session store:   PostgreSQL (connect-pg-simple)');
+  console.log('  Token:           JWT (15 min expiry, signed with SESSION_SECRET)');
+  console.log('  Cookie secure:   true (HTTPS only in production)');
+  console.log('  Cookie sameSite: lax (CSRF protection)');
+  console.log('  Trust proxy:     1 (Railway compatible)');
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('📋 REQUIRED ENVIRONMENT VARIABLES:');
+  console.log(`  DATABASE_URL:    ${process.env.DATABASE_URL ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+  console.log(`  SESSION_SECRET:  ${process.env.SESSION_SECRET ? '✅ SET' : '❌ NOT SET (REQUIRED)'}`);
+  console.log(`  PUBLIC_APP_URL:  ${process.env.PUBLIC_APP_URL ? '✅ SET' : '⚠️  NOT SET (will use default)'}`);
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('📧 EMAIL CONFIGURATION:');
+  console.log('  Email provider must be configured in Admin Settings → Email.');
+  console.log('  Gmail OAuth or SMTP must be working for magic links to be sent.');
+  console.log('───────────────────────────────────────────────────────────────');
+  console.log('✅ This is the RECOMMENDED auth provider for printershero.com');
   
 } else if (authProviderRaw === 'replit') {
   // Replit auth: OIDC (platform-specific, requires DEPLOY_TARGET=replit)

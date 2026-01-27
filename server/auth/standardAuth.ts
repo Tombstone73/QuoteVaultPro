@@ -245,10 +245,23 @@ export async function setupAuth(app: Express) {
     });
   });
 
+  /**
+   * GET /api/auth/config
+   * 
+   * Returns current auth provider type (safe to expose publicly)
+   * Response: { provider: "standard" }
+   */
+  app.get("/api/auth/config", (req, res) => {
+    res.json({
+      provider: "standard",
+    });
+  });
+
   console.log("[standardAuth] Auth endpoints registered:");
   console.log("  POST /api/auth/login");
   console.log("  POST /api/auth/logout");
   console.log("  GET /api/auth/me");
+  console.log("  GET /api/auth/config");
 }
 
 /**

@@ -1,8 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calculator, FileText, Settings, TrendingUp } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 export default function Landing() {
+  const navigate = useNavigate();
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
@@ -11,8 +14,8 @@ export default function Landing() {
             <Calculator className="w-6 h-6 text-primary" data-testid="logo-calculator" />
             <h1 className="text-xl font-semibold" data-testid="text-app-title">Pricing Calculator</h1>
           </div>
-          <Button asChild data-testid="button-login">
-            <a href="/api/login">Sign In</a>
+          <Button onClick={() => navigate("/login")} data-testid="button-login">
+            Sign In
           </Button>
         </div>
       </header>
@@ -26,8 +29,8 @@ export default function Landing() {
             Generate accurate quotes for business cards, postcards, flyers, and more. 
             Save your quote history and manage pricing with ease.
           </p>
-          <Button size="lg" asChild data-testid="button-get-started">
-            <a href="/api/login">Get Started</a>
+          <Button size="lg" onClick={() => navigate("/login")} data-testid="button-get-started">
+            Get Started
           </Button>
         </div>
 
