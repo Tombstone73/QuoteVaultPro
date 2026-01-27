@@ -183,6 +183,20 @@
       "when": 1737705600000,
       "tag": "0033_add_password_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1737936000000,
+      "tag": "0034_auth_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1737936000000,
+      "tag": "0035_password_reset_tokens",
+      "breakpoints": true
     }
   ]
 }
