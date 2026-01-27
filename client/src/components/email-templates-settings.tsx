@@ -3,9 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { AlertCircle, RotateCcw, Save } from "lucide-react";
@@ -13,6 +11,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import type { EmailTemplates } from "@shared/emailTemplates";
 import { DEFAULT_EMAIL_TEMPLATES, TEMPLATE_VARIABLES } from "@shared/emailTemplates";
+import { TemplateEditor } from "@/components/email/TemplateEditor";
+import { SubjectVariableInput } from "@/components/email/SubjectVariableInput";
 
 export function EmailTemplatesSettings() {
   const { toast } = useToast();
@@ -20,6 +20,12 @@ export function EmailTemplatesSettings() {
   const [quoteBody, setQuoteBody] = useState("");
   const [invoiceSubject, setInvoiceSubject] = useState("");
   const [invoiceBody, setInvoiceBody] = useState("");
+  
+  // Convert TEMPLATE_VARIABLES to array format for components
+  const allowedTokens = Object.entries(TEMPLATE_VARIABLES).map(([token, label]) => ({
+    token,
+    label,
+  }));
   
   // Fetch email templates
   const { data: templates, isLoading } = useQuery<EmailTemplates>({
@@ -152,10 +158,10 @@ export function EmailTemplatesSettings() {
 
               <div className="space-y-2">
                 <Label htmlFor="quote-subject">Subject Line</Label>
-                <Input
-                  id="quote-subject"
+                <SubjectVariableInput
                   value={quoteSubject}
-                  onChange={(e) => setQuoteSubject(e.target.value)}
+                  onChange={setQuoteSubject}
+                  variables={allowedTokens}
                   placeholder="Quote #{{quote.number}} from {{org.name}}"
                   maxLength={200}
                 />
@@ -165,18 +171,14 @@ export function EmailTemplatesSettings() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="quote-body">Email Body (HTML)</Label>
-                <Textarea
-                  id="quote-body"
-                  value={quoteBody}
-                  onChange={(e) => setQuoteBody(e.target.value)}
-                  placeholder="Enter HTML email template..."
-                  rows={12}
-                  maxLength={10000}
-                  className="font-mono text-xs"
+                <Label htmlFor="quote-body">Email Body</Label>
+                <TemplateEditor
+                  valueHtml={quoteBody}
+                  onChangeHtml={setQuoteBody}
+                  variables={allowedTokens}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {quoteBody.length}/10,000 characters. Use HTML for formatting.
+                  {quoteBody.length}/10,000 characters
                 </p>
               </div>
             </div>
@@ -199,10 +201,10 @@ export function EmailTemplatesSettings() {
 
               <div className="space-y-2">
                 <Label htmlFor="invoice-subject">Subject Line</Label>
-                <Input
-                  id="invoice-subject"
+                <SubjectVariableInput
                   value={invoiceSubject}
-                  onChange={(e) => setInvoiceSubject(e.target.value)}
+                  onChange={setInvoiceSubject}
+                  variables={allowedTokens}
                   placeholder="Invoice #{{invoice.number}} from {{org.name}}"
                   maxLength={200}
                 />
@@ -212,18 +214,14 @@ export function EmailTemplatesSettings() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="invoice-body">Email Body (HTML)</Label>
-                <Textarea
-                  id="invoice-body"
-                  value={invoiceBody}
-                  onChange={(e) => setInvoiceBody(e.target.value)}
-                  placeholder="Enter HTML email template..."
-                  rows={12}
-                  maxLength={10000}
-                  className="font-mono text-xs"
+                <Label htmlFor="invoice-body">Email Body</Label>
+                <TemplateEditor
+                  valueHtml={invoiceBody}
+                  onChangeHtml={setInvoiceBody}
+                  variables={allowedTokens}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {invoiceBody.length}/10,000 characters. Use HTML for formatting.
+                  {invoiceBody.length}/10,000 characters
                 </p>
               </div>
             </div>
