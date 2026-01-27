@@ -9,6 +9,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { ROUTES } from "@/config/routes";
 import Landing from "@/pages/landing";
+import Login from "@/pages/login";
+import AuthMagicLink from "@/pages/auth-magic-link";
 import Home from "@/pages/home";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
@@ -56,10 +58,12 @@ import PrepressPage from "@/pages/prepress";
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
 
-  // While loading or unauthenticated, send everything to Landing
+  // While loading or unauthenticated, show login/landing routes
   if (isLoading || !isAuthenticated) {
     return (
       <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/auth/magic-link" element={<AuthMagicLink />} />
         <Route path="*" element={<Landing />} />
       </Routes>
     );
