@@ -80,7 +80,7 @@ export function TemplateEditor({
     editorProps: {
       attributes: {
         class:
-          "prose prose-sm dark:prose-invert max-w-none p-4 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 rounded-md",
+          "prose prose-sm dark:prose-invert max-w-none p-4 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 rounded-md text-foreground",
       },
     },
     onUpdate: ({ editor }) => {
@@ -199,7 +199,7 @@ export function TemplateEditor({
 
       {/* Editor Content */}
       <div className="border rounded-md bg-background">
-        <div className="prose prose-sm max-w-none min-h-[220px] dark:prose-invert">
+        <div className="prose prose-sm max-w-none min-h-[220px] dark:prose-invert text-foreground">
           <EditorContent editor={editor} />
         </div>
       </div>
