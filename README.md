@@ -40,6 +40,15 @@ npm start
 - PBV2 HTTP smoke (requires authenticated session cookie):
   - `npm run pbv2:http:smoke -- --productId <productId> --cookie "connect.sid=..."`
 
+## 🌐 Production Deployment
+
+**Architecture**: Split deployment with Vercel frontend + Railway backend
+
+- **Frontend**: [www.printershero.com](https://www.printershero.com) (Vercel)
+- **Backend**: quotevaultpro-production.up.railway.app (Railway)
+- **API Routing**: Vercel rewrites `/api/*` requests to Railway backend (see `vercel.json`)
+- **Frontend Config**: Uses relative `/api/*` URLs that work in both dev and production (see `client/src/lib/apiConfig.ts`)
+
 ## 📋 How to Contribute
 
 **New to the project?** Start here:
