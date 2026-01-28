@@ -1,23 +1,12 @@
 {
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "https://quotevaultpro-production.up.railway.app/api/:path*"
+      "source": "/api/(.*)",
+      "destination": "https://quotevaultpro-production.up.railway.app/api/$1"
     },
     {
       "source": "/(.*)",
       "destination": "/index.html"
-    }
-  ],
-  "headers": [
-    {
-      "source": "/api/:path*",
-      "headers": [
-        {
-          "key": "X-Forwarded-Host",
-          "value": "www.printershero.com"
-        }
-      ]
     }
   ]
 }
