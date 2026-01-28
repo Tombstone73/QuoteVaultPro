@@ -1,5 +1,7 @@
 # QuoteVaultPro (TitanOS)
 
+<!-- Trigger redeploy from main branch -->
+
 A comprehensive, multi-tenant ERP/MIS/CRM system built specifically for the printing and graphics industry.
 
 ## 🚀 Quick Start
