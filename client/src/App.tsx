@@ -9,6 +9,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { ROUTES } from "@/config/routes";
 import Login from "@/pages/login";
+import ForgotPassword from "@/pages/forgot-password";
+import ResetPassword from "@/pages/reset-password";
 import Home from "@/pages/home";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
@@ -66,6 +68,8 @@ function Router() {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
