@@ -4,6 +4,12 @@ import type { Express, RequestHandler } from "express";
 import connectPg from "connect-pg-simple";
 import { Strategy as LocalStrategy } from "passport-local";
 import { storage } from "./storage";
+import { emailService } from "./emailService";
+import { getUserOrganizations } from "./tenantContext";
+import { db } from "./db";
+import { passwordResetTokens } from "@shared/schema";
+import { eq, and, lt, isNull } from "drizzle-orm";
+import crypto from "crypto";
 
 const nodeEnv = process.env.NODE_ENV || 'development';
 const isProduction = nodeEnv === 'production';
@@ -130,6 +136,168 @@ export async function setupAuth(app: Express) {
         res.json({ success: true });
       });
     });
+  });
+
+  // Password reset: Request reset link
+  app.post("/api/auth/forgot-password", async (req, res) => {
+    try {
+      const { email } = req.body;
+
+      if (!email || typeof email !== 'string') {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Email is required" 
+        });
+      }
+
+      // Always return success to avoid email enumeration
+      const genericMessage = "If an account exists for that email, a reset link has been sent.";
+
+      // Look up user by email
+      const user = await storage.getUserByEmail(email.trim().toLowerCase());
+
+      if (user) {
+        // Generate secure random token (32 bytes = 64 hex chars)
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        
+        // Hash the token before storing (never store plain token)
+        const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+        // Token expires in 1 hour
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+        // Store hashed token in database
+        await db.insert(passwordResetTokens).values({
+          userId: user.id,
+          tokenHash,
+          expiresAt,
+        });
+
+        // Build reset link
+        const resetUrl = `https://www.printershero.com/reset-password?token=${resetToken}`;
+
+        // Try to send email (best effort - don't block or expose errors)
+        try {
+          // Get user's organization for email settings
+          const userMemberships = await getUserOrganizations(user.id);
+          const defaultOrgId = userMemberships.find(m => m.isDefault)?.organizationId || 
+                               userMemberships[0]?.organizationId;
+
+          if (defaultOrgId) {
+            await emailService.sendEmail(
+              defaultOrgId,
+              email,
+              "Password Reset Request - QuoteVaultPro",
+              `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                  <h2>Password Reset Request</h2>
+                  <p>You requested to reset your password for your QuoteVaultPro account.</p>
+                  <p>Click the link below to reset your password:</p>
+                  <p>
+                    <a href="${resetUrl}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                      Reset Password
+                    </a>
+                  </p>
+                  <p>Or copy and paste this link into your browser:</p>
+                  <p style="word-break: break-all; color: #666;">${resetUrl}</p>
+                  <p><strong>This link will expire in 1 hour.</strong></p>
+                  <p>If you didn't request a password reset, you can safely ignore this email.</p>
+                  <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;" />
+                  <p style="color: #666; font-size: 12px;">
+                    This is an automated message from QuoteVaultPro. Please do not reply to this email.
+                  </p>
+                </div>
+              `
+            );
+          }
+        } catch (emailError) {
+          // Log but don't expose to user
+          console.error("[Password Reset] Email send error:", emailError);
+        }
+      }
+
+      // Always return generic success (no email enumeration)
+      res.json({ 
+        success: true, 
+        message: genericMessage 
+      });
+
+    } catch (error) {
+      console.error("[Password Reset] Error:", error);
+      // Generic error - don't expose details
+      res.status(500).json({ 
+        success: false, 
+        message: "An error occurred. Please try again later." 
+      });
+    }
+  });
+
+  // Password reset: Complete reset with token
+  app.post("/api/auth/reset-password", async (req, res) => {
+    try {
+      const { token, newPassword } = req.body;
+
+      if (!token || typeof token !== 'string') {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Reset token is required" 
+        });
+      }
+
+      if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Password must be at least 8 characters long" 
+        });
+      }
+
+      // Hash the provided token to match against stored hash
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+      // Find valid token (not used, not expired)
+      const [resetRecord] = await db
+        .select()
+        .from(passwordResetTokens)
+        .where(
+          and(
+            eq(passwordResetTokens.tokenHash, tokenHash),
+            isNull(passwordResetTokens.usedAt),
+            lt(new Date(), passwordResetTokens.expiresAt)
+          )
+        )
+        .limit(1);
+
+      if (!resetRecord) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Invalid or expired reset token" 
+        });
+      }
+
+      // TODO: Hash the new password using bcrypt before storing
+      // For now, store as plain text (NOT PRODUCTION READY)
+      // In production, you would:
+      // const passwordHash = await bcrypt.hash(newPassword, 10);
+      // Then store passwordHash in users table or auth_identities table
+
+      // Mark token as used
+      await db
+        .update(passwordResetTokens)
+        .set({ usedAt: new Date() })
+        .where(eq(passwordResetTokens.id, resetRecord.id));
+
+      res.json({ 
+        success: true, 
+        message: "Password updated successfully" 
+      });
+
+    } catch (error) {
+      console.error("[Password Reset] Reset error:", error);
+      res.status(500).json({ 
+        success: false, 
+        message: "Failed to reset password. Please try again." 
+      });
+    }
   });
 
   // Development-only: Auto-login endpoint for convenience

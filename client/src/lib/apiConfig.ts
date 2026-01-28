@@ -13,6 +13,25 @@
  */
 
 /**
+ * Check if API configuration is valid.
+ * In production, VITE_API_BASE_URL MUST be set.
+ * 
+ * @returns Object with isValid flag and error message if invalid
+ */
+export function checkApiConfig(): { isValid: boolean; error?: string } {
+  const baseUrl = import.meta.env.VITE_API_BASE_URL || "";
+  
+  if (import.meta.env.PROD && !baseUrl) {
+    return {
+      isValid: false,
+      error: "VITE_API_BASE_URL is not configured. This environment variable must be set in Vercel production environment."
+    };
+  }
+  
+  return { isValid: true };
+}
+
+/**
  * Get the API base URL.
  * 
  * In production (Vercel), uses VITE_API_BASE_URL to point to Railway backend.
@@ -24,9 +43,11 @@ function getApiBaseUrl(): string {
   const baseUrl = import.meta.env.VITE_API_BASE_URL || "";
   
   // In production, VITE_API_BASE_URL MUST be set
+  // Instead of throwing, we log error and return empty string
+  // The app will show a config error page (checked in main.tsx)
   if (import.meta.env.PROD && !baseUrl) {
     console.error("[API CONFIG] VITE_API_BASE_URL is required in production");
-    throw new Error("API base URL not configured for production");
+    return "";
   }
   
   // Normalize: remove trailing slash

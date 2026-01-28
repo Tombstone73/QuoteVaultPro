@@ -2,7 +2,7 @@ import * as React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Search, Bell, Menu, User, ChevronRight, LogOut, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth, useLogout } from "@/hooks/useAuth";
 import { useGlobalSearch } from "@/hooks/useGlobalSearch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

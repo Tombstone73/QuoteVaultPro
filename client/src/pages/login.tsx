@@ -99,6 +99,14 @@ export default function Login() {
                   disabled={loading}
                   autoComplete="current-password"
                 />
+                <div className="text-right">
+                  <a
+                    href="/forgot-password"
+                    className="text-sm text-muted-foreground hover:text-primary transition-colors"
+                  >
+                    Forgot password?
+                  </a>
+                </div>
               </div>
 
               <Button type="submit" className="w-full" disabled={loading}>
