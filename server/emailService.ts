@@ -70,7 +70,12 @@ class EmailService {
           refreshToken: config.refreshToken,
           accessToken: accessToken.token || undefined,
         },
-      });
+        // Add strict timeouts to prevent long hangs
+        connectionTimeout: 10000, // 10s to establish connection
+        greetingTimeout: 10000,   // 10s for server greeting
+        socketTimeout: 15000,      // 15s for socket inactivity
+        pool: false,               // Disable connection pooling for reliability
+      } as any);
     } else if (config.provider === "smtp" && config.smtpHost && config.smtpPort) {
       // SMTP setup
       return nodemailer.createTransport({
@@ -81,7 +86,12 @@ class EmailService {
           user: config.smtpUsername,
           pass: config.smtpPassword,
         } : undefined,
-      });
+        // Add strict timeouts to prevent long hangs
+        connectionTimeout: 10000, // 10s to establish connection
+        greetingTimeout: 10000,   // 10s for server greeting
+        socketTimeout: 15000,      // 15s for socket inactivity
+        pool: false,               // Disable connection pooling for reliability
+      } as any);
     } else {
       throw new Error(`Unsupported email provider: ${config.provider} or missing configuration`);
     }
@@ -151,7 +161,7 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string }): Promise<void> {
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string }): Promise<string> {
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
@@ -163,7 +173,8 @@ class EmailService {
       subject: options.subject,
       html: options.html,
     };
-    await transporter.sendMail(mailOptions);
+    const info = await transporter.sendMail(mailOptions);
+    return info.messageId || 'no-message-id';
   }
 
   /**
