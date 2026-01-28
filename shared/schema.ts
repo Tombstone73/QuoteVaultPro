@@ -155,18 +155,48 @@ export const sessions = pgTable(
   (table) => [index("IDX_session_expire").on(table.expire)],
 );
 
-// User storage table (required for Replit Auth)
+// User storage table (profile data only - credentials in auth_identities)
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: varchar("email").unique(),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
+  passwordHash: text("password_hash"), // DEPRECATED: Use auth_identities.password_hash instead. Will be removed in v1.1.
   isAdmin: boolean("is_admin").default(false).notNull(),
   role: varchar("role", { length: 50 }).default("employee").notNull(), // owner, admin, manager, employee
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// Auth identities table - stores authentication credentials separately from user profiles
+export const authIdentities = pgTable("auth_identities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  provider: varchar("provider").notNull(), // 'password', 'google', etc.
+  passwordHash: text("password_hash"), // Only for provider='password'
+  passwordSetAt: timestamp("password_set_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("auth_identities_user_provider_unique").on(table.userId, table.provider),
+  index("auth_identities_user_id_idx").on(table.userId),
+  index("auth_identities_provider_idx").on(table.provider),
+]);
+
+// Password reset tokens table - for forgot/reset password flow
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  tokenHash: text("token_hash").notNull(), // SHA256 hash of token
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("password_reset_tokens_token_hash_unique").on(table.tokenHash),
+  index("password_reset_tokens_user_id_idx").on(table.userId),
+  index("password_reset_tokens_expires_at_idx").on(table.expiresAt),
+]);
 
 export const upsertUserSchema = createInsertSchema(users).pick({
   id: true,
@@ -187,9 +217,50 @@ export const updateUserSchema = createInsertSchema(users).pick({
   role: true,
 }).partial();
 
+// Server-side only: for bootstrap scripts and admin password management
+// NEVER expose this schema to public client-facing APIs
+export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  email: z.string().email().min(1, "Email is required"),
+  passwordHash: z.string().optional(), // Optional: null for OAuth users, required for standard auth
+  role: z.enum(['owner', 'admin', 'manager', 'employee']).default('employee'),
+  isAdmin: z.boolean().default(false),
+});
+
 export type UpsertUser = z.infer<typeof upsertUserSchema>;
 export type UpdateUser = z.infer<typeof updateUserSchema>;
+export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
+
+// Auth identity schemas
+export const insertAuthIdentitySchema = createInsertSchema(authIdentities).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  provider: z.enum(['password', 'google']),
+  passwordHash: z.string().optional(),
+});
+
+export const updateAuthIdentitySchema = insertAuthIdentitySchema.partial().extend({
+  id: z.string(),
+});
+
+export type InsertAuthIdentity = z.infer<typeof insertAuthIdentitySchema>;
+export type UpdateAuthIdentity = z.infer<typeof updateAuthIdentitySchema>;
+export type AuthIdentity = typeof authIdentities.$inferSelect;
+
+// Password reset token schemas
+export const insertPasswordResetTokenSchema = createInsertSchema(passwordResetTokens).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertPasswordResetToken = z.infer<typeof insertPasswordResetTokenSchema>;
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 
 // Media Assets table
 export const mediaAssets = pgTable("media_assets", {
