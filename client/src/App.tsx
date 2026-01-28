@@ -8,7 +8,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/useAuth";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { ROUTES } from "@/config/routes";
-import Landing from "@/pages/landing";
+import Login from "@/pages/login";
 import Home from "@/pages/home";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
@@ -52,17 +52,30 @@ import PrepressPage from "@/pages/prepress";
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
 
-  // While loading or unauthenticated, send everything to Landing
-  if (isLoading || !isAuthenticated) {
+  // While loading auth status, show nothing (or a loading spinner)
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  // If not authenticated, only show login route
+  if (!isAuthenticated) {
     return (
       <Routes>
-        <Route path="*" element={<Landing />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
   }
 
   return (
     <Routes>
+      {/* Redirect login to dashboard if already authenticated */}
+      <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+
       {/* All authenticated routes share the AppLayout */}
       <Route element={<AppLayout />}>
         {/* Root redirect to dashboard */}

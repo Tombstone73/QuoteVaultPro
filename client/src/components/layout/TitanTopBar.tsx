@@ -101,6 +101,7 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const logout = useLogout();
   const [searchQuery, setSearchQuery] = React.useState("");
   const [showSearchResults, setShowSearchResults] = React.useState(false);
   const searchInputRef = React.useRef<HTMLInputElement>(null);
@@ -111,16 +112,8 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
   const pageTitle = getPageTitle(location.pathname);
   const breadcrumbs = getBreadcrumbs(location.pathname);
 
-  const handleLogout = async () => {
-    try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        credentials: "include",
-      });
-      window.location.href = "/";
-    } catch (error) {
-      console.error("Logout failed:", error);
-    }
+  const handleLogout = () => {
+    logout();
   };
 
   const userInitials = React.useMemo(() => {
