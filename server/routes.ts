@@ -45,11 +45,55 @@ import { mergeInventoryPolicyIntoPreferences, normalizeInventoryPolicyPatch } fr
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "./lib/pbv2OverrideConfig";
 
-// Use local auth for development, Replit auth for production
+// Auth provider selection logic
+// Priority: AUTH_PROVIDER env var > detection logic
+// In production (Railway), default to standard/password auth (localAuth)
+// replitAuth only used when explicitly on Replit platform (REPL_ID present)
 const nodeEnv = (process.env.NODE_ENV || '').trim();
-console.log('NODE_ENV in routes.ts:', JSON.stringify(nodeEnv));
-console.log('Using auth:', nodeEnv === "development" ? 'localAuth' : 'replitAuth');
-const auth = nodeEnv === "development" ? localAuth : replitAuth;
+const authProviderEnv = (process.env.AUTH_PROVIDER || '').trim().toLowerCase();
+const isReplit = !!process.env.REPL_ID;
+const isProduction = nodeEnv === 'production';
+
+let authProvider: string;
+let auth: typeof localAuth | typeof replitAuth;
+
+if (authProviderEnv) {
+  // Explicit AUTH_PROVIDER env var takes precedence
+  if (authProviderEnv === 'replit' && !isProduction && isReplit) {
+    authProvider = 'replit';
+    auth = replitAuth;
+  } else if (authProviderEnv === 'standard' || authProviderEnv === 'password') {
+    authProvider = 'standard';
+    auth = localAuth;
+  } else if (authProviderEnv === 'dev') {
+    authProvider = 'dev';
+    auth = localAuth;
+  } else {
+    // Invalid AUTH_PROVIDER, fallback to safe default
+    authProvider = isProduction ? 'standard' : 'dev';
+    auth = localAuth;
+    console.warn(`[Auth] Invalid AUTH_PROVIDER="${authProviderEnv}", using ${authProvider}`);
+  }
+} else {
+  // Auto-detection logic
+  if (isProduction) {
+    // Production: never use replitAuth on Railway
+    // Use standard password auth
+    authProvider = 'standard';
+    auth = localAuth;
+  } else if (isReplit) {
+    // Development on Replit platform
+    authProvider = 'replit';
+    auth = replitAuth;
+  } else {
+    // Local development
+    authProvider = 'dev';
+    auth = localAuth;
+  }
+}
+
+console.log(`[Auth] Selected provider: ${authProvider} (NODE_ENV=${nodeEnv}, REPL_ID=${isReplit ? 'present' : 'absent'})`);
+
 const { setupAuth, isAuthenticated, isAdmin } = auth;
 
 // Role-based access control middleware
@@ -447,6 +491,16 @@ async function snapshotCustomerData(
 
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
+
+  // Health check endpoint (no auth required)
+  app.get('/api/health', (req, res) => {
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      auth: authProvider,
+      env: nodeEnv
+    });
+  });
 
   // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
   await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
