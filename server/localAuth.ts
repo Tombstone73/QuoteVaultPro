@@ -153,6 +153,13 @@ export async function setupAuth(app: Express) {
   });
 
   // Password reset: Request reset link
+  // Password reset: Request reset link
+  // SMOKE TEST: POST /api/auth/forgot-password should return 200 in < 500ms
+  // even when email delivery fails (e.g., invalid SMTP host in env).
+  // Test: curl -X POST http://localhost:5000/api/auth/forgot-password \
+  //       -H "Content-Type: application/json" \
+  //       -d '{"email":"test@example.com"}' --max-time 1
+  // Expected: 200 response with generic success message, email send logged as failure in background
   app.post("/api/auth/forgot-password", async (req, res) => {
     try {
       const { email } = req.body;
@@ -167,72 +174,91 @@ export async function setupAuth(app: Express) {
       // Always return success to avoid email enumeration
       const genericMessage = "If an account exists for that email, a reset link has been sent.";
 
-      // Look up user by email
-      const user = await storage.getUserByEmail(email.trim().toLowerCase());
+      // Respond immediately - don't wait for email send
+      res.json({ 
+        success: true, 
+        message: genericMessage 
+      });
 
-      if (user) {
-        // Generate secure random token (32 bytes = 64 hex chars)
-        const resetToken = crypto.randomBytes(32).toString('hex');
-        
-        // Hash the token before storing (never store plain token)
-        const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
-
-        // Token expires in 1 hour
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
-
-        // Store hashed token in database
-        await db.insert(passwordResetTokens).values({
-          userId: user.id,
-          tokenHash,
-          expiresAt,
-        });
-
-        // Build reset link
-        const resetUrl = `https://www.printershero.com/reset-password?token=${resetToken}`;
-
-        // Try to send email (best effort - don't block or expose errors)
+      // Background work: send email asynchronously (fire-and-forget)
+      // Use setImmediate to ensure response is sent before starting async work
+      setImmediate(async () => {
         try {
+          console.log(`[Password Reset] Processing request for email: ${email.substring(0, 3)}***`);
+          
+          // Look up user by email
+          const user = await storage.getUserByEmail(email.trim().toLowerCase());
+
+          if (!user) {
+            console.log('[Password Reset] No user found for email (expected behavior for security)');
+            return;
+          }
+
+          // Generate secure random token (32 bytes = 64 hex chars)
+          const resetToken = crypto.randomBytes(32).toString('hex');
+          
+          // Hash the token before storing (never store plain token)
+          const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+          // Token expires in 1 hour
+          const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+          // Store hashed token in database
+          await db.insert(passwordResetTokens).values({
+            userId: user.id,
+            tokenHash,
+            expiresAt,
+          });
+
+          console.log(`[Password Reset] Token generated and stored for user ${user.id}`);
+
+          // Build reset link
+          const resetUrl = `https://www.printershero.com/reset-password?token=${resetToken}`;
+
           // Get user's organization for email settings
           const userMemberships = await getUserOrganizations(user.id);
           const defaultOrgId = userMemberships.find(m => m.isDefault)?.organizationId || 
                                userMemberships[0]?.organizationId;
 
-          if (defaultOrgId) {
-            await emailService.sendEmail(defaultOrgId, {
-              to: email,
-              subject: "Password Reset Request - QuoteVaultPro",
-              html: `
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                  <h2>Password Reset Request</h2>
-                  <p>You requested to reset your password for your QuoteVaultPro account.</p>
-                  <p>Click the link below to reset your password:</p>
-                  <p>
-                    <a href="${resetUrl}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
-                      Reset Password
-                    </a>
-                  </p>
-                  <p>Or copy and paste this link into your browser:</p>
-                  <p style="word-break: break-all; color: #666;">${resetUrl}</p>
-                  <p><strong>This link will expire in 1 hour.</strong></p>
-                  <p>If you didn't request a password reset, you can safely ignore this email.</p>
-                  <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;" />
-                  <p style="color: #666; font-size: 12px;">
-                    This is an automated message from QuoteVaultPro. Please do not reply to this email.
-                  </p>
-                </div>
-              `
-            });
+          if (!defaultOrgId) {
+            console.error('[Password Reset] No organization found for user');
+            return;
           }
-        } catch (emailError) {
-          // Log but don't expose to user
-          console.error("[Password Reset] Email send error:", emailError);
-        }
-      }
 
-      // Always return generic success (no email enumeration)
-      res.json({ 
-        success: true, 
-        message: genericMessage 
+          console.log(`[Password Reset] Attempting to send email via org ${defaultOrgId}`);
+          
+          const emailResult = await emailService.sendEmail(defaultOrgId, {
+            to: email,
+            subject: "Password Reset Request - QuoteVaultPro",
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2>Password Reset Request</h2>
+                <p>You requested to reset your password for your QuoteVaultPro account.</p>
+                <p>Click the link below to reset your password:</p>
+                <p>
+                  <a href="${resetUrl}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                    Reset Password
+                  </a>
+                </p>
+                <p>Or copy and paste this link into your browser:</p>
+                <p style="word-break: break-all; color: #666;">${resetUrl}</p>
+                <p><strong>This link will expire in 1 hour.</strong></p>
+                <p>If you didn't request a password reset, you can safely ignore this email.</p>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;" />
+                <p style="color: #666; font-size: 12px;">
+                  This is an automated message from QuoteVaultPro. Please do not reply to this email.
+                </p>
+              </div>
+            `
+          });
+
+          console.log(`[Password Reset] Email sent successfully: ${emailResult}`);
+        } catch (error: any) {
+          // Log error with code for debugging (ETIMEDOUT, etc.)
+          const errorCode = error?.code || 'UNKNOWN';
+          const errorMessage = error?.message || String(error);
+          console.error(`[Password Reset] Background email send failed [${errorCode}]: ${errorMessage}`);
+        }
       });
 
     } catch (error) {
