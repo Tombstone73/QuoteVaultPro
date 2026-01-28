@@ -7,9 +7,23 @@ import { storage } from "./storage";
 import { emailService } from "./emailService";
 import { getUserOrganizations } from "./tenantContext";
 import { db } from "./db";
-import { passwordResetTokens } from "@shared/schema";
-import { eq, and, lt, isNull } from "drizzle-orm";
+import { pgTable, varchar, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql, eq, and, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
+
+// Temporary inline schema definition until shared/schema.ts build issues are resolved
+const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("password_reset_tokens_token_hash_unique").on(table.tokenHash),
+  index("password_reset_tokens_user_id_idx").on(table.userId),
+  index("password_reset_tokens_expires_at_idx").on(table.expiresAt),
+]);
 
 const nodeEnv = process.env.NODE_ENV || 'development';
 const isProduction = nodeEnv === 'production';
@@ -184,11 +198,10 @@ export async function setupAuth(app: Express) {
                                userMemberships[0]?.organizationId;
 
           if (defaultOrgId) {
-            await emailService.sendEmail(
-              defaultOrgId,
-              email,
-              "Password Reset Request - QuoteVaultPro",
-              `
+            await emailService.sendEmail(defaultOrgId, {
+              to: email,
+              subject: "Password Reset Request - QuoteVaultPro",
+              html: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                   <h2>Password Reset Request</h2>
                   <p>You requested to reset your password for your QuoteVaultPro account.</p>
@@ -208,7 +221,7 @@ export async function setupAuth(app: Express) {
                   </p>
                 </div>
               `
-            );
+            });
           }
         } catch (emailError) {
           // Log but don't expose to user
@@ -262,7 +275,7 @@ export async function setupAuth(app: Express) {
           and(
             eq(passwordResetTokens.tokenHash, tokenHash),
             isNull(passwordResetTokens.usedAt),
-            lt(new Date(), passwordResetTokens.expiresAt)
+            gt(passwordResetTokens.expiresAt, new Date())
           )
         )
         .limit(1);
