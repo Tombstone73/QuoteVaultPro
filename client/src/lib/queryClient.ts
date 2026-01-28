@@ -1,4 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { getApiUrl } from "./apiConfig";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -19,7 +20,10 @@ export async function apiRequest(
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(url, {
+  // If url is a path (not absolute), resolve it with getApiUrl
+  const fullUrl = url.startsWith("http") ? url : getApiUrl(url);
+
+  const res = await fetch(fullUrl, {
     method,
     credentials: "include",
     ...init,
@@ -37,7 +41,14 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
+    // Build URL from query key
+    const path = queryKey.join("/") as string;
+    
+    // If path is already absolute (starts with http), use as-is
+    // Otherwise, resolve with getApiUrl to handle production Railway backend
+    const url = path.startsWith("http") ? path : getApiUrl(path);
+    
+    const res = await fetch(url, {
       credentials: "include",
     });
 
