@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import type { User } from "@shared/schema";
+import { getApiUrl } from "@/lib/apiConfig";
 
 export function useAuth() {
   const { data: user, isLoading, error } = useQuery<User>({
-    queryKey: ["/api/auth/user"],
+    queryKey: [getApiUrl("/api/auth/user")],
     retry: false,
     staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
   });
@@ -33,7 +34,7 @@ export function useLogout() {
 
   const logout = async () => {
     try {
-      await fetch("/api/auth/logout", {
+      await fetch(getApiUrl("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
       });
