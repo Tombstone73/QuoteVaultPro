@@ -226,38 +226,53 @@ export async function setupAuth(app: Express) {
           }
 
           console.log(`[Password Reset] Attempting to send email via org ${defaultOrgId}`);
+          console.log(`[Password Reset] Reset URL: ${resetUrl}`);
           
-          const emailResult = await emailService.sendEmail(defaultOrgId, {
-            to: email,
-            subject: "Password Reset Request - QuoteVaultPro",
-            html: `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2>Password Reset Request</h2>
-                <p>You requested to reset your password for your QuoteVaultPro account.</p>
-                <p>Click the link below to reset your password:</p>
-                <p>
-                  <a href="${resetUrl}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
-                    Reset Password
-                  </a>
-                </p>
-                <p>Or copy and paste this link into your browser:</p>
-                <p style="word-break: break-all; color: #666;">${resetUrl}</p>
-                <p><strong>This link will expire in 1 hour.</strong></p>
-                <p>If you didn't request a password reset, you can safely ignore this email.</p>
-                <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;" />
-                <p style="color: #666; font-size: 12px;">
-                  This is an automated message from QuoteVaultPro. Please do not reply to this email.
-                </p>
-              </div>
-            `
-          });
+          try {
+            const emailResult = await emailService.sendEmail(defaultOrgId, {
+              to: email,
+              subject: "Password Reset Request - QuoteVaultPro",
+              html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                  <h2>Password Reset Request</h2>
+                  <p>You requested to reset your password for your QuoteVaultPro account.</p>
+                  <p>Click the link below to reset your password:</p>
+                  <p>
+                    <a href="${resetUrl}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                      Reset Password
+                    </a>
+                  </p>
+                  <p>Or copy and paste this link into your browser:</p>
+                  <p style="word-break: break-all; color: #666;">${resetUrl}</p>
+                  <p><strong>This link will expire in 1 hour.</strong></p>
+                  <p>If you didn't request a password reset, you can safely ignore this email.</p>
+                  <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;" />
+                  <p style="color: #666; font-size: 12px;">
+                    This is an automated message from QuoteVaultPro. Please do not reply to this email.
+                  </p>
+                </div>
+              `
+            });
 
-          console.log(`[Password Reset] Email sent successfully: ${emailResult}`);
+            console.log(`[Password Reset] ✅ Email sent successfully - messageId: ${emailResult}`);
+          } catch (error: any) {
+            // Log detailed error for debugging
+            console.error('[Password Reset] ❌ Email send FAILED:', {
+              errorCode: error?.code || 'UNKNOWN',
+              errorMessage: error?.message || String(error),
+              errorCommand: error?.command,
+              errorStack: error?.stack,
+            });
+            // Note: Error is logged but response was already sent to client
+          }
         } catch (error: any) {
           // Log error with code for debugging (ETIMEDOUT, etc.)
           const errorCode = error?.code || 'UNKNOWN';
           const errorMessage = error?.message || String(error);
-          console.error(`[Password Reset] Background email send failed [${errorCode}]: ${errorMessage}`);
+          console.error(`[Password Reset] Background processing failed [${errorCode}]: ${errorMessage}`);
+          if (error?.stack) {
+            console.error('[Password Reset] Stack trace:', error.stack);
+          }
         }
       });
 
