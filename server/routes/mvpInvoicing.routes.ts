@@ -13,6 +13,7 @@ import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
 import { emailService } from "../emailService";
 import { jobs } from "../../shared/schema";
+import { storage } from "../storage";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -1834,6 +1835,20 @@ export async function registerMvpInvoicingRoutes(
       const { id } = req.params;
       const { toEmail } = req.body || {};
 
+      console.log(`[Invoice Send] Starting send for invoice ${id}, org ${organizationId}`);
+
+      // FAIL FAST: Check email configuration exists BEFORE expensive operations
+      const emailConfig = await storage.getDefaultEmailSettings(organizationId);
+      if (!emailConfig) {
+        console.error(`[Invoice Send] BLOCKED - No email settings configured for org ${organizationId}`);
+        return res.status(400).json({
+          success: false,
+          error: "Email is not configured. Please configure email settings in the admin panel before sending invoices."
+        });
+      }
+
+      console.log(`[Invoice Send] Email config found for org ${organizationId}, provider: ${emailConfig.provider}`);
+
       // Load invoice with related data
       const rel = await getInvoiceWithRelations(id);
       if (!rel) return res.status(404).json({ error: "Invoice not found" });
@@ -1943,6 +1958,7 @@ export async function registerMvpInvoicingRoutes(
       `.trim();
 
       // Send email via email service
+      console.log(`[Invoice Send] Sending email to ${recipientEmail} with PDF attachment...`);
       await emailService.sendEmail(organizationId, {
         to: recipientEmail,
         subject: `Invoice #${invoiceNumber} from ${companyName}`,
@@ -1956,6 +1972,8 @@ export async function registerMvpInvoicingRoutes(
           },
         ] as any,
       });
+
+      console.log(`[Invoice Send] ✅ Email sent successfully to ${recipientEmail}`);
 
       // Mark invoice as sent
       const now = new Date();
@@ -1986,8 +2004,20 @@ export async function registerMvpInvoicingRoutes(
 
       res.json({ success: true });
     } catch (error: any) {
-      console.error("Error sending invoice:", error);
-      res.status(500).json({ error: error.message || "Failed to send invoice" });
+      console.error(`[Invoice Send] ❌ FAILED:`, {
+        error: error.message,
+        stack: error.stack,
+        code: error.code,
+      });
+
+      // Return clear error message
+      const errorMessage = error.message || "Failed to send invoice";
+      res.status(500).json({
+        success: false,
+        error: errorMessage.includes("Email settings not configured")
+          ? "Email is not configured. Please configure email settings in the admin panel."
+          : errorMessage
+      });
     }
   });
 
