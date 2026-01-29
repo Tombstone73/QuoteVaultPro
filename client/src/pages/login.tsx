@@ -44,6 +44,11 @@ export default function Login() {
       const data = await response.json();
 
       if (data.success) {
+        // Debug logging (non-production only)
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[Login] Success, invalidating auth query and redirecting to /dashboard");
+        }
+        
         // Invalidate auth query to trigger refetch with new session
         await queryClient.invalidateQueries({ queryKey: [getApiUrl("/api/auth/user")] });
         
@@ -52,8 +57,9 @@ export default function Login() {
           description: "Welcome back!",
         });
         
-        // Navigate to dashboard - Router will handle auth check
-        navigate("/dashboard", { replace: true });
+        // Use window.location.assign for absolute certainty of navigation
+        // This bypasses React Router and guarantees we enter the app
+        window.location.assign("/dashboard");
       } else {
         throw new Error("Login failed");
       }

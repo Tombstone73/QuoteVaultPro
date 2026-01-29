@@ -13,6 +13,10 @@ export function useAuth() {
       
       // If 401, user is not authenticated - return null instead of throwing
       if (response.status === 401) {
+        // Debug logging (non-production only)
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[Auth] GET /api/auth/user returned 401 (not authenticated)");
+        }
         return null;
       }
       
@@ -20,7 +24,14 @@ export function useAuth() {
         throw new Error(`Failed to fetch user: ${response.status}`);
       }
       
-      return response.json();
+      const user = await response.json();
+      
+      // Debug logging (non-production only)
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[Auth] User authenticated:", user?.email || user?.id);
+      }
+      
+      return user;
     },
     retry: false,
     staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes

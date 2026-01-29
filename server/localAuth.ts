@@ -178,9 +178,9 @@ export async function setupAuth(app: Express) {
   app.post("/api/auth/login", passport.authenticate("local"), (req, res) => {
     // Diagnostic logging for session/cookie setup (non-sensitive)
     if (nodeEnv !== 'production' || process.env.DEBUG_AUTH === 'true') {
-      console.log('[Login] Session created, sending Set-Cookie header');
-      console.log('[Login] Session ID exists:', !!req.sessionID);
-      console.log('[Login] User authenticated:', !!req.user);
+      console.log(`[Login] Session created for user ${(req.user as any)?.email || (req.user as any)?.id}`);
+      console.log('[Login] Session ID:', req.sessionID?.substring(0, 8) + '...');
+      console.log('[Login] Sending Set-Cookie header');
     }
     
     res.json({ success: true, user: req.user });
