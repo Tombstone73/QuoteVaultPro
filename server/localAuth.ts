@@ -31,7 +31,7 @@ const nodeEnv = process.env.NODE_ENV || 'development';
 const isProduction = nodeEnv === 'production';
 
 export function getSession() {
-  const sessionTtl = 7 * 24 * 60 * 60 * 1000;
+  const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 7 days
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
     conString: process.env.DATABASE_URL,
@@ -39,17 +39,35 @@ export function getSession() {
     ttl: sessionTtl,
     tableName: "sessions",
   });
+  
+  // Cross-site cookie config: In production, frontend (Vercel) and backend (Railway) are different origins.
+  // - secure: true (HTTPS required for cross-site cookies)
+  // - sameSite: 'none' (allows cross-site cookie sending)
+  // - httpOnly: true (security: JS can't access cookie)
+  // Must match CORS credentials: true on backend and credentials: 'include' on frontend.
+  const cookieConfig = {
+    httpOnly: true,
+    secure: isProduction, // HTTPS only in production
+    maxAge: sessionTtl,
+    sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax', // 'none' for cross-site, requires secure: true
+  };
+  
+  // Diagnostic logging (non-sensitive)
+  if (!isProduction || process.env.DEBUG_AUTH === 'true') {
+    console.log('[Session] Cookie config:', {
+      secure: cookieConfig.secure,
+      sameSite: cookieConfig.sameSite,
+      httpOnly: cookieConfig.httpOnly,
+      maxAge: `${cookieConfig.maxAge / 1000 / 60 / 60 / 24} days`,
+    });
+  }
+  
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: isProduction, // Secure in production
-      maxAge: sessionTtl,
-      sameSite: isProduction ? 'lax' : 'lax',
-    },
+    cookie: cookieConfig,
   });
 }
 
@@ -113,6 +131,11 @@ export async function setupAuth(app: Express) {
               if (!isValid) {
                 return done(null, false, { message: "Invalid credentials" });
               }
+              
+              // Log successful authentication (non-sensitive)
+              if (nodeEnv !== 'production' || process.env.DEBUG_AUTH === 'true') {
+                console.log(`[LocalAuth] User authenticated: ${email}`);
+              }
             } else if (isProduction) {
               // Production: Require password to be set
               return done(null, false, { message: "Invalid credentials" });
@@ -153,6 +176,13 @@ export async function setupAuth(app: Express) {
 
   // Login endpoint for production
   app.post("/api/auth/login", passport.authenticate("local"), (req, res) => {
+    // Diagnostic logging for session/cookie setup (non-sensitive)
+    if (nodeEnv !== 'production' || process.env.DEBUG_AUTH === 'true') {
+      console.log('[Login] Session created, sending Set-Cookie header');
+      console.log('[Login] Session ID exists:', !!req.sessionID);
+      console.log('[Login] User authenticated:', !!req.user);
+    }
+    
     res.json({ success: true, user: req.user });
   });
 
@@ -171,7 +201,7 @@ export async function setupAuth(app: Express) {
           path: "/",
           httpOnly: true,
           secure: isProduction,
-          sameSite: isProduction ? 'lax' : 'lax',
+          sameSite: isProduction ? 'none' : 'lax', // Must match login cookie config
         });
         res.json({ success: true });
       });
