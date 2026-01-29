@@ -6,15 +6,31 @@ import { getApiUrl } from "@/lib/apiConfig";
 export function useAuth() {
   const { data: user, isLoading, error } = useQuery<User>({
     queryKey: [getApiUrl("/api/auth/user")],
+    queryFn: async () => {
+      const response = await fetch(getApiUrl("/api/auth/user"), {
+        credentials: "include",
+      });
+      
+      // If 401, user is not authenticated - return null instead of throwing
+      if (response.status === 401) {
+        return null;
+      }
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch user: ${response.status}`);
+      }
+      
+      return response.json();
+    },
     retry: false,
     staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
   });
 
-  // If we got a 401, user is not authenticated
+  // User is authenticated if we have user data (not null and no error)
   const isAuthenticated = !!user && !error;
 
   return {
-    user,
+    user: user ?? undefined,
     isLoading,
     isAuthenticated,
     isAdmin: user?.isAdmin ?? false,
