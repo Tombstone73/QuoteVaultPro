@@ -12,6 +12,7 @@ import { ROUTES } from "@/config/routes";
 import Login from "@/pages/login";
 import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
+import SetPasswordPage from "@/pages/set-password";
 import Home from "@/pages/home";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
@@ -53,7 +54,7 @@ import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
 
 function Router() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { user, isAuthenticated, isLoading } = useAuth();
 
   // While loading auth status, show nothing (or a loading spinner)
   if (isLoading) {
@@ -72,6 +73,16 @@ function Router() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
+
+  // If authenticated but must set password, only allow set-password route
+  if (user?.mustSetPassword) {
+    return (
+      <Routes>
+        <Route path="/set-password" element={<SetPasswordPage />} />
+        <Route path="*" element={<Navigate to="/set-password" replace />} />
       </Routes>
     );
   }
