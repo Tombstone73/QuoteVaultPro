@@ -181,6 +181,8 @@ class EmailService {
     const gmail = await this.createGmailClient(config);
 
     const fromAddress = `"${config.fromName}" <${config.fromAddress}>`;
+    console.log(`[EmailService] Using From: "${config.fromName}" <${config.fromAddress}>`);
+    
     const rawMessage = buildRawMessage({
       from: fromAddress,
       to: options.to,
@@ -243,11 +245,11 @@ class EmailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #333;">Email Configuration Test</h2>
-        <p>This is a test email from QuoteVaultPro.</p>
+        <p>This is a test email from ${config.fromName}.</p>
         <p>If you're receiving this, your email configuration is working correctly! ✅</p>
         <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
         <p style="color: #666; font-size: 12px;">
-          Sent from QuoteVaultPro via Gmail API<br>
+          Sent from ${config.fromName} via Gmail API<br>
           Provider: ${config.provider}
         </p>
       </div>
@@ -255,7 +257,7 @@ class EmailService {
 
     await this.sendViaGmailAPI(config, {
       to: recipientEmail,
-      subject: 'Test Email from QuoteVaultPro',
+      subject: `Test Email from ${config.fromName}`,
       html,
     });
   }
