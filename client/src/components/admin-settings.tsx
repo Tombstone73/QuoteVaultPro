@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send, Link as LinkIcon } from "lucide-react";
+import { Copy, Download, Edit, Plus, Settings as SettingsIcon, Settings, Trash2, Upload, LayoutGrid, LayoutList, Users, Hash, X, Mail, Send, Link as LinkIcon } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -597,6 +597,8 @@ export function EmailSettingsTab() {
 
   return (
     <div className="space-y-4">
+      <GmailSetupGuide />
+      
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -806,6 +808,165 @@ export function EmailSettingsTab() {
         </Card>
       )}
     </div>
+  );
+}
+
+// Gmail Setup Guide Component
+function GmailSetupGuide() {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <Card className="border-blue-200 bg-blue-50/50">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Mail className="h-5 w-5 text-blue-600" />
+            <CardTitle className="text-lg">Gmail OAuth Setup Guide</CardTitle>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsExpanded(!isExpanded)}
+          >
+            {isExpanded ? "Hide Guide" : "Show Guide"}
+          </Button>
+        </div>
+        <CardDescription>
+          Complete step-by-step instructions for configuring Gmail with OAuth2
+        </CardDescription>
+      </CardHeader>
+      {isExpanded && (
+        <CardContent className="space-y-6">
+          <div className="space-y-4">
+            <div className="rounded-lg border border-blue-200 bg-white p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">Step 1: Create Google Cloud Project</h4>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Google Cloud Console</a></li>
+                <li>Click "Select a project" → "New Project"</li>
+                <li>Name your project (e.g., "QuoteVaultPro Email")</li>
+                <li>Click "Create" and wait for project creation</li>
+              </ol>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-white p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">Step 2: Enable Gmail API</h4>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                <li>In your project, go to "APIs & Services" → "Library"</li>
+                <li>Search for "Gmail API"</li>
+                <li>Click on "Gmail API" then click "Enable"</li>
+              </ol>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-white p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">Step 3: Configure OAuth Consent Screen</h4>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                <li>Go to "APIs & Services" → "OAuth consent screen"</li>
+                <li>Select "External" user type, click "Create"</li>
+                <li>Fill in required fields:
+                  <ul className="list-disc list-inside ml-4 mt-1">
+                    <li>App name: Your company name</li>
+                    <li>User support email: Your email</li>
+                    <li>Developer contact: Your email</li>
+                  </ul>
+                </li>
+                <li>Click "Save and Continue"</li>
+                <li>On "Scopes" page, click "Add or Remove Scopes"</li>
+                <li>Add <code className="bg-gray-100 px-1 rounded">https://mail.google.com/</code> scope</li>
+                <li>Click "Update" → "Save and Continue"</li>
+                <li>Add your email as a test user, click "Save and Continue"</li>
+              </ol>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-white p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">Step 4: Create OAuth Credentials</h4>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                <li>Go to "APIs & Services" → "Credentials"</li>
+                <li>Click "Create Credentials" → "OAuth client ID"</li>
+                <li>Application type: "Web application"</li>
+                <li>Name: "QuoteVaultPro Gmail Client"</li>
+                <li>Authorized redirect URIs: Add <code className="bg-gray-100 px-1 rounded">https://developers.google.com/oauthplayground</code></li>
+                <li>Click "Create"</li>
+                <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong></li>
+              </ol>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-white p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">Step 5: Generate Refresh Token</h4>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                <li>Go to <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">OAuth 2.0 Playground</a></li>
+                <li>Click the gear icon (⚙️) in the top right</li>
+                <li>Check "Use your own OAuth credentials"</li>
+                <li>Enter your Client ID and Client Secret from Step 4</li>
+                <li>In "Step 1: Select & authorize APIs":
+                  <ul className="list-disc list-inside ml-4 mt-1">
+                    <li>Input: <code className="bg-gray-100 px-1 rounded">https://mail.google.com/</code></li>
+                    <li>Click "Authorize APIs"</li>
+                  </ul>
+                </li>
+                <li>Sign in with the Gmail account you want to send from</li>
+                <li>Click "Allow" on the consent screen</li>
+                <li>In "Step 2: Exchange authorization code for tokens":
+                  <ul className="list-disc list-inside ml-4 mt-1">
+                    <li>Click "Exchange authorization code for tokens"</li>
+                  </ul>
+                </li>
+                <li>Copy the <strong>Refresh token</strong> (starts with "1//")</li>
+              </ol>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-white p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">Step 6: Configure Email Settings</h4>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                <li>Return to this form above</li>
+                <li>Fill in the following fields:
+                  <ul className="list-disc list-inside ml-4 mt-1">
+                    <li><strong>From Email:</strong> The Gmail address you authorized</li>
+                    <li><strong>From Name:</strong> Your company name</li>
+                    <li><strong>Client ID:</strong> From Step 4</li>
+                    <li><strong>Client Secret:</strong> From Step 4</li>
+                    <li><strong>Refresh Token:</strong> From Step 5</li>
+                  </ul>
+                </li>
+                <li>Click "Save Email Settings"</li>
+              </ol>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-white p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">Step 7: Test Your Configuration</h4>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                <li>Scroll down to the "Test Email Configuration" section</li>
+                <li>Enter a test email address</li>
+                <li>Click "Send Test"</li>
+                <li>Check the recipient inbox for the test email</li>
+                <li>If successful, you're all set! If not, see troubleshooting below</li>
+              </ol>
+            </div>
+
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <h4 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
+                <Settings className="h-4 w-4" />
+                Troubleshooting
+              </h4>
+              <ul className="list-disc list-inside space-y-2 text-sm text-gray-700">
+                <li><strong>"invalid_grant" error:</strong> Your refresh token expired. Repeat Step 5 to generate a new one</li>
+                <li><strong>"insufficient permission" error:</strong> Ensure you added the correct scope (<code className="bg-gray-100 px-1 rounded">https://mail.google.com/</code>) in Step 3</li>
+                <li><strong>"Access blocked" error:</strong> Make sure you added your email as a test user in Step 3</li>
+                <li><strong>Test email not sending:</strong> Check that all fields are filled correctly with no extra spaces</li>
+                <li><strong>Still having issues?</strong> Verify the Gmail account has IMAP enabled and "Less secure app access" is not required (OAuth2 is secure)</li>
+              </ul>
+            </div>
+
+            <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+              <h4 className="font-semibold text-green-900 mb-2">✓ Security Notes</h4>
+              <p className="text-sm text-gray-700">
+                OAuth2 is the most secure method for sending email. Your credentials are encrypted and stored securely. 
+                The refresh token allows this application to send emails on your behalf without storing your Gmail password.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      )}
+    </Card>
   );
 }
 
