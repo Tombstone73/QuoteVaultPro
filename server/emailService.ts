@@ -191,12 +191,13 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string }): Promise<string> {
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; attachments?: any[] }): Promise<string> {
     console.log(`[EmailService] sendEmail called:`, {
       organizationId,
       to: options.to,
       subject: options.subject,
       hasHtml: !!options.html,
+      hasAttachments: !!(options.attachments && options.attachments.length > 0),
     });
 
     const config = await this.getEmailConfig(organizationId);
@@ -208,12 +209,17 @@ class EmailService {
 
     try {
       const transporter = await this.createTransporter(config);
-      const mailOptions = {
+      const mailOptions: any = {
         from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
         to: options.to,
         subject: options.subject,
         html: options.html,
       };
+
+      // Add attachments if provided
+      if (options.attachments && options.attachments.length > 0) {
+        mailOptions.attachments = options.attachments;
+      }
 
       console.log('[EmailService] Sending email via transporter...');
       const info = await transporter.sendMail(mailOptions);
