@@ -6474,11 +6474,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await emailService.sendTestEmail(organizationId, recipientEmail);
-      res.json({ message: "Test email sent successfully" });
+      res.json({ success: true, message: "Test email sent successfully" });
     } catch (error) {
-      console.error("Error sending test email:", error);
-      res.status(500).json({
-        message: error instanceof Error ? error.message : "Failed to send test email"
+      console.error("[API] Error sending test email:", error);
+      const errorMessage = error instanceof Error ? error.message : "Failed to send test email";
+      
+      // Return more specific status codes for timeouts
+      const statusCode = errorMessage.includes('timed out') ? 504 : 500;
+      
+      res.status(statusCode).json({
+        success: false,
+        message: errorMessage
       });
     }
   });

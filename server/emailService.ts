@@ -3,6 +3,18 @@ import { google } from "googleapis";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
 
+/**
+ * Utility to add timeout to promises with clear error messages
+ */
+function withTimeout<T>(label: string, ms: number, promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
 interface EmailConfig {
   provider: string;
   fromAddress: string;
@@ -58,7 +70,7 @@ class EmailService {
   private async createTransporter(config: EmailConfig) {
     if (config.provider === "gmail" && config.clientId && config.clientSecret && config.refreshToken) {
       // Gmail OAuth2 setup
-      console.log('[EmailService] Creating Gmail OAuth2 transporter:', {
+      console.log('[EmailService] [STAGE: create-transporter] Creating Gmail OAuth2 transporter:', {
         fromAddress: config.fromAddress,
         provider: 'gmail',
       });
@@ -74,15 +86,26 @@ class EmailService {
         refresh_token: config.refreshToken,
       });
 
-      // Get access token
+      // Get access token with timeout
+      console.log('[EmailService] [STAGE: fetch-access-token] Requesting OAuth2 access token from Google...');
+      let accessToken;
       try {
-        const accessToken = await oauth2Client.getAccessToken();
-        console.log('[EmailService] OAuth2 access token obtained successfully');
-      } catch (error) {
-        console.error('[EmailService] Failed to get OAuth2 access token:', error);
-        throw error;
+        accessToken = await withTimeout(
+          'OAuth2 access token retrieval',
+          10000, // 10 second timeout
+          oauth2Client.getAccessToken()
+        );
+        console.log('[EmailService] [STAGE: fetch-access-token] ✅ OAuth2 access token obtained successfully');
+      } catch (error: any) {
+        console.error('[EmailService] [STAGE: fetch-access-token] ❌ Failed to get OAuth2 access token:', {
+          error: error.message,
+          code: error.code,
+        });
+        if (error.message.includes('timed out')) {
+          throw new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.');
+        }
+        throw new Error(`Failed to authenticate with Gmail: ${error.message}`);
       }
-      const accessToken = await oauth2Client.getAccessToken();
 
       return nodemailer.createTransport({
         service: "gmail",
@@ -131,12 +154,21 @@ class EmailService {
    * Send a test email to verify configuration
    */
   async sendTestEmail(organizationId: string, recipientEmail: string): Promise<void> {
+    console.log('[EmailService] [STAGE: load-config] Loading email config for test email:', {
+      organizationId,
+      recipientEmail,
+    });
+
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
+      console.error('[EmailService] [STAGE: load-config] ❌ No email settings found');
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
+    console.log('[EmailService] [STAGE: load-config] ✅ Config loaded successfully');
 
+    console.log('[EmailService] [STAGE: create-transporter] Creating email transporter...');
     const transporter = await this.createTransporter(config);
+    console.log('[EmailService] [STAGE: create-transporter] ✅ Transporter created');
 
     const mailOptions = {
       from: `"${config.fromName}" <${config.fromAddress}>`,
@@ -156,15 +188,39 @@ class EmailService {
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    console.log('[EmailService] [STAGE: send-mail] Sending test email...');
+    try {
+      await withTimeout(
+        'Email send operation',
+        20000, // 20 second timeout
+        transporter.sendMail(mailOptions)
+      );
+      console.log('[EmailService] [STAGE: send-mail] ✅ Test email sent successfully');
+    } catch (error: any) {
+      console.error('[EmailService] [STAGE: send-mail] ❌ Failed to send test email:', {
+        error: error.message,
+        code: error.code,
+      });
+      if (error.message.includes('timed out')) {
+        throw new Error('Timed out while connecting to Gmail SMTP server. Please check your network connection and try again.');
+      }
+      throw error;
+    }
   }
 
   /**
    * Send quote email to recipient
    */
   async sendQuoteEmail(organizationId: string, quoteId: string, recipientEmail: string, userId?: string): Promise<void> {
+    console.log('[EmailService] [STAGE: load-config] Loading config for quote email:', {
+      organizationId,
+      quoteId,
+      recipientEmail,
+    });
+
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
+      console.error('[EmailService] [STAGE: load-config] ❌ No email settings found');
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
 
@@ -173,8 +229,11 @@ class EmailService {
     if (!quote) {
       throw new Error("Quote not found");
     }
+    console.log('[EmailService] [STAGE: load-config] ✅ Config and quote data loaded');
 
+    console.log('[EmailService] [STAGE: create-transporter] Creating email transporter...');
     const transporter = await this.createTransporter(config);
+    console.log('[EmailService] [STAGE: create-transporter] ✅ Transporter created');
 
     const htmlContent = this.generateQuoteEmailHTML(quote);
 
@@ -185,14 +244,31 @@ class EmailService {
       html: htmlContent,
     };
 
-    await transporter.sendMail(mailOptions);
+    console.log('[EmailService] [STAGE: send-mail] Sending quote email...');
+    try {
+      await withTimeout(
+        'Email send operation',
+        20000, // 20 second timeout
+        transporter.sendMail(mailOptions)
+      );
+      console.log('[EmailService] [STAGE: send-mail] ✅ Quote email sent successfully');
+    } catch (error: any) {
+      console.error('[EmailService] [STAGE: send-mail] ❌ Failed to send quote email:', {
+        error: error.message,
+        code: error.code,
+      });
+      if (error.message.includes('timed out')) {
+        throw new Error('Timed out while sending quote email. Please check your network connection and try again.');
+      }
+      throw error;
+    }
   }
 
   /**
    * Send generic email with custom content
    */
   async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; attachments?: any[] }): Promise<string> {
-    console.log(`[EmailService] sendEmail called:`, {
+    console.log(`[EmailService] [STAGE: load-config] sendEmail called:`, {
       organizationId,
       to: options.to,
       subject: options.subject,
@@ -203,12 +279,16 @@ class EmailService {
     const config = await this.getEmailConfig(organizationId);
     if (!config) {
       const error = new Error("Email settings not configured. Please configure email settings in the admin panel.");
-      console.error('[EmailService] FAILED - No config found for org:', organizationId);
+      console.error('[EmailService] [STAGE: load-config] ❌ No config found for org:', organizationId);
       throw error;
     }
+    console.log('[EmailService] [STAGE: load-config] ✅ Config loaded');
 
     try {
+      console.log('[EmailService] [STAGE: create-transporter] Creating email transporter...');
       const transporter = await this.createTransporter(config);
+      console.log('[EmailService] [STAGE: create-transporter] ✅ Transporter created');
+
       const mailOptions: any = {
         from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
         to: options.to,
@@ -221,10 +301,14 @@ class EmailService {
         mailOptions.attachments = options.attachments;
       }
 
-      console.log('[EmailService] Sending email via transporter...');
-      const info = await transporter.sendMail(mailOptions);
+      console.log('[EmailService] [STAGE: send-mail] Sending email via transporter...');
+      const info = await withTimeout(
+        'Email send operation',
+        20000, // 20 second timeout
+        transporter.sendMail(mailOptions)
+      );
       
-      console.log('[EmailService] ✅ Email sent successfully:', {
+      console.log('[EmailService] [STAGE: send-mail] ✅ Email sent successfully:', {
         messageId: info.messageId,
         response: info.response,
         accepted: info.accepted,
@@ -233,12 +317,14 @@ class EmailService {
 
       return info.messageId || 'no-message-id';
     } catch (error: any) {
-      console.error('[EmailService] ❌ Email send FAILED:', {
+      console.error('[EmailService] [STAGE: send-mail] ❌ Email send FAILED:', {
         error: error.message,
         code: error.code,
         command: error.command,
-        stack: error.stack,
       });
+      if (error.message.includes('timed out')) {
+        throw new Error('Timed out while sending email. Please check your network connection and try again.');
+      }
       throw error;
     }
   }
