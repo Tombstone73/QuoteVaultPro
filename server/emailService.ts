@@ -1,4 +1,3 @@
-import nodemailer from "nodemailer";
 import { google } from "googleapis";
 import { storage } from "./storage";
 import type { EmailSettings } from "@shared/schema";
@@ -13,6 +12,65 @@ function withTimeout<T>(label: string, ms: number, promise: Promise<T>): Promise
       setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
     ),
   ]);
+}
+
+/**
+ * Build raw RFC 2822 email message for Gmail API
+ */
+function buildRawMessage(options: {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+}): string {
+  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+  const { from, to, subject, html, attachments } = options;
+
+  let message = [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    'MIME-Version: 1.0',
+  ];
+
+  if (attachments && attachments.length > 0) {
+    // Multipart message with attachments
+    message.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+    message.push('');
+    message.push(`--${boundary}`);
+    message.push('Content-Type: text/html; charset=UTF-8');
+    message.push('Content-Transfer-Encoding: quoted-printable');
+    message.push('');
+    message.push(html);
+    message.push('');
+
+    // Add each attachment
+    for (const attachment of attachments) {
+      message.push(`--${boundary}`);
+      message.push(`Content-Type: ${attachment.contentType}`);
+      message.push('Content-Transfer-Encoding: base64');
+      message.push(`Content-Disposition: attachment; filename="${attachment.filename}"`);
+      message.push('');
+      message.push(attachment.content.toString('base64'));
+      message.push('');
+    }
+
+    message.push(`--${boundary}--`);
+  } else {
+    // Simple HTML message
+    message.push('Content-Type: text/html; charset=UTF-8');
+    message.push('');
+    message.push(html);
+  }
+
+  // Base64url encode the entire message
+  const rawMessage = message.join('\r\n');
+  return Buffer.from(rawMessage)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
 }
 
 interface EmailConfig {
@@ -65,88 +123,100 @@ class EmailService {
   }
 
   /**
-   * Create Nodemailer transporter with OAuth2 or SMTP
+   * Create Gmail API client with OAuth2 credentials
    */
-  private async createTransporter(config: EmailConfig) {
-    if (config.provider === "gmail" && config.clientId && config.clientSecret && config.refreshToken) {
-      // Gmail OAuth2 setup
-      console.log('[EmailService] [STAGE: create-transporter] Creating Gmail OAuth2 transporter:', {
-        fromAddress: config.fromAddress,
-        provider: 'gmail',
-      });
+  private async createGmailClient(config: EmailConfig) {
+    console.log('[EmailService] [STAGE: create-gmail-client] Creating Gmail API client:', {
+      fromAddress: config.fromAddress,
+      provider: config.provider,
+    });
 
-      const OAuth2 = google.auth.OAuth2;
-      const oauth2Client = new OAuth2(
-        config.clientId,
-        config.clientSecret,
-        "https://developers.google.com/oauthplayground" // Redirect URL
+    const OAuth2 = google.auth.OAuth2;
+    const oauth2Client = new OAuth2(
+      config.clientId,
+      config.clientSecret,
+      "https://developers.google.com/oauthplayground"
+    );
+
+    oauth2Client.setCredentials({
+      refresh_token: config.refreshToken,
+    });
+
+    // Get access token with timeout
+    console.log('[EmailService] [STAGE: fetch-access-token] Requesting OAuth2 access token from Google...');
+    try {
+      await withTimeout(
+        'OAuth2 access token retrieval',
+        10000, // 10 second timeout
+        oauth2Client.getAccessToken()
       );
-
-      oauth2Client.setCredentials({
-        refresh_token: config.refreshToken,
+      console.log('[EmailService] [STAGE: fetch-access-token] ✅ OAuth2 access token obtained successfully');
+    } catch (error: any) {
+      console.error('[EmailService] [STAGE: fetch-access-token] ❌ Failed to get OAuth2 access token:', {
+        error: error.message,
+        code: error.code,
       });
-
-      // Get access token with timeout
-      console.log('[EmailService] [STAGE: fetch-access-token] Requesting OAuth2 access token from Google...');
-      let accessToken;
-      try {
-        accessToken = await withTimeout(
-          'OAuth2 access token retrieval',
-          10000, // 10 second timeout
-          oauth2Client.getAccessToken()
-        );
-        console.log('[EmailService] [STAGE: fetch-access-token] ✅ OAuth2 access token obtained successfully');
-      } catch (error: any) {
-        console.error('[EmailService] [STAGE: fetch-access-token] ❌ Failed to get OAuth2 access token:', {
-          error: error.message,
-          code: error.code,
-        });
-        if (error.message.includes('timed out')) {
-          throw new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.');
-        }
-        throw new Error(`Failed to authenticate with Gmail: ${error.message}`);
+      if (error.message.includes('timed out')) {
+        throw new Error('Timed out while contacting Google to fetch an access token. Please check your network connection and try again.');
       }
+      throw new Error(`Failed to authenticate with Gmail: ${error.message}`);
+    }
 
-      return nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          type: "OAuth2",
-          user: config.fromAddress,
-          clientId: config.clientId,
-          clientSecret: config.clientSecret,
-          refreshToken: config.refreshToken,
-          accessToken: accessToken.token || undefined,
-        },
-        // Add strict timeouts to prevent long hangs
-        connectionTimeout: 10000, // 10s to establish connection
-        greetingTimeout: 10000,   // 10s for server greeting
-        socketTimeout: 15000,      // 15s for socket inactivity
-        pool: false,               // Disable connection pooling for reliability
-      } as any);
-    } else if (config.provider === "smtp" && config.smtpHost && config.smtpPort) {
-      // SMTP setup
-      console.log('[EmailService] Creating SMTP transporter:', {
-        host: config.smtpHost,
-        port: config.smtpPort,
-        secure: config.smtpPort === 465,
-        hasAuth: !!(config.smtpUsername && config.smtpPassword),
+    // Create Gmail API client
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    console.log('[EmailService] [STAGE: create-gmail-client] ✅ Gmail API client created');
+    
+    return gmail;
+  }
+
+  /**
+   * Send email via Gmail API (avoids SMTP timeouts on Railway)
+   */
+  private async sendViaGmailAPI(config: EmailConfig, options: {
+    to: string;
+    subject: string;
+    html: string;
+    attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+  }): Promise<string> {
+    const gmail = await this.createGmailClient(config);
+
+    const fromAddress = `"${config.fromName}" <${config.fromAddress}>`;
+    const rawMessage = buildRawMessage({
+      from: fromAddress,
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+      attachments: options.attachments,
+    });
+
+    console.log('[EmailService] [STAGE: send-via-gmail-api] Sending email via Gmail API...');
+    try {
+      const result = await withTimeout(
+        'Gmail API send operation',
+        20000, // 20 second timeout
+        gmail.users.messages.send({
+          userId: 'me',
+          requestBody: {
+            raw: rawMessage,
+          },
+        })
+      );
+      
+      console.log('[EmailService] [STAGE: send-via-gmail-api] ✅ Email sent successfully via Gmail API:', {
+        messageId: result.data.id,
+        threadId: result.data.threadId,
       });
-      return nodemailer.createTransport({
-        host: config.smtpHost,
-        port: config.smtpPort,
-        secure: config.smtpPort === 465, // true for 465, false for other ports
-        auth: config.smtpUsername && config.smtpPassword ? {
-          user: config.smtpUsername,
-          pass: config.smtpPassword,
-        } : undefined,
-        // Add strict timeouts to prevent long hangs
-        connectionTimeout: 10000, // 10s to establish connection
-        greetingTimeout: 10000,   // 10s for server greeting
-        socketTimeout: 15000,      // 15s for socket inactivity
-        pool: false,               // Disable connection pooling for reliability
-      } as any);
-    } else {
-      throw new Error(`Unsupported email provider: ${config.provider} or missing configuration`);
+
+      return result.data.id || 'no-message-id';
+    } catch (error: any) {
+      console.error('[EmailService] [STAGE: send-via-gmail-api] ❌ Gmail API send failed:', {
+        error: error.message,
+        code: error.code,
+      });
+      if (error.message.includes('timed out')) {
+        throw new Error('Timed out while sending email via Gmail API. Please check your network connection and try again.');
+      }
+      throw new Error(`Failed to send email via Gmail API: ${error.message}`);
     }
   }
 
@@ -166,46 +236,28 @@ class EmailService {
     }
     console.log('[EmailService] [STAGE: load-config] ✅ Config loaded successfully');
 
-    console.log('[EmailService] [STAGE: create-transporter] Creating email transporter...');
-    const transporter = await this.createTransporter(config);
-    console.log('[EmailService] [STAGE: create-transporter] ✅ Transporter created');
-
-    const mailOptions = {
-      from: `"${config.fromName}" <${config.fromAddress}>`,
-      to: recipientEmail,
-      subject: "Test Email from QuoteVaultPro",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #333;">Email Configuration Test</h2>
-          <p>This is a test email from QuoteVaultPro.</p>
-          <p>If you're receiving this, your email configuration is working correctly! ✅</p>
-          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-          <p style="color: #666; font-size: 12px;">
-            Sent from QuoteVaultPro<br>
-            Provider: ${config.provider}
-          </p>
-        </div>
-      `,
-    };
-
-    console.log('[EmailService] [STAGE: send-mail] Sending test email...');
-    try {
-      await withTimeout(
-        'Email send operation',
-        20000, // 20 second timeout
-        transporter.sendMail(mailOptions)
-      );
-      console.log('[EmailService] [STAGE: send-mail] ✅ Test email sent successfully');
-    } catch (error: any) {
-      console.error('[EmailService] [STAGE: send-mail] ❌ Failed to send test email:', {
-        error: error.message,
-        code: error.code,
-      });
-      if (error.message.includes('timed out')) {
-        throw new Error('Timed out while connecting to Gmail SMTP server. Please check your network connection and try again.');
-      }
-      throw error;
+    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
+      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
     }
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #333;">Email Configuration Test</h2>
+        <p>This is a test email from QuoteVaultPro.</p>
+        <p>If you're receiving this, your email configuration is working correctly! ✅</p>
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+        <p style="color: #666; font-size: 12px;">
+          Sent from QuoteVaultPro via Gmail API<br>
+          Provider: ${config.provider}
+        </p>
+      </div>
+    `;
+
+    await this.sendViaGmailAPI(config, {
+      to: recipientEmail,
+      subject: 'Test Email from QuoteVaultPro',
+      html,
+    });
   }
 
   /**
@@ -224,6 +276,10 @@ class EmailService {
       throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
     }
 
+    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
+      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
+    }
+
     // Get quote data
     const quote = await storage.getQuoteById(organizationId, quoteId, userId);
     if (!quote) {
@@ -231,37 +287,13 @@ class EmailService {
     }
     console.log('[EmailService] [STAGE: load-config] ✅ Config and quote data loaded');
 
-    console.log('[EmailService] [STAGE: create-transporter] Creating email transporter...');
-    const transporter = await this.createTransporter(config);
-    console.log('[EmailService] [STAGE: create-transporter] ✅ Transporter created');
-
     const htmlContent = this.generateQuoteEmailHTML(quote);
 
-    const mailOptions = {
-      from: `"${config.fromName}" <${config.fromAddress}>`,
+    await this.sendViaGmailAPI(config, {
       to: recipientEmail,
       subject: `Quote #${quote.quoteNumber} from ${config.fromName}`,
       html: htmlContent,
-    };
-
-    console.log('[EmailService] [STAGE: send-mail] Sending quote email...');
-    try {
-      await withTimeout(
-        'Email send operation',
-        20000, // 20 second timeout
-        transporter.sendMail(mailOptions)
-      );
-      console.log('[EmailService] [STAGE: send-mail] ✅ Quote email sent successfully');
-    } catch (error: any) {
-      console.error('[EmailService] [STAGE: send-mail] ❌ Failed to send quote email:', {
-        error: error.message,
-        code: error.code,
-      });
-      if (error.message.includes('timed out')) {
-        throw new Error('Timed out while sending quote email. Please check your network connection and try again.');
-      }
-      throw error;
-    }
+    });
   }
 
   /**
@@ -284,49 +316,26 @@ class EmailService {
     }
     console.log('[EmailService] [STAGE: load-config] ✅ Config loaded');
 
-    try {
-      console.log('[EmailService] [STAGE: create-transporter] Creating email transporter...');
-      const transporter = await this.createTransporter(config);
-      console.log('[EmailService] [STAGE: create-transporter] ✅ Transporter created');
-
-      const mailOptions: any = {
-        from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
-        to: options.to,
-        subject: options.subject,
-        html: options.html,
-      };
-
-      // Add attachments if provided
-      if (options.attachments && options.attachments.length > 0) {
-        mailOptions.attachments = options.attachments;
-      }
-
-      console.log('[EmailService] [STAGE: send-mail] Sending email via transporter...');
-      const info = await withTimeout(
-        'Email send operation',
-        20000, // 20 second timeout
-        transporter.sendMail(mailOptions)
-      );
-      
-      console.log('[EmailService] [STAGE: send-mail] ✅ Email sent successfully:', {
-        messageId: info.messageId,
-        response: info.response,
-        accepted: info.accepted,
-        rejected: info.rejected,
-      });
-
-      return info.messageId || 'no-message-id';
-    } catch (error: any) {
-      console.error('[EmailService] [STAGE: send-mail] ❌ Email send FAILED:', {
-        error: error.message,
-        code: error.code,
-        command: error.command,
-      });
-      if (error.message.includes('timed out')) {
-        throw new Error('Timed out while sending email. Please check your network connection and try again.');
-      }
-      throw error;
+    if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
+      throw new Error('Gmail OAuth credentials are required. Please configure email settings.');
     }
+
+    // Convert nodemailer attachment format to Gmail API format
+    let gmailAttachments: Array<{ filename: string; content: Buffer; contentType: string }> | undefined;
+    if (options.attachments && options.attachments.length > 0) {
+      gmailAttachments = options.attachments.map((att: any) => ({
+        filename: att.filename || 'attachment',
+        content: Buffer.isBuffer(att.content) ? att.content : Buffer.from(att.content),
+        contentType: att.contentType || 'application/octet-stream',
+      }));
+    }
+
+    return await this.sendViaGmailAPI(config, {
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+      attachments: gmailAttachments,
+    });
   }
 
   /**
