@@ -14,6 +14,8 @@ import { isWorkerEnabled, logWorkerStatus, getWorkerIntervalOverride, logWorkerT
 const app = express();
 
 // CORS configuration for production frontend
+// Note: Same-origin requests from Vercel proxy (www.printershero.com/api/* → Railway)
+// will have no Origin header, so they're allowed by default
 const allowedOrigins = [
   "https://www.printershero.com",
   "http://localhost:5173", // Vite dev server
@@ -22,12 +24,13 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    // Allow requests with no origin (like mobile apps or curl requests) in development
-    if (!origin && process.env.NODE_ENV === "development") {
+    // Allow requests with no origin (same-origin requests from Vercel proxy)
+    if (!origin) {
       callback(null, true);
       return;
     }
-    if (!origin || allowedOrigins.includes(origin)) {
+    // Allow requests from explicitly allowed origins
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error(`Origin ${origin} not allowed by CORS`));
@@ -43,7 +46,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions)); // Handle preflight requests
 
-// Trust proxy for secure cookies in production (Railway)
+// Trust proxy for secure cookies behind Railway/Vercel proxy
 if (process.env.NODE_ENV === "production") {
   app.set("trust proxy", 1);
 }
