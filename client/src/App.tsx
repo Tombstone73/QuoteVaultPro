@@ -13,6 +13,7 @@ import Login from "@/pages/login";
 import ForgotPassword from "@/pages/forgot-password";
 import ResetPassword from "@/pages/reset-password";
 import SetPasswordPage from "@/pages/set-password";
+import ForcePasswordChange from "@/pages/force-password-change";
 import Home from "@/pages/home";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
@@ -54,7 +55,7 @@ import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
 
 function Router() {
-  const { user, isAuthenticated, isLoading } = useAuth();
+  const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
 
   // While loading auth status, show nothing (or a loading spinner)
   if (isLoading) {
@@ -77,7 +78,17 @@ function Router() {
     );
   }
 
-  // If authenticated but must set password, only allow set-password route
+  // If authenticated but must change password (invited user), force password change
+  if (mustChangePassword) {
+    return (
+      <Routes>
+        <Route path="/force-password-change" element={<ForcePasswordChange />} />
+        <Route path="*" element={<Navigate to="/force-password-change" replace />} />
+      </Routes>
+    );
+  }
+
+  // Legacy: If user has mustSetPassword flag, redirect to set-password
   if (user?.mustSetPassword) {
     return (
       <Routes>

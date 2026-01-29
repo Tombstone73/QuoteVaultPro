@@ -3,48 +3,58 @@ import { useNavigate } from "react-router-dom";
 import type { User } from "@shared/schema";
 import { getApiUrl } from "@/lib/apiConfig";
 
+type SessionResponse = {
+  authenticated: boolean;
+  user?: User;
+  mustChangePassword?: boolean;
+};
+
 export function useAuth() {
-  const { data: user, isLoading, error } = useQuery<User>({
-    queryKey: [getApiUrl("/api/auth/user")],
+  const { data: sessionData, isLoading, error } = useQuery<SessionResponse>({
+    queryKey: [getApiUrl("/api/auth/session")],
     queryFn: async () => {
-      const response = await fetch(getApiUrl("/api/auth/user"), {
+      const response = await fetch(getApiUrl("/api/auth/session"), {
         credentials: "include",
       });
       
-      // If 401, user is not authenticated - return null instead of throwing
+      // If 401, user is not authenticated
       if (response.status === 401) {
-        // Debug logging (non-production only)
         if (process.env.NODE_ENV !== "production") {
-          console.log("[Auth] GET /api/auth/user returned 401 (not authenticated)");
+          console.log("[Auth] GET /api/auth/session returned 401 (not authenticated)");
         }
-        return null;
+        return { authenticated: false };
       }
       
       if (!response.ok) {
-        throw new Error(`Failed to fetch user: ${response.status}`);
+        throw new Error(`Failed to fetch session: ${response.status}`);
       }
       
-      const user = await response.json();
+      const sessionData = await response.json();
       
       // Debug logging (non-production only)
       if (process.env.NODE_ENV !== "production") {
-        console.log("[Auth] User authenticated:", user?.email || user?.id);
+        console.log("[Auth] Session:", {
+          authenticated: sessionData.authenticated,
+          email: sessionData.user?.email,
+          mustChangePassword: sessionData.mustChangePassword,
+        });
       }
       
-      return user;
+      return sessionData;
     },
     retry: false,
     staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
   });
 
-  // User is authenticated if we have user data (not null and no error)
-  const isAuthenticated = !!user && !error;
+  // User is authenticated if session says so and we have user data
+  const isAuthenticated = sessionData?.authenticated === true && !!sessionData.user && !error;
 
   return {
-    user: user ?? undefined,
+    user: sessionData?.user,
     isLoading,
     isAuthenticated,
-    isAdmin: user?.isAdmin ?? false,
+    isAdmin: sessionData?.user?.isAdmin ?? false,
+    mustChangePassword: sessionData?.mustChangePassword ?? false,
   };
 }
 

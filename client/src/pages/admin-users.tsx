@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
-import { Shield, Crown, User, Trash2 } from "lucide-react";
+import { Shield, Crown, User, Trash2, UserPlus } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,15 +20,26 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { format } from "date-fns";
 
-type User = {
+type OrgUser = {
   id: string;
   email: string;
   firstName: string | null;
   lastName: string | null;
-  isAdmin: boolean;
-  role: string;
+  orgRole: string;
+  isInvited: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -38,11 +49,14 @@ export default function AdminUsers() {
   const { user: currentUser } = useAuth();
   const queryClient = useQueryClient();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [userToDelete, setUserToDelete] = useState<User | null>(null);
+  const [userToDelete, setUserToDelete] = useState<OrgUser | null>(null);
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"admin" | "manager" | "member">("member");
 
-  const isOwner = currentUser?.role === "owner";
+  const isOwnerOrAdmin = currentUser?.role === "owner" || currentUser?.role === "admin";
 
-  const { data: users, isLoading } = useQuery<User[]>({
+  const { data: users, isLoading } = useQuery<OrgUser[]>({
     queryKey: ["/api/users"],
     queryFn: async () => {
       const response = await fetch("/api/users", { credentials: "include" });
@@ -51,12 +65,45 @@ export default function AdminUsers() {
     },
   });
 
+  const inviteUserMutation = useMutation({
+    mutationFn: async ({ email, orgRole }: { email: string; orgRole: string }) => {
+      const response = await fetch("/api/users/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, orgRole }),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to invite user");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({
+        title: "User Invited",
+        description: "Invitation email has been sent successfully.",
+      });
+      setInviteDialogOpen(false);
+      setInviteEmail("");
+      setInviteRole("member");
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const updateUserMutation = useMutation({
-    mutationFn: async ({ id, updates }: { id: string; updates: Partial<User> }) => {
+    mutationFn: async ({ id, orgRole }: { id: string; orgRole: string }) => {
       const response = await fetch(`/api/users/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates),
+        body: JSON.stringify({ orgRole }),
         credentials: "include",
       });
       if (!response.ok) {
@@ -97,7 +144,7 @@ export default function AdminUsers() {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       toast({
         title: "Success",
-        description: "User deleted successfully",
+        description: "User removed from organization",
       });
       setDeleteDialogOpen(false);
       setUserToDelete(null);
@@ -111,15 +158,23 @@ export default function AdminUsers() {
     },
   });
 
+  const handleInviteSubmit = () => {
+    if (!inviteEmail) {
+      toast({
+        title: "Error",
+        description: "Email is required",
+        variant: "destructive",
+      });
+      return;
+    }
+    inviteUserMutation.mutate({ email: inviteEmail, orgRole: inviteRole });
+  };
+
   const handleRoleChange = (userId: string, newRole: string) => {
-    updateUserMutation.mutate({ id: userId, updates: { role: newRole } });
+    updateUserMutation.mutate({ id: userId, orgRole: newRole });
   };
 
-  const handleAdminToggle = (userId: string, currentIsAdmin: boolean) => {
-    updateUserMutation.mutate({ id: userId, updates: { isAdmin: !currentIsAdmin } });
-  };
-
-  const handleDeleteClick = (user: User) => {
+  const handleDeleteClick = (user: OrgUser) => {
     setUserToDelete(user);
     setDeleteDialogOpen(true);
   };
@@ -130,20 +185,27 @@ export default function AdminUsers() {
     }
   };
 
-  const getRoleBadge = (role: string) => {
-    switch (role) {
+  const getOrgRoleBadge = (orgRole: string, isInvited: boolean) => {
+    const badgeContent = (
+      <>
+        {orgRole === "admin" && <Shield className="w-3 h-3 mr-1" />}
+        {orgRole === "owner" && <Crown className="w-3 h-3 mr-1" />}
+        {orgRole.charAt(0).toUpperCase() + orgRole.slice(1)}
+        {isInvited && <span className="ml-1 text-xs">(Invited)</span>}
+      </>
+    );
+
+    switch (orgRole) {
       case "owner":
-        return <Badge className="bg-purple-600"><Crown className="w-3 h-3 mr-1" />Owner</Badge>;
+        return <Badge className="bg-purple-600">{badgeContent}</Badge>;
       case "admin":
-        return <Badge className="bg-primary"><Shield className="w-3 h-3 mr-1" />Admin</Badge>;
+        return <Badge className="bg-primary">{badgeContent}</Badge>;
       case "manager":
-        return <Badge variant="secondary">Manager</Badge>;
-      case "employee":
-        return <Badge variant="outline">Employee</Badge>;
-      case "customer":
-        return <Badge variant="outline"><User className="w-3 h-3 mr-1" />Customer</Badge>;
+        return <Badge variant="secondary">{badgeContent}</Badge>;
+      case "member":
+        return <Badge variant="outline">{badgeContent}</Badge>;
       default:
-        return <Badge variant="outline">{role}</Badge>;
+        return <Badge variant="outline">{badgeContent}</Badge>;
     }
   };
 
@@ -158,18 +220,74 @@ export default function AdminUsers() {
 
   return (
     <div className="container mx-auto p-6 space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">User Management</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage user roles and permissions
-        </p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold">User Management</h1>
+          <p className="text-muted-foreground mt-1">
+            Manage user roles and permissions for your organization
+          </p>
+        </div>
+        {isOwnerOrAdmin && (
+          <Dialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <UserPlus className="w-4 h-4 mr-2" />
+                Invite User
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Invite User to Organization</DialogTitle>
+                <DialogDescription>
+                  Send an invitation email with a temporary password. The user will be required to set a new password on first login.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="invite-email">Email Address</Label>
+                  <Input
+                    id="invite-email"
+                    type="email"
+                    placeholder="user@example.com"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="invite-role">Organization Role</Label>
+                  <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as any)}>
+                    <SelectTrigger id="invite-role">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="admin">Admin</SelectItem>
+                      <SelectItem value="manager">Manager</SelectItem>
+                      <SelectItem value="member">Member</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground">
+                    Admin: Full access. Manager: Limited admin. Member: Standard access.
+                  </p>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setInviteDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleInviteSubmit} disabled={inviteUserMutation.isPending}>
+                  {inviteUserMutation.isPending ? "Sending..." : "Send Invitation"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Users</CardTitle>
+          <CardTitle>Organization Members</CardTitle>
           <CardDescription>
-            {users?.length ?? 0} user{users?.length !== 1 ? 's' : ''} total
+            {users?.length ?? 0} member{users?.length !== 1 ? 's' : ''} in your organization
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -180,15 +298,15 @@ export default function AdminUsers() {
                   <TableHead>Name</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
-                  <TableHead>Admin</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="w-[100px]">Actions</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Joined</TableHead>
+                  {isOwnerOrAdmin && <TableHead className="w-[100px]">Actions</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {users?.map((user) => {
                   const isCurrentUser = user.id === currentUser?.id;
-                  const canEdit = isOwner && !isCurrentUser;
+                  const canEdit = isOwnerOrAdmin && !isCurrentUser;
                   
                   return (
                     <TableRow key={user.id}>
@@ -208,7 +326,7 @@ export default function AdminUsers() {
                       <TableCell>
                         {canEdit ? (
                           <Select
-                            value={user.role}
+                            value={user.orgRole}
                             onValueChange={(value) => handleRoleChange(user.id, value)}
                             disabled={updateUserMutation.isPending}
                           >
@@ -216,45 +334,43 @@ export default function AdminUsers() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="owner">Owner</SelectItem>
                               <SelectItem value="admin">Admin</SelectItem>
                               <SelectItem value="manager">Manager</SelectItem>
-                              <SelectItem value="employee">Employee</SelectItem>
-                              <SelectItem value="customer">Customer</SelectItem>
+                              <SelectItem value="member">Member</SelectItem>
                             </SelectContent>
                           </Select>
                         ) : (
-                          getRoleBadge(user.role)
+                          getOrgRoleBadge(user.orgRole, user.isInvited)
                         )}
                       </TableCell>
                       <TableCell>
-                        {canEdit ? (
-                          <Switch
-                            checked={user.isAdmin}
-                            onCheckedChange={() => handleAdminToggle(user.id, user.isAdmin)}
-                            disabled={updateUserMutation.isPending}
-                          />
+                        {user.isInvited ? (
+                          <Badge variant="outline" className="border-yellow-600 text-yellow-600">
+                            Pending
+                          </Badge>
                         ) : (
-                          <span className="text-sm text-muted-foreground">
-                            {user.isAdmin ? "Yes" : "No"}
-                          </span>
+                          <Badge variant="outline" className="border-green-600 text-green-600">
+                            Active
+                          </Badge>
                         )}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {format(new Date(user.createdAt), "MMM d, yyyy")}
                       </TableCell>
-                      <TableCell>
-                        {canEdit && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleDeleteClick(user)}
-                            disabled={deleteUserMutation.isPending}
-                          >
-                            <Trash2 className="w-4 h-4 text-destructive" />
-                          </Button>
-                        )}
-                      </TableCell>
+                      {isOwnerOrAdmin && (
+                        <TableCell>
+                          {canEdit && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleDeleteClick(user)}
+                              disabled={deleteUserMutation.isPending}
+                            >
+                              <Trash2 className="w-4 h-4 text-destructive" />
+                            </Button>
+                          )}
+                        </TableCell>
+                      )}
                     </TableRow>
                   );
                 })}
@@ -264,12 +380,12 @@ export default function AdminUsers() {
         </CardContent>
       </Card>
 
-      {!isOwner && (
+      {!isOwnerOrAdmin && (
         <Card className="border-yellow-600 bg-yellow-50 dark:bg-yellow-950">
           <CardHeader>
             <CardTitle className="text-yellow-800 dark:text-yellow-200">View Only Access</CardTitle>
             <CardDescription className="text-yellow-700 dark:text-yellow-300">
-              Only users with the Owner role can modify user roles and permissions.
+              Only users with Owner or Admin roles can invite users and modify permissions.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -278,15 +394,15 @@ export default function AdminUsers() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete User</AlertDialogTitle>
+            <AlertDialogTitle>Remove User</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete {userToDelete?.email}? This action cannot be undone.
+              Are you sure you want to remove {userToDelete?.email} from your organization? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleConfirmDelete} className="bg-destructive text-destructive-foreground">
-              Delete
+              Remove User
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

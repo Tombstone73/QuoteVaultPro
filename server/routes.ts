@@ -112,6 +112,38 @@ const isAdminOrOwner = (req: any, res: any, next: any) => {
   return res.status(403).json({ message: "Access denied. Admin or Owner role required." });
 };
 
+// Org-scoped owner/admin check - requires tenantContext middleware
+const requireOrgOwnerAdmin = async (req: any, res: any, next: any) => {
+  try {
+    const userId = getUserId(req.user);
+    const organizationId = getRequestOrganizationId(req);
+    
+    if (!userId || !organizationId) {
+      return res.status(403).json({ message: "Missing authentication or organization context" });
+    }
+    
+    const [membership] = await db
+      .select()
+      .from(userOrganizations)
+      .where(
+        and(
+          eq(userOrganizations.userId, userId),
+          eq(userOrganizations.organizationId, organizationId)
+        )
+      )
+      .limit(1);
+    
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
+      return res.status(403).json({ message: "Access denied. Organization Owner or Admin role required." });
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Error in requireOrgOwnerAdmin middleware:', error);
+    return res.status(500).json({ message: "Failed to verify permissions" });
+  }
+};
+
 // =============================
 // Import Job Helpers
 // =============================
@@ -605,51 +637,239 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // User management routes (admin only)
-  app.get("/api/users", isAuthenticated, isAdmin, async (req, res) => {
+  // User management routes - org-scoped (owner/admin only)
+  app.get("/api/users", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
-      const users = await storage.getAllUsers();
-      res.json(users);
+      const organizationId = getRequestOrganizationId(req);
+
+      // Get all users in this organization with their auth status
+      const orgUsers = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          orgRole: userOrganizations.role,
+          isInvited: sql<boolean>`(${authIdentities.passwordHash} IS NOT NULL AND ${authIdentities.passwordSetAt} IS NULL)`,
+          createdAt: users.createdAt,
+          updatedAt: users.updatedAt,
+        })
+        .from(userOrganizations)
+        .innerJoin(users, eq(userOrganizations.userId, users.id))
+        .leftJoin(
+          authIdentities,
+          and(
+            eq(authIdentities.userId, users.id),
+            eq(authIdentities.provider, sql`'password'`)
+          )
+        )
+        .where(eq(userOrganizations.organizationId, organizationId))
+        .orderBy(asc(users.email));
+
+      res.json(orgUsers);
     } catch (error) {
       console.error("Error fetching users:", error);
       res.status(500).json({ message: "Failed to fetch users" });
     }
   });
 
-  app.patch("/api/users/:id", isAuthenticated, isAdmin, async (req, res) => {
+  // Invite a new user to the organization
+  app.post("/api/users/invite", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
-      const { id } = req.params;
-      const updates = req.body;
+      const organizationId = getRequestOrganizationId(req);
+      const { email: rawEmail, orgRole = 'member' } = req.body;
 
-      // Prevent users from removing their own admin status
-      const currentUserId = getUserId(req.user);
-      if (id === currentUserId && updates.isAdmin === false) {
-        return res.status(400).json({ message: "You cannot remove your own admin status" });
+      if (!rawEmail || typeof rawEmail !== 'string') {
+        return res.status(400).json({ message: "Email is required" });
       }
 
-      const user = await storage.updateUser(id, updates);
-      res.json(user);
+      const email = rawEmail.trim().toLowerCase();
+
+      // Validate org role
+      if (!['admin', 'manager', 'member'].includes(orgRole)) {
+        return res.status(400).json({ message: "Invalid org role. Must be admin, manager, or member." });
+      }
+
+      // Check if user already exists
+      const [existingUser] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+
+      let userId: string;
+
+      if (existingUser) {
+        userId = existingUser.id;
+        
+        // Check if already in this org
+        const [existingMembership] = await db
+          .select()
+          .from(userOrganizations)
+          .where(
+            and(
+              eq(userOrganizations.userId, userId),
+              eq(userOrganizations.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+
+        if (existingMembership) {
+          return res.status(400).json({ message: "User already exists in this organization" });
+        }
+      } else {
+        // Create new user
+        userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        await db.insert(users).values({
+          id: userId,
+          email: email,
+          firstName: null,
+          lastName: null,
+          role: 'employee',
+          isAdmin: false,
+          profileImageUrl: null,
+          passwordHash: null,
+        });
+      }
+
+      // Generate cryptographically strong temporary password
+      const tempPassword = crypto.randomBytes(9).toString('base64url');
+      
+      // Hash the temporary password
+      const bcryptModule = await import('bcryptjs');
+      const passwordHash = await bcryptModule.hash(tempPassword, 10);
+
+      // Upsert auth identity with temp password (passwordSetAt = NULL indicates invited state)
+      await db
+        .insert(authIdentities)
+        .values({
+          userId: userId,
+          provider: 'password',
+          passwordHash: passwordHash,
+          passwordSetAt: null, // NULL = invited/temp password state
+        })
+        .onConflictDoUpdate({
+          target: [authIdentities.userId, authIdentities.provider],
+          set: {
+            passwordHash: passwordHash,
+            passwordSetAt: null,
+            updatedAt: sql`now()`,
+          },
+        });
+
+      // Add user to organization
+      await db.insert(userOrganizations).values({
+        userId: userId,
+        organizationId: organizationId,
+        role: orgRole,
+        isDefault: true,
+      });
+
+      // Send invite email asynchronously (non-blocking)
+      setImmediate(async () => {
+        try {
+          const appUrl = 'https://www.printershero.com';
+          
+          await emailService.sendEmail(organizationId, {
+            to: email,
+            subject: "You're invited to PrintersHero",
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2>Welcome to PrintersHero!</h2>
+                <p>You've been invited to join PrintersHero, a printing company management system.</p>
+                
+                <h3>Your Login Credentials</h3>
+                <p><strong>Email:</strong> ${email}</p>
+                <p><strong>Temporary Password:</strong> <code style="background: #f4f4f5; padding: 4px 8px; border-radius: 4px;">${tempPassword}</code></p>
+                
+                <p style="margin: 24px 0;">
+                  <a href="${appUrl}/login" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                    Log In to PrintersHero
+                  </a>
+                </p>
+                
+                <p><strong>Important:</strong> You will be required to change your password on first login.</p>
+                
+                <p style="color: #71717a; font-size: 14px; margin-top: 32px;">
+                  If you did not expect this invitation, please ignore this email.
+                </p>
+              </div>
+            `,
+          });
+        } catch (emailError) {
+          console.error('Failed to send invite email:', emailError);
+        }
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error inviting user:", error);
+      res.status(500).json({ message: "Failed to invite user" });
+    }
+  });
+
+  app.patch("/api/users/:id", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { orgRole } = req.body;
+      const currentUserId = getUserId(req.user);
+      const organizationId = getRequestOrganizationId(req);
+
+      // Prevent users from modifying themselves
+      if (id === currentUserId) {
+        return res.status(400).json({ message: "You cannot modify your own membership" });
+      }
+
+      // Validate org role
+      if (orgRole && !['admin', 'manager', 'member'].includes(orgRole)) {
+        return res.status(400).json({ message: "Invalid org role" });
+      }
+
+      // Update user's role in this organization
+      if (orgRole) {
+        await db
+          .update(userOrganizations)
+          .set({ role: orgRole, updatedAt: sql`now()` })
+          .where(
+            and(
+              eq(userOrganizations.userId, id),
+              eq(userOrganizations.organizationId, organizationId)
+            )
+          );
+      }
+
+      res.json({ success: true });
     } catch (error) {
       console.error("Error updating user:", error);
       res.status(500).json({ message: "Failed to update user" });
     }
   });
 
-  app.delete("/api/users/:id", isAuthenticated, isAdmin, async (req: any, res) => {
+  app.delete("/api/users/:id", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const { id } = req.params;
       const currentUserId = getUserId(req.user);
+      const organizationId = getRequestOrganizationId(req);
 
-      // Prevent users from deleting themselves
+      // Prevent users from removing themselves
       if (id === currentUserId) {
-        return res.status(400).json({ message: "You cannot delete your own account" });
+        return res.status(400).json({ message: "You cannot remove yourself from the organization" });
       }
 
-      await storage.deleteUser(id);
+      // Remove user from organization
+      await db
+        .delete(userOrganizations)
+        .where(
+          and(
+            eq(userOrganizations.userId, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        );
+
       res.json({ success: true });
     } catch (error) {
-      console.error("Error deleting user:", error);
-      res.status(500).json({ message: "Failed to delete user" });
+      console.error("Error removing user:", error);
+      res.status(500).json({ message: "Failed to remove user" });
     }
   });
 

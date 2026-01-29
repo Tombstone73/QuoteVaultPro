@@ -13,6 +13,23 @@ import { sql, eq, and, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import { authIdentities } from "@shared/schema";
 
+// Helper: Check if user must change password (invited state)
+async function getMustChangePassword(userId: string): Promise<boolean> {
+  const [identity] = await db
+    .select()
+    .from(authIdentities)
+    .where(
+      and(
+        eq(authIdentities.userId, userId),
+        eq(authIdentities.provider, 'password')
+      )
+    )
+    .limit(1);
+
+  // User must change password if they have a password hash but passwordSetAt is NULL
+  return !!(identity && identity.passwordHash && !identity.passwordSetAt);
+}
+
 // Temporary inline schema definition until shared/schema.ts build issues are resolved
 const passwordResetTokens = pgTable("password_reset_tokens", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -76,6 +93,45 @@ export async function setupAuth(app: Express) {
   app.use(getSession());
   app.use(passport.initialize());
   app.use(passport.session());
+
+  // Enforce password change for invited users (before other routes)
+  app.use(async (req, res, next) => {
+    // Skip enforcement if not authenticated
+    if (!req.isAuthenticated()) {
+      return next();
+    }
+
+    // Skip enforcement for allowlisted auth routes
+    const allowlistedPaths = [
+      '/api/auth/session',
+      '/api/auth/logout',
+      '/api/auth/complete-invite-password',
+      '/api/auth/reset-password',
+      '/api/auth/forgot-password',
+    ];
+
+    if (allowlistedPaths.includes(req.path)) {
+      return next();
+    }
+
+    // Check if user must change password
+    const user = req.user as any;
+    const userId = user?.claims?.sub || user?.id;
+
+    if (userId) {
+      const mustChange = await getMustChangePassword(userId);
+      
+      // Block all other API routes if password change is required
+      if (mustChange && req.path.startsWith('/api')) {
+        return res.status(403).json({ 
+          message: "Password change required", 
+          code: "PASSWORD_CHANGE_REQUIRED" 
+        });
+      }
+    }
+
+    next();
+  });
 
   // Production: Require valid user lookup
   // Development: Auto-create test users for convenience
@@ -167,11 +223,21 @@ export async function setupAuth(app: Express) {
   });
 
   // Session check endpoint - returns current user or 401
-  app.get("/api/auth/session", (req, res) => {
+  app.get("/api/auth/session", async (req, res) => {
     if (!req.isAuthenticated()) {
       return res.status(401).json({ authenticated: false });
     }
-    res.json({ authenticated: true, user: req.user });
+    
+    const user = req.user as any;
+    const userId = user?.claims?.sub || user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({ authenticated: false });
+    }
+    
+    const mustChangePassword = await getMustChangePassword(userId);
+    
+    res.json({ authenticated: true, user: req.user, mustChangePassword });
   });
 
   // Login endpoint for production
@@ -384,11 +450,26 @@ export async function setupAuth(app: Express) {
         });
       }
 
-      // TODO: Hash the new password using bcrypt before storing
-      // For now, store as plain text (NOT PRODUCTION READY)
-      // In production, you would:
-      // const passwordHash = await bcrypt.hash(newPassword, 10);
-      // Then store passwordHash in users table or auth_identities table
+      // Hash the new password with bcrypt
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+
+      // Update auth identity with new password hash
+      await db
+        .insert(authIdentities)
+        .values({
+          userId: resetRecord.userId,
+          provider: 'password',
+          passwordHash: passwordHash,
+          passwordSetAt: new Date(), // Mark password as permanently set
+        })
+        .onConflictDoUpdate({
+          target: [authIdentities.userId, authIdentities.provider],
+          set: {
+            passwordHash: passwordHash,
+            passwordSetAt: new Date(),
+            updatedAt: sql`now()`,
+          },
+        });
 
       // Mark token as used
       await db
@@ -406,6 +487,76 @@ export async function setupAuth(app: Express) {
       res.status(500).json({ 
         success: false, 
         message: "Failed to reset password. Please try again." 
+      });
+    }
+  });
+
+  // Complete invite: Set permanent password after logging in with temp password
+  app.post("/api/auth/complete-invite-password", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ 
+          success: false, 
+          message: "You must be logged in to change your password" 
+        });
+      }
+
+      const user = req.user as any;
+      const userId = user?.claims?.sub || user?.id;
+
+      if (!userId) {
+        return res.status(401).json({ 
+          success: false, 
+          message: "Invalid session" 
+        });
+      }
+
+      const { newPassword } = req.body;
+
+      if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Password must be at least 8 characters long" 
+        });
+      }
+
+      // Verify user is in invited state (must change password)
+      const mustChange = await getMustChangePassword(userId);
+      if (!mustChange) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Your password does not need to be changed" 
+        });
+      }
+
+      // Hash the new password with bcrypt
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+
+      // Update auth identity with new password hash and set passwordSetAt
+      await db
+        .update(authIdentities)
+        .set({
+          passwordHash: passwordHash,
+          passwordSetAt: new Date(), // Mark password as permanently set
+          updatedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(authIdentities.userId, userId),
+            eq(authIdentities.provider, 'password')
+          )
+        );
+
+      res.json({ 
+        success: true, 
+        message: "Password updated successfully" 
+      });
+
+    } catch (error) {
+      console.error("[Complete Invite] Password change error:", error);
+      res.status(500).json({ 
+        success: false, 
+        message: "Failed to update password. Please try again." 
       });
     }
   });
