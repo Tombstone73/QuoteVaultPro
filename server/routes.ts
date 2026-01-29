@@ -5,10 +5,9 @@ import { promises as fsPromises } from "fs";
 import { randomUUID } from "crypto";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
-import bcrypt from "bcryptjs";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -589,6 +588,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
+      // Diagnostic logging for session verification (non-sensitive)
+      if (process.env.NODE_ENV !== 'production' || process.env.DEBUG_AUTH === 'true') {
+        console.log('[Auth /api/auth/user] Session ID exists:', !!req.sessionID);
+        console.log('[Auth /api/auth/user] User authenticated:', !!req.user);
+        console.log('[Auth /api/auth/user] Cookie header present:', !!req.headers.cookie);
+      }
+      
       const userId = getUserId(req.user);
       const user = await storage.getUser(userId!);
       res.json(user);
@@ -643,95 +649,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting user:", error);
       res.status(500).json({ message: "Failed to delete user" });
-    }
-  });
-
-  // DIAGNOSTIC ENDPOINT: Manually set user password for testing
-  // TODO: Remove this endpoint after authentication system is fully implemented
-  // This bypasses email verification and is for development/testing only
-  app.post("/api/admin/users/set-password", isAuthenticated, isAdminOrOwner, async (req: any, res) => {
-    try {
-      const { email, password } = req.body;
-
-      // Validate inputs
-      if (!email || typeof email !== 'string') {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Email is required" 
-        });
-      }
-
-      if (!password || typeof password !== 'string') {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Password is required" 
-        });
-      }
-
-      if (password.length < 8) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Password must be at least 8 characters" 
-        });
-      }
-
-      // Look up user by email
-      const user = await storage.getUserByEmail(email.trim().toLowerCase());
-      if (!user) {
-        return res.status(404).json({ 
-          success: false, 
-          message: "User not found" 
-        });
-      }
-
-      // Hash password using bcrypt (10 rounds)
-      const passwordHash = await bcrypt.hash(password, 10);
-
-      // Upsert auth identity for password provider
-      const existingIdentity = await db
-        .select()
-        .from(authIdentities)
-        .where(
-          and(
-            eq(authIdentities.userId, user.id),
-            eq(authIdentities.provider, 'password')
-          )
-        )
-        .limit(1);
-
-      if (existingIdentity.length > 0) {
-        // Update existing identity
-        await db
-          .update(authIdentities)
-          .set({
-            passwordHash,
-            passwordSetAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(authIdentities.id, existingIdentity[0].id));
-      } else {
-        // Create new identity
-        await db.insert(authIdentities).values({
-          userId: user.id,
-          provider: 'password',
-          passwordHash,
-          passwordSetAt: new Date(),
-        });
-      }
-
-      // Log audit event (DO NOT log plaintext password)
-      console.log(`[Admin] Password set for user ${user.id} (${user.email}) by admin ${getUserId(req.user)}`);
-
-      res.json({ 
-        success: true, 
-        message: "Password updated." 
-      });
-    } catch (error) {
-      console.error("Error setting user password:", error);
-      res.status(500).json({ 
-        success: false, 
-        message: "Failed to set password" 
-      });
     }
   });
 
