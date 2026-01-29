@@ -462,8 +462,8 @@ function QuoteNumberSettings() {
   );
 }
 
-// Email Settings Tab Component
-function EmailSettingsTab() {
+// Email Settings Tab Component (exported for use in settings page)
+export function EmailSettingsTab() {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [testEmailAddress, setTestEmailAddress] = useState("");

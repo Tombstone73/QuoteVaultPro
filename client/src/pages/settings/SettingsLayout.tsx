@@ -43,6 +43,7 @@ import {
   Palette,
   PlugZap,
   Sliders,
+  Mail,
   type LucideIcon,
 } from "lucide-react";
 
@@ -110,6 +111,12 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     path: "/settings/integrations", 
     icon: PlugZap,
     description: "QuickBooks and other integrations"
+  },
+  { 
+    label: "Email Settings", 
+    path: "/settings/email", 
+    icon: Mail,
+    description: "Email configuration for invoices and quotes"
   },
   { 
     label: "Production & Operations", 
