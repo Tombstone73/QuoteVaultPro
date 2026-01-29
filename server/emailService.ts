@@ -23,8 +23,20 @@ class EmailService {
   private async getEmailConfig(organizationId: string): Promise<EmailConfig | null> {
     const settings = await storage.getDefaultEmailSettings(organizationId);
     if (!settings) {
+      console.error(`[EmailService] No email settings found for org ${organizationId}`);
       return null;
     }
+
+    console.log(`[EmailService] Loaded config for org ${organizationId}:`, {
+      provider: settings.provider,
+      fromAddress: settings.fromAddress,
+      fromName: settings.fromName,
+      hasClientId: !!settings.clientId,
+      hasClientSecret: !!settings.clientSecret,
+      hasRefreshToken: !!settings.refreshToken,
+      hasSmtpHost: !!settings.smtpHost,
+      hasSmtpPort: !!settings.smtpPort,
+    });
 
     return {
       provider: settings.provider,
@@ -46,6 +58,11 @@ class EmailService {
   private async createTransporter(config: EmailConfig) {
     if (config.provider === "gmail" && config.clientId && config.clientSecret && config.refreshToken) {
       // Gmail OAuth2 setup
+      console.log('[EmailService] Creating Gmail OAuth2 transporter:', {
+        fromAddress: config.fromAddress,
+        provider: 'gmail',
+      });
+
       const OAuth2 = google.auth.OAuth2;
       const oauth2Client = new OAuth2(
         config.clientId,
@@ -58,6 +75,13 @@ class EmailService {
       });
 
       // Get access token
+      try {
+        const accessToken = await oauth2Client.getAccessToken();
+        console.log('[EmailService] OAuth2 access token obtained successfully');
+      } catch (error) {
+        console.error('[EmailService] Failed to get OAuth2 access token:', error);
+        throw error;
+      }
       const accessToken = await oauth2Client.getAccessToken();
 
       return nodemailer.createTransport({
@@ -78,6 +102,12 @@ class EmailService {
       } as any);
     } else if (config.provider === "smtp" && config.smtpHost && config.smtpPort) {
       // SMTP setup
+      console.log('[EmailService] Creating SMTP transporter:', {
+        host: config.smtpHost,
+        port: config.smtpPort,
+        secure: config.smtpPort === 465,
+        hasAuth: !!(config.smtpUsername && config.smtpPassword),
+      });
       return nodemailer.createTransport({
         host: config.smtpHost,
         port: config.smtpPort,
@@ -162,19 +192,49 @@ class EmailService {
    * Send generic email with custom content
    */
   async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string }): Promise<string> {
-    const config = await this.getEmailConfig(organizationId);
-    if (!config) {
-      throw new Error("Email settings not configured. Please configure email settings in the admin panel.");
-    }
-    const transporter = await this.createTransporter(config);
-    const mailOptions = {
-      from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
+    console.log(`[EmailService] sendEmail called:`, {
+      organizationId,
       to: options.to,
       subject: options.subject,
-      html: options.html,
-    };
-    const info = await transporter.sendMail(mailOptions);
-    return info.messageId || 'no-message-id';
+      hasHtml: !!options.html,
+    });
+
+    const config = await this.getEmailConfig(organizationId);
+    if (!config) {
+      const error = new Error("Email settings not configured. Please configure email settings in the admin panel.");
+      console.error('[EmailService] FAILED - No config found for org:', organizationId);
+      throw error;
+    }
+
+    try {
+      const transporter = await this.createTransporter(config);
+      const mailOptions = {
+        from: options.from || `"${config.fromName}" <${config.fromAddress}>`,
+        to: options.to,
+        subject: options.subject,
+        html: options.html,
+      };
+
+      console.log('[EmailService] Sending email via transporter...');
+      const info = await transporter.sendMail(mailOptions);
+      
+      console.log('[EmailService] ✅ Email sent successfully:', {
+        messageId: info.messageId,
+        response: info.response,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+
+      return info.messageId || 'no-message-id';
+    } catch (error: any) {
+      console.error('[EmailService] ❌ Email send FAILED:', {
+        error: error.message,
+        code: error.code,
+        command: error.command,
+        stack: error.stack,
+      });
+      throw error;
+    }
   }
 
   /**

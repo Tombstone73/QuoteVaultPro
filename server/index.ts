@@ -169,6 +169,12 @@ process.on('uncaughtException', (error) => {
       log(`serving on port ${port}`);
       console.log('[Server] Ready to accept connections');
 
+      // ===== EMAIL DIAGNOSTICS =====
+      console.log('[Email] Configuration check:');
+      console.log(`  - Email service: emailService module loaded`);
+      console.log(`  - DB-based email settings: configured per-organization`);
+      console.log(`  - Supported providers: gmail (OAuth2), smtp`);
+
       // ===== BACKGROUND WORKERS INITIALIZATION =====
       // All workers gated by workerGates.ts for dev/preview cost control
       
