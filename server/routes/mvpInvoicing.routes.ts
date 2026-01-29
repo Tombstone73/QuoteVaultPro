@@ -11,6 +11,8 @@ import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
 import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
+import { emailService } from "../emailService";
+import { jobs } from "../../shared/schema";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -1815,6 +1817,177 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       console.error("Error updating invoice:", error);
       res.status(500).json({ error: error.message || "Failed to update invoice" });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Send invoice via email with PDF attachment
+  // ------------------------------------------------------------
+  app.post("/api/invoices/:id/send", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const userId = getUserId(req.user);
+      const userName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email;
+
+      const { id } = req.params;
+      const { toEmail } = req.body || {};
+
+      // Load invoice with related data
+      const rel = await getInvoiceWithRelations(id);
+      if (!rel) return res.status(404).json({ error: "Invoice not found" });
+      const inv: any = rel.invoice;
+      if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
+
+      // Load customer for billing info and default email
+      const [cust] = await db.select().from(customers).where(and(eq(customers.id, inv.customerId), eq(customers.organizationId, organizationId)));
+      if (!cust) return res.status(404).json({ error: "Customer not found" });
+
+      // Determine recipient email
+      const recipientEmail = toEmail || cust.email;
+      if (!recipientEmail) {
+        return res.status(400).json({ error: "No recipient email specified and customer has no email on file" });
+      }
+
+      // Load company settings for FROM info
+      const [orgCompany] = await db.select().from(companySettings).where(eq(companySettings.organizationId, organizationId));
+
+      // Load line items
+      const lineItems = await db
+        .select()
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.invoiceId, inv.id))
+        .orderBy(invoiceLineItems.sortOrder, desc(invoiceLineItems.createdAt));
+
+      // Load job if exists
+      const jobId = String(inv.jobId || '').trim();
+      let job: any = null;
+      if (jobId) {
+        const jobRows = await db.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.organizationId, organizationId)));
+        job = jobRows[0] || null;
+      }
+
+      // Load payments for status calculation
+      const paymentRows = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)))
+        .orderBy(desc(payments.createdAt));
+
+      const rollup = computeInvoicePaymentRollup({
+        invoiceTotalCents: Number((inv as any).totalCents || 0),
+        payments: paymentRows.map((p: any) => ({
+          id: p.id,
+          status: String(p.status || 'succeeded'),
+          amountCents: Number(p.amountCents || 0),
+        })),
+      });
+
+      const statusLabel = getInvoicePaymentStatusLabel({ invoiceStatus: (inv as any).status, rollup });
+
+      // Generate PDF
+      const pdfBytes = await generateInvoicePdfBytes({
+        invoice: inv as any,
+        customer: (cust as any) || null,
+        companySettings: (orgCompany as any) || null,
+        paymentSummary: {
+          amountPaidCents: rollup.amountPaidCents,
+          amountDueCents: rollup.amountDueCents,
+          statusLabel,
+        },
+        lineItems: lineItems as any,
+        job,
+      });
+
+      const invoiceNumber = (inv as any).invoiceNumber ? String((inv as any).invoiceNumber) : inv.id;
+      const filename = `invoice-${invoiceNumber}.pdf`;
+      const pdfBase64 = Buffer.from(pdfBytes).toString('base64');
+
+      // Build email HTML
+      const companyName = orgCompany?.companyName || 'QuoteVaultPro';
+      const customerName = cust.companyName || cust.email || 'Valued Customer';
+      const totalFormatted = ((Number(inv.totalCents || 0) / 100).toFixed(2));
+      const dueDate = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : 'upon receipt';
+
+      const emailHtml = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice #${invoiceNumber}</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
+    <h1 style="margin: 0 0 10px 0; color: #2563eb;">Invoice #${invoiceNumber}</h1>
+    <p style="margin: 0; color: #666;">
+      From: ${companyName}<br>
+      To: ${customerName}
+    </p>
+  </div>
+
+  <div style="padding: 20px 0;">
+    <p>Dear ${customerName},</p>
+    <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
+    <p>Payment is due ${dueDate}.</p>
+    <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
+  </div>
+
+  <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #dee2e6; color: #666; font-size: 14px;">
+    <p style="margin: 0;">Thank you for your business!</p>
+    <p style="margin: 5px 0 0 0;">${companyName}</p>
+  </div>
+</body>
+</html>
+      `.trim();
+
+      // Send email via email service
+      await emailService.sendEmail(organizationId, {
+        to: recipientEmail,
+        subject: `Invoice #${invoiceNumber} from ${companyName}`,
+        html: emailHtml,
+        attachments: [
+          {
+            filename,
+            content: pdfBase64,
+            encoding: 'base64',
+            contentType: 'application/pdf',
+          },
+        ] as any,
+      });
+
+      // Mark invoice as sent
+      const now = new Date();
+      const invoiceVersion = Number(inv.invoiceVersion || 1);
+
+      await db
+        .update(invoices)
+        .set({ lastSentAt: now, lastSentVia: 'email', lastSentVersion: invoiceVersion, updatedAt: now } as any)
+        .where(eq(invoices.id, id));
+
+      // Audit log
+      try {
+        await db.insert(auditLogs).values({
+          organizationId,
+          userId: userId || null,
+          userName,
+          actionType: "invoice.sent",
+          entityType: "invoice",
+          entityId: id,
+          entityName: String(inv.invoiceNumber),
+          description: `Invoice sent via email to ${recipientEmail}`,
+          newValues: { via: 'email', invoiceVersion, recipientEmail } as any,
+          createdAt: now,
+        } as any);
+      } catch (auditError) {
+        console.error('Audit log failed:', auditError);
+      }
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error sending invoice:", error);
+      res.status(500).json({ error: error.message || "Failed to send invoice" });
     }
   });
 
