@@ -1,4 +1,4 @@
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/hooks/use-toast";
 import { Calculator, Loader2 } from "lucide-react";
 import { getApiUrl } from "@/lib/apiConfig";
+import { useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -13,6 +15,15 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+
+  // Redirect if already authenticated
+  useEffect(() => {
+    if (!authLoading && isAuthenticated) {
+      navigate("/dashboard", { replace: true });
+    }
+  }, [isAuthenticated, authLoading, navigate]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -33,11 +44,16 @@ export default function Login() {
       const data = await response.json();
 
       if (data.success) {
+        // Invalidate auth query to trigger refetch with new session
+        await queryClient.invalidateQueries({ queryKey: [getApiUrl("/api/auth/user")] });
+        
         toast({
           title: "Logged in",
           description: "Welcome back!",
         });
-        navigate("/dashboard");
+        
+        // Navigate to dashboard - Router will handle auth check
+        navigate("/dashboard", { replace: true });
       } else {
         throw new Error("Login failed");
       }
