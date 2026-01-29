@@ -28,15 +28,15 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Cross-site cookie config for production (Replit auth always in production)
-  // - secure: true (HTTPS required)
-  // - sameSite: 'none' (allows cross-site cookie sending)
+  // Same-origin cookie config for production (Vercel proxy makes requests same-origin)
+  // - secure: true (HTTPS required in production)
+  // - sameSite: 'lax' (safe for same-origin, prevents CSRF)
   // - httpOnly: true (security: JS can't access cookie)
   const cookieConfig = {
     httpOnly: true,
     secure: true,
     maxAge: sessionTtl,
-    sameSite: 'none' as const, // Required for cross-site cookies
+    sameSite: 'lax' as const, // Safe for same-origin requests via Vercel proxy
   };
   
   console.log('[Session] Replit auth cookie config:', {

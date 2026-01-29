@@ -40,16 +40,16 @@ export function getSession() {
     tableName: "sessions",
   });
   
-  // Cross-site cookie config: In production, frontend (Vercel) and backend (Railway) are different origins.
-  // - secure: true (HTTPS required for cross-site cookies)
-  // - sameSite: 'none' (allows cross-site cookie sending)
+  // Same-origin cookie config: Vercel proxy makes all /api/* requests same-origin.
+  // - secure: true (HTTPS required in production)
+  // - sameSite: 'lax' (safe for same-origin, prevents CSRF)
   // - httpOnly: true (security: JS can't access cookie)
-  // Must match CORS credentials: true on backend and credentials: 'include' on frontend.
+  // Frontend calls /api/* on printershero.com → Vercel rewrites to Railway backend.
   const cookieConfig = {
     httpOnly: true,
     secure: isProduction, // HTTPS only in production
     maxAge: sessionTtl,
-    sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax', // 'none' for cross-site, requires secure: true
+    sameSite: 'lax' as const, // Safe for same-origin requests
   };
   
   // Diagnostic logging (non-sensitive)
@@ -201,7 +201,7 @@ export async function setupAuth(app: Express) {
           path: "/",
           httpOnly: true,
           secure: isProduction,
-          sameSite: isProduction ? 'none' : 'lax', // Must match login cookie config
+          sameSite: 'lax', // Must match login cookie config
         });
         res.json({ success: true });
       });
