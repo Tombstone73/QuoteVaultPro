@@ -3,6 +3,7 @@ import session from "express-session";
 import type { Express, RequestHandler } from "express";
 import connectPg from "connect-pg-simple";
 import { Strategy as LocalStrategy } from "passport-local";
+import bcrypt from "bcryptjs";
 import { storage } from "./storage";
 import { emailService } from "./emailService";
 import { getUserOrganizations } from "./tenantContext";
@@ -10,6 +11,7 @@ import { db } from "./db";
 import { pgTable, varchar, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql, eq, and, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
+import { authIdentities } from "@shared/schema";
 
 // Temporary inline schema definition until shared/schema.ts build issues are resolved
 const passwordResetTokens = pgTable("password_reset_tokens", {
@@ -92,8 +94,32 @@ export async function setupAuth(app: Express) {
             }
           }
           
-          // TODO: In production, verify password hash here
-          // For now, accept any password in dev, and in production require existing user
+          // Verify password if user exists and has password auth identity
+          if (user) {
+            const identity = await db
+              .select()
+              .from(authIdentities)
+              .where(
+                and(
+                  eq(authIdentities.userId, user.id),
+                  eq(authIdentities.provider, 'password')
+                )
+              )
+              .limit(1);
+
+            if (identity.length > 0 && identity[0].passwordHash) {
+              // Verify password hash
+              const isValid = await bcrypt.compare(password, identity[0].passwordHash);
+              if (!isValid) {
+                return done(null, false, { message: "Invalid credentials" });
+              }
+            } else if (isProduction) {
+              // Production: Require password to be set
+              return done(null, false, { message: "Invalid credentials" });
+            }
+            // Development: Allow login even without password set for test users
+          }
+          
           return done(null, user);
         } catch (error) {
           return done(error);
