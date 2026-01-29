@@ -19,7 +19,7 @@ const getOidcConfig = memoize(
 );
 
 export function getSession() {
-  const sessionTtl = 7 * 24 * 60 * 60 * 1000;
+  const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 7 days
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
     conString: process.env.DATABASE_URL,
@@ -27,16 +27,30 @@ export function getSession() {
     ttl: sessionTtl,
     tableName: "sessions",
   });
+  
+  // Cross-site cookie config for production (Replit auth always in production)
+  // - secure: true (HTTPS required)
+  // - sameSite: 'none' (allows cross-site cookie sending)
+  // - httpOnly: true (security: JS can't access cookie)
+  const cookieConfig = {
+    httpOnly: true,
+    secure: true,
+    maxAge: sessionTtl,
+    sameSite: 'none' as const, // Required for cross-site cookies
+  };
+  
+  console.log('[Session] Replit auth cookie config:', {
+    secure: cookieConfig.secure,
+    sameSite: cookieConfig.sameSite,
+    httpOnly: cookieConfig.httpOnly,
+  });
+  
   return session({
     secret: process.env.SESSION_SECRET!,
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: true,
-      maxAge: sessionTtl,
-    },
+    cookie: cookieConfig,
   });
 }
 
