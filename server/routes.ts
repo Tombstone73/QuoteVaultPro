@@ -3,11 +3,12 @@ import { createServer, type Server } from "http";
 import path from "path";
 import { promises as fsPromises } from "fs";
 import { randomUUID } from "crypto";
+import crypto from "crypto";
 import { evaluate } from "mathjs";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { db } from "./db";
-import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks } from "@shared/schema";
+import { customers, users, quotes, orders, invoices, invoiceLineItems, payments, insertMaterialSchema, updateMaterialSchema, insertInventoryAdjustmentSchema, materials, inventoryAdjustments, orderMaterialUsage, accountingSyncJobs, organizations, userOrganizations, customerVisibleProducts, products, pbv2TreeVersions, productVariants, quoteAttachments, quoteAttachmentPages, orderAttachments, customerContacts, quoteLineItems, orderLineItems, globalVariables, auditLogs, orderAuditLog, orderStatusPills, shipments, jobs, jobStatusLog, jobStatuses, productionJobs, productionEvents, quoteWorkflowStates, quoteListNotes, listSettings, integrationConnections, assets, assetLinks, authIdentities } from "@shared/schema";
 import { eq, desc, and, isNull, isNotNull, asc, inArray, or, sql } from "drizzle-orm";
 import * as localAuth from "./localAuth";
 import * as replitAuth from "./replitAuth";
@@ -649,6 +650,364 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting user:", error);
       res.status(500).json({ message: "Failed to delete user" });
+    }
+  });
+
+  // ============================================================
+  // ADMIN USER INVITE SYSTEM (Owner/Admin only, Org-scoped)
+  // ============================================================
+
+  // List all users in organization (owner/admin only)
+  app.get("/api/admin/users", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+
+      // Get all users in this organization via userOrganizations table
+      const orgUsers = await db
+        .select({
+          userId: userOrganizations.userId,
+          role: userOrganizations.role,
+          isDefault: userOrganizations.isDefault,
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          isAdmin: users.isAdmin,
+          mustSetPassword: users.mustSetPassword,
+          createdAt: users.createdAt,
+        })
+        .from(userOrganizations)
+        .innerJoin(users, eq(userOrganizations.userId, users.id))
+        .where(eq(userOrganizations.organizationId, organizationId))
+        .orderBy(asc(users.email));
+
+      res.json({ success: true, data: orgUsers });
+    } catch (error) {
+      console.error("Error fetching admin users:", error);
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
+  // Create user with temporary password and send invite email (owner/admin only)
+  app.post("/api/admin/users", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+
+      const schema = z.object({
+        email: z.string().email(),
+        firstName: z.string().optional(),
+        lastName: z.string().optional(),
+        role: z.enum(['owner', 'admin', 'manager', 'employee']).default('employee'),
+      });
+
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: fromZodError(parsed.error).toString() });
+      }
+
+      const { email, firstName, lastName, role } = parsed.data;
+
+      // Check if user already exists in this organization
+      const existingUser = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+
+      if (existingUser.length > 0) {
+        // Check if already in this org
+        const existingMembership = await db
+          .select()
+          .from(userOrganizations)
+          .where(
+            and(
+              eq(userOrganizations.userId, existingUser[0].id),
+              eq(userOrganizations.organizationId, organizationId)
+            )
+          )
+          .limit(1);
+
+        if (existingMembership.length > 0) {
+          return res.status(400).json({ message: "User already exists in this organization" });
+        }
+      }
+
+      // Generate cryptographically strong temporary password (20 chars)
+      const tempPassword = crypto.randomBytes(15).toString('base64').slice(0, 20);
+      
+      // Hash the temporary password using bcrypt
+      const bcrypt = await import('bcryptjs');
+      const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+      // Create user
+      const userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      await db.insert(users).values({
+        id: userId,
+        email: email.toLowerCase().trim(),
+        firstName: firstName || null,
+        lastName: lastName || null,
+        role: role,
+        isAdmin: role === 'owner' || role === 'admin',
+        mustSetPassword: true, // Force password change on first login
+        profileImageUrl: null,
+        passwordHash: null, // DEPRECATED field, leave null
+      });
+
+      // Create auth identity with password hash
+      await db.insert(authIdentities).values({
+        userId: userId,
+        provider: 'password',
+        passwordHash: passwordHash,
+        passwordSetAt: new Date(),
+      });
+
+      // Add user to organization
+      await db.insert(userOrganizations).values({
+        userId: userId,
+        organizationId: organizationId,
+        role: role === 'owner' || role === 'admin' ? 'admin' : 'member',
+        isDefault: true,
+      });
+
+      // Send invite email asynchronously (non-blocking)
+      setImmediate(async () => {
+        try {
+          const appUrl = 'https://www.printershero.com';
+          
+          await emailService.sendEmail(organizationId, {
+            to: email,
+            subject: "You're invited to PrintersHero",
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2>Welcome to PrintersHero!</h2>
+                <p>You've been invited to join PrintersHero, a printing company management system.</p>
+                
+                <h3>Your Login Credentials</h3>
+                <p><strong>Email:</strong> ${email}</p>
+                <p><strong>Temporary Password:</strong> <code>${tempPassword}</code></p>
+                
+                <p>
+                  <a href="${appUrl}/login" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                    Log In to PrintersHero
+                  </a>
+                </p>
+                
+                <p style="color: #ef4444; font-weight: bold;">
+                  ⚠️ You will be prompted to set a new password after logging in.
+                </p>
+                
+                <p style="color: #6b7280; font-size: 14px; margin-top: 24px;">
+                  If you have any questions, please contact your system administrator.
+                </p>
+              </div>
+            `,
+          });
+
+          console.log(`[User Invite] Email sent successfully to ${email}`);
+        } catch (emailError) {
+          console.error(`[User Invite] Failed to send email to ${email}:`, emailError);
+          // Don't throw - user is already created
+        }
+      });
+
+      // Never return temp password in API response
+      res.json({ 
+        success: true, 
+        message: "User invited successfully. They will receive an email with login credentials.",
+        data: { 
+          id: userId, 
+          email, 
+          firstName, 
+          lastName, 
+          role,
+          mustSetPassword: true 
+        } 
+      });
+    } catch (error) {
+      console.error("Error creating user invite:", error);
+      res.status(500).json({ message: "Failed to create user" });
+    }
+  });
+
+  // Reset user password and resend invite (owner/admin only)
+  app.post("/api/admin/users/:id/reset-password", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) {
+        return res.status(403).json({ message: "No organization context" });
+      }
+
+      const { id } = req.params;
+
+      // Verify user exists in this organization
+      const [membership] = await db
+        .select({ userId: userOrganizations.userId })
+        .from(userOrganizations)
+        .innerJoin(users, eq(userOrganizations.userId, users.id))
+        .where(
+          and(
+            eq(users.id, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!membership) {
+        return res.status(404).json({ message: "User not found in this organization" });
+      }
+
+      const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      // Generate new temporary password
+      const tempPassword = crypto.randomBytes(15).toString('base64').slice(0, 20);
+      const bcrypt = await import('bcryptjs');
+      const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+      // Update auth identity with new password hash
+      await db
+        .update(authIdentities)
+        .set({ 
+          passwordHash: passwordHash,
+          passwordSetAt: new Date(),
+        })
+        .where(
+          and(
+            eq(authIdentities.userId, id),
+            eq(authIdentities.provider, 'password')
+          )
+        );
+
+      // Set mustSetPassword flag
+      await db
+        .update(users)
+        .set({ mustSetPassword: true })
+        .where(eq(users.id, id));
+
+      // Resend invite email asynchronously
+      setImmediate(async () => {
+        try {
+          const appUrl = 'https://www.printershero.com';
+          
+          await emailService.sendEmail(organizationId, {
+            to: user.email!,
+            subject: "Your PrintersHero Password Has Been Reset",
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2>Password Reset</h2>
+                <p>Your password for PrintersHero has been reset by an administrator.</p>
+                
+                <h3>Your New Login Credentials</h3>
+                <p><strong>Email:</strong> ${user.email}</p>
+                <p><strong>Temporary Password:</strong> <code>${tempPassword}</code></p>
+                
+                <p>
+                  <a href="${appUrl}/login" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                    Log In to PrintersHero
+                  </a>
+                </p>
+                
+                <p style="color: #ef4444; font-weight: bold;">
+                  ⚠️ You will be prompted to set a new password after logging in.
+                </p>
+              </div>
+            `,
+          });
+
+          console.log(`[Password Reset] Email sent successfully to ${user.email}`);
+        } catch (emailError) {
+          console.error(`[Password Reset] Failed to send email to ${user.email}:`, emailError);
+        }
+      });
+
+      res.json({ 
+        success: true, 
+        message: "Password reset successfully. User will receive an email with new credentials." 
+      });
+    } catch (error) {
+      console.error("Error resetting user password:", error);
+      res.status(500).json({ message: "Failed to reset password" });
+    }
+  });
+
+  // Set new password (forced password change on first login)
+  app.post("/api/auth/set-password", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req.user);
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const schema = z.object({
+        currentPassword: z.string().min(1, "Current password is required"),
+        newPassword: z.string().min(10, "New password must be at least 10 characters"),
+      });
+
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: fromZodError(parsed.error).toString() });
+      }
+
+      const { currentPassword, newPassword } = parsed.data;
+
+      // Verify current password
+      const [identity] = await db
+        .select()
+        .from(authIdentities)
+        .where(
+          and(
+            eq(authIdentities.userId, userId),
+            eq(authIdentities.provider, 'password')
+          )
+        )
+        .limit(1);
+
+      if (!identity || !identity.passwordHash) {
+        return res.status(400).json({ message: "No password authentication method found" });
+      }
+
+      const bcrypt = await import('bcryptjs');
+      const isValid = await bcrypt.compare(currentPassword, identity.passwordHash);
+      
+      if (!isValid) {
+        return res.status(400).json({ message: "Current password is incorrect" });
+      }
+
+      // Hash new password
+      const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+      // Update password hash
+      await db
+        .update(authIdentities)
+        .set({ 
+          passwordHash: newPasswordHash,
+          passwordSetAt: new Date(),
+        })
+        .where(eq(authIdentities.id, identity.id));
+
+      // Clear mustSetPassword flag
+      await db
+        .update(users)
+        .set({ mustSetPassword: false })
+        .where(eq(users.id, userId));
+
+      console.log(`[Set Password] User ${userId} successfully set new password`);
+
+      res.json({ 
+        success: true, 
+        message: "Password updated successfully" 
+      });
+    } catch (error) {
+      console.error("Error setting password:", error);
+      res.status(500).json({ message: "Failed to update password" });
     }
   });
 
