@@ -25,6 +25,7 @@ declare global {
     interface Request {
       organizationId?: string;
       organizationSlug?: string;
+      orgRole?: string; // User's role in the current organization
     }
   }
 }
@@ -81,6 +82,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       }
       
       req.organizationId = headerOrgId;
+      req.orgRole = membership[0].role;
       return next();
     }
 
@@ -89,6 +91,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       .select({
         organizationId: userOrganizations.organizationId,
         slug: organizations.slug,
+        orgRole: userOrganizations.role,
       })
       .from(userOrganizations)
       .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
@@ -103,6 +106,12 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
     if (defaultOrg.length > 0) {
       req.organizationId = defaultOrg[0].organizationId;
       req.organizationSlug = defaultOrg[0].slug;
+      req.orgRole = defaultOrg[0].orgRole;
+      console.log('[TenantContext] Set org context:', {
+        organizationId: req.organizationId,
+        orgRole: req.orgRole,
+        userId: user.id
+      });
       return next();
     }
 
@@ -111,6 +120,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       .select({
         organizationId: userOrganizations.organizationId,
         slug: organizations.slug,
+        orgRole: userOrganizations.role,
       })
       .from(userOrganizations)
       .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))
@@ -120,6 +130,12 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
     if (anyOrg.length > 0) {
       req.organizationId = anyOrg[0].organizationId;
       req.organizationSlug = anyOrg[0].slug;
+      req.orgRole = anyOrg[0].orgRole;
+      console.log('[TenantContext] Set org context (fallback):', {
+        organizationId: req.organizationId,
+        orgRole: req.orgRole,
+        userId: user.id
+      });
       return next();
     }
 
@@ -153,6 +169,7 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       
       req.organizationId = DEFAULT_ORGANIZATION_ID;
       req.organizationSlug = DEFAULT_ORGANIZATION_SLUG;
+      req.orgRole = 'member';
       return next();
     } catch (provisionError) {
       console.error('[TenantContext] Failed to auto-provision user to default org:', provisionError);
