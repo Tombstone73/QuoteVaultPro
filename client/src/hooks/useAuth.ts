@@ -1,5 +1,4 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
 import type { User } from "@shared/schema";
 import { getApiUrl } from "@/lib/apiConfig";
 
@@ -66,7 +65,6 @@ export function useUser() {
 
 // Hook for logout functionality
 export function useLogout() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const logout = async () => {
@@ -79,13 +77,13 @@ export function useLogout() {
       // Clear all cached queries
       queryClient.clear();
 
-      // Navigate to login
-      navigate("/login", { replace: true });
+      // Use window.location for full page navigation to avoid any routing issues
+      window.location.href = "/login";
     } catch (error) {
       console.error("Logout error:", error);
       // Even if logout fails, clear cache and navigate
       queryClient.clear();
-      navigate("/login", { replace: true });
+      window.location.href = "/login";
     }
   };
 
