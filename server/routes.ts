@@ -820,6 +820,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "You cannot modify your own membership" });
       }
 
+      // Check if target user is an owner (owners can't be demoted)
+      const [targetMembership] = await db
+        .select()
+        .from(userOrganizations)
+        .where(
+          and(
+            eq(userOrganizations.userId, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (targetMembership?.role === 'owner') {
+        return res.status(400).json({ message: "Cannot modify owner role" });
+      }
+
       // Validate org role
       if (orgRole && !['admin', 'manager', 'member'].includes(orgRole)) {
         return res.status(400).json({ message: "Invalid org role" });
@@ -827,7 +843,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Update user's role in this organization
       if (orgRole) {
-        await db
+        const result = await db
           .update(userOrganizations)
           .set({ role: orgRole, updatedAt: sql`now()` })
           .where(
@@ -835,7 +851,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
               eq(userOrganizations.userId, id),
               eq(userOrganizations.organizationId, organizationId)
             )
-          );
+          )
+          .returning();
+
+        if (result.length === 0) {
+          return res.status(404).json({ message: "User not found in organization" });
+        }
       }
 
       res.json({ success: true });
