@@ -1290,7 +1290,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get organization preferences (from settings.preferences)
-  app.get('/api/organization/preferences', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.get('/api/organization/preferences', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -1335,7 +1335,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update organization preferences (merge into settings.preferences)
-  app.put('/api/organization/preferences', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.put('/api/organization/preferences', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -1385,7 +1385,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Safely patch ONLY the inventory policy preferences (does not overwrite other keys)
-  app.patch('/api/organization/preferences/inventory-policy', isAuthenticated, tenantContext, async (req: any, res) => {
+  app.patch('/api/organization/preferences/inventory-policy', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) {
@@ -1553,7 +1553,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/product-types", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.post("/api/product-types", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -1565,7 +1565,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/product-types/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.patch("/api/product-types/:id", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -1578,7 +1578,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/product-types/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.delete("/api/product-types/:id", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -11453,7 +11453,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================================
   // JOB STATUS CONFIGURATION (Admin Only)
   // ============================================================
-  app.get("/api/settings/job-statuses", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.get("/api/settings/job-statuses", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
@@ -11465,7 +11465,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/settings/job-statuses", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.post("/api/settings/job-statuses", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
@@ -11477,7 +11477,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/settings/job-statuses/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.patch("/api/settings/job-statuses/:id", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
@@ -11489,7 +11489,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/settings/job-statuses/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.delete("/api/settings/job-statuses/:id", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });

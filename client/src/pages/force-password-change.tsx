@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Eye, EyeOff, AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { getApiUrl } from "@/lib/apiConfig";
+import { ROUTES } from "@/config/routes";
 
 export default function ForcePasswordChange() {
   const [newPassword, setNewPassword] = useState("");
@@ -56,11 +57,14 @@ export default function ForcePasswordChange() {
         description: "Your password has been successfully changed.",
       });
 
-      // Invalidate session to refresh mustChangePassword flag
-      queryClient.invalidateQueries({ queryKey: [getApiUrl("/api/auth/session")] });
+      // Refetch session to clear mustChangePassword flag, then navigate
+      await queryClient.refetchQueries({ 
+        queryKey: [getApiUrl("/api/auth/session")],
+        exact: true 
+      });
 
-      // Navigate to dashboard
-      navigate("/dashboard", { replace: true });
+      // Navigate to dashboard using canonical route
+      navigate(ROUTES.dashboard, { replace: true });
     } catch (err: any) {
       setError(err.message || "Failed to update password. Please try again.");
       toast({
