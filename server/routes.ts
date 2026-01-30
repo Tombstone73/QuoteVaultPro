@@ -1369,6 +1369,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const rawPreferences = (org.settings as any)?.preferences;
       const preferences = rawPreferences && typeof rawPreferences === "object" ? rawPreferences : {};
 
+      // Extract email templates from settings.emailTemplates
+      const emailTemplates = (org.settings as any)?.emailTemplates || {};
+
       // Ensure stable defaults for inventory policy toggles
       const inventoryPolicy = resolveInventoryPolicyFromOrgPreferences(preferences);
 
@@ -1379,6 +1382,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...(preferences as any),
         inventoryPolicy,
         quickBooks,
+        emailTemplates,
       });
     } catch (error) {
       console.error("Error fetching organization preferences:", error);
@@ -1402,6 +1406,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const newPreferences = req.body;
 
+      // Extract emailTemplates if present (will be stored at settings.emailTemplates)
+      const { emailTemplates, ...otherPreferences } = newPreferences;
+
       // Get current settings
       const [org] = await db
         .select({ settings: organizations.settings })
@@ -1417,7 +1424,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const currentSettings = (org.settings || {}) as any;
       const updatedSettings = {
         ...currentSettings,
-        preferences: newPreferences,
+        preferences: otherPreferences,
+        ...(emailTemplates && { emailTemplates }),
       };
 
       // Update organization settings
@@ -1429,7 +1437,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         })
         .where(eq(organizations.id, organizationId));
 
-      res.json({ success: true, preferences: newPreferences });
+      res.json({ success: true, preferences: otherPreferences, emailTemplates });
     } catch (error) {
       console.error("Error updating organization preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });

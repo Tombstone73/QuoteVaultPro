@@ -72,6 +72,13 @@ export const organizations = pgTable("organizations", {
       primaryColor?: string;
       companyName?: string;
     };
+    emailTemplates?: {
+      replyToEmail?: string;
+      quoteEmailSubject?: string;
+      quoteEmailBody?: string;
+      invoiceEmailSubject?: string;
+      invoiceEmailBody?: string;
+    };
   }>().default(sql`'{}'::jsonb`).notNull(),
   trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
   // Tax system fields

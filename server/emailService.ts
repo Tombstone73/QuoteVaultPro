@@ -22,17 +22,24 @@ function buildRawMessage(options: {
   to: string;
   subject: string;
   html: string;
+  replyTo?: string;
   attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
 }): string {
   const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-  const { from, to, subject, html, attachments } = options;
+  const { from, to, subject, html, replyTo, attachments } = options;
 
   let message = [
     `From: ${from}`,
     `To: ${to}`,
     `Subject: ${subject}`,
-    'MIME-Version: 1.0',
   ];
+
+  // Add Reply-To header if provided
+  if (replyTo) {
+    message.push(`Reply-To: ${replyTo}`);
+  }
+
+  message.push('MIME-Version: 1.0');
 
   if (attachments && attachments.length > 0) {
     // Multipart message with attachments
@@ -86,7 +93,54 @@ interface EmailConfig {
   smtpPassword?: string;
 }
 
+interface EmailTemplates {
+  replyToEmail?: string;
+  quoteEmailSubject?: string;
+  quoteEmailBody?: string;
+  invoiceEmailSubject?: string;
+  invoiceEmailBody?: string;
+}
+
 class EmailService {
+  /**
+   * Get email templates from organization settings
+   */
+  private async getEmailTemplates(organizationId: string): Promise<EmailTemplates> {
+    try {
+      const { db } = await import('./db');
+      const { organizations } = await import('@shared/schema');
+      const { eq } = await import('drizzle-orm');
+
+      const [org] = await db
+        .select({ settings: organizations.settings })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (!org || !org.settings) {
+        return {};
+      }
+
+      const settings = org.settings as any;
+      return settings.emailTemplates || {};
+    } catch (error) {
+      console.error('[EmailService] Failed to load email templates:', error);
+      return {};
+    }
+  }
+
+  /**
+   * Replace template variables in subject/body
+   */
+  private replaceTemplateVariables(template: string, variables: Record<string, any>): string {
+    let result = template;
+    for (const [key, value] of Object.entries(variables)) {
+      const regex = new RegExp(`\\{${key}\\}`, 'g');
+      result = result.replace(regex, String(value || ''));
+    }
+    return result;
+  }
+
   /**
    * Get email configuration from database
    */
@@ -176,18 +230,23 @@ class EmailService {
     to: string;
     subject: string;
     html: string;
+    replyTo?: string;
     attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
   }): Promise<string> {
     const gmail = await this.createGmailClient(config);
 
     const fromAddress = `"${config.fromName}" <${config.fromAddress}>`;
     console.log(`[EmailService] Using From: "${config.fromName}" <${config.fromAddress}>`);
+    if (options.replyTo) {
+      console.log(`[EmailService] Using Reply-To: ${options.replyTo}`);
+    }
     
     const rawMessage = buildRawMessage({
       from: fromAddress,
       to: options.to,
       subject: options.subject,
       html: options.html,
+      replyTo: options.replyTo,
       attachments: options.attachments,
     });
 
@@ -287,26 +346,49 @@ class EmailService {
     if (!quote) {
       throw new Error("Quote not found");
     }
-    console.log('[EmailService] [STAGE: load-config] ✅ Config and quote data loaded');
 
-    const htmlContent = this.generateQuoteEmailHTML(quote);
+    // Get email templates
+    const templates = await this.getEmailTemplates(organizationId);
+    console.log('[EmailService] [STAGE: load-config] ✅ Config, quote data, and templates loaded');
+
+    // Prepare template variables
+    const variables = {
+      quoteNumber: quote.quoteNumber,
+      companyName: config.fromName,
+      customerName: quote.customerName || 'Customer',
+    };
+
+    // Use custom template or default
+    const subjectTemplate = templates.quoteEmailSubject || 'Quote #{quoteNumber} from {companyName}';
+    const bodyTemplate = templates.quoteEmailBody || 'Hello,\n\nPlease find your quote #{quoteNumber} below.\n\nThank you for your business!';
+
+    const subject = this.replaceTemplateVariables(subjectTemplate, variables);
+    const bodyText = this.replaceTemplateVariables(bodyTemplate, variables);
+
+    // Convert plain text body to HTML with proper formatting
+    const bodyHtml = bodyText.split('\n').map(line => line || '<br>').join('<br>');
+
+    // Generate full HTML email with quote details
+    const htmlContent = this.generateQuoteEmailHTML(quote, bodyHtml);
 
     await this.sendViaGmailAPI(config, {
       to: recipientEmail,
-      subject: `Quote #${quote.quoteNumber} from ${config.fromName}`,
+      subject,
       html: htmlContent,
+      replyTo: templates.replyToEmail,
     });
   }
 
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; attachments?: any[] }): Promise<string> {
+  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; from?: string; replyTo?: string; attachments?: any[] }): Promise<string> {
     console.log(`[EmailService] [STAGE: load-config] sendEmail called:`, {
       organizationId,
       to: options.to,
       subject: options.subject,
       hasHtml: !!options.html,
+      hasReplyTo: !!options.replyTo,
       hasAttachments: !!(options.attachments && options.attachments.length > 0),
     });
 
@@ -316,6 +398,11 @@ class EmailService {
       console.error('[EmailService] [STAGE: load-config] ❌ No config found for org:', organizationId);
       throw error;
     }
+
+    // Get email templates for Reply-To if not explicitly provided
+    const templates = await this.getEmailTemplates(organizationId);
+    const replyTo = options.replyTo || templates.replyToEmail;
+
     console.log('[EmailService] [STAGE: load-config] ✅ Config loaded');
 
     if (config.provider !== 'gmail' || !config.clientId || !config.clientSecret || !config.refreshToken) {
@@ -336,6 +423,7 @@ class EmailService {
       to: options.to,
       subject: options.subject,
       html: options.html,
+      replyTo,
       attachments: gmailAttachments,
     });
   }
@@ -343,7 +431,7 @@ class EmailService {
   /**
    * Generate HTML email content for a quote
    */
-  private generateQuoteEmailHTML(quote: any): string {
+  private generateQuoteEmailHTML(quote: any, customBodyHtml?: string): string {
     const lineItemsHTML = quote.lineItems
       .map((item: any) => {
         const variantInfo = item.variant ? ` - ${item.variant.name}` : "";
@@ -381,6 +469,12 @@ class EmailService {
         <title>Quote #${quote.quoteNumber}</title>
       </head>
       <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px;">
+        ${customBodyHtml ? `
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+          ${customBodyHtml}
+        </div>
+        ` : ''}
+        
         <div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; margin-bottom: 30px;">
           <h1 style="margin: 0 0 10px 0; color: #2563eb;">Quote #${quote.quoteNumber}</h1>
           <p style="margin: 0; color: #666;">
