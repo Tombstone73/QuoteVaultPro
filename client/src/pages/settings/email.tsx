@@ -13,7 +13,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Edit, Mail, FileText } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 // Schema for email templates
 const emailTemplatesSchema = z.object({
@@ -51,7 +51,7 @@ function EmailTemplatesCard() {
   });
 
   // Load existing templates when data arrives
-  useState(() => {
+  useEffect(() => {
     if (preferences?.emailTemplates) {
       form.reset({
         replyToEmail: preferences.emailTemplates.replyToEmail || "",
@@ -61,7 +61,7 @@ function EmailTemplatesCard() {
         invoiceEmailBody: preferences.emailTemplates.invoiceEmailBody || "Hello,\n\nPlease find your invoice #{invoiceNumber} attached.\n\nThank you for your business!",
       });
     }
-  });
+  }, [preferences, form]);
 
   // Save mutation
   const saveMutation = useMutation({
