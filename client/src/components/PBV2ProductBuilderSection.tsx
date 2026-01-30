@@ -11,6 +11,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -27,6 +33,7 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { Download, Upload, AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish, validateTreeForRestore } from "@shared/pbv2/validator";
 import { createPbv2BannerGrommetsTreeJson, createPbv2StarterTreeJson, stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
@@ -232,6 +239,14 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
   const [removeChildTarget, setRemoveChildTarget] = useState<null | { nodeId: string; idx: number; summary: string }>(null);
   const [childValidationByKey, setChildValidationByKey] = useState<Record<string, { findings: InlineFinding[] }>>({});
   const [childRowExpandedByKey, setChildRowExpandedByKey] = useState<Record<string, boolean>>({});
+
+  // JSON Import/Export state
+  const [jsonImportModalOpen, setJsonImportModalOpen] = useState(false);
+  const [jsonImportText, setJsonImportText] = useState("");
+  const [jsonImportValidated, setJsonImportValidated] = useState(false);
+  const [jsonImportFindings, setJsonImportFindings] = useState<Finding[]>([]);
+  const [jsonImportError, setJsonImportError] = useState("");
+  const [jsonImportSchemaVersion, setJsonImportSchemaVersion] = useState<string | null>(null);
 
   const [overrideEnabled, setOverrideEnabled] = useState<boolean>(false);
   const [overrideTreeVersionId, setOverrideTreeVersionId] = useState<string | null>(null);
@@ -622,6 +637,156 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
 
       setLastError(error.message);
       toast({ title: "Publish blocked", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Download JSON handlers
+  const downloadJson = (source: "draft" | "active") => {
+    const version = source === "draft" ? draft : active;
+    if (!version) {
+      toast({
+        title: "No version available",
+        description: `No ${source} version exists`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const jsonString = stringifyPbv2TreeJson(version.treeJson);
+      const blob = new Blob([jsonString], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      
+      // Include schema version in filename if present
+      const schemaVersion = (version.treeJson as any)?.schemaVersion;
+      const versionSuffix = schemaVersion ? `_v${schemaVersion}` : "";
+      a.download = `pbv2${versionSuffix}_${source}_${productId}.json`;
+      
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "JSON Downloaded",
+        description: `${source} version exported successfully`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Export failed",
+        description: error.message || "Failed to export JSON",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // JSON Import validation
+  const validateJsonImport = async () => {
+    setJsonImportError("");
+    setJsonImportFindings([]);
+    setJsonImportValidated(false);
+    setJsonImportSchemaVersion(null);
+
+    try {
+      const parsed = JSON.parse(jsonImportText);
+      
+      // Detect schema version
+      const schemaVersion = parsed?.schemaVersion;
+      setJsonImportSchemaVersion(schemaVersion || null);
+      
+      // Validate using existing validator
+      const result = validateTreeForPublish(parsed, DEFAULT_VALIDATE_OPTS);
+      
+      const findings: Finding[] = [
+        ...result.errors.map((f) => ({ ...f, severity: "ERROR" as const })),
+        ...result.warnings.map((f) => ({ ...f, severity: "WARNING" as const })),
+      ];
+      
+      // Add schema version warning if missing
+      if (!schemaVersion) {
+        findings.push({
+          severity: "WARNING",
+          code: "MISSING_SCHEMA_VERSION",
+          message: "schemaVersion field is missing. Tree will be applied with backward-compatible defaults.",
+          path: "root.schemaVersion",
+        });
+      }
+
+      setJsonImportFindings(findings);
+      
+      const hasErrors = result.errors.length > 0;
+      if (hasErrors) {
+        setJsonImportError(`Validation blocked: ${result.errors.length} error(s)`);
+      } else {
+        setJsonImportValidated(true);
+        toast({
+          title: "JSON Valid",
+          description: result.warnings.length > 0 
+            ? `Valid with ${result.warnings.length} warning(s)` 
+            : "Ready to apply",
+        });
+      }
+    } catch (error: any) {
+      setJsonImportError(error.message || "Invalid JSON");
+      toast({
+        title: "Invalid JSON",
+        description: error.message || "Failed to parse JSON",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Apply JSON to draft
+  const applyJsonImportMutation = useMutation({
+    mutationFn: async () => {
+      const parsed = JSON.parse(jsonImportText);
+      
+      // If no draft exists, create one first
+      if (!draft) {
+        const created = await apiJson<Pbv2TreeVersion>("POST", `/api/products/${productId}/pbv2/tree/draft`, {});
+        if (!created.ok || created.json.success !== true) {
+          throw new Error(envelopeMessage(created.status, created.json, "Failed to create draft"));
+        }
+      }
+
+      // Get current draft ID (either existing or just created)
+      await treeQuery.refetch();
+      const currentDraft = treeQuery.data?.data?.draft;
+      
+      if (!currentDraft) {
+        throw new Error("Failed to get draft for applying JSON");
+      }
+
+      // Apply the JSON to the draft
+      const patched = await apiJson<Pbv2TreeVersion>("PATCH", `/api/pbv2/tree-versions/${currentDraft.id}`, { 
+        treeJson: parsed 
+      });
+      
+      if (!patched.ok || patched.json.success !== true) {
+        throw new Error(envelopeMessage(patched.status, patched.json, "Failed to apply JSON"));
+      }
+
+      return patched.json;
+    },
+    onSuccess: async () => {
+      toast({
+        title: "JSON Applied",
+        description: "Changes applied to draft successfully",
+      });
+      await treeQuery.refetch();
+      setJsonImportModalOpen(false);
+      setJsonImportText("");
+      setJsonImportValidated(false);
+      setJsonImportFindings([]);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Apply failed",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -1117,23 +1282,64 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
   };
 
   return (
-    <Card className="mt-6">
-      <CardHeader className="space-y-1">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <CardTitle className="text-base">Product Builder v2 (PBV2)</CardTitle>
-            <CardDescription>
-              Versioned PBV2 draft/publish lifecycle. Developer fallback JSON editor is temporary.
-            </CardDescription>
-          </div>
-          <div className="flex items-center gap-2">
-            {draft ? <Badge variant="secondary">Draft</Badge> : <Badge variant="outline">No Draft</Badge>}
-            {active ? <Badge>Active</Badge> : <Badge variant="outline">No Active</Badge>}
-          </div>
-        </div>
-      </CardHeader>
+    <>
+      <Card className="mt-6">
+        <CardHeader className="space-y-1">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Product Builder v2 (PBV2)</CardTitle>
+              <CardDescription>
+                Versioned PBV2 draft/publish lifecycle. Developer fallback JSON editor is temporary.
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              {/* JSON Download/Upload Actions */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={!draft && !active}>
+                    <Download className="h-4 w-4 mr-2" />
+                    Download JSON
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem
+                    disabled={!draft}
+                    onClick={() => downloadJson("draft")}
+                  >
+                    Export Draft
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!active}
+                    onClick={() => downloadJson("active")}
+                  >
+                    Export Published
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
 
-      <CardContent className="space-y-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setJsonImportModalOpen(true);
+                  setJsonImportText("");
+                  setJsonImportValidated(false);
+                  setJsonImportFindings([]);
+                  setJsonImportError("");
+                  setJsonImportSchemaVersion(null);
+                }}
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                Upload JSON
+              </Button>
+
+              {draft ? <Badge variant="secondary">Draft</Badge> : <Badge variant="outline">No Draft</Badge>}
+              {active ? <Badge>Active</Badge> : <Badge variant="outline">No Active</Badge>}
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
         {treeQuery.isLoading ? <div className="text-sm text-muted-foreground">Loading PBV2…</div> : null}
         {treeQuery.data && treeQuery.data.success === false ? (
           <div className="text-sm text-destructive">{treeQuery.data.message || "Failed to load PBV2"}</div>
@@ -3335,5 +3541,170 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
         </div>
       </CardContent>
     </Card>
+
+      {/* JSON Import Modal */}
+      <Dialog open={jsonImportModalOpen} onOpenChange={setJsonImportModalOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Upload PBV2 JSON</DialogTitle>
+            <DialogDescription>
+              Paste a PBV2 product JSON export below. This will be validated before you can apply it to the Draft.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Warning Banner */}
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                <div>
+                  <strong>Safe Draft Workflow:</strong> This JSON will be applied to the Draft only. The Published version will not be affected until you explicitly publish the Draft.
+                </div>
+              </div>
+            </div>
+
+            {/* Context Clarity Block */}
+            <div className="rounded-md border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground space-y-1">
+              <div className="flex items-center gap-2">
+                <Info className="h-3 w-3 shrink-0" />
+                <span className="font-medium">Import Context</span>
+              </div>
+              <div className="pl-5 space-y-0.5">
+                <div>
+                  <span className="font-medium">Applying to:</span> Draft
+                </div>
+                <div>
+                  <span className="font-medium">Draft status:</span>{" "}
+                  {draft ? "Existing" : "Will be created"}
+                </div>
+                <div>
+                  <span className="font-medium">Validation rules:</span> Publish-safe
+                </div>
+                {jsonImportSchemaVersion && (
+                  <div>
+                    <span className="font-medium">Detected schema:</span> v{jsonImportSchemaVersion}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* JSON Input */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">JSON Input</label>
+              <textarea
+                className="w-full h-[200px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                placeholder='Paste PBV2 JSON here (e.g., { "nodes": [...], "edges": [...], "rootNodeIds": [...] })'
+                value={jsonImportText}
+                onChange={(e) => {
+                  setJsonImportText(e.target.value);
+                  setJsonImportValidated(false);
+                  setJsonImportFindings([]);
+                  setJsonImportError("");
+                  setJsonImportSchemaVersion(null);
+                }}
+              />
+            </div>
+
+            {/* Validate Button */}
+            <Button
+              onClick={validateJsonImport}
+              disabled={!jsonImportText.trim() || jsonImportValidated}
+            >
+              {jsonImportValidated ? (
+                <>
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Validated
+                </>
+              ) : (
+                "Validate JSON"
+              )}
+            </Button>
+
+            {/* Validation Error */}
+            {jsonImportError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                  <div>
+                    <strong>Validation Error:</strong>
+                    <pre className="mt-1 text-xs whitespace-pre-wrap font-mono">{jsonImportError}</pre>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Validation Findings */}
+            {jsonImportValidated && jsonImportFindings.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-medium">Validation Findings:</div>
+                <div className="space-y-1">
+                  {jsonImportFindings.map((finding, idx) => {
+                    const Icon =
+                      finding.severity === "ERROR"
+                        ? AlertTriangle
+                        : finding.severity === "WARNING"
+                        ? AlertTriangle
+                        : Info;
+                    const textColor =
+                      finding.severity === "ERROR"
+                        ? "text-red-600 dark:text-red-400"
+                        : finding.severity === "WARNING"
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-blue-600 dark:text-blue-400";
+                    return (
+                      <div key={idx} className={`flex items-start gap-2 text-sm ${textColor}`}>
+                        <Icon className="h-4 w-4 mt-0.5 shrink-0" />
+                        <span>{finding.message}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Success Message */}
+            {jsonImportValidated && jsonImportFindings.length === 0 && !jsonImportError && (
+              <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-200">
+                <div className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+                  <div>
+                    <strong>Valid JSON!</strong> This JSON passed all validation checks. You can apply it to the Draft.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setJsonImportModalOpen(false);
+                setJsonImportText("");
+                setJsonImportValidated(false);
+                setJsonImportFindings([]);
+                setJsonImportError("");
+                setJsonImportSchemaVersion(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                applyJsonImportMutation.mutate();
+              }}
+              disabled={
+                !jsonImportValidated ||
+                !!jsonImportError ||
+                jsonImportFindings.some((f) => f.severity === "ERROR") ||
+                applyJsonImportMutation.isPending
+              }
+            >
+              {applyJsonImportMutation.isPending ? "Applying..." : "Apply to Draft"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
