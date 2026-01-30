@@ -815,8 +815,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const currentUserId = getUserId(req.user);
       const organizationId = getRequestOrganizationId(req);
 
+      console.log('[PATCH /api/users/:id] Request:', { 
+        userId: id, 
+        orgRole, 
+        currentUserId, 
+        organizationId,
+        body: req.body 
+      });
+
       // Prevent users from modifying themselves
       if (id === currentUserId) {
+        console.log('[PATCH /api/users/:id] Blocked: Cannot modify self');
         return res.status(400).json({ message: "You cannot modify your own membership" });
       }
 
@@ -832,34 +841,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
         )
         .limit(1);
 
-      if (targetMembership?.role === 'owner') {
+      console.log('[PATCH /api/users/:id] Target membership:', targetMembership);
+
+      if (!targetMembership) {
+        console.log('[PATCH /api/users/:id] Error: User not found in organization');
+        return res.status(404).json({ message: "User not found in organization" });
+      }
+
+      if (targetMembership.role === 'owner') {
+        console.log('[PATCH /api/users/:id] Blocked: Cannot modify owner role');
         return res.status(400).json({ message: "Cannot modify owner role" });
       }
 
       // Validate org role
-      if (orgRole && !['admin', 'manager', 'member'].includes(orgRole)) {
+      if (!orgRole) {
+        console.log('[PATCH /api/users/:id] Error: orgRole is required');
+        return res.status(400).json({ message: "orgRole is required" });
+      }
+
+      if (!['admin', 'manager', 'member'].includes(orgRole)) {
+        console.log('[PATCH /api/users/:id] Error: Invalid org role:', orgRole);
         return res.status(400).json({ message: "Invalid org role" });
       }
 
       // Update user's role in this organization
-      if (orgRole) {
-        const result = await db
-          .update(userOrganizations)
-          .set({ role: orgRole, updatedAt: sql`now()` })
-          .where(
-            and(
-              eq(userOrganizations.userId, id),
-              eq(userOrganizations.organizationId, organizationId)
-            )
-          )
-          .returning();
+      console.log('[PATCH /api/users/:id] Executing update...', {
+        userId: id,
+        organizationId,
+        newRole: orgRole
+      });
 
-        if (result.length === 0) {
-          return res.status(404).json({ message: "User not found in organization" });
-        }
+      const result = await db
+        .update(userOrganizations)
+        .set({ role: orgRole, updatedAt: sql`now()` })
+        .where(
+          and(
+            eq(userOrganizations.userId, id),
+            eq(userOrganizations.organizationId, organizationId)
+          )
+        )
+        .returning();
+
+      console.log('[PATCH /api/users/:id] Update result:', result);
+
+      if (result.length === 0) {
+        console.log('[PATCH /api/users/:id] Error: Update affected 0 rows');
+        return res.status(404).json({ message: "User not found in organization" });
       }
 
-      res.json({ success: true });
+      console.log('[PATCH /api/users/:id] Success - role updated to:', result[0].role);
+      res.json({ success: true, updatedRole: result[0].role });
     } catch (error) {
       console.error("Error updating user:", error);
       res.status(500).json({ message: "Failed to update user" });
