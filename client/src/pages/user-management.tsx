@@ -98,17 +98,20 @@ export default function UserManagement() {
 
   const updateUserMutation = useMutation({
     mutationFn: async ({ id, orgRole }: { id: string; orgRole: string }) => {
+      console.log('[UserManagement] Updating user role:', { id, orgRole });
       const response = await fetch(`/api/users/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orgRole }),
         credentials: "include",
       });
+      const data = await response.json();
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to update user");
+        console.error('[UserManagement] Update failed:', data);
+        throw new Error(data.message || "Failed to update user");
       }
-      return response.json();
+      console.log('[UserManagement] Update success:', data);
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
@@ -310,7 +313,8 @@ export default function UserManagement() {
               <TableBody>
                 {users.map((user) => {
                   const isCurrentUser = user.id === currentUser?.id;
-                  const canEdit = isOwnerOrAdmin && !isCurrentUser;
+                  const isOwner = user.orgRole === 'owner';
+                  const canEdit = isOwnerOrAdmin && !isCurrentUser && !isOwner;
 
                   return (
                     <TableRow key={user.id}>
