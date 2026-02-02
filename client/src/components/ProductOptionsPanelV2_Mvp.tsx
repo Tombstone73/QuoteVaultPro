@@ -88,12 +88,15 @@ function parseTreeJson(jsonString: string | null): TreeShape {
 
 /**
  * Initialize a minimal valid PBV2 tree
+ * PBV2 uses groups/options model with nodes/edges arrays
+ * Empty state is valid - no rootNodeIds required
  */
 function initializeTree(): any {
   return {
     schemaVersion: 2,
-    rootNodeIds: [],
-    nodes: {},
+    status: 'DRAFT',
+    nodes: [],
+    edges: [],
     meta: {
       title: 'New Options Tree',
       updatedAt: new Date().toISOString(),
