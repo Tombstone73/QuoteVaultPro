@@ -38,14 +38,51 @@ type Props = {
 };
 
 /**
+ * Detect the shape of parsed tree data
+ */
+type TreeShape = 
+  | { ok: true; tree: any }
+  | { ok: false; detectedShape: 'array' | 'null' | 'graph' | 'unknown' };
+
+function detectTreeShape(parsed: any): TreeShape {
+  if (parsed == null) {
+    return { ok: false, detectedShape: 'null' };
+  }
+  
+  // Legacy array format (old options structure)
+  if (Array.isArray(parsed)) {
+    return { ok: false, detectedShape: 'array' };
+  }
+  
+  // Not an object at all
+  if (typeof parsed !== 'object') {
+    return { ok: false, detectedShape: 'unknown' };
+  }
+  
+  // Legacy graph format (has nodes/edges but not PBV2 structure)
+  if ((parsed.nodes || parsed.edges) && !parsed.schemaVersion) {
+    return { ok: false, detectedShape: 'graph' };
+  }
+  
+  // Valid PBV2 format (object with proper structure)
+  // Don't enforce strict validation here - just check it's an object
+  // that looks like PBV2 (has nodes/edges or is empty starter tree)
+  return { ok: true, tree: parsed };
+}
+
+/**
  * Parse and normalize PBV2 tree JSON
  */
-function parseTreeJson(jsonString: string | null): any | null {
-  if (!jsonString || !jsonString.trim()) return null;
+function parseTreeJson(jsonString: string | null): TreeShape {
+  if (!jsonString || !jsonString.trim()) {
+    return { ok: false, detectedShape: 'null' };
+  }
+  
   try {
-    return JSON.parse(jsonString);
+    const parsed = JSON.parse(jsonString);
+    return detectTreeShape(parsed);
   } catch {
-    return null;
+    return { ok: false, detectedShape: 'unknown' };
   }
 }
 
@@ -68,17 +105,19 @@ export default function ProductOptionsPanelV2_Mvp({
 }: Props) {
   const { toast } = useToast();
 
-  // Parse tree and derive editor model
-  const treeData = React.useMemo(() => parseTreeJson(optionTreeJson), [optionTreeJson]);
+  // Parse tree with safe legacy detection
+  const parseResult = React.useMemo(() => parseTreeJson(optionTreeJson), [optionTreeJson]);
+  
+  // Only attempt to build editor model if we have valid PBV2 shape
   const editorModel = React.useMemo(() => {
-    if (!treeData) return null;
+    if (!parseResult.ok) return null;
     try {
-      return pbv2TreeToEditorModel(treeData);
+      return pbv2TreeToEditorModel(parseResult.tree);
     } catch (e) {
       console.error('Failed to parse PBV2 tree:', e);
       return null;
     }
-  }, [treeData]);
+  }, [parseResult]);
 
   // Selection state
   const [selectedGroupId, setSelectedGroupId] = React.useState<string | null>(null);
@@ -125,10 +164,10 @@ export default function ProductOptionsPanelV2_Mvp({
    * Apply a patch and commit to parent
    */
   const commitPatch = React.useCallback((patch: { nodes?: any[]; edges?: any[] }) => {
-    if (!treeData) return;
-    const updated = applyPatchToTree(treeData, patch);
+    if (!parseResult.ok) return;
+    const updated = applyPatchToTree(parseResult.tree, patch);
     onChangeOptionTreeJson(JSON.stringify(updated, null, 2));
-  }, [treeData, onChangeOptionTreeJson]);
+  }, [parseResult, onChangeOptionTreeJson]);
 
   /**
    * Initialize empty tree
@@ -150,8 +189,8 @@ export default function ProductOptionsPanelV2_Mvp({
   const addGroup = React.useCallback((e?: React.MouseEvent) => {
     e?.preventDefault();
     e?.stopPropagation();
-    if (!treeData) return;
-    const { patch, newGroupId } = createAddGroupPatch(treeData);
+    if (!parseResult.ok) return;
+    const { patch, newGroupId } = createAddGroupPatch(parseResult.tree);
     commitPatch(patch);
     setSelectedGroupId(newGroupId);
     setSelectedOptionId(null);
@@ -159,23 +198,23 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Group added",
       description: "New group created. Update its name and settings.",
     });
-  }, [treeData, commitPatch, toast]);
+  }, [parseResult, commitPatch, toast]);
 
   /**
    * Update group
    */
   const updateGroup = React.useCallback((groupId: string, updates: Partial<EditorOptionGroup>) => {
-    if (!treeData) return;
-    const { patch } = createUpdateGroupPatch(treeData, groupId, updates);
+    if (!parseResult.ok) return;
+    const { patch } = createUpdateGroupPatch(parseResult.tree, groupId, updates);
     commitPatch(patch);
-  }, [treeData, commitPatch]);
+  }, [parseResult, commitPatch]);
 
   /**
    * Delete group (cascade deletes all options)
    */
   const deleteGroup = React.useCallback((groupId: string) => {
-    if (!treeData) return;
-    const { patch } = createDeleteGroupPatch(treeData, groupId);
+    if (!parseResult.ok) return;
+    const { patch } = createDeleteGroupPatch(parseResult.tree, groupId);
     commitPatch(patch);
     if (selectedGroupId === groupId) {
       setSelectedGroupId(null);
@@ -185,7 +224,7 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Group deleted",
       description: "Group and all its options have been removed.",
     });
-  }, [treeData, commitPatch, selectedGroupId, toast]);
+  }, [parseResult, commitPatch, selectedGroupId, toast]);
 
   /**
    * Add option to selected group
@@ -193,8 +232,8 @@ export default function ProductOptionsPanelV2_Mvp({
   const addOption = React.useCallback((groupId: string, e?: React.MouseEvent) => {
     e?.preventDefault();
     e?.stopPropagation();
-    if (!treeData) return;
-    const { patch, newOptionId } = createAddOptionPatch(treeData, groupId);
+    if (!parseResult.ok) return;
+    const { patch, newOptionId } = createAddOptionPatch(parseResult.tree, groupId);
     commitPatch(patch);
     setSelectedGroupId(groupId);
     setSelectedOptionId(newOptionId);
@@ -202,23 +241,23 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Option added",
       description: "New option created. Configure its settings.",
     });
-  }, [treeData, commitPatch, toast]);
+  }, [parseResult, commitPatch, toast]);
 
   /**
    * Update option
    */
   const updateOption = React.useCallback((optionId: string, updates: Partial<EditorOption>) => {
-    if (!treeData) return;
-    const { patch } = createUpdateOptionPatch(treeData, optionId, updates);
+    if (!parseResult.ok) return;
+    const { patch } = createUpdateOptionPatch(parseResult.tree, optionId, updates);
     commitPatch(patch);
-  }, [treeData, commitPatch]);
+  }, [parseResult, commitPatch]);
 
   /**
    * Delete option
    */
   const deleteOption = React.useCallback((optionId: string) => {
-    if (!treeData) return;
-    const { patch } = createDeleteOptionPatch(treeData, optionId);
+    if (!parseResult.ok) return;
+    const { patch } = createDeleteOptionPatch(parseResult.tree, optionId);
     commitPatch(patch);
     if (selectedOptionId === optionId) {
       setSelectedOptionId(null);
@@ -227,7 +266,7 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Option deleted",
       description: "Option has been removed.",
     });
-  }, [treeData, commitPatch, selectedOptionId, toast]);
+  }, [parseResult, commitPatch, selectedOptionId, toast]);
 
   /**
    * Move group up/down in list
@@ -245,9 +284,10 @@ export default function ProductOptionsPanelV2_Mvp({
     reordered.splice(newIndex, 0, removed);
 
     // Update sortOrder in tree nodes
-    const { patch } = createUpdateGroupPatch(treeData, groupId, {});
+    if (!parseResult.ok) return;
+    const { patch } = createUpdateGroupPatch(parseResult.tree, groupId, {});
     commitPatch(patch);
-  }, [editorModel, treeData, commitPatch]);
+  }, [editorModel, parseResult, commitPatch]);
 
   /**
    * Move option up/down in group
@@ -261,14 +301,19 @@ export default function ProductOptionsPanelV2_Mvp({
 
     // Reorder is handled by edge priority in pbv2ViewModel
     // For now, just update the option
-    const { patch } = createUpdateOptionPatch(treeData, optionId, {});
+    if (!parseResult.ok) return;
+    const { patch } = createUpdateOptionPatch(parseResult.tree, optionId, {});
     commitPatch(patch);
-  }, [selectedGroup, treeData, commitPatch]);
+  }, [selectedGroup, parseResult, commitPatch]);
 
-  // If no tree, show init UI
-  if (!treeData) {
+  // If legacy format detected, show banner with init option
+  if (!parseResult.ok) {
     return (
-      <div className="flex h-full overflow-hidden bg-background">
+      <div className="flex h-full overflow-hidden bg-background relative">
+        {/* TEMPORARY: Visual marker to confirm this component renders */}
+        <div className="fixed bottom-2 right-2 z-50 rounded-md bg-green-500 px-3 py-1 text-xs font-bold text-white shadow-lg">
+          PBV2_FIGMA_LAYOUT
+        </div>
         <aside className="w-72 border-r border-border bg-card flex flex-col">
           <div className="border-b border-border p-4">
             <div className="flex items-center justify-between mb-3">
@@ -294,10 +339,31 @@ export default function ProductOptionsPanelV2_Mvp({
         </aside>
         
         <main className="flex-1 overflow-y-auto">
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            <div className="text-center">
-              <Settings2 className="h-12 w-12 mx-auto mb-3 opacity-50" />
-              <p>Initialize the tree to begin editing</p>
+          <div className="flex items-center justify-center h-full bg-background">
+            <div className="text-center space-y-4 max-w-md p-6">
+              <div className="flex justify-center">
+                <div className="rounded-full bg-yellow-500/10 p-4">
+                  <Layers className="h-8 w-8 text-yellow-600" />
+                </div>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold mb-2">Legacy Format Detected</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Tree v2 requires PBV2 format. Current data is <strong className="text-foreground">{parseResult.detectedShape}</strong> format.
+                </p>
+                <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-left">
+                  <div className="font-medium mb-1">What will happen:</div>
+                  <ul className="list-disc pl-4 space-y-1 text-muted-foreground">
+                    <li>Current {parseResult.detectedShape} data will be replaced</li>
+                    <li>A new empty PBV2 tree will be created</li>
+                    <li>You can then add groups and options</li>
+                  </ul>
+                </div>
+              </div>
+              <Button type="button" onClick={initTree} className="w-full">
+                <Plus className="h-4 w-4 mr-2" />
+                Initialize Tree v2
+              </Button>
             </div>
           </div>
         </main>
@@ -322,6 +388,11 @@ export default function ProductOptionsPanelV2_Mvp({
 
   return (
     <>
+      {/* TEMPORARY: Visual marker to confirm this component renders */}
+      <div className="fixed bottom-2 right-2 z-50 rounded-md bg-green-500 px-3 py-1 text-xs font-bold text-white shadow-lg">
+        PBV2_FIGMA_LAYOUT
+      </div>
+      
       <div className="flex h-full overflow-hidden bg-background">
       {/* LEFT: Option Groups Sidebar */}
       <aside className="w-72 border-r border-border bg-card flex flex-col">
@@ -820,7 +891,7 @@ export default function ProductOptionsPanelV2_Mvp({
               <div className="space-y-2">
                 <div className="text-sm font-medium">Current Tree JSON</div>
                 <Textarea
-                  value={JSON.stringify(treeData, null, 2)}
+                  value={parseResult.ok ? JSON.stringify(parseResult.tree, null, 2) : 'Legacy format - not parseable'}
                   readOnly
                   className="font-mono text-xs min-h-[400px]"
                 />

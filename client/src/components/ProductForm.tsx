@@ -46,18 +46,40 @@ export const ProductForm = ({
 }) => {
   const addPricingProfileKey = form.watch("pricingProfileKey");
   const [addGroupSignal, setAddGroupSignal] = React.useState<number | null>(null);
-  const [optionsMode, setOptionsMode] = React.useState<"legacy" | "treeV2">("legacy");
+  
+  // Persist optionsMode across refresh via localStorage
+  const STORAGE_KEY = 'productEditor:optionsMode';
+  const [optionsMode, setOptionsMode] = React.useState<"legacy" | "treeV2">(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      return stored === 'treeV2' ? 'treeV2' : 'legacy';
+    } catch {
+      return 'legacy';
+    }
+  });
+  
   const optionTreeJson = form.watch("optionTreeJson");
 
   const [optionTreeText, setOptionTreeText] = React.useState<string>("");
   const [optionTreeErrors, setOptionTreeErrors] = React.useState<string[]>([]);
 
-  React.useEffect(() => {
-    // Default to Tree v2 editor when an existing product already has a v2 tree.
-    if (optionsMode === "legacy" && optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
-      setOptionsMode("treeV2");
+  // Wrapper to persist optionsMode changes to localStorage
+  const setAndPersistOptionsMode = React.useCallback((mode: "legacy" | "treeV2") => {
+    setOptionsMode(mode);
+    try {
+      localStorage.setItem(STORAGE_KEY, mode);
+    } catch (e) {
+      console.warn('Failed to persist optionsMode:', e);
     }
-  }, [optionTreeJson, optionsMode]);
+  }, []);
+
+  React.useEffect(() => {
+    // Auto-switch to Tree v2 editor when an existing product already has a v2 tree.
+    // But ONLY if user hasn't explicitly chosen legacy mode.
+    if (optionsMode === "legacy" && optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
+      setAndPersistOptionsMode("treeV2");
+    }
+  }, [optionTreeJson, optionsMode, setAndPersistOptionsMode]);
 
   React.useEffect(() => {
     if (optionsMode !== "treeV2") return;
@@ -427,7 +449,7 @@ export const ProductForm = ({
                 checked={optionsMode === "treeV2"}
                 onCheckedChange={(checked) => {
                   if (checked) {
-                    setOptionsMode("treeV2");
+                    setAndPersistOptionsMode("treeV2");
                     setOptionTreeErrors([]);
                     form.clearErrors("optionTreeJson");
                     try {
@@ -439,7 +461,7 @@ export const ProductForm = ({
                   }
 
                   // Switching back to legacy disables v2 by clearing optionTreeJson.
-                  setOptionsMode("legacy");
+                  setAndPersistOptionsMode("legacy");
                   form.setValue("optionTreeJson", null, { shouldDirty: true });
                   form.clearErrors("optionTreeJson");
                   setOptionTreeErrors([]);
