@@ -85,6 +85,7 @@ export function OptionGroupsSidebar({
                   `}
                 >
                   <button
+                    type="button"
                     onClick={() => onSelectGroup(group.id)}
                     className="w-full text-left p-3 pr-8"
                   >
@@ -140,6 +141,7 @@ export function OptionGroupsSidebar({
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <button
+                          type="button"
                           className="inline-flex items-center justify-center h-6 w-6 p-0 text-slate-400 hover:text-slate-200 hover:bg-slate-700 rounded-md transition-colors"
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -167,6 +169,10 @@ export function OptionGroupsSidebar({
           })}
         </div>
       </ScrollArea>
+
+      <div className="border-t border-[#334155] p-3 text-xs text-slate-400">
+        Advanced editors open as drawers. Dev drawer: Ctrl+Shift+D.
+      </div>
     </aside>
   );
 }

@@ -136,6 +136,7 @@ export function OptionEditor({
                     <GripVertical className="h-4 w-4 text-slate-500 mr-2 flex-shrink-0" />
                     
                     <button
+                      type="button"
                       onClick={() => toggleOption(option.id)}
                       className="flex items-center flex-1 gap-3 text-left"
                     >
