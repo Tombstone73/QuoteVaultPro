@@ -13,6 +13,7 @@ import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog"
 import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
 import ProductOptionsPanelV2_Mvp from "@/components/ProductOptionsPanelV2_Mvp";
+import { useToast } from "@/hooks/use-toast";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -44,6 +45,7 @@ export const ProductForm = ({
   onSave: any;
   formId?: string;
 }) => {
+  const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
   const [addGroupSignal, setAddGroupSignal] = React.useState<number | null>(null);
   
@@ -74,12 +76,32 @@ export const ProductForm = ({
   }, []);
 
   React.useEffect(() => {
+    // Auto-initialize PBV2 for new products (no optionTreeJson)
+    const productId = form.getValues("id");
+    if (!productId && !optionTreeJson) {
+      // New product with no tree - initialize with PBV2 empty state
+      const emptyPBV2 = {
+        schemaVersion: 2,
+        status: 'DRAFT',
+        nodes: [],
+        edges: [],
+        meta: {
+          title: 'New Options Tree',
+          updatedAt: new Date().toISOString(),
+        },
+      };
+      form.setValue("optionTreeJson", emptyPBV2, { shouldDirty: false });
+      setAndPersistOptionsMode("treeV2");
+      setOptionTreeText(JSON.stringify(emptyPBV2, null, 2));
+      return;
+    }
+    
     // Auto-switch to Tree v2 editor when an existing product already has a v2 tree.
     // But ONLY if user hasn't explicitly chosen legacy mode.
     if (optionsMode === "legacy" && optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
       setAndPersistOptionsMode("treeV2");
     }
-  }, [optionTreeJson, optionsMode, setAndPersistOptionsMode]);
+  }, [optionTreeJson, optionsMode, setAndPersistOptionsMode, form]);
 
   React.useEffect(() => {
     if (optionsMode !== "treeV2") return;
@@ -132,6 +154,9 @@ export const ProductForm = ({
       return;
     }
 
+    // PBV2 mode: Only validate structure, NOT legacy graph rules
+    // Skip validateOptionTreeV2 (legacy graph validator with rootNodeIds requirement)
+    // PBV2 uses groups/options model and doesn't require rootNodeIds
     const zodRes = optionTreeV2Schema.safeParse(parsed);
     if (!zodRes.success) {
       form.setError("optionTreeJson", {
@@ -142,15 +167,9 @@ export const ProductForm = ({
       return;
     }
 
-    const validation = validateOptionTreeV2(parsed);
-    if (!validation.ok) {
-      form.setError("optionTreeJson", {
-        type: "manual",
-        message: "Invalid optionTreeJson (v2)",
-      });
-      setOptionTreeErrors(validation.errors);
-      return;
-    }
+    // DO NOT call validateOptionTreeV2 here - it's a legacy graph validator
+    // PBV2 empty state (nodes: [], edges: []) is valid
+    // Legacy validator requires rootNodeIds.length > 0 which breaks PBV2
 
     form.clearErrors("optionTreeJson");
     setOptionTreeErrors([]);
@@ -161,21 +180,19 @@ export const ProductForm = ({
     const legacyOptionsJson = form.getValues("optionsJson");
     const tree = buildOptionTreeV2FromLegacyOptions(legacyOptionsJson);
 
-    // Validate with the same minimal boundary validator used throughout the app.
-    const validation = validateOptionTreeV2(tree);
-    if (!validation.ok) {
-      form.setError("optionTreeJson", {
-        type: "manual",
-        message: "Invalid optionTreeJson (v2)",
-      });
-      setOptionTreeErrors(validation.errors);
-      return;
-    }
+    // DO NOT call validateOptionTreeV2 - it's a legacy graph validator
+    // that requires rootNodeIds.length > 0, breaking PBV2 empty state
+    // PBV2 uses groups/options model and is valid with empty nodes/edges arrays
 
     form.setValue("optionTreeJson", tree as any, { shouldDirty: true });
     form.clearErrors("optionTreeJson");
     setOptionTreeErrors([]);
     setOptionTreeText(JSON.stringify(tree, null, 2));
+    
+    toast({
+      title: "Tree v2 Initialized",
+      description: "PBV2 options tree created. You can now add groups and options.",
+    });
   };
 
   return (
