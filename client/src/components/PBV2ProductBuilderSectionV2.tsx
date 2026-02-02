@@ -91,6 +91,7 @@ function envelopeMessage(status: number, json: any, fallback: string) {
 }
 
 export default function PBV2ProductBuilderSectionV2({ productId }: { productId: string }) {
+  console.log("[MOUNT] PBV2ProductBuilderSectionV2 - CANONICAL PBV2 UI PATH");
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
 
