@@ -130,6 +130,10 @@ export default function ProductOptionsEditor({
   fieldName: string;
   addGroupSignal?: number | null;
 }) {
+  // TEMPORARY: Visual marker to detect if legacy UI renders
+  useEffect(() => {
+    console.warn('[LEGACY_LAYOUT] ProductOptionsEditor rendered - this should NOT appear in Tree v2 mode');
+  }, []);
   const options: ProductOptionItem[] = form.watch(fieldName) || [];
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [emptyGroups, setEmptyGroups] = useState<Record<string, GroupDraft>>({});
