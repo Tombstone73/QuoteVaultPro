@@ -120,6 +120,18 @@ export const ProductForm = ({
       return;
     }
 
+    // Detect if this is legacy format - skip validation if so
+    const isLegacy = Array.isArray(parsed) || 
+                     (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
+    
+    if (isLegacy) {
+      // Legacy format detected - don't validate, just store as-is
+      form.clearErrors("optionTreeJson");
+      setOptionTreeErrors([]);
+      form.setValue("optionTreeJson", parsed, { shouldDirty: true });
+      return;
+    }
+
     const zodRes = optionTreeV2Schema.safeParse(parsed);
     if (!zodRes.success) {
       form.setError("optionTreeJson", {
@@ -497,16 +509,45 @@ export const ProductForm = ({
                 onChangeOptionTreeJson={setTreeTextAndValidate}
               />
 
-              {optionTreeErrors.length > 0 ? (
-                <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-                  <div className="font-medium">Option Tree v2 errors</div>
-                  <ul className="mt-1 list-disc pl-4">
-                    {optionTreeErrors.map((err) => (
-                      <li key={err}>{err}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
+              {(() => {
+                // Only show red error box if we have PBV2 data with validation errors
+                // Do NOT show for legacy format (that's handled by yellow banner in PBV2 panel)
+                const trimmed = optionTreeText.trim();
+                if (!trimmed) return null;
+                
+                try {
+                  const parsed = JSON.parse(trimmed);
+                  const isLegacy = Array.isArray(parsed) || 
+                                   (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
+                  
+                  // Only render error box if NOT legacy and we have errors
+                  if (isLegacy || optionTreeErrors.length === 0) return null;
+                  
+                  return (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                      <div className="font-medium">Option Tree v2 errors</div>
+                      <ul className="mt-1 list-disc pl-4">
+                        {optionTreeErrors.map((err) => (
+                          <li key={err}>{err}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                } catch {
+                  // JSON parse error - show errors if any
+                  if (optionTreeErrors.length === 0) return null;
+                  return (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                      <div className="font-medium">Option Tree v2 errors</div>
+                      <ul className="mt-1 list-disc pl-4">
+                        {optionTreeErrors.map((err) => (
+                          <li key={err}>{err}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                }
+              })()}
 
               <FormDescription className="text-xs">
                 Tree v2 opt-in is only active when optionTreeJson exists and schemaVersion=2.

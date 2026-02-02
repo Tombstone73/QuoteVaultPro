@@ -91,10 +91,13 @@ function parseTreeJson(jsonString: string | null): TreeShape {
  */
 function initializeTree(): any {
   return {
-    status: 'ENABLED',
+    schemaVersion: 2,
     rootNodeIds: [],
-    nodes: [],
-    edges: [],
+    nodes: {},
+    meta: {
+      title: 'New Options Tree',
+      updatedAt: new Date().toISOString(),
+    },
   };
 }
 
