@@ -317,37 +317,33 @@ export default function ProductOptionsPanelV2_Mvp({
   // If legacy format detected, show banner with init option
   if (!parseResult.ok) {
     return (
-      <div className="flex h-full overflow-hidden bg-background relative">
-        {/* TEMPORARY: Visual marker to confirm this component renders */}
-        <div className="fixed bottom-2 right-2 z-50 rounded-md bg-green-500 px-3 py-1 text-xs font-bold text-white shadow-lg">
-          PBV2_FIGMA_LAYOUT
-        </div>
-        <aside className="w-72 border-r border-border bg-card flex flex-col">
-          <div className="border-b border-border p-4">
+      <div className="flex h-full overflow-hidden bg-[#0a0e1a]">
+        <aside className="w-72 border-r border-[#334155] bg-[#0f172a] flex flex-col">
+          <div className="border-b border-[#334155] p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <Layers className="h-4 w-4 text-muted-foreground" />
-                <h2 className="font-semibold text-foreground">Option Groups</h2>
+                <Layers className="h-4 w-4 text-slate-400" />
+                <h2 className="font-semibold text-slate-200">Option Groups</h2>
               </div>
-              <Badge variant="outline" className="text-xs">0</Badge>
+              <Badge variant="outline" className="text-xs bg-slate-800 text-slate-300 border-slate-600">0</Badge>
             </div>
-            <Button type="button" onClick={initTree} className="w-full gap-2" size="sm">
+            <Button type="button" onClick={initTree} className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm" size="sm">
               <Plus className="h-4 w-4" />
               Initialize Tree
             </Button>
           </div>
           <div className="flex-1 p-4 flex items-center justify-center">
-            <div className="text-center text-sm text-muted-foreground">
+            <div className="text-center text-sm text-slate-400">
               Initialize PBV2 tree to begin building options.
             </div>
           </div>
-          <div className="border-t border-border p-3 text-xs text-muted-foreground">
+          <div className="border-t border-[#334155] p-3 text-xs text-slate-400">
             Advanced editors open as drawers. Dev drawer: Ctrl+Shift+D.
           </div>
         </aside>
         
-        <main className="flex-1 overflow-y-auto">
-          <div className="flex items-center justify-center h-full bg-background">
+        <main className="flex-1 overflow-y-auto border-r border-[#334155]">
+          <div className="flex items-center justify-center h-full bg-[#0a0e1a]">
             <div className="text-center space-y-4 max-w-md p-6">
               <div className="flex justify-center">
                 <div className="rounded-full bg-yellow-500/10 p-4">
@@ -355,20 +351,20 @@ export default function ProductOptionsPanelV2_Mvp({
                 </div>
               </div>
               <div>
-                <h3 className="text-lg font-semibold mb-2">Legacy Format Detected</h3>
-                <p className="text-sm text-muted-foreground mb-3">
-                  Tree v2 requires PBV2 format. Current data is <strong className="text-foreground">{parseResult.detectedShape}</strong> format.
+                <h3 className="text-lg font-semibold mb-2 text-slate-200">Legacy Format Detected</h3>
+                <p className="text-sm text-slate-400 mb-3">
+                  Tree v2 requires PBV2 format. Current data is <strong className="text-slate-200">{parseResult.detectedShape}</strong> format.
                 </p>
                 <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-left">
-                  <div className="font-medium mb-1">What will happen:</div>
-                  <ul className="list-disc pl-4 space-y-1 text-muted-foreground">
+                  <div className="font-medium mb-1 text-slate-300">What will happen:</div>
+                  <ul className="list-disc pl-4 space-y-1 text-slate-400">
                     <li>Current {parseResult.detectedShape} data will be replaced</li>
                     <li>A new empty PBV2 tree will be created</li>
                     <li>You can then add groups and options</li>
                   </ul>
                 </div>
               </div>
-              <Button type="button" onClick={initTree} className="w-full">
+              <Button type="button" onClick={initTree} className="w-full bg-blue-600 hover:bg-blue-700 text-white">
                 <Plus className="h-4 w-4 mr-2" />
                 Initialize Tree v2
               </Button>
@@ -376,8 +372,8 @@ export default function ProductOptionsPanelV2_Mvp({
           </div>
         </main>
         
-        <aside className="w-80 border-l border-border bg-card p-4">
-          <div className="text-sm text-muted-foreground">Preview & validation will appear here</div>
+        <aside className="w-96 border-l border-[#334155] bg-[#0f172a] p-4">
+          <div className="text-sm text-slate-400">Preview & validation will appear here</div>
         </aside>
       </div>
     );
@@ -385,8 +381,8 @@ export default function ProductOptionsPanelV2_Mvp({
 
   if (!editorModel) {
     return (
-      <div className="flex h-full items-center justify-center bg-background">
-        <div className="text-center text-destructive">
+      <div className="flex h-full items-center justify-center bg-[#0a0e1a]">
+        <div className="text-center text-red-400">
           <p className="font-semibold">Failed to parse PBV2 tree</p>
           <p className="text-sm mt-2">Check console for errors</p>
         </div>
@@ -396,25 +392,20 @@ export default function ProductOptionsPanelV2_Mvp({
 
   return (
     <>
-      {/* TEMPORARY: Visual marker to confirm this component renders */}
-      <div className="fixed bottom-2 right-2 z-50 rounded-md bg-green-500 px-3 py-1 text-xs font-bold text-white shadow-lg">
-        PBV2_FIGMA_LAYOUT
-      </div>
-      
-      <div className="flex h-full overflow-hidden bg-background">
+      <div className="flex h-full overflow-hidden bg-[#0a0e1a]">
       {/* LEFT: Option Groups Sidebar */}
-      <aside className="w-72 border-r border-border bg-card flex flex-col">
-        <div className="border-b border-border p-4">
+      <aside className="w-72 border-r border-[#334155] bg-[#0f172a] flex flex-col">
+        <div className="border-b border-[#334155] p-4">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <Layers className="h-4 w-4 text-muted-foreground" />
-              <h2 className="font-semibold text-foreground">Option Groups</h2>
+              <Layers className="h-4 w-4 text-slate-400" />
+              <h2 className="font-semibold text-slate-200">Option Groups</h2>
             </div>
-            <Badge variant="outline" className="text-xs">
+            <Badge variant="outline" className="text-xs bg-slate-800 text-slate-300 border-slate-600">
               {editorModel.groups.length}
             </Badge>
           </div>
-          <Button type="button" onClick={addGroup} className="w-full gap-2" size="sm">
+          <Button type="button" onClick={addGroup} className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm" size="sm">
             <Plus className="h-4 w-4" />
             Add Group
           </Button>
@@ -429,14 +420,14 @@ export default function ProductOptionsPanelV2_Mvp({
               return (
                 <div key={group.id}>
                   {index > 0 && (
-                    <div className="h-px bg-border/50 my-2 mx-3" />
+                    <div className="h-px bg-slate-700/50 my-2 mx-3" />
                   )}
                   <div
                     className={`
                       rounded-md transition-colors relative
                       ${isActive
-                        ? 'bg-accent/50 border border-accent'
-                        : 'hover:bg-accent/30 border border-transparent'
+                        ? 'bg-blue-500/10 border border-blue-500/30'
+                        : 'hover:bg-slate-800/50 border border-transparent'
                       }
                     `}
                   >
@@ -448,24 +439,26 @@ export default function ProductOptionsPanelV2_Mvp({
                       }}
                       className="w-full text-left p-3 pr-8"
                     >
-                      <div className="flex items-start gap-2 mb-2">
-                        <GripVertical className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-semibold text-sm truncate text-foreground">
-                            {group.name}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {optionCount} option{optionCount !== 1 ? 's' : ''}
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-start gap-2 flex-1 min-w-0">
+                          <GripVertical className="h-4 w-4 text-slate-500 mt-0.5 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-semibold text-slate-200 mb-0.5 truncate">
+                              {group.name}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              {optionCount} option{optionCount !== 1 ? 's' : ''}
+                            </div>
                           </div>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-1.5 flex-wrap ml-6">
                         {group.isRequired && (
-                          <Badge variant="outline" className="text-xs">Required</Badge>
+                          <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">Required</Badge>
                         )}
                         {group.isMultiSelect && (
-                          <Badge variant="outline" className="text-xs">Multi</Badge>
+                          <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">Multi</Badge>
                         )}
                       </div>
                     </button>
@@ -476,7 +469,7 @@ export default function ProductOptionsPanelV2_Mvp({
                           <button
                             type="button"
                             onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center justify-center h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+                            className="inline-flex items-center justify-center h-6 w-6 p-0 text-slate-400 hover:text-slate-200 hover:bg-slate-700 rounded-md transition-colors"
                           >
                             <MoreVertical className="h-4 w-4" />
                           </button>
@@ -532,52 +525,52 @@ export default function ProductOptionsPanelV2_Mvp({
             })}
 
             {editorModel.groups.length === 0 && (
-              <div className="text-center text-sm text-muted-foreground py-8">
+              <div className="text-center text-sm text-slate-400 py-8">
                 No groups yet. Add your first group to begin.
               </div>
             )}
           </div>
         </ScrollArea>
 
-        <div className="border-t border-border p-3 text-xs text-muted-foreground">
+        <div className="border-t border-[#334155] p-3 text-xs text-slate-400">
           Advanced editors open as drawers. Dev drawer: Ctrl+Shift+D.
         </div>
       </aside>
 
       {/* CENTER: Option Editor */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto border-r border-[#334155]">
         {!selectedGroup && (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
+          <div className="flex items-center justify-center h-full text-slate-400 bg-[#0a0e1a]">
             <div className="text-center">
-              <Settings2 className="h-12 w-12 mx-auto mb-3 opacity-50" />
+              <Settings2 className="h-12 w-12 mx-auto mb-3 text-slate-600" />
               <p>Select an option group to begin editing</p>
             </div>
           </div>
         )}
 
         {selectedGroup && (
-          <div className="h-full flex flex-col">
+          <div className="h-full flex flex-col bg-[#0a0e1a]">
             {/* Group Header */}
-            <div className="border-b border-border bg-card p-5">
+            <div className="border-b border-[#334155] bg-[#1e293b] p-5">
               <div className="flex items-start justify-between mb-3">
                 <div className="flex-1">
                   <Input
                     value={selectedGroup.name}
                     onChange={(e) => updateGroup(selectedGroup.id, { name: e.target.value })}
-                    className="text-lg font-semibold mb-2 border-transparent hover:border-border focus:border-primary px-2 -ml-2 bg-transparent"
+                    className="text-lg font-semibold mb-2 border-transparent hover:border-slate-600 focus:border-blue-500 px-2 -ml-2 bg-transparent text-slate-100"
                   />
                   <Textarea
                     value={selectedGroup.description}
                     onChange={(e) => updateGroup(selectedGroup.id, { description: e.target.value })}
                     placeholder="Group description..."
-                    className="text-sm min-h-[50px] border-transparent hover:border-border focus:border-primary bg-transparent resize-none"
+                    className="text-sm text-slate-300 min-h-[50px] border-transparent hover:border-slate-600 focus:border-blue-500 bg-transparent resize-none"
                   />
                 </div>
               </div>
 
               <div className="flex items-center gap-6 ml-2">
                 <div className="flex items-center gap-2">
-                  <Label htmlFor="required" className="font-medium cursor-pointer text-sm">
+                  <Label htmlFor="required" className="font-medium cursor-pointer text-sm text-slate-300">
                     Required Group
                   </Label>
                   <Button
@@ -592,7 +585,7 @@ export default function ProductOptionsPanelV2_Mvp({
                   </Button>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Label htmlFor="multiselect" className="font-medium cursor-pointer text-sm">
+                  <Label htmlFor="multiselect" className="font-medium cursor-pointer text-sm text-slate-300">
                     Multi-select
                   </Label>
                   <Button
@@ -610,23 +603,17 @@ export default function ProductOptionsPanelV2_Mvp({
             </div>
 
             {/* Options List */}
-            <ScrollArea className="flex-1">
-              <div className="p-5">
+            <ScrollArea className="flex-1 bg-[#0a0e1a]">
+              <div className="p-6">
                 <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold">Options</h3>
-                    <Badge variant="secondary" className="text-xs">
-                      {selectedGroup.optionIds.length}
-                    </Badge>
-                  </div>
+                  <h3 className="font-semibold text-slate-200">Options</h3>
                   <Button
                     type="button"
                     onClick={(e) => addOption(selectedGroup.id, e)}
                     size="sm"
-                    variant="outline"
-                    className="gap-2"
+                    className="gap-2 bg-blue-600 hover:bg-blue-700 text-white"
                   >
-                    <Plus className="h-3 w-3" />
+                    <Plus className="h-4 w-4" />
                     Add Option
                   </Button>
                 </div>
@@ -644,36 +631,36 @@ export default function ProductOptionsPanelV2_Mvp({
                         className={`
                           rounded-md border transition-colors cursor-pointer
                           ${isActive
-                            ? 'bg-accent/50 border-accent'
-                            : 'bg-card border-border hover:bg-accent/30'
+                            ? 'bg-blue-500/10 border-blue-500/30'
+                            : 'bg-slate-800/30 border-slate-700 hover:bg-slate-800/50'
                           }
                         `}
                         onClick={() => setSelectedOptionId(optionId)}
                       >
                         <div className="p-3">
                           <div className="flex items-start justify-between">
-                            <div className="flex items-center gap-2 flex-1 min-w-0">
-                              <GripVertical className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                              <GripVertical className="h-4 w-4 text-slate-500 flex-shrink-0 mt-0.5" />
                               <div className="flex-1 min-w-0">
-                                <div className="font-medium text-sm truncate">{option.name}</div>
-                                <div className="text-xs text-muted-foreground">{option.type}</div>
+                                <div className="font-semibold text-slate-200 mb-0.5 truncate">{option.name}</div>
+                                <div className="text-xs text-slate-400">{option.type}</div>
                               </div>
                             </div>
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-1 flex-shrink-0">
                               {option.isRequired && (
-                                <Badge variant="outline" className="text-xs">Required</Badge>
+                                <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">Required</Badge>
                               )}
                               {option.isDefault && (
-                                <Badge variant="outline" className="text-xs">Default</Badge>
+                                <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Default</Badge>
                               )}
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <button
                                     type="button"
                                     onClick={(e) => e.stopPropagation()}
-                                    className="inline-flex items-center justify-center h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+                                    className="inline-flex items-center justify-center h-6 w-6 p-0 text-slate-400 hover:text-slate-200 hover:bg-slate-700 rounded-md transition-colors"
                                   >
-                                    <MoreVertical className="h-3 w-3" />
+                                    <MoreVertical className="h-4 w-4" />
                                   </button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
@@ -804,7 +791,7 @@ export default function ProductOptionsPanelV2_Mvp({
                   })}
 
                   {selectedGroup.optionIds.length === 0 && (
-                    <div className="text-center text-sm text-muted-foreground py-8 border border-dashed border-border rounded-md">
+                    <div className="text-center text-sm text-slate-400 py-8 border border-dashed border-slate-700 rounded-md">
                       No options yet. Add your first option above.
                     </div>
                   )}
@@ -816,37 +803,40 @@ export default function ProductOptionsPanelV2_Mvp({
       </main>
 
       {/* RIGHT: Preview & Validation Panel */}
-      <aside className="w-80 border-l border-border bg-card overflow-y-auto">
-        <ScrollArea className="h-full">
+      <aside className="w-96 bg-[#0f172a] border-l border-[#334155] flex flex-col">
+        <div className="border-b border-[#334155] p-4">
+          <h2 className="font-semibold text-slate-200">Preview & Validation</h2>
+        </div>
+        <ScrollArea className="flex-1">
           <div className="p-4 space-y-6">
             <div>
-              <h3 className="text-sm font-semibold mb-3">Summary</h3>
+              <h3 className="text-sm font-semibold mb-3 text-slate-200">Summary</h3>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Groups:</span>
-                  <span className="font-medium">{editorModel.groups.length}</span>
+                  <span className="text-slate-400">Groups:</span>
+                  <span className="font-medium text-slate-200">{editorModel.groups.length}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Options:</span>
-                  <span className="font-medium">{Object.keys(editorModel.options).length}</span>
+                  <span className="text-slate-400">Options:</span>
+                  <span className="font-medium text-slate-200">{Object.keys(editorModel.options).length}</span>
                 </div>
               </div>
             </div>
 
-            <Separator />
+            <Separator className="bg-[#334155]" />
 
             <div>
-              <h3 className="text-sm font-semibold mb-3">Validation</h3>
-              <div className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+              <h3 className="text-sm font-semibold mb-3 text-slate-200">Validation</h3>
+              <div className="rounded-md border border-slate-700 bg-slate-800/30 p-3 text-sm text-slate-400">
                 Validation checks will appear here
               </div>
             </div>
 
-            <Separator />
+            <Separator className="bg-[#334155]" />
 
             <div>
-              <h3 className="text-sm font-semibold mb-3">Preview</h3>
-              <div className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+              <h3 className="text-sm font-semibold mb-3 text-slate-200">Preview</h3>
+              <div className="rounded-md border border-slate-700 bg-slate-800/30 p-3 text-sm text-slate-400">
                 Customer preview will render here
               </div>
             </div>
