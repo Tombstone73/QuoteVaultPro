@@ -10,7 +10,7 @@ import React from "react";
 import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEditor";
 import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
-import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
+import { optionTreeV2Schema, validateOptionTreeV2, createEmptyOptionTreeV2 } from "@shared/optionTreeV2";
 import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
 import ProductOptionsPanelV2_Mvp from "@/components/ProductOptionsPanelV2_Mvp";
 import { useToast } from "@/hooks/use-toast";
@@ -112,17 +112,8 @@ export const ProductForm = ({
   React.useEffect(() => {
     // Auto-initialize PBV2 for new products (no optionTreeJson)
     if (!productId && !optionTreeJson) {
-      // New product with no tree - initialize with PBV2 empty state
-      // Matches optionTreeV2Schema: schemaVersion=2, rootNodeIds=[], nodes={}
-      const emptyPBV2 = {
-        schemaVersion: 2,
-        rootNodeIds: [],
-        nodes: {},
-        meta: {
-          title: 'New Options Tree',
-          updatedAt: new Date().toISOString(),
-        },
-      };
+      // New product with no tree - initialize with canonical empty OptionTreeV2
+      const emptyPBV2 = createEmptyOptionTreeV2();
       form.setValue("optionTreeJson", emptyPBV2, { shouldDirty: false });
       setOptionTreeText(JSON.stringify(emptyPBV2, null, 2));
     }
@@ -182,6 +173,18 @@ export const ProductForm = ({
     // PBV2 mode: Only validate structure, NOT legacy graph rules
     // Skip validateOptionTreeV2 (legacy graph validator with rootNodeIds requirement)
     // PBV2 uses groups/options model and doesn't require rootNodeIds
+    
+    // Runtime migration: handle legacy arrays
+    if (Array.isArray(parsed)) {
+      console.warn('[ProductForm] Legacy array detected in optionTreeJson, migrating to empty OptionTreeV2');
+      const migrated = createEmptyOptionTreeV2();
+      form.clearErrors("optionTreeJson");
+      setOptionTreeErrors(['⚠️ Legacy array format detected. Migrated to empty PBV2 tree - please add groups/options.']);
+      form.setValue("optionTreeJson", migrated, { shouldDirty: true });
+      setOptionTreeText(JSON.stringify(migrated, null, 2));
+      return;
+    }
+    
     const zodRes = optionTreeV2Schema.safeParse(parsed);
     if (!zodRes.success) {
       form.setError("optionTreeJson", {

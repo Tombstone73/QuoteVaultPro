@@ -13,6 +13,7 @@
  */
 
 import type { OptionNodeV2 } from '@shared/optionTreeV2';
+import { createEmptyOptionTreeV2 } from '@shared/optionTreeV2';
 
 export type EditorOptionGroup = {
   id: string; // Node ID in PBV2 tree
@@ -145,7 +146,18 @@ function normalizeArrays(treeRaw: any): { tree: any; nodes: PBV2Node[]; edges: P
  * Convert PBV2 tree JSON to editor model for UI rendering
  */
 export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
-  const { tree, nodes, edges } = normalizeArrays(treeJson);
+  // Runtime migration: handle legacy arrays or null/undefined
+  let safeTreeJson = treeJson;
+  
+  if (Array.isArray(treeJson)) {
+    console.warn('[PBV2] Legacy array tree detected, migrating to empty OptionTreeV2 object');
+    safeTreeJson = createEmptyOptionTreeV2();
+  } else if (!treeJson || typeof treeJson !== 'object') {
+    console.warn('[PBV2] Invalid tree JSON (null/undefined/non-object), using empty OptionTreeV2');
+    safeTreeJson = createEmptyOptionTreeV2();
+  }
+
+  const { tree, nodes, edges } = normalizeArrays(safeTreeJson);
 
   // Identify group nodes (GROUP type or nodes with children)
   const groupNodes = nodes.filter(n => 
@@ -367,6 +379,7 @@ export function createUpdateOptionPatch(
     required?: boolean;
     defaultValue?: any;
     choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number }>;
+    constraints?: any;
   }
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
@@ -395,6 +408,10 @@ export function createUpdateOptionPatch(
 
     if (updates.defaultValue !== undefined && updated.input) {
       updated.input = { ...updated.input, defaultValue: updates.defaultValue };
+    }
+
+    if (updates.constraints !== undefined && updated.input) {
+      updated.input = { ...updated.input, constraints: updates.constraints };
     }
 
     if (updates.choices !== undefined) {

@@ -60,6 +60,7 @@ export type OptionNodeV2 = {
       number?: { min?: number; max?: number; step?: number; integerOnly?: boolean };
       text?: { minLen?: number; maxLen?: number; pattern?: string };
       select?: { allowEmpty?: boolean; emptyLabel?: string };
+      dimension?: { minWidthIn?: number; maxWidthIn?: number; minHeightIn?: number; maxHeightIn?: number; allowRotate?: boolean };
     };
   };
   choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number }>;
@@ -165,6 +166,9 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
             .object({ minLen: z.number().int().optional(), maxLen: z.number().int().optional(), pattern: z.string().optional() })
             .optional(),
           select: z.object({ allowEmpty: z.boolean().optional(), emptyLabel: z.string().optional() }).optional(),
+          dimension: z
+            .object({ minWidthIn: z.number().optional(), maxWidthIn: z.number().optional(), minHeightIn: z.number().optional(), maxHeightIn: z.number().optional(), allowRotate: z.boolean().optional() })
+            .optional(),
         })
         .optional(),
     })
@@ -216,6 +220,29 @@ export const lineItemOptionSelectionsV2Schema: z.ZodType<LineItemOptionSelection
 // ------------------------------------------------------------
 // Minimal graph validator (MVP)
 // ------------------------------------------------------------
+
+/**
+ * Create a canonical empty OptionTreeV2 object.
+ * Use this as the default when initializing new trees or migrating from legacy arrays.
+ */
+export function createEmptyOptionTreeV2(): OptionTreeV2 {
+  const meta: any = {
+    title: 'New Options Tree',
+    updatedAt: new Date().toISOString(),
+  };
+  
+  // Dev-only: Add baseWeightOz to make weight preview visible for testing
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+    meta.baseWeightOz = 1;
+  }
+  
+  return {
+    schemaVersion: 2,
+    rootNodeIds: [],
+    nodes: {},
+    meta,
+  };
+}
 
 export function validateOptionTreeV2(tree: unknown): { ok: true } | { ok: false; errors: string[] } {
   const errors: string[] = [];
