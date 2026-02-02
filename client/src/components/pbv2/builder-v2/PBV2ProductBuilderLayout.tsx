@@ -42,7 +42,13 @@ export interface PBV2ProductBuilderLayoutProps {
 
 /**
  * Presentational 3-column layout for PBV2 builder.
- * This component receives all data and handlers from the container.
+ * 
+ * Responsive flex layout:
+ * - Left sidebar (fixed 288px): Option groups
+ * - Middle editor (flex grow): Selected group editor with min-w-0 for proper overflow
+ * - Right panel (fixed 384px): Pricing validation
+ * 
+ * The middle column uses flex-1 min-w-0 to allow proper text truncation and flexing.
  */
 export function PBV2ProductBuilderLayout({
   editorModel,
@@ -68,7 +74,8 @@ export function PBV2ProductBuilderLayout({
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
 
   return (
-    <div className="h-screen flex flex-col bg-[#0a0e1a]">
+    <div className="w-full h-full flex flex-col bg-[#0a0e1a]">
+      {/* Fixed header */}
       <ProductHeader
         productName={editorModel.productMeta.name}
         productStatus={editorModel.productMeta.status}
@@ -81,30 +88,40 @@ export function PBV2ProductBuilderLayout({
         onUpdateProductName={(name) => onUpdateProduct({ name })}
       />
       
+      {/* 3-column layout: flex-1 fills remaining space, overflow-hidden prevents scroll leaks */}
       <div className="flex-1 flex overflow-hidden">
-        <OptionGroupsSidebar
-          optionGroups={editorModel.groups}
-          options={editorModel.options}
-          selectedGroupId={selectedGroupId}
-          onSelectGroup={onSelectGroup}
-          onAddGroup={onAddGroup}
-          onDeleteGroup={onDeleteGroup}
-        />
+        {/* Left Sidebar: Fixed width (288px), shrink-0 prevents it from shrinking */}
+        <div className="w-72 shrink-0 overflow-hidden">
+          <OptionGroupsSidebar
+            optionGroups={editorModel.groups}
+            options={editorModel.options}
+            selectedGroupId={selectedGroupId}
+            onSelectGroup={onSelectGroup}
+            onAddGroup={onAddGroup}
+            onDeleteGroup={onDeleteGroup}
+          />
+        </div>
         
-        <OptionEditor
-          selectedGroup={selectedGroup}
-          options={editorModel.options}
-          selectedOptionId={selectedOptionId}
-          onSelectOption={onSelectOption}
-          onAddOption={onAddOption}
-          onDeleteOption={onDeleteOption}
-          onUpdateGroup={onUpdateGroup}
-        />
+        {/* Middle Editor: Flex grow with min-w-0 for proper content overflow handling */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <OptionEditor
+            selectedGroup={selectedGroup}
+            options={editorModel.options}
+            selectedOptionId={selectedOptionId}
+            onSelectOption={onSelectOption}
+            onAddOption={onAddOption}
+            onDeleteOption={onDeleteOption}
+            onUpdateGroup={onUpdateGroup}
+          />
+        </div>
         
-        <PricingValidationPanel
-          findings={findings}
-          pricingPreview={pricingPreview}
-        />
+        {/* Right Panel: Fixed width (384px), shrink-0 prevents it from shrinking */}
+        <div className="w-96 shrink-0 overflow-hidden">
+          <PricingValidationPanel
+            findings={findings}
+            pricingPreview={pricingPreview}
+          />
+        </div>
       </div>
     </div>
   );

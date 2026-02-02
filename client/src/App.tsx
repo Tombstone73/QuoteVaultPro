@@ -53,6 +53,7 @@ import PurchaseOrderDetailPage from "@/pages/purchase-order-detail";
 import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
+import ProductBuilderV2Page from "@/pages/product-builder-v2";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -175,8 +176,12 @@ function Router() {
         {/* Product Catalog (standalone) */}
         <Route path="/products" element={<ProductsPage />} />
 
+        {/* Product Editor (legacy V1 with V1 tree view) */}
         <Route path="/products/new" element={<ProductEditorPage />} />
         <Route path="/products/:productId/edit" element={<ProductEditorPage />} />
+
+        {/* PBV2 Builder V2 (full-screen, responsive 3-column layout) */}
+        <Route path="/products/:productId/builder-v2" element={<ProductBuilderV2Page />} />
 
         {/* Settings routes - nested under SettingsLayout */}
         <Route path="/settings" element={<SettingsLayout />}>
