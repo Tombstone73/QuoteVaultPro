@@ -211,4 +211,164 @@ describe("pbv2/validator/validatePublish", () => {
     const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
     expect(result.errors.some((f) => f.code === "PBV2_E_MATERIAL_NEGATIVE_QUANTITY")).toBe(true);
   });
+
+  test("Negative base weight => ERROR", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        { id: "root", type: "INPUT", status: "ENABLED", key: "root", input: { selectionKey: "root", valueType: "BOOLEAN" } },
+      ],
+      edges: [],
+      meta: {
+        baseWeightOz: -5,
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.some((f) => f.code === "PBV2_E_WEIGHT_NEGATIVE")).toBe(true);
+  });
+
+  test("Negative weightImpact oz => ERROR", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        {
+          id: "root",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "root",
+          label: "Test Option",
+          input: { selectionKey: "root", valueType: "BOOLEAN" },
+          weightImpact: [
+            { mode: "addFlat", oz: -2.5 },
+          ],
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.some((f) => f.code === "PBV2_E_WEIGHT_NEGATIVE")).toBe(true);
+  });
+
+  test("Negative choice weightOz => ERROR", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        {
+          id: "root",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "root",
+          label: "Material",
+          input: { selectionKey: "root", valueType: "ENUM" },
+          choices: [
+            { value: "light", label: "Light", weightOz: 2 },
+            { value: "heavy", label: "Heavy", weightOz: -10 },
+          ],
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.errors.some((f) => f.code === "PBV2_E_WEIGHT_NEGATIVE")).toBe(true);
+  });
+
+  test("Missing weight everywhere => WARNING", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        { id: "root", type: "INPUT", status: "ENABLED", key: "root", input: { selectionKey: "root", valueType: "BOOLEAN" } },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(true);
+  });
+
+  test("Base weight zero => WARNING (treated as missing)", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        { id: "root", type: "INPUT", status: "ENABLED", key: "root", input: { selectionKey: "root", valueType: "BOOLEAN" } },
+      ],
+      edges: [],
+      meta: {
+        baseWeightOz: 0,
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(true);
+  });
+
+  test("Product with positive base weight => no missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        { id: "root", type: "INPUT", status: "ENABLED", key: "root", input: { selectionKey: "root", valueType: "BOOLEAN" } },
+      ],
+      edges: [],
+      meta: {
+        baseWeightOz: 10,
+      },
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
+  });
+
+  test("Product with weightImpact => no missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        {
+          id: "root",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "root",
+          input: { selectionKey: "root", valueType: "BOOLEAN" },
+          weightImpact: [
+            { mode: "addPerQty", oz: 0.5 },
+          ],
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
+  });
+
+  test("Product with choice weightOz => no missing weight warning", () => {
+    const tree = {
+      status: "DRAFT",
+      rootNodeIds: ["root"],
+      nodes: [
+        {
+          id: "root",
+          type: "INPUT",
+          status: "ENABLED",
+          key: "root",
+          input: { selectionKey: "root", valueType: "ENUM" },
+          choices: [
+            { value: "light", label: "Light", weightOz: 2 },
+          ],
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateTreeForPublish(tree as any, DEFAULT_VALIDATE_OPTS);
+    expect(result.warnings.some((f) => f.code === "PBV2_W_WEIGHT_MISSING")).toBe(false);
+  });
 });

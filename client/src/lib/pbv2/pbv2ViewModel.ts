@@ -12,6 +12,8 @@
  * - Keep all edits local until "Save Draft" is called
  */
 
+import type { OptionNodeV2 } from '@shared/optionTreeV2';
+
 export type EditorOptionGroup = {
   id: string; // Node ID in PBV2 tree
   name: string;
@@ -59,19 +61,23 @@ export type EditorModel = {
 
 type PBV2Node = {
   id: string;
+  kind?: "question" | "group" | "computed";
   type?: string;
   status?: string;
   key?: string;
   input?: {
-    selectionKey?: string;
-    valueType?: string;
+    type?: "boolean" | "select" | "multiselect" | "number" | "text" | "textarea" | "file" | "dimension";
     required?: boolean;
+    defaultValue?: any;
     constraints?: any;
   };
   label?: string;
   description?: string;
+  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number }>;
   data?: any;
   priceComponents?: any[];
+  pricingImpact?: any[];
+  weightImpact?: any[];
   materialEffects?: any[];
   [key: string]: any;
 };
@@ -154,11 +160,11 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
 
     return {
       id: node.id,
-      name: node.label || node.key || node.input?.selectionKey || `Group ${index + 1}`,
+      name: node.label || node.key || node.id,
       description: node.description || '',
       sortOrder: index,
       isRequired: node.input?.required || false,
-      isMultiSelect: node.input?.valueType?.toUpperCase() === 'ARRAY' || false,
+      isMultiSelect: node.input?.type === 'multiselect',
       optionIds,
     };
   });
@@ -170,17 +176,18 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
   nodes.forEach((node, index) => {
     if (!optionNodeIds.has(node.id)) return;
 
-    const selectionKey = node.input?.selectionKey || node.key || node.id;
-    const hasPricing = Array.isArray(node.priceComponents) && node.priceComponents.length > 0;
+    const selectionKey = node.key || node.id;
+    const hasPricing = Array.isArray(node.pricingImpact) && node.pricingImpact.length > 0;
     const hasProductionFlags = Array.isArray(node.materialEffects) && node.materialEffects.length > 0;
     const hasConditionals = edges.some(e => e.fromNodeId === node.id && e.condition);
-    const hasWeight = false; // TODO: Check if PBV2 has weight fields
+    const hasWeight = Array.isArray(node.weightImpact) && node.weightImpact.length > 0;
 
     let optionType: EditorOption['type'] = 'radio';
-    const valueType = node.input?.valueType?.toUpperCase();
-    if (valueType === 'NUMBER') optionType = 'numeric';
-    else if (valueType === 'BOOLEAN') optionType = 'checkbox';
-    else if (valueType === 'ENUM') optionType = 'dropdown';
+    const inputType = node.input?.type;
+    if (inputType === 'number') optionType = 'numeric';
+    else if (inputType === 'boolean') optionType = 'checkbox';
+    else if (inputType === 'select') optionType = 'dropdown';
+    else if (inputType === 'dimension') optionType = 'dimension';
 
     options[node.id] = {
       id: node.id,
@@ -188,7 +195,7 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
       description: node.description || '',
       type: optionType,
       sortOrder: index,
-      isDefault: (node.input as any)?.defaultValue !== undefined || (node.input as any)?.default !== undefined,
+      isDefault: node.input?.defaultValue !== undefined,
       isRequired: node.input?.required || false,
       selectionKey,
       hasPricing,
@@ -258,14 +265,14 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
 
   const newNode: PBV2Node = {
     id: newGroupId,
+    kind: 'group',
     type: 'GROUP',
     status: 'ENABLED',
     key: selectionKey,
     label: 'New Group',
     description: '',
     input: {
-      selectionKey,
-      valueType: 'ENUM',
+      type: 'select',
       required: false,
     },
   };
@@ -299,7 +306,7 @@ export function createUpdateGroupPatch(
       updated.input = { ...updated.input, required: updates.isRequired };
     }
     if (updates.isMultiSelect !== undefined && updated.input) {
-      updated.input = { ...updated.input, valueType: updates.isMultiSelect ? 'ARRAY' : 'ENUM' };
+      updated.input = { ...updated.input, type: updates.isMultiSelect ? 'multiselect' : 'select' };
     }
 
     return updated;
@@ -348,6 +355,241 @@ export function createDeleteGroupPatch(treeJson: unknown, groupId: string): { pa
 }
 
 /**
+ * Create patch to update an option node
+ */
+export function createUpdateOptionPatch(
+  treeJson: unknown,
+  optionId: string,
+  updates: {
+    label?: string;
+    description?: string;
+    type?: string;
+    required?: boolean;
+    defaultValue?: any;
+    choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number }>;
+  }
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== optionId) return n;
+
+    const updated = { ...n };
+    if (updates.label !== undefined) updated.label = updates.label;
+    if (updates.description !== undefined) updated.description = updates.description;
+    
+    if (updates.type !== undefined && updated.input) {
+      const typeMap: Record<string, "boolean" | "select" | "multiselect" | "number" | "text" | "textarea" | "file" | "dimension"> = {
+        'radio': 'select',
+        'checkbox': 'boolean',
+        'dropdown': 'select',
+        'numeric': 'number',
+        'dimension': 'dimension'
+      };
+      updated.input = { ...updated.input, type: typeMap[updates.type] || 'select' };
+    }
+
+    if (updates.required !== undefined && updated.input) {
+      updated.input = { ...updated.input, required: updates.required };
+    }
+
+    if (updates.defaultValue !== undefined && updated.input) {
+      updated.input = { ...updated.input, defaultValue: updates.defaultValue };
+    }
+
+    if (updates.choices !== undefined) {
+      updated.choices = updates.choices;
+    }
+
+    return updated;
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Create patch to add a choice to a select-like option
+ */
+export function createAddChoicePatch(
+  treeJson: unknown,
+  optionId: string
+): { patch: any; newChoiceValue: string } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+  
+  const optionNode = nodes.find(n => n.id === optionId);
+  const existingChoices = optionNode?.choices || [];
+  
+  // Generate unique value
+  let counter = existingChoices.length + 1;
+  let newValue = `choice_${counter}`;
+  while (existingChoices.some((c: any) => c.value === newValue)) {
+    counter++;
+    newValue = `choice_${counter}`;
+  }
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== optionId) return n;
+    
+    const newChoice = {
+      value: newValue,
+      label: '',
+      sortOrder: existingChoices.length,
+    };
+
+    return {
+      ...n,
+      choices: [...existingChoices, newChoice],
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+    newChoiceValue: newValue,
+  };
+}
+
+/**
+ * Create patch to update a choice
+ */
+export function createUpdateChoicePatch(
+  treeJson: unknown,
+  optionId: string,
+  choiceValue: string,
+  updates: { label?: string; value?: string; description?: string }
+): { patch: any; validationError?: string } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+  
+  const optionNode = nodes.find(n => n.id === optionId);
+  const existingChoices = optionNode?.choices || [];
+
+  // Check for duplicate value if updating value
+  if (updates.value !== undefined && updates.value !== choiceValue) {
+    const isDuplicate = existingChoices.some((c: any) => c.value === updates.value && c.value !== choiceValue);
+    if (isDuplicate) {
+      return {
+        patch: { nodes, edges },
+        validationError: 'Choice value must be unique',
+      };
+    }
+  }
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== optionId) return n;
+
+    const updatedChoices = (n.choices || []).map((c: any) => {
+      if (c.value !== choiceValue) return c;
+      
+      const updated = { ...c };
+      if (updates.label !== undefined) updated.label = updates.label;
+      if (updates.value !== undefined) updated.value = updates.value;
+      if (updates.description !== undefined) updated.description = updates.description;
+      return updated;
+    });
+
+    // Update defaultValue if it referenced the old choice value
+    let updatedInput = n.input;
+    if (updates.value !== undefined && updates.value !== choiceValue && n.input?.defaultValue === choiceValue) {
+      updatedInput = { ...n.input, defaultValue: updates.value };
+    }
+
+    return {
+      ...n,
+      choices: updatedChoices,
+      input: updatedInput,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Create patch to delete a choice
+ */
+export function createDeleteChoicePatch(
+  treeJson: unknown,
+  optionId: string,
+  choiceValue: string
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== optionId) return n;
+
+    const updatedChoices = (n.choices || []).filter((c: any) => c.value !== choiceValue);
+    
+    // Clear defaultValue if it referenced the deleted choice
+    let updatedInput = n.input;
+    if (n.input?.defaultValue === choiceValue) {
+      updatedInput = { ...n.input, defaultValue: undefined };
+    }
+
+    return {
+      ...n,
+      choices: updatedChoices,
+      input: updatedInput,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Create patch to reorder choices
+ */
+export function createReorderChoicePatch(
+  treeJson: unknown,
+  optionId: string,
+  fromIndex: number,
+  toIndex: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== optionId) return n;
+
+    const choices = [...(n.choices || [])];
+    const [moved] = choices.splice(fromIndex, 1);
+    choices.splice(toIndex, 0, moved);
+
+    // Update sortOrder
+    const reordered = choices.map((c: any, idx: number) => ({
+      ...c,
+      sortOrder: idx,
+    }));
+
+    return {
+      ...n,
+      choices: reordered,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
  * Create patch to add a new option to a group
  */
 export function createAddOptionPatch(treeJson: unknown, groupId: string): { patch: any; newOptionId: string } {
@@ -360,18 +602,18 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
 
   const newNode: PBV2Node = {
     id: newOptionId,
+    kind: 'question',
     type: 'INPUT',
     status: 'ENABLED',
     key: selectionKey,
     label: 'New Option',
     description: '',
     input: {
-      selectionKey,
-      valueType: 'ENUM',
+      type: 'select',
       required: false,
     },
-    priceComponents: [],
-    materialEffects: [],
+    pricingImpact: [],
+    weightImpact: [],
   };
 
   const newEdge: PBV2Edge = {
@@ -388,45 +630,6 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
       edges: [...edges, newEdge],
     },
     newOptionId,
-  };
-}
-
-/**
- * Create patch to update an option
- */
-export function createUpdateOptionPatch(
-  treeJson: unknown,
-  optionId: string,
-  updates: Partial<Pick<EditorOption, 'name' | 'description' | 'isRequired' | 'isDefault' | 'type'>>
-): { patch: any } {
-  const { tree, nodes, edges } = normalizeArrays(treeJson);
-
-  const updatedNodes = nodes.map(n => {
-    if (n.id !== optionId) return n;
-
-    const updated = { ...n };
-    if (updates.name !== undefined) updated.label = updates.name;
-    if (updates.description !== undefined) updated.description = updates.description;
-    if (updated.input) {
-      if (updates.isRequired !== undefined) {
-        updated.input = { ...updated.input, required: updates.isRequired };
-      }
-      if (updates.type !== undefined) {
-        let valueType = 'ENUM';
-        if (updates.type === 'numeric') valueType = 'NUMBER';
-        else if (updates.type === 'checkbox') valueType = 'BOOLEAN';
-        updated.input = { ...updated.input, valueType };
-      }
-    }
-
-    return updated;
-  });
-
-  return {
-    patch: {
-      nodes: updatedNodes,
-      edges,
-    },
   };
 }
 
