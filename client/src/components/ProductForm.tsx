@@ -49,59 +49,84 @@ export const ProductForm = ({
   const addPricingProfileKey = form.watch("pricingProfileKey");
   const [addGroupSignal, setAddGroupSignal] = React.useState<number | null>(null);
   
-  // Persist optionsMode across refresh via localStorage
-  const STORAGE_KEY = 'productEditor:optionsMode';
-  const [optionsMode, setOptionsMode] = React.useState<"legacy" | "treeV2">(() => {
+  const optionTreeJson = form.watch("optionTreeJson");
+  const productId = form.watch("id");
+  
+  // Determine optionsMode based on actual data presence, then fall back to localStorage
+  // Decision order:
+  // 1. If optionTreeJson has schemaVersion=2 => Tree v2 mode
+  // 2. Else if legacy data (array/graph without schemaVersion) => check localStorage preference
+  // 3. For new products (no id, no data) => Tree v2 mode by default
+  const determineInitialMode = React.useCallback((): "legacy" | "treeV2" => {
+    // If we have PBV2 data, always use Tree v2
+    if (optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
+      return "treeV2";
+    }
+    
+    // For new products, default to Tree v2
+    if (!productId) {
+      return "treeV2";
+    }
+    
+    // For existing products with legacy data, check localStorage preference
+    const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(storageKey);
       return stored === 'treeV2' ? 'treeV2' : 'legacy';
     } catch {
       return 'legacy';
     }
-  });
+  }, [optionTreeJson, productId]);
   
-  const optionTreeJson = form.watch("optionTreeJson");
+  const [optionsMode, setOptionsMode] = React.useState<"legacy" | "treeV2">(determineInitialMode);
 
   const [optionTreeText, setOptionTreeText] = React.useState<string>("");
   const [optionTreeErrors, setOptionTreeErrors] = React.useState<string[]>([]);
 
-  // Wrapper to persist optionsMode changes to localStorage
+  // Wrapper to persist optionsMode changes to localStorage (per-product)
   const setAndPersistOptionsMode = React.useCallback((mode: "legacy" | "treeV2") => {
     setOptionsMode(mode);
+    const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
     try {
-      localStorage.setItem(STORAGE_KEY, mode);
+      localStorage.setItem(storageKey, mode);
     } catch (e) {
       console.warn('Failed to persist optionsMode:', e);
     }
   }, []);
 
+  // Re-evaluate mode when optionTreeJson or productId changes
+  React.useEffect(() => {
+    const correctMode = determineInitialMode();
+    if (correctMode !== optionsMode) {
+      setOptionsMode(correctMode);
+      // Also persist the auto-determined mode
+      const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
+      try {
+        localStorage.setItem(storageKey, correctMode);
+      } catch (e) {
+        console.warn('Failed to persist optionsMode:', e);
+      }
+    }
+  }, [determineInitialMode, optionsMode, productId]);
+
   React.useEffect(() => {
     // Auto-initialize PBV2 for new products (no optionTreeJson)
-    const productId = form.getValues("id");
     if (!productId && !optionTreeJson) {
       // New product with no tree - initialize with PBV2 empty state
+      // Matches optionTreeV2Schema: schemaVersion=2, rootNodeIds=[], nodes={}
       const emptyPBV2 = {
         schemaVersion: 2,
-        status: 'DRAFT',
-        nodes: [],
-        edges: [],
+        rootNodeIds: [],
+        nodes: {},
         meta: {
           title: 'New Options Tree',
           updatedAt: new Date().toISOString(),
         },
       };
       form.setValue("optionTreeJson", emptyPBV2, { shouldDirty: false });
-      setAndPersistOptionsMode("treeV2");
       setOptionTreeText(JSON.stringify(emptyPBV2, null, 2));
-      return;
     }
-    
-    // Auto-switch to Tree v2 editor when an existing product already has a v2 tree.
-    // But ONLY if user hasn't explicitly chosen legacy mode.
-    if (optionsMode === "legacy" && optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
-      setAndPersistOptionsMode("treeV2");
-    }
-  }, [optionTreeJson, optionsMode, setAndPersistOptionsMode, form]);
+  }, [productId, optionTreeJson, form]);
 
   React.useEffect(() => {
     if (optionsMode !== "treeV2") return;
