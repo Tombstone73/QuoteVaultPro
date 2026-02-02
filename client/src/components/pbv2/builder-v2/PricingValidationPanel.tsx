@@ -25,7 +25,7 @@ export function PricingValidationPanel({
   const total = pricingPreview ? pricingPreview.addOnCents / 100 : 0;
 
   return (
-    <aside className="w-96 bg-[#0f172a] border-l border-[#334155] flex flex-col">
+    <aside className="h-full w-full bg-[#0f172a] border-l border-[#334155] flex flex-col overflow-hidden">
       <div className="border-b border-[#334155] p-4">
         <div className="flex items-center gap-2 mb-4">
           <DollarSign className="h-4 w-4 text-blue-400" />

@@ -57,7 +57,7 @@ export function OptionEditor({
   const groupOptions = selectedGroup.optionIds.map(id => options[id]).filter(Boolean);
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0e1a]">
+    <div className="h-full w-full flex flex-col bg-[#0a0e1a] overflow-hidden">
       <div className="border-b border-[#334155] bg-[#1e293b] p-5">
         <div className="flex items-start justify-between mb-3">
           <div className="flex-1">
