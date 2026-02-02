@@ -8,10 +8,11 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
 import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEditor";
-import { Plus, ExternalLink, Layers } from "lucide-react";
+import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
+import ProductOptionsPanelV2_Mvp from "@/components/ProductOptionsPanelV2_Mvp";
 import { useToast } from "@/hooks/use-toast";
 
 // Required field indicator component
@@ -539,89 +540,62 @@ export const ProductForm = ({
             )}
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="p-0">
           {optionsMode === "legacy" ? (
-            <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
+            <div className="p-6">
+              <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
+            </div>
           ) : (
-            <div className="space-y-4">
-              {/* Tree v2 mode: Link to full-screen builder (canonical PBV2 UI) */}
-              <div className="rounded-lg border-2 border-blue-500/30 bg-blue-500/5 p-8 text-center">
-                <div className="flex justify-center mb-4">
-                  <div className="rounded-full bg-blue-500/10 p-4">
-                    <Layers className="h-12 w-12 text-blue-500" />
-                  </div>
-                </div>
-                <h3 className="text-lg font-semibold mb-2">Tree v2 Builder</h3>
-                <p className="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
-                  Tree v2 uses the full-screen 3-column Figma-aligned builder for the best editing experience.
-                  {form.getValues("id") && " Click below to open the advanced builder."}
-                </p>
-                {form.getValues("id") ? (
-                  <Button
-                    type="button"
-                    asChild
-                    className="gap-2"
-                    size="lg"
-                  >
-                    <a href={`/products/${form.getValues("id")}/builder-v2`} target="_blank" rel="noopener noreferrer">
-                      <ExternalLink className="h-4 w-4" />
-                      Open Full-Screen Builder
-                    </a>
-                  </Button>
-                ) : (
-                  <div className="text-sm text-muted-foreground">
-                    Save this product first to access the Tree v2 builder.
-                  </div>
-                )}
-              </div>
-
-              {(() => {
-                // Only show red error box if we have PBV2 data with validation errors
-                // Do NOT show for legacy format (that's handled by yellow banner in PBV2 panel)
-                const trimmed = optionTreeText.trim();
-                if (!trimmed) return null;
-                
-                try {
-                  const parsed = JSON.parse(trimmed);
-                  const isLegacy = Array.isArray(parsed) || 
-                                   (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
-                  
-                  // Only render error box if NOT legacy and we have errors
-                  if (isLegacy || optionTreeErrors.length === 0) return null;
-                  
-                  return (
-                    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-                      <div className="font-medium">Option Tree v2 errors</div>
-                      <ul className="mt-1 list-disc pl-4">
-                        {optionTreeErrors.map((err) => (
-                          <li key={err}>{err}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  );
-                } catch {
-                  // JSON parse error - show errors if any
-                  if (optionTreeErrors.length === 0) return null;
-                  return (
-                    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-                      <div className="font-medium">Option Tree v2 errors</div>
-                      <ul className="mt-1 list-disc pl-4">
-                        {optionTreeErrors.map((err) => (
-                          <li key={err}>{err}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  );
-                }
-              })()}
-
-              <FormDescription className="text-xs">
-                Tree v2 opt-in is only active when optionTreeJson exists and schemaVersion=2.
-              </FormDescription>
+            <div className="h-[600px]">
+              <ProductOptionsPanelV2_Mvp
+                productId={String(form.getValues("id") ?? "new")}
+                optionTreeJson={optionTreeText}
+                onChangeOptionTreeJson={setTreeTextAndValidate}
+              />
             </div>
           )}
         </CardContent>
       </Card>
+
+      {optionsMode === "treeV2" && (() => {
+        // Only show red error box if we have PBV2 data with validation errors
+        // Do NOT show for legacy format (that's handled by yellow banner in PBV2 panel)
+        const trimmed = optionTreeText.trim();
+        if (!trimmed) return null;
+        
+        try {
+          const parsed = JSON.parse(trimmed);
+          const isLegacy = Array.isArray(parsed) || 
+                           (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
+          
+          // Only render error box if NOT legacy and we have errors
+          if (isLegacy || optionTreeErrors.length === 0) return null;
+          
+          return (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+              <div className="font-medium">Option Tree v2 errors</div>
+              <ul className="mt-1 list-disc pl-4">
+                {optionTreeErrors.map((err) => (
+                  <li key={err}>{err}</li>
+                ))}
+              </ul>
+            </div>
+          );
+        } catch {
+          // JSON parse error - show errors if any
+          if (optionTreeErrors.length === 0) return null;
+          return (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+              <div className="font-medium">Option Tree v2 errors</div>
+              <ul className="mt-1 list-disc pl-4">
+                {optionTreeErrors.map((err) => (
+                  <li key={err}>{err}</li>
+                ))}
+              </ul>
+            </div>
+          );
+        }
+      })()}
 
       {/* #advanced */}
       <Card>
