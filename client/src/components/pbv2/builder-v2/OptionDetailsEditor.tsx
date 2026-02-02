@@ -121,6 +121,395 @@ export function OptionDetailsEditor({
         </div>
       </div>
 
+      {/* Checkbox-specific: Default value */}
+      {isCheckboxType && (
+        <>
+          <Separator className="bg-slate-700" />
+          <div>
+            <Label className="text-slate-300 mb-2 block">Default Value</Label>
+            <div className="flex items-center gap-2">
+              <Switch
+                id={`default-checked-${option.id}`}
+                checked={nodeData?.input?.defaultValue === true}
+                onCheckedChange={(checked) => onUpdateOption(option.id, { defaultValue: checked ? true : undefined })}
+              />
+              <Label htmlFor={`default-checked-${option.id}`} className="text-slate-300 cursor-pointer">
+                Default checked
+              </Label>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Numeric-specific: Constraints and default */}
+      {option.type === 'numeric' && (
+        <>
+          <Separator className="bg-slate-700" />
+          <div className="space-y-3">
+            <Label className="text-slate-300">Numeric Constraints</Label>
+            
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs text-slate-400 mb-1 block">Min</Label>
+                <Input
+                  type="number"
+                  value={nodeData?.input?.constraints?.number?.min ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                    if (val !== undefined && isNaN(val)) return;
+                    onUpdateOption(option.id, { 
+                      constraints: { 
+                        ...nodeData?.input?.constraints, 
+                        number: { ...nodeData?.input?.constraints?.number, min: val } 
+                      } 
+                    });
+                  }}
+                  placeholder="No min"
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-slate-400 mb-1 block">Max</Label>
+                <Input
+                  type="number"
+                  value={nodeData?.input?.constraints?.number?.max ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                    if (val !== undefined && isNaN(val)) return;
+                    onUpdateOption(option.id, { 
+                      constraints: { 
+                        ...nodeData?.input?.constraints, 
+                        number: { ...nodeData?.input?.constraints?.number, max: val } 
+                      } 
+                    });
+                  }}
+                  placeholder="No max"
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+              </div>
+            </div>
+
+            {(() => {
+              const min = nodeData?.input?.constraints?.number?.min;
+              const max = nodeData?.input?.constraints?.number?.max;
+              if (min !== undefined && max !== undefined && min > max) {
+                return (
+                  <div className="flex items-center gap-1.5 text-xs text-red-400">
+                    <AlertCircle className="h-3 w-3" />
+                    Min cannot be greater than max
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs text-slate-400 mb-1 block">Step</Label>
+                <Input
+                  type="number"
+                  value={nodeData?.input?.constraints?.number?.step ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                    if (val !== undefined && (isNaN(val) || val <= 0)) return;
+                    onUpdateOption(option.id, { 
+                      constraints: { 
+                        ...nodeData?.input?.constraints, 
+                        number: { ...nodeData?.input?.constraints?.number, step: val } 
+                      } 
+                    });
+                  }}
+                  placeholder="Any"
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-slate-400 mb-1 block">Default Value</Label>
+                <Input
+                  type="number"
+                  value={nodeData?.input?.defaultValue ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                    if (val !== undefined && isNaN(val)) return;
+                    onUpdateOption(option.id, { defaultValue: val });
+                  }}
+                  placeholder="No default"
+                  className="bg-[#1e293b] border-slate-600 text-slate-100"
+                />
+              </div>
+            </div>
+
+            {(() => {
+              const defaultVal = nodeData?.input?.defaultValue;
+              const min = nodeData?.input?.constraints?.number?.min;
+              const max = nodeData?.input?.constraints?.number?.max;
+              if (defaultVal !== undefined && typeof defaultVal === 'number') {
+                if (min !== undefined && defaultVal < min) {
+                  return (
+                    <div className="flex items-center gap-1.5 text-xs text-amber-400">
+                      <AlertCircle className="h-3 w-3" />
+                      Default is below min ({min})
+                    </div>
+                  );
+                }
+                if (max !== undefined && defaultVal > max) {
+                  return (
+                    <div className="flex items-center gap-1.5 text-xs text-amber-400">
+                      <AlertCircle className="h-3 w-3" />
+                      Default is above max ({max})
+                    </div>
+                  );
+                }
+              }
+              return null;
+            })()}
+
+            <div className="flex items-center gap-2">
+              <Switch
+                id={`integer-only-${option.id}`}
+                checked={nodeData?.input?.constraints?.number?.integerOnly === true}
+                onCheckedChange={(checked) => onUpdateOption(option.id, { 
+                  constraints: { 
+                    ...nodeData?.input?.constraints, 
+                    number: { ...nodeData?.input?.constraints?.number, integerOnly: checked || undefined } 
+                  } 
+                })}
+              />
+              <Label htmlFor={`integer-only-${option.id}`} className="text-slate-300 cursor-pointer">
+                Integer only (no decimals)
+              </Label>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Dimension-specific: Constraints and default */}
+      {option.type === 'dimension' && (
+        <>
+          <Separator className="bg-slate-700" />
+          <div className="space-y-3">
+            <Label className="text-slate-300">Dimension Constraints (inches)</Label>
+            
+            <div>
+              <Label className="text-xs text-slate-400 mb-2 block">Width</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-slate-500 mb-1 block">Min</Label>
+                  <Input
+                    type="number"
+                    value={nodeData?.input?.constraints?.dimension?.minWidthIn ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                      if (val !== undefined && (isNaN(val) || val <= 0)) return;
+                      onUpdateOption(option.id, { 
+                        constraints: { 
+                          ...nodeData?.input?.constraints, 
+                          dimension: { ...nodeData?.input?.constraints?.dimension, minWidthIn: val } 
+                        } 
+                      });
+                    }}
+                    placeholder="No min"
+                    className="bg-[#1e293b] border-slate-600 text-slate-100"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-500 mb-1 block">Max</Label>
+                  <Input
+                    type="number"
+                    value={nodeData?.input?.constraints?.dimension?.maxWidthIn ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                      if (val !== undefined && (isNaN(val) || val <= 0)) return;
+                      onUpdateOption(option.id, { 
+                        constraints: { 
+                          ...nodeData?.input?.constraints, 
+                          dimension: { ...nodeData?.input?.constraints?.dimension, maxWidthIn: val } 
+                        } 
+                      });
+                    }}
+                    placeholder="No max"
+                    className="bg-[#1e293b] border-slate-600 text-slate-100"
+                  />
+                </div>
+              </div>
+              {(() => {
+                const min = nodeData?.input?.constraints?.dimension?.minWidthIn;
+                const max = nodeData?.input?.constraints?.dimension?.maxWidthIn;
+                if (min !== undefined && max !== undefined && min > max) {
+                  return (
+                    <div className="flex items-center gap-1.5 mt-1 text-xs text-red-400">
+                      <AlertCircle className="h-3 w-3" />
+                      Min width cannot be greater than max
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+
+            <div>
+              <Label className="text-xs text-slate-400 mb-2 block">Height</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-slate-500 mb-1 block">Min</Label>
+                  <Input
+                    type="number"
+                    value={nodeData?.input?.constraints?.dimension?.minHeightIn ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                      if (val !== undefined && (isNaN(val) || val <= 0)) return;
+                      onUpdateOption(option.id, { 
+                        constraints: { 
+                          ...nodeData?.input?.constraints, 
+                          dimension: { ...nodeData?.input?.constraints?.dimension, minHeightIn: val } 
+                        } 
+                      });
+                    }}
+                    placeholder="No min"
+                    className="bg-[#1e293b] border-slate-600 text-slate-100"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-500 mb-1 block">Max</Label>
+                  <Input
+                    type="number"
+                    value={nodeData?.input?.constraints?.dimension?.maxHeightIn ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                      if (val !== undefined && (isNaN(val) || val <= 0)) return;
+                      onUpdateOption(option.id, { 
+                        constraints: { 
+                          ...nodeData?.input?.constraints, 
+                          dimension: { ...nodeData?.input?.constraints?.dimension, maxHeightIn: val } 
+                        } 
+                      });
+                    }}
+                    placeholder="No max"
+                    className="bg-[#1e293b] border-slate-600 text-slate-100"
+                  />
+                </div>
+              </div>
+              {(() => {
+                const min = nodeData?.input?.constraints?.dimension?.minHeightIn;
+                const max = nodeData?.input?.constraints?.dimension?.maxHeightIn;
+                if (min !== undefined && max !== undefined && min > max) {
+                  return (
+                    <div className="flex items-center gap-1.5 mt-1 text-xs text-red-400">
+                      <AlertCircle className="h-3 w-3" />
+                      Min height cannot be greater than max
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+
+            <div>
+              <Label className="text-xs text-slate-400 mb-2 block">Default Dimensions</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-slate-500 mb-1 block">Width (in)</Label>
+                  <Input
+                    type="number"
+                    value={(() => {
+                      const dv = nodeData?.input?.defaultValue;
+                      return dv?.widthIn ?? '';
+                    })()}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                      if (val !== undefined && (isNaN(val) || val <= 0)) return;
+                      const current = nodeData?.input?.defaultValue || {};
+                      onUpdateOption(option.id, { 
+                        defaultValue: { ...current, widthIn: val } 
+                      });
+                    }}
+                    placeholder="No default"
+                    className="bg-[#1e293b] border-slate-600 text-slate-100"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-500 mb-1 block">Height (in)</Label>
+                  <Input
+                    type="number"
+                    value={(() => {
+                      const dv = nodeData?.input?.defaultValue;
+                      return dv?.heightIn ?? '';
+                    })()}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                      if (val !== undefined && (isNaN(val) || val <= 0)) return;
+                      const current = nodeData?.input?.defaultValue || {};
+                      onUpdateOption(option.id, { 
+                        defaultValue: { ...current, heightIn: val } 
+                      });
+                    }}
+                    placeholder="No default"
+                    className="bg-[#1e293b] border-slate-600 text-slate-100"
+                  />
+                </div>
+              </div>
+              {(() => {
+                const dv = nodeData?.input?.defaultValue;
+                const constraints = nodeData?.input?.constraints?.dimension;
+                if (dv?.widthIn !== undefined) {
+                  if (constraints?.minWidthIn !== undefined && dv.widthIn < constraints.minWidthIn) {
+                    return (
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-amber-400">
+                        <AlertCircle className="h-3 w-3" />
+                        Default width is below min ({constraints.minWidthIn})
+                      </div>
+                    );
+                  }
+                  if (constraints?.maxWidthIn !== undefined && dv.widthIn > constraints.maxWidthIn) {
+                    return (
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-amber-400">
+                        <AlertCircle className="h-3 w-3" />
+                        Default width is above max ({constraints.maxWidthIn})
+                      </div>
+                    );
+                  }
+                }
+                if (dv?.heightIn !== undefined) {
+                  if (constraints?.minHeightIn !== undefined && dv.heightIn < constraints.minHeightIn) {
+                    return (
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-amber-400">
+                        <AlertCircle className="h-3 w-3" />
+                        Default height is below min ({constraints.minHeightIn})
+                      </div>
+                    );
+                  }
+                  if (constraints?.maxHeightIn !== undefined && dv.heightIn > constraints.maxHeightIn) {
+                    return (
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-amber-400">
+                        <AlertCircle className="h-3 w-3" />
+                        Default height is above max ({constraints.maxHeightIn})
+                      </div>
+                    );
+                  }
+                }
+                return null;
+              })()}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Switch
+                id={`allow-rotate-${option.id}`}
+                checked={nodeData?.input?.constraints?.dimension?.allowRotate === true}
+                onCheckedChange={(checked) => onUpdateOption(option.id, { 
+                  constraints: { 
+                    ...nodeData?.input?.constraints, 
+                    dimension: { ...nodeData?.input?.constraints?.dimension, allowRotate: checked || undefined } 
+                  } 
+                })}
+              />
+              <Label htmlFor={`allow-rotate-${option.id}`} className="text-slate-300 cursor-pointer">
+                Allow rotation (swap width/height)
+              </Label>
+            </div>
+          </div>
+        </>
+      )}
+
       {isSelectType && (
         <>
           <Separator className="bg-slate-700" />

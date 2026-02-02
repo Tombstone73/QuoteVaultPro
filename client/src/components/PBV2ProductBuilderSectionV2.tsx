@@ -18,6 +18,7 @@ import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/vali
 import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
+import { createEmptyOptionTreeV2 } from "@shared/optionTreeV2";
 import type { Finding } from "@shared/pbv2/findings";
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
@@ -138,7 +139,21 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
 
     // Only initialize if we don't have local changes
     if (!hasLocalChanges) {
-      setLocalTreeJson(draft.treeJson);
+      // Runtime migration: handle legacy arrays in database
+      let safeTreeJson = draft.treeJson;
+      
+      if (Array.isArray(draft.treeJson)) {
+        console.warn(`[PBV2] Product ${draft.productId}: Legacy array tree in DB, migrating to empty OptionTreeV2`);
+        safeTreeJson = createEmptyOptionTreeV2();
+        // Mark as dirty so user can save the migrated version
+        setHasLocalChanges(true);
+      } else if (!draft.treeJson || typeof draft.treeJson !== 'object') {
+        console.warn(`[PBV2] Product ${draft.productId}: Invalid tree JSON in DB, using empty OptionTreeV2`);
+        safeTreeJson = createEmptyOptionTreeV2();
+        setHasLocalChanges(true);
+      }
+      
+      setLocalTreeJson(safeTreeJson);
     }
   }, [draft?.id, draft?.treeJson]);
 
