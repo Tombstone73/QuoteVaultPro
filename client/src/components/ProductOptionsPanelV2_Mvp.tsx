@@ -1039,7 +1039,7 @@ export default function ProductOptionsPanelV2_Mvp({
 
             {tree ? (
               <ScrollArea className="h-[520px] rounded-md border border-border">
-                <div className="p-2 space-y-1">
+                <div className="p-2 space-y-1 pr-4">
                   {rows.map((r) => {
                     const isActive = r.id === selectedId;
                     const hasNodeErrors = nodeErrorsMerged.has(r.id);
@@ -1051,35 +1051,33 @@ export default function ProductOptionsPanelV2_Mvp({
                         type="button"
                         onClick={() => setSelectedId(r.id)}
                         className={
-                          "w-full text-left rounded-md border px-2 py-2 transition " +
+                          "w-full text-left rounded-md border px-2 py-2 transition flex items-start justify-between gap-2 overflow-hidden " +
                           (isActive
                             ? "bg-muted border-border"
                             : "bg-background border-border hover:bg-muted")
                         }
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0" style={{ paddingLeft: `${Math.min(r.depth, 6) * 12}px` }}>
-                            <div className="truncate text-sm font-medium text-foreground">
-                              {r.node.label}
-                            </div>
-                            <div className="truncate text-xs text-muted-foreground">
-                              {r.id}
-                              {r.depth > 0 && r.triggerLabel ? ` • ${r.triggerLabel}` : ""}
-                            </div>
+                        <div className="min-w-0" style={{ paddingLeft: `${Math.min(r.depth, 6) * 12}px` }}>
+                          <div className="truncate text-sm font-medium text-foreground">
+                            {r.node.label}
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {hasNodeErrors ? <Badge variant="destructive" className="text-[11px]">!</Badge> : null}
-                            {r.node.kind === "group" ? (
-                              <Badge variant="outline" className="text-[11px]">Group</Badge>
-                            ) : r.node.kind === "computed" ? (
-                              <Badge variant="outline" className="text-[11px]">Computed</Badge>
-                            ) : (
-                              <div className="text-[11px] text-muted-foreground">
-                                {inputType ?? "question"}
-                                {required ? " • req" : ""}
-                              </div>
-                            )}
+                          <div className="truncate text-xs text-muted-foreground">
+                            {r.id}
+                            {r.depth > 0 && r.triggerLabel ? ` • ${r.triggerLabel}` : ""}
                           </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                          {hasNodeErrors ? <Badge variant="destructive" className="text-[11px]">!</Badge> : null}
+                          {r.node.kind === "group" ? (
+                            <Badge variant="outline" className="text-[11px]">Group</Badge>
+                          ) : r.node.kind === "computed" ? (
+                            <Badge variant="outline" className="text-[11px]">Computed</Badge>
+                          ) : (
+                            <div className="text-[11px] text-muted-foreground whitespace-nowrap">
+                              {inputType ?? "question"}
+                              {required ? " • req" : ""}
+                            </div>
+                          )}
                         </div>
                       </button>
                     );
