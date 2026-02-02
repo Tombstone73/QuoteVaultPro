@@ -7,6 +7,10 @@ import {
 import { buildSymbolTable } from "./symbolTable";
 import { typeCheckCondition, typeCheckExpression } from "./typeChecker";
 
+// Re-export weight calculation from OptionTreeV2 evaluator for consistent import path
+export { pbv2ToWeightTotal } from "../../server/services/optionTreeV2Evaluator";
+export type { OptionTreeV2WeightInput, OptionTreeV2WeightResult } from "../../server/services/optionTreeV2Evaluator";
+
 export type Pbv2Selections = {
   explicitSelections?: Record<string, unknown>;
 };

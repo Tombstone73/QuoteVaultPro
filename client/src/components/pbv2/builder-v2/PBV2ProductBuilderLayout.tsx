@@ -24,6 +24,10 @@ export interface PBV2ProductBuilderLayoutProps {
     addOnCents: number;
     breakdown: Array<{ label: string; cents: number }>;
   } | null;
+  weightPreview: {
+    totalOz: number;
+    breakdown: Array<{ label: string; oz: number }>;
+  } | null;
   
   // Handlers
   onSelectGroup: (groupId: string) => void;
@@ -58,6 +62,7 @@ export function PBV2ProductBuilderLayout({
   canPublish,
   findings,
   pricingPreview,
+  weightPreview,
   onSelectGroup,
   onSelectOption,
   onAddGroup,
@@ -120,6 +125,7 @@ export function PBV2ProductBuilderLayout({
           <PricingValidationPanel
             findings={findings}
             pricingPreview={pricingPreview}
+            weightPreview={weightPreview}
           />
         </div>
       </div>

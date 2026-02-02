@@ -1,5 +1,5 @@
 import React from 'react';
-import { DollarSign, AlertTriangle, CheckCircle, AlertCircleIcon, Info } from 'lucide-react';
+import { DollarSign, AlertTriangle, CheckCircle, AlertCircleIcon, Info, Weight } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import type { Finding } from '@shared/pbv2/findings';
@@ -9,12 +9,17 @@ interface PricingValidationPanelProps {
     addOnCents: number;
     breakdown: Array<{ label: string; cents: number }>;
   } | null;
+  weightPreview: {
+    totalOz: number;
+    breakdown: Array<{ label: string; oz: number }>;
+  } | null;
   findings: Finding[];
   previewQuantity?: number;
 }
 
 export function PricingValidationPanel({
   pricingPreview,
+  weightPreview,
   findings,
   previewQuantity = 500
 }: PricingValidationPanelProps) {
@@ -23,6 +28,14 @@ export function PricingValidationPanel({
   const infos = findings.filter(f => f.severity === 'INFO');
 
   const total = pricingPreview ? pricingPreview.addOnCents / 100 : 0;
+
+  const formatWeight = (oz: number) => {
+    if (oz >= 16) {
+      const lbs = oz / 16;
+      return `${oz.toFixed(oz % 1 === 0 ? 0 : 2)} oz (${lbs.toFixed(2)} lb)`;
+    }
+    return `${oz.toFixed(oz % 1 === 0 ? 0 : 2)} oz`;
+  };
 
   return (
     <aside className="h-full w-full bg-[#0f172a] border-l border-[#334155] flex flex-col overflow-hidden">
@@ -74,6 +87,53 @@ export function PricingValidationPanel({
           </div>
         )}
       </div>
+
+      {weightPreview && (
+        <div className="border-b border-[#334155] p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Weight className="h-4 w-4 text-purple-400" />
+            <h2 className="font-semibold text-slate-200">Weight Preview</h2>
+          </div>
+
+          <div className="space-y-3">
+            <div className="bg-[#1e293b] border border-[#334155] rounded-lg p-4">
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-sm text-slate-400">Total Weight</span>
+                <div className="flex items-baseline gap-1">
+                  <Weight className="h-4 w-4 text-slate-400" />
+                  <span className="text-2xl font-semibold text-slate-100">
+                    {formatWeight(weightPreview.totalOz)}
+                  </span>
+                </div>
+              </div>
+              <div className="text-xs text-slate-500">
+                Based on current configuration (Qty: {previewQuantity})
+              </div>
+            </div>
+
+            {weightPreview.breakdown.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-xs font-semibold text-slate-400 mb-2">Breakdown</div>
+                {weightPreview.breakdown
+                  .filter(item => item.oz !== 0)
+                  .map((item, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between text-sm py-1.5 px-2 rounded hover:bg-slate-800/50"
+                    >
+                      <span className="text-slate-400">
+                        {item.label}
+                      </span>
+                      <span className="font-mono text-slate-200">
+                        {item.oz.toFixed(item.oz % 1 === 0 ? 0 : 2)} oz
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <ScrollArea className="flex-1">
         <div className="p-4 space-y-4">
