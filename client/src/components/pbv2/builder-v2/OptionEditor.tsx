@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, Settings, GripVertical, Trash2, ChevronDown, ChevronRight, GitBranch, ChevronUp, AlertCircle } from 'lucide-react';
+import { Plus, Settings, GripVertical, Trash2, ChevronDown, ChevronRight, GitBranch, ChevronUp, AlertCircle, Copy, MoveVertical, ArrowUp, ArrowDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -15,10 +15,14 @@ import { OptionDetailsEditor } from './OptionDetailsEditor';
 interface OptionEditorProps {
   selectedGroup: EditorOptionGroup | undefined;
   options: Record<string, EditorOption>;
+  allGroups: EditorOptionGroup[];
   selectedOptionId: string | null;
   onSelectOption: (optionId: string | null) => void;
   onAddOption: (groupId: string) => void;
+  onDuplicateOption: (groupId: string, optionId: string) => void;
   onDeleteOption: (groupId: string, optionId: string) => void;
+  onReorderOption: (groupId: string, fromIndex: number, toIndex: number) => void;
+  onMoveOption: (fromGroupId: string, toGroupId: string, optionId: string) => void;
   onUpdateGroup: (groupId: string, updates: Partial<EditorOptionGroup>) => void;
   onUpdateOption: (optionId: string, updates: any) => void;
   onAddChoice: (optionId: string) => void;
@@ -31,10 +35,14 @@ interface OptionEditorProps {
 export function OptionEditor({
   selectedGroup,
   options,
+  allGroups,
   selectedOptionId,
   onSelectOption,
   onAddOption,
+  onDuplicateOption,
   onDeleteOption,
+  onReorderOption,
+  onMoveOption,
   onUpdateGroup,
   onUpdateOption,
   onAddChoice,
@@ -45,6 +53,22 @@ export function OptionEditor({
 }: OptionEditorProps) {
   const [expandedOptions, setExpandedOptions] = React.useState<Set<string>>(new Set());
   const [editingChoiceValue, setEditingChoiceValue] = React.useState<{ optionId: string; value: string } | null>(null);
+  const [moveDropdownOpen, setMoveDropdownOpen] = React.useState<string | null>(null);
+
+  // Close move dropdown on click outside
+  React.useEffect(() => {
+    if (!moveDropdownOpen) return;
+    
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-move-dropdown]')) {
+        setMoveDropdownOpen(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [moveDropdownOpen]);
 
   const toggleOption = (optionId: string) => {
     const newExpanded = new Set(expandedOptions);
@@ -213,14 +237,97 @@ export function OptionEditor({
                       </div>
                     </button>
 
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onDeleteOption(selectedGroup.id, option.id)}
-                      className="ml-2 text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1 ml-2">
+                      {/* Reorder buttons */}
+                      <div className="flex flex-col">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            const currentIndex = groupOptions.findIndex(o => o?.id === option.id);
+                            if (currentIndex > 0) {
+                              onReorderOption(selectedGroup.id, currentIndex, currentIndex - 1);
+                            }
+                          }}
+                          disabled={groupOptions.findIndex(o => o?.id === option.id) === 0}
+                          className="h-5 w-7 p-0 text-slate-400 hover:text-slate-200 disabled:opacity-30"
+                        >
+                          <ArrowUp className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            const currentIndex = groupOptions.findIndex(o => o?.id === option.id);
+                            if (currentIndex < groupOptions.length - 1) {
+                              onReorderOption(selectedGroup.id, currentIndex, currentIndex + 1);
+                            }
+                          }}
+                          disabled={groupOptions.findIndex(o => o?.id === option.id) === groupOptions.length - 1}
+                          className="h-5 w-7 p-0 text-slate-400 hover:text-slate-200 disabled:opacity-30"
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </Button>
+                      </div>
+
+                      {/* Duplicate button */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onDuplicateOption(selectedGroup.id, option.id)}
+                        className="text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                        title="Duplicate option"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+
+                      {/* Move to group dropdown */}
+                      <div className="relative" data-move-dropdown>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setMoveDropdownOpen(moveDropdownOpen === option.id ? null : option.id)}
+                          className="text-purple-400 hover:text-purple-300 hover:bg-purple-500/10"
+                          title="Move to group"
+                        >
+                          <MoveVertical className="h-4 w-4" />
+                        </Button>
+                        {moveDropdownOpen === option.id && (
+                          <div className="absolute right-0 top-full mt-1 z-50 bg-[#1e293b] border border-[#334155] rounded-md shadow-lg min-w-[180px]">
+                            <div className="py-1">
+                              {allGroups
+                                .filter(g => g.id !== selectedGroup.id)
+                                .map(group => (
+                                  <button
+                                    key={group.id}
+                                    onClick={() => {
+                                      onMoveOption(selectedGroup.id, group.id, option.id);
+                                      setMoveDropdownOpen(null);
+                                    }}
+                                    className="w-full px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/50 transition-colors"
+                                  >
+                                    {group.name}
+                                  </button>
+                                ))}
+                              {allGroups.filter(g => g.id !== selectedGroup.id).length === 0 && (
+                                <div className="px-3 py-2 text-sm text-slate-400">No other groups</div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Delete button */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onDeleteOption(selectedGroup.id, option.id)}
+                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        title="Delete option"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
 
                   {isExpanded && (

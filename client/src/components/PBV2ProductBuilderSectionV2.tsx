@@ -28,8 +28,11 @@ import {
   createUpdateGroupPatch,
   createDeleteGroupPatch,
   createAddOptionPatch,
+  createDuplicateOptionPatch,
   createUpdateOptionPatch,
   createDeleteOptionPatch,
+  createReorderOptionsPatch,
+  createMoveOptionPatch,
   createAddChoicePatch,
   createUpdateChoicePatch,
   createDeleteChoicePatch,
@@ -299,7 +302,18 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    setSelectedOptionId(newOptionId);
     toast({ title: "Option added" });
+  };
+
+  const handleDuplicateOption = (groupId: string, optionId: string) => {
+    if (!localTreeJson) return;
+    const { patch, newOptionId } = createDuplicateOptionPatch(localTreeJson, groupId, optionId);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+    setSelectedOptionId(newOptionId);
+    toast({ title: "Option duplicated" });
   };
 
   const handleDeleteOption = (groupId: string, optionId: string) => {
@@ -308,10 +322,40 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    
+    // Smart fallback selection
     if (selectedOptionId === optionId) {
-      setSelectedOptionId(null);
+      const group = editorModel.groups.find(g => g.id === groupId);
+      if (group && group.optionIds.length > 1) {
+        const currentIndex = group.optionIds.indexOf(optionId);
+        const nextIndex = currentIndex < group.optionIds.length - 1 ? currentIndex + 1 : currentIndex - 1;
+        if (nextIndex >= 0 && group.optionIds[nextIndex] !== optionId) {
+          setSelectedOptionId(group.optionIds[nextIndex]);
+        } else {
+          setSelectedOptionId(null);
+        }
+      } else {
+        setSelectedOptionId(null);
+      }
     }
     toast({ title: "Option deleted" });
+  };
+
+  const handleReorderOption = (groupId: string, fromIndex: number, toIndex: number) => {
+    if (!localTreeJson || fromIndex === toIndex) return;
+    const { patch } = createReorderOptionsPatch(localTreeJson, groupId, fromIndex, toIndex);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleMoveOption = (fromGroupId: string, toGroupId: string, optionId: string) => {
+    if (!localTreeJson || fromGroupId === toGroupId) return;
+    const { patch } = createMoveOptionPatch(localTreeJson, fromGroupId, toGroupId, optionId);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+    toast({ title: "Option moved" });
   };
 
   const handleUpdateOption = (optionId: string, updates: any) => {
@@ -500,7 +544,10 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
         onAddGroup={handleAddGroup}
         onDeleteGroup={handleDeleteGroup}
         onAddOption={handleAddOption}
+        onDuplicateOption={handleDuplicateOption}
         onDeleteOption={handleDeleteOption}
+        onReorderOption={handleReorderOption}
+        onMoveOption={handleMoveOption}
         onUpdateGroup={handleUpdateGroup}
         onUpdateOption={handleUpdateOption}
         onAddChoice={handleAddChoice}

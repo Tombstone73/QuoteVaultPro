@@ -36,7 +36,10 @@ export interface PBV2ProductBuilderLayoutProps {
   onAddGroup: () => void;
   onDeleteGroup: (groupId: string) => void;
   onAddOption: (groupId: string) => void;
+  onDuplicateOption: (groupId: string, optionId: string) => void;
   onDeleteOption: (groupId: string, optionId: string) => void;
+  onReorderOption: (groupId: string, fromIndex: number, toIndex: number) => void;
+  onMoveOption: (fromGroupId: string, toGroupId: string, optionId: string) => void;
   onUpdateGroup: (groupId: string, updates: any) => void;
   onUpdateProduct: (updates: any) => void;
   onUpdateOption: (optionId: string, updates: any) => void;
@@ -75,7 +78,10 @@ export function PBV2ProductBuilderLayout({
   onAddGroup,
   onDeleteGroup,
   onAddOption,
+  onDuplicateOption,
   onDeleteOption,
+  onReorderOption,
+  onMoveOption,
   onUpdateGroup,
   onUpdateOption,
   onAddChoice,
@@ -124,10 +130,14 @@ export function PBV2ProductBuilderLayout({
           <OptionEditor
             selectedGroup={selectedGroup}
             options={editorModel.options}
+            allGroups={editorModel.groups}
             selectedOptionId={selectedOptionId}
             onSelectOption={onSelectOption}
             onAddOption={onAddOption}
+            onDuplicateOption={onDuplicateOption}
             onDeleteOption={onDeleteOption}
+            onReorderOption={onReorderOption}
+            onMoveOption={onMoveOption}
             onUpdateGroup={onUpdateGroup}
             treeJson={treeJson}
             onUpdateOption={onUpdateOption}
