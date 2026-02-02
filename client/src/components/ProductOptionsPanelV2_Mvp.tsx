@@ -133,7 +133,9 @@ export default function ProductOptionsPanelV2_Mvp({
   /**
    * Initialize empty tree
    */
-  const initTree = React.useCallback(() => {
+  const initTree = React.useCallback((e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
     const newTree = initializeTree();
     onChangeOptionTreeJson(JSON.stringify(newTree, null, 2));
     toast({
@@ -145,7 +147,9 @@ export default function ProductOptionsPanelV2_Mvp({
   /**
    * Add a new group
    */
-  const addGroup = React.useCallback(() => {
+  const addGroup = React.useCallback((e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
     if (!treeData) return;
     const { patch, newGroupId } = createAddGroupPatch(treeData);
     commitPatch(patch);
@@ -186,7 +190,9 @@ export default function ProductOptionsPanelV2_Mvp({
   /**
    * Add option to selected group
    */
-  const addOption = React.useCallback((groupId: string) => {
+  const addOption = React.useCallback((groupId: string, e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
     if (!treeData) return;
     const { patch, newOptionId } = createAddOptionPatch(treeData, groupId);
     commitPatch(patch);
@@ -275,7 +281,7 @@ export default function ProductOptionsPanelV2_Mvp({
                 <div className="text-xs text-muted-foreground">
                   Initialize the PBV2 tree to start building product options.
                 </div>
-                <Button onClick={initTree} className="w-full">
+                <Button type="button" onClick={initTree} className="w-full">
                   Initialize Tree
                 </Button>
               </div>
@@ -330,7 +336,7 @@ export default function ProductOptionsPanelV2_Mvp({
           </CardHeader>
           
           <CardContent className="flex-1 flex flex-col space-y-3 overflow-hidden">
-            <Button onClick={addGroup} size="sm" className="w-full">
+            <Button type="button" onClick={addGroup} size="sm" className="w-full">
               <Plus className="h-4 w-4 mr-2" />
               Add Group
             </Button>
@@ -353,6 +359,7 @@ export default function ProductOptionsPanelV2_Mvp({
                       `}
                     >
                       <button
+                        type="button"
                         onClick={() => {
                           setSelectedGroupId(group.id);
                           setSelectedOptionId(null);
@@ -383,6 +390,7 @@ export default function ProductOptionsPanelV2_Mvp({
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <button
+                              type="button"
                               onClick={(e) => e.stopPropagation()}
                               className="inline-flex items-center justify-center h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
                             >
@@ -452,7 +460,8 @@ export default function ProductOptionsPanelV2_Mvp({
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-medium">Options</div>
                   <Button
-                    onClick={() => addOption(selectedGroup.id)}
+                    type="button"
+                    onClick={(e) => addOption(selectedGroup.id, e)}
                     size="sm"
                     variant="outline"
                   >
@@ -481,6 +490,7 @@ export default function ProductOptionsPanelV2_Mvp({
                           `}
                         >
                           <button
+                            type="button"
                             onClick={() => setSelectedOptionId(optionId)}
                             className="w-full text-left p-2 pr-10"
                           >
@@ -496,6 +506,7 @@ export default function ProductOptionsPanelV2_Mvp({
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button
+                                  type="button"
                                   onClick={(e) => e.stopPropagation()}
                                   className="inline-flex items-center justify-center h-5 w-5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
                                 >
@@ -622,6 +633,7 @@ export default function ProductOptionsPanelV2_Mvp({
                       </div>
                     </div>
                     <Button
+                      type="button"
                       variant={selectedGroup.isRequired ? "default" : "outline"}
                       size="sm"
                       onClick={() => updateGroup(selectedGroup.id, { isRequired: !selectedGroup.isRequired })}
@@ -638,6 +650,7 @@ export default function ProductOptionsPanelV2_Mvp({
                       </div>
                     </div>
                     <Button
+                      type="button"
                       variant={selectedGroup.isMultiSelect ? "default" : "outline"}
                       size="sm"
                       onClick={() => updateGroup(selectedGroup.id, { isMultiSelect: !selectedGroup.isMultiSelect })}
@@ -711,6 +724,7 @@ export default function ProductOptionsPanelV2_Mvp({
                     {(['radio', 'checkbox', 'dropdown', 'numeric'] as const).map((type) => (
                       <Button
                         key={type}
+                        type="button"
                         variant={selectedOption.type === type ? "default" : "outline"}
                         size="sm"
                         onClick={() => updateOption(selectedOption.id, { type })}
@@ -734,6 +748,7 @@ export default function ProductOptionsPanelV2_Mvp({
                       </div>
                     </div>
                     <Button
+                      type="button"
                       variant={selectedOption.isRequired ? "default" : "outline"}
                       size="sm"
                       onClick={() => updateOption(selectedOption.id, { isRequired: !selectedOption.isRequired })}
@@ -750,6 +765,7 @@ export default function ProductOptionsPanelV2_Mvp({
                       </div>
                     </div>
                     <Button
+                      type="button"
                       variant={selectedOption.isDefault ? "default" : "outline"}
                       size="sm"
                       onClick={() => updateOption(selectedOption.id, { isDefault: !selectedOption.isDefault })}
@@ -850,7 +866,7 @@ export default function ProductOptionsPanelV2_Mvp({
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Developer Drawer</h2>
-                <Button variant="ghost" size="sm" onClick={() => setDevDrawerOpen(false)}>Close</Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setDevDrawerOpen(false)}>Close</Button>
               </div>
               
               <div className="space-y-2">
