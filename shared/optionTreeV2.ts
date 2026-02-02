@@ -231,11 +231,6 @@ export function createEmptyOptionTreeV2(): OptionTreeV2 {
     updatedAt: new Date().toISOString(),
   };
   
-  // Dev-only: Add baseWeightOz to make weight preview visible for testing
-  if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
-    meta.baseWeightOz = 1;
-  }
-  
   return {
     schemaVersion: 2,
     rootNodeIds: [],

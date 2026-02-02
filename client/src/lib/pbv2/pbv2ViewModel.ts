@@ -679,6 +679,115 @@ export function createDeleteOptionPatch(treeJson: unknown, optionId: string): { 
 }
 
 /**
+ * Create patch to duplicate an option
+ */
+export function createDuplicateOptionPatch(
+  treeJson: unknown,
+  groupId: string,
+  optionId: string
+): { patch: any; newOptionId: string } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+  const existingIds = new Set([...nodes.map(n => n.id), ...edges.map(e => e.id)]);
+
+  const sourceNode = nodes.find(n => n.id === optionId);
+  if (!sourceNode) {
+    throw new Error(`Option ${optionId} not found`);
+  }
+
+  // Deep copy the node with new ID
+  const newOptionId = makeId('opt_', existingIds);
+  const newEdgeId = makeId('edge_', existingIds);
+  
+  const duplicatedNode: PBV2Node = {
+    ...JSON.parse(JSON.stringify(sourceNode)),
+    id: newOptionId,
+    key: `option_${Date.now()}`,
+    label: sourceNode.label ? `${sourceNode.label} (Copy)` : 'New Option (Copy)',
+  };
+
+  // Create edge from group to new option
+  const newEdge: PBV2Edge = {
+    id: newEdgeId,
+    status: 'ENABLED',
+    fromNodeId: groupId,
+    toNodeId: newOptionId,
+    priority: 0,
+  };
+
+  return {
+    patch: {
+      nodes: [...nodes, duplicatedNode],
+      edges: [...edges, newEdge],
+    },
+    newOptionId,
+  };
+}
+
+/**
+ * Create patch to reorder options within a group
+ */
+export function createReorderOptionsPatch(
+  treeJson: unknown,
+  groupId: string,
+  fromIndex: number,
+  toIndex: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  // Get edges for this group
+  const groupEdges = edges.filter(e => e.fromNodeId === groupId && e.status !== 'DELETED');
+  
+  // Reorder the edges
+  const reordered = [...groupEdges];
+  const [moved] = reordered.splice(fromIndex, 1);
+  reordered.splice(toIndex, 0, moved);
+
+  // Update priorities
+  const updatedEdges = edges.map(e => {
+    if (e.fromNodeId !== groupId || e.status === 'DELETED') return e;
+    
+    const newIndex = reordered.findIndex(re => re.id === e.id);
+    if (newIndex === -1) return e;
+    
+    return { ...e, priority: newIndex };
+  });
+
+  return {
+    patch: {
+      nodes,
+      edges: updatedEdges,
+    },
+  };
+}
+
+/**
+ * Create patch to move an option between groups
+ */
+export function createMoveOptionPatch(
+  treeJson: unknown,
+  fromGroupId: string,
+  toGroupId: string,
+  optionId: string
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  // Update the edge that connects to this option
+  const updatedEdges = edges.map(e => {
+    if (e.toNodeId === optionId && e.fromNodeId === fromGroupId) {
+      return { ...e, fromNodeId: toGroupId };
+    }
+    return e;
+  });
+
+  return {
+    patch: {
+      nodes,
+      edges: updatedEdges,
+    },
+  };
+}
+
+/**
  * Apply a patch to tree JSON (replaces nodes/edges)
  */
 export function applyPatchToTree(treeJson: unknown, patch: { nodes?: PBV2Node[]; edges?: PBV2Edge[] }): any {
