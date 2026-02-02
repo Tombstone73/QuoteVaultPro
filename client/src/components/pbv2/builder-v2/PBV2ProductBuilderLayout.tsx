@@ -9,6 +9,7 @@ import type { Finding } from '@shared/pbv2/findings';
 export interface PBV2ProductBuilderLayoutProps {
   // Editor model (derived from PBV2 tree)
   editorModel: EditorModel;
+  treeJson: any; // Raw PBV2 tree for detailed editing
   
   // Selection state
   selectedGroupId: string | null;
@@ -38,6 +39,11 @@ export interface PBV2ProductBuilderLayoutProps {
   onDeleteOption: (groupId: string, optionId: string) => void;
   onUpdateGroup: (groupId: string, updates: any) => void;
   onUpdateProduct: (updates: any) => void;
+  onUpdateOption: (optionId: string, updates: any) => void;
+  onAddChoice: (optionId: string) => void;
+  onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
+  onDeleteChoice: (optionId: string, choiceValue: string) => void;
+  onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
@@ -56,6 +62,7 @@ export interface PBV2ProductBuilderLayoutProps {
  */
 export function PBV2ProductBuilderLayout({
   editorModel,
+  treeJson,
   selectedGroupId,
   selectedOptionId,
   hasUnsavedChanges,
@@ -70,6 +77,11 @@ export function PBV2ProductBuilderLayout({
   onAddOption,
   onDeleteOption,
   onUpdateGroup,
+  onUpdateOption,
+  onAddChoice,
+  onUpdateChoice,
+  onDeleteChoice,
+  onReorderChoice,
   onUpdateProduct,
   onSave,
   onPublish,
@@ -117,6 +129,12 @@ export function PBV2ProductBuilderLayout({
             onAddOption={onAddOption}
             onDeleteOption={onDeleteOption}
             onUpdateGroup={onUpdateGroup}
+            treeJson={treeJson}
+            onUpdateOption={onUpdateOption}
+            onAddChoice={onAddChoice}
+            onUpdateChoice={onUpdateChoice}
+            onDeleteChoice={onDeleteChoice}
+            onReorderChoice={onReorderChoice}
           />
         </div>
         

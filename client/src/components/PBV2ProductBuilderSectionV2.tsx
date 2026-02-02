@@ -29,6 +29,10 @@ import {
   createAddOptionPatch,
   createUpdateOptionPatch,
   createDeleteOptionPatch,
+  createAddChoicePatch,
+  createUpdateChoicePatch,
+  createDeleteChoicePatch,
+  createReorderChoicePatch,
   applyPatchToTree,
 } from "@/lib/pbv2/pbv2ViewModel";
 import type { EditorOptionGroup } from "@/lib/pbv2/pbv2ViewModel";
@@ -295,6 +299,46 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     toast({ title: "Option deleted" });
   };
 
+  const handleUpdateOption = (optionId: string, updates: any) => {
+    if (!localTreeJson) return;
+    const { patch } = createUpdateOptionPatch(localTreeJson, optionId, updates);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleAddChoice = (optionId: string) => {
+    if (!localTreeJson) return;
+    const { patch } = createAddChoicePatch(localTreeJson, optionId);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleUpdateChoice = (optionId: string, choiceValue: string, updates: any) => {
+    if (!localTreeJson) return;
+    const { patch } = createUpdateChoicePatch(localTreeJson, optionId, choiceValue, updates);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleDeleteChoice = (optionId: string, choiceValue: string) => {
+    if (!localTreeJson) return;
+    const { patch } = createDeleteChoicePatch(localTreeJson, optionId, choiceValue);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleReorderChoice = (optionId: string, fromIndex: number, toIndex: number) => {
+    if (!localTreeJson) return;
+    const { patch } = createReorderChoicePatch(localTreeJson, optionId, fromIndex, toIndex);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
   const handleUpdateProduct = (updates: any) => {
     if (!localTreeJson) return;
     const tree = JSON.parse(JSON.stringify(localTreeJson));
@@ -428,6 +472,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     <>
       <PBV2ProductBuilderLayout
         editorModel={editorModel}
+        treeJson={localTreeJson}
         selectedGroupId={selectedGroupId}
         selectedOptionId={selectedOptionId}
         hasUnsavedChanges={hasLocalChanges}
@@ -442,6 +487,11 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
         onAddOption={handleAddOption}
         onDeleteOption={handleDeleteOption}
         onUpdateGroup={handleUpdateGroup}
+        onUpdateOption={handleUpdateOption}
+        onAddChoice={handleAddChoice}
+        onUpdateChoice={handleUpdateChoice}
+        onDeleteChoice={handleDeleteChoice}
+        onReorderChoice={handleReorderChoice}
         onUpdateProduct={handleUpdateProduct}
         onSave={handleSave}
         onPublish={handlePublish}

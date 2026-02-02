@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, Settings, GripVertical, Trash2, ChevronDown, ChevronRight, GitBranch } from 'lucide-react';
+import { Plus, Settings, GripVertical, Trash2, ChevronDown, ChevronRight, GitBranch, ChevronUp, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -8,7 +8,9 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { EditorOptionGroup, EditorOption } from '@/lib/pbv2/pbv2ViewModel';
+import { OptionDetailsEditor } from './OptionDetailsEditor';
 
 interface OptionEditorProps {
   selectedGroup: EditorOptionGroup | undefined;
@@ -18,6 +20,12 @@ interface OptionEditorProps {
   onAddOption: (groupId: string) => void;
   onDeleteOption: (groupId: string, optionId: string) => void;
   onUpdateGroup: (groupId: string, updates: Partial<EditorOptionGroup>) => void;
+  onUpdateOption: (optionId: string, updates: any) => void;
+  onAddChoice: (optionId: string) => void;
+  onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
+  onDeleteChoice: (optionId: string, choiceValue: string) => void;
+  onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
+  treeJson: any;
 }
 
 export function OptionEditor({
@@ -27,9 +35,16 @@ export function OptionEditor({
   onSelectOption,
   onAddOption,
   onDeleteOption,
-  onUpdateGroup
+  onUpdateGroup,
+  onUpdateOption,
+  onAddChoice,
+  onUpdateChoice,
+  onDeleteChoice,
+  onReorderChoice,
+  treeJson
 }: OptionEditorProps) {
   const [expandedOptions, setExpandedOptions] = React.useState<Set<string>>(new Set());
+  const [editingChoiceValue, setEditingChoiceValue] = React.useState<{ optionId: string; value: string } | null>(null);
 
   const toggleOption = (optionId: string) => {
     const newExpanded = new Set(expandedOptions);
@@ -211,10 +226,18 @@ export function OptionEditor({
                   {isExpanded && (
                     <>
                       <Separator className="bg-[#334155]" />
-                      <div className="p-4 bg-[#0f172a]">
-                        <div className="text-sm text-slate-400">
-                          Option details can be edited through the advanced editor below.
-                        </div>
+                      <div className="p-4 bg-[#0f172a] space-y-4">
+                        <OptionDetailsEditor
+                          option={option}
+                          treeJson={treeJson}
+                          onUpdateOption={onUpdateOption}
+                          onAddChoice={onAddChoice}
+                          onUpdateChoice={onUpdateChoice}
+                          onDeleteChoice={onDeleteChoice}
+                          onReorderChoice={onReorderChoice}
+                          editingChoiceValue={editingChoiceValue}
+                          setEditingChoiceValue={setEditingChoiceValue}
+                        />
                       </div>
                     </>
                   )}
@@ -227,3 +250,5 @@ export function OptionEditor({
     </div>
   );
 }
+
+

@@ -1888,5 +1888,127 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
     }
   }
 
+  // Weight validation: check for negative weights (ERROR)
+  const negativeWeights: Array<{ path: string; value: number; label?: string }> = [];
+
+  // Check base weight
+  const meta = asRecord((t as any).meta);
+  if (meta) {
+    const baseWeightOz = meta.baseWeightOz;
+    if (typeof baseWeightOz === "number" && baseWeightOz < 0) {
+      negativeWeights.push({ path: "tree.meta.baseWeightOz", value: baseWeightOz, label: "Base weight" });
+    }
+  }
+
+  // Check node weightImpact
+  for (const n of nodes) {
+    const weightImpact = (n.raw as any).weightImpact;
+    if (Array.isArray(weightImpact)) {
+      for (let i = 0; i < weightImpact.length; i++) {
+        const impact = asRecord(weightImpact[i]);
+        if (impact) {
+          const oz = impact.oz;
+          if (typeof oz === "number" && oz < 0) {
+            const label = impact.label ? String(impact.label) : `Node ${n.id}`;
+            negativeWeights.push({
+              path: `tree.nodes[${n.id}].weightImpact[${i}].oz`,
+              value: oz,
+              label,
+            });
+          }
+        }
+      }
+    }
+
+    // Check choice weightOz
+    const choices = (n.raw as any).choices;
+    if (Array.isArray(choices)) {
+      for (let i = 0; i < choices.length; i++) {
+        const choice = asRecord(choices[i]);
+        if (choice) {
+          const weightOz = choice.weightOz;
+          if (typeof weightOz === "number" && weightOz < 0) {
+            const choiceLabel = choice.label ? String(choice.label) : `choice ${i}`;
+            const nodeLabel = (n.raw as any).label ? String((n.raw as any).label) : n.id;
+            negativeWeights.push({
+              path: `tree.nodes[${n.id}].choices[${i}].weightOz`,
+              value: weightOz,
+              label: `${nodeLabel}: ${choiceLabel}`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (negativeWeights.length > 0) {
+    for (const neg of negativeWeights) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_WEIGHT_NEGATIVE",
+          message: `Weight cannot be negative: ${neg.label} (${neg.value} oz)`,
+          path: neg.path,
+        })
+      );
+    }
+  }
+
+  // Weight validation: check for missing weight (WARNING)
+  let hasWeight = false;
+
+  // Check base weight
+  if (meta) {
+    const baseWeightOz = meta.baseWeightOz;
+    if (typeof baseWeightOz === "number" && baseWeightOz !== 0) {
+      hasWeight = true;
+    }
+  }
+
+  // Check node weightImpact for non-zero values
+  if (!hasWeight) {
+    for (const n of nodes) {
+      const weightImpact = (n.raw as any).weightImpact;
+      if (Array.isArray(weightImpact)) {
+        for (const impact of weightImpact) {
+          const impactRec = asRecord(impact);
+          if (impactRec) {
+            const oz = impactRec.oz;
+            if (typeof oz === "number" && oz !== 0) {
+              hasWeight = true;
+              break;
+            }
+          }
+        }
+      }
+      if (hasWeight) break;
+
+      // Check choice weightOz for non-zero values
+      const choices = (n.raw as any).choices;
+      if (Array.isArray(choices)) {
+        for (const choice of choices) {
+          const choiceRec = asRecord(choice);
+          if (choiceRec) {
+            const weightOz = choiceRec.weightOz;
+            if (typeof weightOz === "number" && weightOz !== 0) {
+              hasWeight = true;
+              break;
+            }
+          }
+        }
+      }
+      if (hasWeight) break;
+    }
+  }
+
+  if (!hasWeight) {
+    findings.push(
+      warningFinding({
+        code: "PBV2_W_WEIGHT_MISSING",
+        message: "Product has no weight defined (base weight and option weights are missing). Shipping weight will be 0.",
+        path: "tree",
+      })
+    );
+  }
+
   return toResult(findings);
 }
