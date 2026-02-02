@@ -1,0 +1,1002 @@
+Date : 2026-02-02 14:58:55
+Directory : c:\titan-automation\QuoteVaultPro
+Total : 837 files,  201406 codes, 10964 comments, 25183 blanks, all 237553 lines
+
+Languages
++--------------------+------------+------------+------------+------------+------------+
+| language           | files      | code       | comment    | blank      | total      |
++--------------------+------------+------------+------------+------------+------------+
+| TypeScript JSX     |        294 |     84,988 |      2,657 |      7,382 |     95,027 |
+| TypeScript         |        299 |     66,669 |      7,012 |     10,161 |     83,842 |
+| Markdown           |        113 |     24,238 |         61 |      6,293 |     30,592 |
+| JSON               |         11 |     19,011 |          0 |          5 |     19,016 |
+| MS SQL             |         90 |      3,939 |      1,062 |        869 |      5,870 |
+| PostCSS            |          8 |      1,257 |         38 |        240 |      1,535 |
+| JavaScript         |         12 |        855 |        112 |        169 |      1,136 |
+| YAML               |          3 |        197 |          0 |         38 |        235 |
+| Log                |          1 |        142 |          0 |          5 |        147 |
+| HTML               |          2 |         32 |          0 |          3 |         35 |
+| PowerShell         |          1 |         32 |          7 |          7 |         46 |
+| JSON with Comments |          1 |         23 |          0 |          1 |         24 |
+| Dotenv             |          1 |         19 |         15 |          9 |         43 |
+| Ini                |          1 |          4 |          0 |          1 |          5 |
++--------------------+------------+------------+------------+------------+------------+
+
+Directories
++------------------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                                                                         | files      | code       | comment    | blank      | total      |
++------------------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                                                                            |        837 |    201,406 |     10,964 |     25,183 |    237,553 |
+| . (Files)                                                                                                                    |        134 |     36,980 |        379 |      4,678 |     42,037 |
+| .anima                                                                                                                       |          2 |          2 |          0 |          0 |          2 |
+| .cursor                                                                                                                      |          1 |          6 |          0 |          3 |          9 |
+| .cursor\skills                                                                                                               |          1 |          6 |          0 |          3 |          9 |
+| .cursor\skills\tianos-prepress-rules                                                                                         |          1 |          6 |          0 |          3 |          9 |
+| .github                                                                                                                      |          4 |        476 |          0 |         94 |        570 |
+| .github (Files)                                                                                                              |          1 |        279 |          0 |         56 |        335 |
+| .github\workflows                                                                                                            |          3 |        197 |          0 |         38 |        235 |
+| .roo                                                                                                                         |          1 |          0 |          0 |          1 |          1 |
+| .roo\rules-code                                                                                                              |          1 |          0 |          0 |          1 |          1 |
+| .zencoder                                                                                                                    |          1 |         49 |          0 |          9 |         58 |
+| .zencoder\rules                                                                                                              |          1 |         49 |          0 |          9 |         58 |
+| Pbv2OptionsPage-main                                                                                                         |         71 |      7,061 |        120 |        711 |      7,892 |
+| Pbv2OptionsPage-main (Files)                                                                                                 |          6 |        123 |         17 |         13 |        153 |
+| Pbv2OptionsPage-main\guidelines                                                                                              |          1 |          1 |         60 |          1 |         62 |
+| Pbv2OptionsPage-main\src                                                                                                     |         64 |      6,937 |         43 |        697 |      7,677 |
+| Pbv2OptionsPage-main\src (Files)                                                                                             |          1 |          4 |          0 |          3 |          7 |
+| Pbv2OptionsPage-main\src\app                                                                                                 |         59 |      6,788 |         34 |        669 |      7,491 |
+| Pbv2OptionsPage-main\src\app (Files)                                                                                         |          2 |        278 |          0 |         37 |        315 |
+| Pbv2OptionsPage-main\src\app\components                                                                                      |         56 |      6,042 |         34 |        630 |      6,706 |
+| Pbv2OptionsPage-main\src\app\components (Files)                                                                              |          7 |      1,577 |         20 |        121 |      1,718 |
+| Pbv2OptionsPage-main\src\app\components\figma                                                                                |          1 |         22 |          0 |          6 |         28 |
+| Pbv2OptionsPage-main\src\app\components\ui                                                                                   |         48 |      4,443 |         14 |        503 |      4,960 |
+| Pbv2OptionsPage-main\src\app\data                                                                                            |          1 |        468 |          0 |          2 |        470 |
+| Pbv2OptionsPage-main\src\styles                                                                                              |          4 |        145 |          9 |         25 |        179 |
+| client                                                                                                                       |        309 |     88,590 |      3,861 |      8,227 |    100,678 |
+| client (Files)                                                                                                               |          2 |         61 |         12 |         10 |         83 |
+| client\src                                                                                                                   |        307 |     88,529 |      3,849 |      8,217 |    100,595 |
+| client\src (Files)                                                                                                           |          3 |        549 |         54 |        120 |        723 |
+| client\src\components                                                                                                        |        163 |     40,384 |      1,104 |      3,651 |     45,139 |
+| client\src\components (Files)                                                                                                |         62 |     26,222 |        754 |      2,078 |     29,054 |
+| client\src\components\customers                                                                                              |          7 |        948 |         12 |         60 |      1,020 |
+| client\src\components\customers (Files)                                                                                      |          4 |        524 |         12 |         42 |        578 |
+| client\src\components\customers\tables                                                                                       |          3 |        424 |          0 |         18 |        442 |
+| client\src\components\integrations                                                                                           |          1 |        112 |          0 |         18 |        130 |
+| client\src\components\layout                                                                                                 |          7 |      1,043 |         94 |        113 |      1,250 |
+| client\src\components\line-items                                                                                             |         10 |      2,160 |          9 |        272 |      2,441 |
+| client\src\components\list                                                                                                   |          1 |        101 |          0 |          4 |        105 |
+| client\src\components\media                                                                                                  |          1 |         47 |         11 |          9 |         67 |
+| client\src\components\orders                                                                                                 |          3 |      2,988 |         33 |        292 |      3,313 |
+| client\src\components\payments                                                                                               |          1 |        340 |         55 |         48 |        443 |
+| client\src\components\pbv2                                                                                                   |          6 |        900 |         20 |         65 |        985 |
+| client\src\components\pbv2\builder-v2                                                                                        |          6 |        900 |         20 |         65 |        985 |
+| client\src\components\production                                                                                             |          1 |        257 |         38 |         44 |        339 |
+| client\src\components\titan                                                                                                  |         14 |        977 |         55 |        129 |      1,161 |
+| client\src\components\ui                                                                                                     |         49 |      4,289 |         23 |        519 |      4,831 |
+| client\src\config                                                                                                            |          1 |         78 |        113 |         20 |        211 |
+| client\src\docs                                                                                                              |          1 |        233 |          0 |         63 |        296 |
+| client\src\features                                                                                                          |         25 |     15,695 |      1,090 |      1,574 |     18,359 |
+| client\src\features\customers                                                                                                |          2 |      1,846 |         86 |        146 |      2,078 |
+| client\src\features\documents                                                                                                |          1 |        806 |         45 |         70 |        921 |
+| client\src\features\documents\create                                                                                         |          1 |        806 |         45 |         70 |        921 |
+| client\src\features\materials                                                                                                |          1 |        316 |          1 |         22 |        339 |
+| client\src\features\production                                                                                               |          5 |      4,855 |        279 |        459 |      5,593 |
+| client\src\features\production (Files)                                                                                       |          1 |         21 |          0 |          5 |         26 |
+| client\src\features\production\theme                                                                                         |          1 |         61 |         13 |          8 |         82 |
+| client\src\features\production\views                                                                                         |          3 |      4,773 |        266 |        446 |      5,485 |
+| client\src\features\products                                                                                                 |          1 |        918 |         12 |         95 |      1,025 |
+| client\src\features\products\editor                                                                                          |          1 |        918 |         12 |         95 |      1,025 |
+| client\src\features\quotes                                                                                                   |         15 |      6,954 |        667 |        782 |      8,403 |
+| client\src\features\quotes\editor                                                                                            |         14 |      6,944 |        667 |        776 |      8,387 |
+| client\src\features\quotes\editor (Files)                                                                                    |          4 |      3,039 |        525 |        437 |      4,001 |
+| client\src\features\quotes\editor\components                                                                                 |         10 |      3,905 |        142 |        339 |      4,386 |
+| client\src\features\quotes\utils                                                                                             |          1 |         10 |          0 |          6 |         16 |
+| client\src\hooks                                                                                                             |         32 |      4,775 |        303 |        558 |      5,636 |
+| client\src\lib                                                                                                               |         26 |      1,559 |        443 |        326 |      2,328 |
+| client\src\lib (Files)                                                                                                       |         16 |        792 |        285 |        178 |      1,255 |
+| client\src\lib\__tests__                                                                                                     |          1 |         92 |         12 |         22 |        126 |
+| client\src\lib\attachments                                                                                                   |          1 |         45 |         41 |         19 |        105 |
+| client\src\lib\config                                                                                                        |          1 |         11 |          1 |          3 |         15 |
+| client\src\lib\lineItems                                                                                                     |          1 |         83 |          2 |         16 |        101 |
+| client\src\lib\pbv2                                                                                                          |          2 |        380 |         49 |         59 |        488 |
+| client\src\lib\tests                                                                                                         |          1 |         76 |          1 |         14 |         91 |
+| client\src\lib\ui                                                                                                            |          2 |         60 |         51 |         10 |        121 |
+| client\src\lib\uploads                                                                                                       |          1 |         20 |          1 |          5 |         26 |
+| client\src\pages                                                                                                             |         56 |     25,256 |        742 |      1,905 |     27,903 |
+| client\src\pages (Files)                                                                                                     |         46 |     21,287 |        667 |      1,602 |     23,556 |
+| client\src\pages\dev                                                                                                         |          1 |        144 |          0 |         19 |        163 |
+| client\src\pages\portal                                                                                                      |          3 |        475 |          7 |         46 |        528 |
+| client\src\pages\settings                                                                                                    |          6 |      3,350 |         68 |        238 |      3,656 |
+| docs                                                                                                                         |         41 |      9,026 |        275 |      2,244 |     11,545 |
+| docs (Files)                                                                                                                 |         26 |      5,171 |        275 |      1,502 |      6,948 |
+| docs\Modules                                                                                                                 |         15 |      3,855 |          0 |        742 |      4,597 |
+| migrations__legacy_ignored                                                                                                   |         33 |      2,112 |        430 |        371 |      2,913 |
+| migrations__legacy_ignored (Files)                                                                                           |         32 |      2,001 |        430 |        371 |      2,802 |
+| migrations__legacy_ignored\meta                                                                                              |          1 |        111 |          0 |          0 |        111 |
+| scripts                                                                                                                      |         12 |      1,284 |         71 |        264 |      1,619 |
+| scripts (Files)                                                                                                              |         11 |      1,120 |         71 |        238 |      1,429 |
+| scripts\db                                                                                                                   |          1 |        164 |          0 |         26 |        190 |
+| server                                                                                                                       |        166 |     42,692 |      5,021 |      6,769 |     54,482 |
+| server (Files)                                                                                                               |         22 |     16,721 |      1,733 |      2,445 |     20,899 |
+| server\db                                                                                                                    |         60 |      2,166 |        644 |        518 |      3,328 |
+| server\db (Files)                                                                                                            |          1 |        150 |         25 |         29 |        204 |
+| server\db\migrations                                                                                                         |         32 |      1,180 |        431 |        276 |      1,887 |
+| server\db\migrations (Files)                                                                                                 |         31 |      1,006 |        431 |        275 |      1,712 |
+| server\db\migrations\meta                                                                                                    |          1 |        174 |          0 |          1 |        175 |
+| server\db\migrations_BACKUP                                                                                                  |          5 |        129 |         22 |         15 |        166 |
+| server\db\migrations_BACKUP (Files)                                                                                          |          4 |        116 |         22 |         15 |        153 |
+| server\db\migrations_BACKUP\meta                                                                                             |          1 |         13 |          0 |          0 |         13 |
+| server\db\migrations__archive_2025_12_23                                                                                     |         22 |        707 |        166 |        198 |      1,071 |
+| server\lib                                                                                                                   |         12 |      1,858 |         83 |        331 |      2,272 |
+| server\prepress                                                                                                              |         19 |      2,103 |        642 |        443 |      3,188 |
+| server\prepress (Files)                                                                                                      |          6 |      1,083 |        268 |        200 |      1,551 |
+| server\prepress\adapters                                                                                                     |          2 |         55 |         72 |         15 |        142 |
+| server\prepress\toolchain                                                                                                    |          6 |        675 |        187 |        136 |        998 |
+| server\prepress\worker                                                                                                       |          5 |        290 |        115 |         92 |        497 |
+| server\routes                                                                                                                |          3 |      8,441 |        575 |      1,259 |     10,275 |
+| server\scripts                                                                                                               |          1 |        197 |         21 |         28 |        246 |
+| server\services                                                                                                              |         18 |      3,869 |        600 |        645 |      5,114 |
+| server\services (Files)                                                                                                      |         14 |      2,994 |        447 |        509 |      3,950 |
+| server\services\assets                                                                                                       |          3 |        655 |        148 |        107 |        910 |
+| server\services\tests                                                                                                        |          1 |        220 |          5 |         29 |        254 |
+| server\storage                                                                                                               |         10 |      4,471 |        274 |        601 |      5,346 |
+| server\tests                                                                                                                 |         14 |      1,975 |        171 |        342 |      2,488 |
+| server\types                                                                                                                 |          1 |          1 |          0 |          1 |          2 |
+| server\utils                                                                                                                 |          2 |        272 |        148 |         54 |        474 |
+| server\workers                                                                                                               |          4 |        618 |        130 |        102 |        850 |
+| shared                                                                                                                       |         61 |     13,100 |        807 |      1,807 |     15,714 |
+| shared (Files)                                                                                                               |         17 |      5,485 |        665 |        741 |      6,891 |
+| shared\pbv2                                                                                                                  |         33 |      6,760 |        133 |        939 |      7,832 |
+| shared\pbv2 (Files)                                                                                                          |         15 |      3,569 |         85 |        527 |      4,181 |
+| shared\pbv2\tests                                                                                                            |         13 |        962 |         15 |        140 |      1,117 |
+| shared\pbv2\tests (Files)                                                                                                    |         10 |        701 |         15 |        108 |        824 |
+| shared\pbv2\tests\validator                                                                                                  |          3 |        261 |          0 |         32 |        293 |
+| shared\pbv2\validator                                                                                                        |          5 |      2,229 |         33 |        272 |      2,534 |
+| shared\rollups                                                                                                               |          1 |         85 |          0 |         20 |        105 |
+| shared\tests                                                                                                                 |         10 |        770 |          9 |        107 |        886 |
+| tests                                                                                                                        |          1 |         28 |          0 |          5 |         33 |
++------------------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++------------------------------------------------------------------------------------------------------------------------------+--------------------+------------+------------+------------+------------+
+| filename                                                                                                                     | language           | code       | comment    | blank      | total      |
++------------------------------------------------------------------------------------------------------------------------------+--------------------+------------+------------+------------+------------+
+| c:\titan-automation\QuoteVaultPro\.anima\conventions.json                                                                    | JSON               |          1 |          0 |          0 |          1 |
+| c:\titan-automation\QuoteVaultPro\.anima\workspace.json                                                                      | JSON               |          1 |          0 |          0 |          1 |
+| c:\titan-automation\QuoteVaultPro\.cursor\skills\tianos-prepress-rules\SKILL.md                                              | Markdown           |          6 |          0 |          3 |          9 |
+| c:\titan-automation\QuoteVaultPro\.env                                                                                       | Dotenv             |         19 |         15 |          9 |         43 |
+| c:\titan-automation\QuoteVaultPro\.github\copilot-instructions.md                                                            | Markdown           |        279 |          0 |         56 |        335 |
+| c:\titan-automation\QuoteVaultPro\.github\workflows\project-add.yml                                                          | YAML               |         14 |          0 |          3 |         17 |
+| c:\titan-automation\QuoteVaultPro\.github\workflows\project-status.yml                                                       | YAML               |        175 |          0 |         32 |        207 |
+| c:\titan-automation\QuoteVaultPro\.github\workflows\smoke.yml                                                                | YAML               |          8 |          0 |          3 |         11 |
+| c:\titan-automation\QuoteVaultPro\.roo\rules-code\rules.md                                                                   | Markdown           |          0 |          0 |          1 |          1 |
+| c:\titan-automation\QuoteVaultPro\.zencoder\rules\repo.md                                                                    | Markdown           |         49 |          0 |          9 |         58 |
+| c:\titan-automation\QuoteVaultPro\ADMIN_OVERRIDE_TERMINAL_ORDERS.md                                                          | Markdown           |        108 |          0 |         24 |        132 |
+| c:\titan-automation\QuoteVaultPro\ARTWORK_PIPELINE_IMPLEMENTATION.md                                                         | Markdown           |         94 |          0 |         30 |        124 |
+| c:\titan-automation\QuoteVaultPro\ASSET_PIPELINE_PHASE1_COMPLETE.md                                                          | Markdown           |        221 |          0 |         54 |        275 |
+| c:\titan-automation\QuoteVaultPro\ASSET_PIPELINE_PHASE2_TESTING.md                                                           | Markdown           |        299 |          0 |         69 |        368 |
+| c:\titan-automation\QuoteVaultPro\ASSET_PIPELINE_SUMMARY.md                                                                  | Markdown           |        328 |          0 |        103 |        431 |
+| c:\titan-automation\QuoteVaultPro\CONFIG_ERROR_HANDLING.md                                                                   | Markdown           |         69 |          0 |         21 |         90 |
+| c:\titan-automation\QuoteVaultPro\CONTRIBUTING.md                                                                            | Markdown           |        171 |          0 |         60 |        231 |
+| c:\titan-automation\QuoteVaultPro\DEPLOYMENT_CHECKLIST.md                                                                    | Markdown           |          9 |          0 |          2 |         11 |
+| c:\titan-automation\QuoteVaultPro\DEPLOYMENT_SUMMARY.md                                                                      | Markdown           |         95 |          0 |         30 |        125 |
+| c:\titan-automation\QuoteVaultPro\EMAIL_SETTINGS_INVESTIGATION.md                                                            | Markdown           |        215 |          0 |         84 |        299 |
+| c:\titan-automation\QuoteVaultPro\EMAIL_SETTINGS_UI_RESTORATION.md                                                           | Markdown           |        186 |          0 |         85 |        271 |
+| c:\titan-automation\QuoteVaultPro\ENHANCED_OPTIONS_IMPLEMENTATION.md                                                         | Markdown           |        349 |          0 |         78 |        427 |
+| c:\titan-automation\QuoteVaultPro\INVOICE_SEND_AND_THUMBNAILS_FIX.md                                                         | Markdown           |        151 |          0 |         70 |        221 |
+| c:\titan-automation\QuoteVaultPro\KernalInstructionsTitanOS.md                                                               | Markdown           |        108 |          0 |         24 |        132 |
+| c:\titan-automation\QuoteVaultPro\KernalTitanOSSHORT.md                                                                      | Markdown           |         23 |          0 |          6 |         29 |
+| c:\titan-automation\QuoteVaultPro\LAMINATION_DISPLAY_VISUAL_REFERENCE.md                                                     | Markdown           |        170 |          0 |         45 |        215 |
+| c:\titan-automation\QuoteVaultPro\MIGRATION_0012_VERIFICATION.md                                                             | Markdown           |        133 |          0 |         53 |        186 |
+| c:\titan-automation\QuoteVaultPro\MULTI_MATERIAL_TRACKING.md                                                                 | Markdown           |        379 |          0 |        102 |        481 |
+| c:\titan-automation\QuoteVaultPro\NAVIGATION_AUDIT_RESULTS.md                                                                | Markdown           |        178 |          0 |         44 |        222 |
+| c:\titan-automation\QuoteVaultPro\NEON_MVP_INVOICING_BILLING_READY.sql                                                       | MS SQL             |        109 |         13 |         10 |        132 |
+| c:\titan-automation\QuoteVaultPro\ORDER_COMPLETION_IMPLEMENTATION.md                                                         | Markdown           |        123 |          0 |         32 |        155 |
+| c:\titan-automation\QuoteVaultPro\ORDER_LINE_ITEM_ARTWORK_COMPLETE.md                                                        | Markdown           |         89 |          0 |         19 |        108 |
+| c:\titan-automation\QuoteVaultPro\PASSWORD_RESET_IMPLEMENTATION.md                                                           | Markdown           |        169 |          0 |         46 |        215 |
+| c:\titan-automation\QuoteVaultPro\PBV2_FIGMA_ALIGNMENT_COMPLETE.md                                                           | Markdown           |        150 |          0 |         46 |        196 |
+| c:\titan-automation\QuoteVaultPro\PBV2_INITIALIZATION_VALIDATION_FIX.md                                                      | Markdown           |        394 |          0 |        100 |        494 |
+| c:\titan-automation\QuoteVaultPro\PBV2_JSON_HARDENING_COMPLETE.md                                                            | Markdown           |        224 |          0 |         55 |        279 |
+| c:\titan-automation\QuoteVaultPro\PBV2_JSON_IMPORT_EXPORT_COMPLETE.md                                                        | Markdown           |        199 |          0 |         44 |        243 |
+| c:\titan-automation\QuoteVaultPro\PBV2_LAYOUT_REFACTOR_COMPLETE.md                                                           | Markdown           |        158 |          0 |         35 |        193 |
+| c:\titan-automation\QuoteVaultPro\PBV2_OPTIONS_UI_REFACTOR_COMPLETE.md                                                       | Markdown           |        411 |          0 |         65 |        476 |
+| c:\titan-automation\QuoteVaultPro\PBV2_PERSISTENCE_FIX.md                                                                    | Markdown           |        285 |          0 |         88 |        373 |
+| c:\titan-automation\QuoteVaultPro\PBV2_SCHEMA_CONFORMANCE_ROOT_CAUSE.md                                                      | Markdown           |        538 |          0 |        131 |        669 |
+| c:\titan-automation\QuoteVaultPro\PBV2_SCHEMA_VALIDATION_FIX_COMPLETE.md                                                     | Markdown           |        257 |          0 |         63 |        320 |
+| c:\titan-automation\QuoteVaultPro\PBV2_VALIDATION_GATING_FIX.md                                                              | Markdown           |        541 |          0 |        151 |        692 |
+| c:\titan-automation\QuoteVaultPro\PBV2_VISUAL_COMPARISON.md                                                                  | Markdown           |        228 |          0 |         36 |        264 |
+| c:\titan-automation\QuoteVaultPro\PHASE2_ORDER_TRANSITIONS_COMPLETE.md                                                       | Markdown           |        203 |          0 |         60 |        263 |
+| c:\titan-automation\QuoteVaultPro\PHASE3_TENANT_HARDENING_COMPLETE.md                                                        | Markdown           |        175 |          0 |         44 |        219 |
+| c:\titan-automation\QuoteVaultPro\PREPRESS_FINDINGS_AND_FIXES_IMPLEMENTATION.md                                              | Markdown           |        356 |          0 |         79 |        435 |
+| c:\titan-automation\QuoteVaultPro\PREPRESS_IMPLEMENTATION_SUMMARY.md                                                         | Markdown           |        198 |          0 |         56 |        254 |
+| c:\titan-automation\QuoteVaultPro\PREPRESS_MULTI_FORMAT_UPGRADE.md                                                           | Markdown           |        217 |          0 |         58 |        275 |
+| c:\titan-automation\QuoteVaultPro\PREPRESS_UI_FIX_AND_JOB_LIST.md                                                            | Markdown           |        212 |          0 |         53 |        265 |
+| c:\titan-automation\QuoteVaultPro\PRODUCTION_ARTWORK_WHEEL_ZOOM_COMPLETE.md                                                  | Markdown           |         83 |          0 |         21 |        104 |
+| c:\titan-automation\QuoteVaultPro\PRODUCTION_AUTH_FIX.md                                                                     | Markdown           |         81 |          0 |         21 |        102 |
+| c:\titan-automation\QuoteVaultPro\PRODUCTION_BACKEND_DERIVATION_FIX.md                                                       | Markdown           |        151 |          0 |         29 |        180 |
+| c:\titan-automation\QuoteVaultPro\PRODUCTION_MEDIA_SIDES_FIX.md                                                              | Markdown           |        100 |          0 |         19 |        119 |
+| c:\titan-automation\QuoteVaultPro\PRODUCTION_MVP_DEBUG_FIX.md                                                                | Markdown           |        141 |          0 |         23 |        164 |
+| c:\titan-automation\QuoteVaultPro\PRODUCT_BUILDER_V2_OPTION_TREE_ARCHITECTURE.md                                             | Markdown           |      1,142 |          0 |        318 |      1,460 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\ATTRIBUTIONS.md                                                       | Markdown           |          2 |          0 |          1 |          3 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\README.md                                                             | Markdown           |          5 |          0 |          6 |         11 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\guidelines\Guidelines.md                                              | Markdown           |          1 |         60 |          1 |         62 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\index.html                                                            | HTML               |         12 |          0 |          3 |         15 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\package.json                                                          | JSON               |         88 |          0 |          0 |         88 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\postcss.config.mjs                                                    | JavaScript         |          1 |         14 |          1 |         16 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\App.tsx                                                       | TypeScript JSX     |        192 |          0 |         20 |        212 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ConditionalLogicBuilder.tsx                        | TypeScript JSX     |        208 |          0 |         26 |        234 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ConfirmationModal.tsx                              | TypeScript JSX     |         58 |          0 |          4 |         62 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\OptionDetailPanel.tsx                              | TypeScript JSX     |        372 |          9 |         29 |        410 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\OptionEditor.tsx                                   | TypeScript JSX     |        298 |          0 |         16 |        314 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\OptionGroupsSidebar.tsx                            | TypeScript JSX     |        181 |          0 |          7 |        188 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\PricingValidationPanel.tsx                         | TypeScript JSX     |        347 |         11 |         30 |        388 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ProductHeader.tsx                                  | TypeScript JSX     |        113 |          0 |          9 |        122 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\figma\ImageWithFallback.tsx                        | TypeScript JSX     |         22 |          0 |          6 |         28 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\accordion.tsx                                   | TypeScript JSX     |         59 |          0 |          8 |         67 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\alert-dialog.tsx                                | TypeScript JSX     |        143 |          0 |         15 |        158 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\alert.tsx                                       | TypeScript JSX     |         60 |          0 |          7 |         67 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\aspect-ratio.tsx                                | TypeScript JSX     |          8 |          0 |          4 |         12 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\avatar.tsx                                      | TypeScript JSX     |         47 |          0 |          7 |         54 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\badge.tsx                                       | TypeScript JSX     |         41 |          0 |          6 |         47 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\breadcrumb.tsx                                  | TypeScript JSX     |         99 |          0 |         11 |        110 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\button.tsx                                      | TypeScript JSX     |         53 |          0 |          6 |         59 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\calendar.tsx                                    | TypeScript JSX     |         71 |          0 |          5 |         76 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\card.tsx                                        | TypeScript JSX     |         83 |          0 |         10 |         93 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\carousel.tsx                                    | TypeScript JSX     |        214 |          0 |         28 |        242 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\chart.tsx                                       | TypeScript JSX     |        319 |          2 |         33 |        354 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\checkbox.tsx                                    | TypeScript JSX     |         28 |          0 |          5 |         33 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\collapsible.tsx                                 | TypeScript JSX     |         28 |          0 |          6 |         34 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\command.tsx                                     | TypeScript JSX     |        165 |          0 |         13 |        178 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\context-menu.tsx                                | TypeScript JSX     |        234 |          0 |         19 |        253 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\dialog.tsx                                      | TypeScript JSX     |        122 |          0 |         14 |        136 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\drawer.tsx                                      | TypeScript JSX     |        119 |          0 |         14 |        133 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\dropdown-menu.tsx                               | TypeScript JSX     |         53 |          0 |          7 |         60 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\form.tsx                                        | TypeScript JSX     |        144 |          0 |         25 |        169 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\hover-card.tsx                                  | TypeScript JSX     |         38 |          0 |          7 |         45 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\input-otp.tsx                                   | TypeScript JSX     |         69 |          0 |          9 |         78 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\input.tsx                                       | TypeScript JSX     |         18 |          0 |          4 |         22 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\label.tsx                                       | TypeScript JSX     |         20 |          0 |          5 |         25 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\menubar.tsx                                     | TypeScript JSX     |        257 |          0 |         20 |        277 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\navigation-menu.tsx                             | TypeScript JSX     |        157 |          0 |         12 |        169 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\pagination.tsx                                  | TypeScript JSX     |        117 |          0 |         11 |        128 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\popover.tsx                                     | TypeScript JSX     |         41 |          0 |          8 |         49 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\progress.tsx                                    | TypeScript JSX     |         27 |          0 |          5 |         32 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\radio-group.tsx                                 | TypeScript JSX     |         40 |          0 |          6 |         46 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\resizable.tsx                                   | TypeScript JSX     |         50 |          0 |          7 |         57 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\scroll-area.tsx                                 | TypeScript JSX     |         53 |          0 |          6 |         59 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\select.tsx                                      | TypeScript JSX     |        176 |          0 |         14 |        190 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\separator.tsx                                   | TypeScript JSX     |         24 |          0 |          5 |         29 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\sheet.tsx                                       | TypeScript JSX     |        126 |          0 |         14 |        140 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\sidebar.tsx                                     | TypeScript JSX     |        660 |         12 |         55 |        727 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\skeleton.tsx                                    | TypeScript JSX     |         11 |          0 |          3 |         14 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\slider.tsx                                      | TypeScript JSX     |         58 |          0 |          6 |         64 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\sonner.tsx                                      | TypeScript JSX     |         21 |          0 |          5 |         26 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\switch.tsx                                      | TypeScript JSX     |         27 |          0 |          5 |         32 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\table.tsx                                       | TypeScript JSX     |        105 |          0 |         12 |        117 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\tabs.tsx                                        | TypeScript JSX     |         59 |          0 |          8 |         67 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\textarea.tsx                                    | TypeScript JSX     |         15 |          0 |          4 |         19 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\toggle-group.tsx                                | TypeScript JSX     |         66 |          0 |          8 |         74 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\toggle.tsx                                      | TypeScript JSX     |         42 |          0 |          6 |         48 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\tooltip.tsx                                     | TypeScript JSX     |         54 |          0 |          8 |         62 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\use-mobile.ts                                   | TypeScript         |         17 |          0 |          5 |         22 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\components\ui\utils.ts                                        | TypeScript         |          5 |          0 |          2 |          7 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\data\mockData.ts                                              | TypeScript         |        468 |          0 |          2 |        470 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\app\types.ts                                                      | TypeScript         |         86 |          0 |         17 |        103 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\main.tsx                                                          | TypeScript JSX     |          4 |          0 |          3 |          7 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\styles\fonts.css                                                  | PostCSS            |          6 |          0 |          2 |          8 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\styles\index.css                                                  | PostCSS            |          3 |          0 |          1 |          4 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\styles\tailwind.css                                               | PostCSS            |          3 |          0 |          2 |          5 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\src\styles\theme.css                                                  | PostCSS            |        133 |          9 |         20 |        162 |
+| c:\titan-automation\QuoteVaultPro\Pbv2OptionsPage-main\vite.config.ts                                                        | TypeScript         |         15 |          3 |          2 |         20 |
+| c:\titan-automation\QuoteVaultPro\QUICKBOOKS_TESTING_GUIDE.md                                                                | Markdown           |        348 |          0 |         97 |        445 |
+| c:\titan-automation\QuoteVaultPro\QUOTE_DETAIL_THUMBNAILS_FIX.md                                                             | Markdown           |        108 |          0 |         25 |        133 |
+| c:\titan-automation\QuoteVaultPro\QUOTE_ORDER_DETAIL_AUDIT.md                                                                | Markdown           |        263 |          0 |         89 |        352 |
+| c:\titan-automation\QuoteVaultPro\README.md                                                                                  | Markdown           |        156 |          1 |         60 |        217 |
+| c:\titan-automation\QuoteVaultPro\ROLL_PRODUCTION_LAMINATION_DISPLAY.md                                                      | Markdown           |        142 |          0 |         30 |        172 |
+| c:\titan-automation\QuoteVaultPro\SESSION_AUTH_FIX.md                                                                        | Markdown           |        203 |          0 |         48 |        251 |
+| c:\titan-automation\QuoteVaultPro\SIDES_VOLUME_PRICING_IMPLEMENTATION.md                                                     | Markdown           |        402 |          0 |         92 |        494 |
+| c:\titan-automation\QuoteVaultPro\STRIPE_PAYMENTS_V1_LOCAL_DEV.md                                                            | Markdown           |         82 |          0 |         38 |        120 |
+| c:\titan-automation\QuoteVaultPro\TENANT_STANDARDIZATION_COMPLETE.md                                                         | Markdown           |        247 |          0 |         59 |        306 |
+| c:\titan-automation\QuoteVaultPro\TITANOS_CLOSED_VIEW_COMPLETE.md                                                            | Markdown           |         80 |          0 |         30 |        110 |
+| c:\titan-automation\QuoteVaultPro\TITANOS_CLOSED_VIEW_SMOKE_TEST.md                                                          | Markdown           |        329 |          0 |        119 |        448 |
+| c:\titan-automation\QuoteVaultPro\TITANOS_CLOSED_VIEW_SUMMARY.md                                                             | Markdown           |        251 |          0 |         79 |        330 |
+| c:\titan-automation\QuoteVaultPro\TITANOS_DEPLOYMENT_CHECKLIST.md                                                            | Markdown           |        235 |          0 |         50 |        285 |
+| c:\titan-automation\QuoteVaultPro\TITANOS_PHASE2_COMPLETE.md                                                                 | Markdown           |        337 |          0 |         84 |        421 |
+| c:\titan-automation\QuoteVaultPro\TITAN_STATE_MIGRATION_STATUS.md                                                            | Markdown           |        355 |          0 |        102 |        457 |
+| c:\titan-automation\QuoteVaultPro\TITAN_STATE_QUICKSTART.md                                                                  | Markdown           |        495 |          0 |        116 |        611 |
+| c:\titan-automation\QuoteVaultPro\USER_INVITE_SYSTEM_IMPLEMENTATION.md                                                       | Markdown           |        309 |          0 |         76 |        385 |
+| c:\titan-automation\QuoteVaultPro\VERIFICATION_CHECKLIST.md                                                                  | Markdown           |         70 |          0 |         21 |         91 |
+| c:\titan-automation\QuoteVaultPro\add-job-status-unique.ts                                                                   | TypeScript         |         18 |          0 |          3 |         21 |
+| c:\titan-automation\QuoteVaultPro\apply-asset-pipeline-migration.ts                                                          | TypeScript         |         29 |          1 |          8 |         38 |
+| c:\titan-automation\QuoteVaultPro\apply-fix-migration.ts                                                                     | TypeScript         |         18 |          0 |          6 |         24 |
+| c:\titan-automation\QuoteVaultPro\apply-fulfillment-migration.ts                                                             | TypeScript         |         19 |          0 |          6 |         25 |
+| c:\titan-automation\QuoteVaultPro\apply-invoicing-migration.ts                                                               | TypeScript         |         19 |          0 |          6 |         25 |
+| c:\titan-automation\QuoteVaultPro\apply-manual-migration.ts                                                                  | TypeScript         |         29 |          2 |          9 |         40 |
+| c:\titan-automation\QuoteVaultPro\apply-material-usages-migration.ts                                                         | TypeScript         |         35 |          4 |          8 |         47 |
+| c:\titan-automation\QuoteVaultPro\apply-migration-0012.ts                                                                    | TypeScript         |         94 |         14 |         18 |        126 |
+| c:\titan-automation\QuoteVaultPro\apply-migration-0014.ts                                                                    | TypeScript         |         49 |          9 |         15 |         73 |
+| c:\titan-automation\QuoteVaultPro\apply-migration-0015.ts                                                                    | TypeScript         |         54 |          3 |         15 |         72 |
+| c:\titan-automation\QuoteVaultPro\apply-order-list-notes-migration.ts                                                        | TypeScript         |         25 |          0 |          8 |         33 |
+| c:\titan-automation\QuoteVaultPro\apply-order-state-timestamps-migration.ts                                                  | TypeScript         |         18 |          0 |          6 |         24 |
+| c:\titan-automation\QuoteVaultPro\apply-order-thumbnails-migration.ts                                                        | TypeScript         |         25 |          0 |          8 |         33 |
+| c:\titan-automation\QuoteVaultPro\apply-pricing-profile-migration.ts                                                         | TypeScript         |         60 |          5 |          9 |         74 |
+| c:\titan-automation\QuoteVaultPro\apply-qb-migration.ts                                                                      | TypeScript         |         26 |          1 |          7 |         34 |
+| c:\titan-automation\QuoteVaultPro\apply-roll-material-migration.ts                                                           | TypeScript         |         23 |          9 |         10 |         42 |
+| c:\titan-automation\QuoteVaultPro\apply-saas-tax-migration.ts                                                                | TypeScript         |         22 |          5 |          8 |         35 |
+| c:\titan-automation\QuoteVaultPro\apply-snapshot-migration.ts                                                                | TypeScript         |         42 |          2 |         13 |         57 |
+| c:\titan-automation\QuoteVaultPro\backfill-asset-derivative-keys-org-prefix.ts                                               | TypeScript         |        106 |         20 |         25 |        151 |
+| c:\titan-automation\QuoteVaultPro\backfill-jobs.ts                                                                           | TypeScript         |         56 |          9 |         15 |         80 |
+| c:\titan-automation\QuoteVaultPro\backfill-mislabeled-local-attachments.ts                                                   | TypeScript         |        164 |         25 |         27 |        216 |
+| c:\titan-automation\QuoteVaultPro\backfill-order-attachment-storage.ts                                                       | TypeScript         |        121 |         30 |         26 |        177 |
+| c:\titan-automation\QuoteVaultPro\check-full-schema.ts                                                                       | TypeScript         |         27 |          0 |          7 |         34 |
+| c:\titan-automation\QuoteVaultPro\check-migration-0011.ts                                                                    | TypeScript         |         35 |          0 |          7 |         42 |
+| c:\titan-automation\QuoteVaultPro\check-pricing-formulas.ts                                                                  | TypeScript         |         56 |          4 |         10 |         70 |
+| c:\titan-automation\QuoteVaultPro\client\index.html                                                                          | HTML               |         20 |          0 |          0 |         20 |
+| c:\titan-automation\QuoteVaultPro\client\jest.config.js                                                                      | JavaScript         |         41 |         12 |         10 |         63 |
+| c:\titan-automation\QuoteVaultPro\client\src\App.tsx                                                                         | TypeScript JSX     |        178 |         26 |         29 |        233 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\AdjustInventoryForm.tsx                                              | TypeScript JSX     |         77 |          1 |          7 |         85 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\AttachmentPreviewMeta.tsx                                            | TypeScript JSX     |         17 |          6 |          7 |         30 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\AttachmentViewerDialog.tsx                                           | TypeScript JSX     |        555 |         48 |         50 |        653 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\AttachmentsPanel.tsx                                                 | TypeScript JSX     |        379 |         18 |         48 |        445 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ColumnConfigModal.tsx                                                | TypeScript JSX     |        104 |          0 |         13 |        117 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ConfigError.tsx                                                      | TypeScript JSX     |         64 |          4 |          8 |         76 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\CustomerDetailPanel.tsx                                              | TypeScript JSX     |        757 |         11 |         44 |        812 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\CustomerList.tsx                                                     | TypeScript JSX     |        201 |          4 |         12 |        217 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\CustomerSelect.tsx                                                   | TypeScript JSX     |        223 |         17 |         24 |        264 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\DocumentMetaCard.tsx                                                 | TypeScript JSX     |         17 |          0 |          4 |         21 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\FormulaEditor.tsx                                                    | TypeScript JSX     |        178 |          4 |         20 |        202 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\FulfillmentShippingPanel.tsx                                         | TypeScript JSX     |        261 |         11 |         12 |        284 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\FulfillmentStatusBadge.tsx                                           | TypeScript JSX     |         43 |          0 |          5 |         48 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\LargeFileLocalDevWarningDialog.tsx                                   | TypeScript JSX     |         33 |          0 |          3 |         36 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\LineItemAttachmentsPanel.tsx                                         | TypeScript JSX     |        949 |         86 |        118 |      1,153 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\LineItemThumbnail.tsx                                                | TypeScript JSX     |         99 |         16 |         13 |        128 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\LowStockBadge.tsx                                                    | TypeScript JSX     |          5 |          0 |          2 |          7 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\MaterialForm.tsx                                                     | TypeScript JSX     |        522 |         24 |         29 |        575 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\OrderArtworkPanel.tsx                                                | TypeScript JSX     |        582 |          7 |         53 |        642 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\OrderAttachmentsPanel.tsx                                            | TypeScript JSX     |        470 |         20 |         53 |        543 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\OrderStateBadge.tsx                                                  | TypeScript JSX     |         16 |          5 |          5 |         26 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\OrderStatusPillSelector.tsx                                          | TypeScript JSX     |         79 |          6 |          8 |         93 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\PBV2ProductBuilderSection.tsx                                        | TypeScript JSX     |      3,377 |         21 |        313 |      3,711 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\PBV2ProductBuilderSectionV2.tsx                                      | TypeScript JSX     |        430 |         26 |         59 |        515 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\PackingSlipModal.tsx                                                 | TypeScript JSX     |         47 |          2 |          6 |         55 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ProductForm.tsx                                                      | TypeScript JSX     |        575 |         40 |         44 |        659 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ProductOptionsPanelV2_Mvp.tsx                                        | TypeScript JSX     |        776 |         69 |         68 |        913 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ProductSimulator.tsx                                                 | TypeScript JSX     |        282 |          5 |         33 |        320 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\PurchaseOrderForm.tsx                                                | TypeScript JSX     |        175 |          0 |         12 |        187 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\QuoteAttachmentsPanel.tsx                                            | TypeScript JSX     |        435 |         16 |         51 |        502 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\QuoteWorkflowActions.tsx                                             | TypeScript JSX     |        290 |         18 |         34 |        342 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\QuoteWorkflowBadge.tsx                                               | TypeScript JSX     |         19 |          4 |          5 |         28 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ReceivePurchaseOrderItemsForm.tsx                                    | TypeScript JSX     |         67 |          0 |          5 |         72 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ShipmentForm.tsx                                                     | TypeScript JSX     |        257 |          7 |         19 |        283 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ShippingPanel.tsx                                                    | TypeScript JSX     |         83 |          8 |          6 |         97 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\SplitWorkspace.tsx                                                   | TypeScript JSX     |         66 |          0 |         10 |         76 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\StateTransitionButtons.tsx                                           | TypeScript JSX     |        373 |          8 |         43 |        424 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ThemeToggle.tsx                                                      | TypeScript JSX     |         47 |          0 |          4 |         51 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\TimelinePanel.module.css                                             | PostCSS            |          6 |          0 |          1 |          7 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\TimelinePanel.tsx                                                    | TypeScript JSX     |        235 |          1 |         36 |        272 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\VendorForm.tsx                                                       | TypeScript JSX     |        133 |          0 |          7 |        140 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ViewAllAttachmentsDialog.tsx                                         | TypeScript JSX     |        435 |         16 |         37 |        488 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\VoidQuoteDialog.tsx                                                  | TypeScript JSX     |        115 |          3 |         11 |        129 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\admin-dashboard.tsx                                                  | TypeScript JSX     |        387 |          3 |         31 |        421 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\admin-settings.tsx                                                   | TypeScript JSX     |      4,879 |         40 |        162 |      5,081 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\calculator.tsx                                                       | TypeScript JSX     |      1,271 |         39 |         82 |      1,392 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\contact-form.tsx                                                     | TypeScript JSX     |        278 |          4 |         25 |        307 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\convert-quote-to-order-dialog.tsx                                    | TypeScript JSX     |        118 |          0 |          7 |        125 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\credit-form.tsx                                                      | TypeScript JSX     |        227 |          7 |         20 |        254 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customer-form.tsx                                                    | TypeScript JSX     |        894 |         30 |         64 |        988 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customers\CustomerActivityTabs.tsx                                   | TypeScript JSX     |         71 |          2 |         10 |         83 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customers\CustomerStatCard.tsx                                       | TypeScript JSX     |         49 |          0 |          4 |         53 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customers\CustomerStatsRow.tsx                                       | TypeScript JSX     |        212 |          5 |         15 |        232 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customers\SplitCustomerDetail.tsx                                    | TypeScript JSX     |        192 |          5 |         13 |        210 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customers\tables\CustomerInvoicesTable.tsx                           | TypeScript JSX     |         96 |          0 |          5 |        101 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customers\tables\CustomerOrdersTable.tsx                             | TypeScript JSX     |        181 |          0 |          7 |        188 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\customers\tables\CustomerQuotesTable.tsx                             | TypeScript JSX     |        147 |          0 |          6 |        153 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\global-search.tsx                                                    | TypeScript JSX     |        142 |          2 |         17 |        161 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\integrations\QBTransientDisconnectBanner.tsx                         | TypeScript JSX     |        112 |          0 |         18 |        130 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\job-status-settings.tsx                                              | TypeScript JSX     |        167 |          0 |          9 |        176 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\layout\AppLayout.tsx                                                 | TypeScript JSX     |         66 |          8 |          9 |         83 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\layout\GlobalSearchOverlay.tsx                                       | TypeScript JSX     |        179 |          0 |         16 |        195 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\layout\ResizablePanels.tsx                                           | TypeScript JSX     |         87 |         15 |         14 |        116 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\layout\SidebarNav.tsx                                                | TypeScript JSX     |          3 |          4 |          1 |          8 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\layout\TitanSidebarNav.tsx                                           | TypeScript JSX     |        422 |         36 |         38 |        496 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\layout\TitanTopBar.tsx                                               | TypeScript JSX     |        281 |         25 |         32 |        338 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\layout\index.ts                                                      | TypeScript         |          5 |          6 |          3 |         14 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemActionButtons.tsx                                 | TypeScript JSX     |         48 |          0 |          5 |         53 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemAlertChip.tsx                                     | TypeScript JSX     |         27 |          0 |          6 |         33 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemMainBlock.tsx                                     | TypeScript JSX     |         96 |          2 |         18 |        116 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemMoneyField.tsx                                    | TypeScript JSX     |         37 |          0 |          5 |         42 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemOverrideToggle.tsx                                | TypeScript JSX     |         40 |          0 |          5 |         45 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemQtyPill.tsx                                       | TypeScript JSX     |        116 |          3 |         15 |        134 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemRowEnterprise.tsx                                 | TypeScript JSX     |        879 |          0 |         72 |        951 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\LineItemStatusPill.tsx                                    | TypeScript JSX     |        161 |          0 |         19 |        180 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\lineItemRowEnterprise.module.css                          | PostCSS            |        736 |          2 |        117 |        855 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\line-items\lineItemTheme.css                                         | PostCSS            |         20 |          2 |         10 |         32 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\list\ListViewSettings.tsx                                            | TypeScript JSX     |        101 |          0 |          4 |        105 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\media-picker.tsx                                                     | TypeScript JSX     |        142 |          0 |         12 |        154 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\media\PdfViewer.tsx                                                  | TypeScript JSX     |         47 |         11 |          9 |         67 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\note-form.tsx                                                        | TypeScript JSX     |        180 |          6 |         19 |        205 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\object-uploader.tsx                                                  | TypeScript JSX     |        212 |          1 |         26 |        239 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\order-form-OLD-BACKUP.tsx                                            | TypeScript JSX     |        453 |          9 |         37 |        499 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\order-form.tsx                                                       | TypeScript JSX     |      1,158 |         42 |         85 |      1,285 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\order-line-item-dialog.tsx                                           | TypeScript JSX     |        943 |         37 |         74 |      1,054 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\order-status-badge.tsx                                               | TypeScript JSX     |        150 |          0 |         13 |        163 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\orders\ManualReservationsCard.tsx                                    | TypeScript JSX     |        320 |          0 |         31 |        351 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\orders\OrderFulfillmentPanel.tsx                                     | TypeScript JSX     |        620 |         16 |         48 |        684 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\orders\OrderLineItemsSection.tsx                                     | TypeScript JSX     |      2,048 |         17 |        213 |      2,278 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\payments\StripePayDialog.tsx                                         | TypeScript JSX     |        340 |         55 |         48 |        443 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\pbv2\builder-v2\ConfirmationModal.tsx                                | TypeScript JSX     |         60 |          0 |          4 |         64 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionEditor.tsx                                     | TypeScript JSX     |        214 |          0 |         16 |        230 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\pbv2\builder-v2\OptionGroupsSidebar.tsx                              | TypeScript JSX     |        171 |          0 |          8 |        179 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\pbv2\builder-v2\PBV2ProductBuilderLayout.tsx                         | TypeScript JSX     |        104 |         20 |         11 |        135 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\pbv2\builder-v2\PricingValidationPanel.tsx                           | TypeScript JSX     |        246 |          0 |         15 |        261 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\pbv2\builder-v2\ProductHeader.tsx                                    | TypeScript JSX     |        105 |          0 |         11 |        116 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\production\ZoomPanImageViewer.tsx                                    | TypeScript JSX     |        257 |         38 |         44 |        339 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\quote-history.tsx                                                    | TypeScript JSX     |        450 |          1 |         33 |        484 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\quote-source-badge.tsx                                               | TypeScript JSX     |         26 |          0 |          6 |         32 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\ColumnConfig.tsx                                               | TypeScript JSX     |        417 |         12 |         41 |        470 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\ContentLayout.tsx                                              | TypeScript JSX     |          9 |          0 |          3 |         12 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\DataCard.tsx                                                   | TypeScript JSX     |         40 |          0 |          4 |         44 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\FilterPanel.tsx                                                | TypeScript JSX     |         27 |          0 |          3 |         30 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\Page.tsx                                                       | TypeScript JSX     |         19 |          0 |          3 |         22 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\PageHeader.tsx                                                 | TypeScript JSX     |         27 |          0 |          3 |         30 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\Section.tsx                                                    | TypeScript JSX     |         25 |          0 |          3 |         28 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\StatusPill.tsx                                                 | TypeScript JSX     |         46 |          5 |         12 |         63 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\TitanButton.tsx                                                | TypeScript JSX     |         84 |          0 |          7 |         91 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\TitanCard.tsx                                                  | TypeScript JSX     |         33 |          0 |          5 |         38 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\TitanSearchInput.tsx                                           | TypeScript JSX     |         32 |          0 |          4 |         36 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\TitanStatCard.tsx                                              | TypeScript JSX     |         62 |          4 |          5 |         71 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\TitanTable.tsx                                                 | TypeScript JSX     |        131 |         27 |         29 |        187 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\titan\index.ts                                                       | TypeScript         |         25 |          7 |          7 |         39 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\PageShell.tsx                                                     | TypeScript JSX     |          8 |          0 |          2 |         10 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\TitanCard.tsx                                                     | TypeScript JSX     |         17 |          0 |          3 |         20 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\accordion.tsx                                                     | TypeScript JSX     |         49 |          0 |          8 |         57 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\alert-dialog.tsx                                                  | TypeScript JSX     |        126 |          0 |         14 |        140 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\alert.tsx                                                         | TypeScript JSX     |         53 |          0 |          7 |         60 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\aspect-ratio.tsx                                                  | TypeScript JSX     |          3 |          0 |          3 |          6 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\avatar.tsx                                                        | TypeScript JSX     |         45 |          0 |          7 |         52 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\badge.tsx                                                         | TypeScript JSX     |         31 |          1 |          7 |         39 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\breadcrumb.tsx                                                    | TypeScript JSX     |        105 |          0 |         11 |        116 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\button.tsx                                                        | TypeScript JSX     |         52 |          6 |          6 |         64 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\calendar.tsx                                                      | TypeScript JSX     |         64 |          0 |          5 |         69 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\card.tsx                                                          | TypeScript JSX     |         78 |          0 |          8 |         86 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\carousel.tsx                                                      | TypeScript JSX     |        231 |          0 |         30 |        261 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\chart.tsx                                                         | TypeScript JSX     |        331 |          2 |         33 |        366 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\checkbox.tsx                                                      | TypeScript JSX     |         25 |          0 |          4 |         29 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\collapsible.tsx                                                   | TypeScript JSX     |          6 |          0 |          6 |         12 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\command.tsx                                                       | TypeScript JSX     |        135 |          0 |         17 |        152 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\context-menu.tsx                                                  | TypeScript JSX     |        181 |          0 |         18 |        199 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\dialog.tsx                                                        | TypeScript JSX     |        109 |          0 |         14 |        123 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\drawer.tsx                                                        | TypeScript JSX     |        105 |          0 |         14 |        119 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\dropdown-menu.tsx                                                 | TypeScript JSX     |        181 |          0 |         18 |        199 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\form.tsx                                                          | TypeScript JSX     |        153 |          0 |         26 |        179 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\hover-card.tsx                                                    | TypeScript JSX     |         23 |          0 |          7 |         30 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\input-otp.tsx                                                     | TypeScript JSX     |         62 |          0 |          8 |         70 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\input.tsx                                                         | TypeScript JSX     |         19 |          1 |          4 |         24 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\label.tsx                                                         | TypeScript JSX     |         20 |          0 |          5 |         25 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\menubar.tsx                                                       | TypeScript JSX     |        237 |          0 |         20 |        257 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\navigation-menu.tsx                                               | TypeScript JSX     |        117 |          0 |         12 |        129 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\pagination.tsx                                                    | TypeScript JSX     |        107 |          0 |         11 |        118 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\popover.tsx                                                       | TypeScript JSX     |         24 |          0 |          6 |         30 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\progress.tsx                                                      | TypeScript JSX     |         24 |          0 |          5 |         29 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\radio-group.tsx                                                   | TypeScript JSX     |         38 |          0 |          5 |         43 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\resizable.tsx                                                     | TypeScript JSX     |         39 |          0 |          7 |         46 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\scroll-area.tsx                                                   | TypeScript JSX     |         42 |          0 |          5 |         47 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\select.tsx                                                        | TypeScript JSX     |        146 |          0 |         15 |        161 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\separator.tsx                                                     | TypeScript JSX     |         26 |          0 |          4 |         30 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\sheet.tsx                                                         | TypeScript JSX     |        125 |          0 |         16 |        141 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\sidebar.tsx                                                       | TypeScript JSX     |        660 |         13 |         55 |        728 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\skeleton.tsx                                                      | TypeScript JSX     |         13 |          0 |          3 |         16 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\slider.tsx                                                        | TypeScript JSX     |         23 |          0 |          4 |         27 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\switch.tsx                                                        | TypeScript JSX     |         24 |          0 |          4 |         28 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\table.tsx                                                         | TypeScript JSX     |        107 |          0 |         11 |        118 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\tabs.tsx                                                          | TypeScript JSX     |         47 |          0 |          7 |         54 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\textarea.tsx                                                      | TypeScript JSX     |         19 |          0 |          4 |         23 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\toast.tsx                                                         | TypeScript JSX     |        115 |          0 |         13 |        128 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\toaster.tsx                                                       | TypeScript JSX     |         31 |          0 |          3 |         34 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\toggle-group.tsx                                                  | TypeScript JSX     |         52 |          0 |         10 |         62 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\toggle.tsx                                                        | TypeScript JSX     |         38 |          0 |          6 |         44 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\ui\tooltip.tsx                                                       | TypeScript JSX     |         23 |          0 |          8 |         31 |
+| c:\titan-automation\QuoteVaultPro\client\src\components\user-management.tsx                                                  | TypeScript JSX     |        291 |          1 |         14 |        306 |
+| c:\titan-automation\QuoteVaultPro\client\src\config\routes.ts                                                                | TypeScript         |         78 |        113 |         20 |        211 |
+| c:\titan-automation\QuoteVaultPro\client\src\docs\thumbnail-status-auto-refresh-audit.md                                     | Markdown           |        233 |          0 |         63 |        296 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\customers\EnhancedCustomerView.tsx                                     | TypeScript JSX     |      1,845 |         86 |        145 |      2,076 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\customers\index.ts                                                     | TypeScript         |          1 |          0 |          1 |          2 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\documents\create\DocumentCreateForm.tsx                                | TypeScript JSX     |        806 |         45 |         70 |        921 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\materials\CreateMaterialDialog.tsx                                     | TypeScript JSX     |        316 |          1 |         22 |        339 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\production\ProductionViewRenderer.tsx                                  | TypeScript JSX     |         21 |          0 |          5 |         26 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\production\theme\productionCardTheme.ts                                | TypeScript         |         61 |         13 |          8 |         82 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\production\views\FlatbedProductionView.tsx                             | TypeScript JSX     |      1,433 |         66 |        128 |      1,627 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\production\views\ProductionOverviewPage.tsx                            | TypeScript JSX     |      1,876 |        134 |        190 |      2,200 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\production\views\RollProductionView.tsx                                | TypeScript JSX     |      1,464 |         66 |        128 |      1,658 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\products\editor\ProductOptionsEditor.tsx                               | TypeScript JSX     |        918 |         12 |         95 |      1,025 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\QuoteEditorPage.tsx                                      | TypeScript JSX     |        884 |        174 |        117 |      1,175 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\CustomerCard.tsx                              | TypeScript JSX     |        397 |          9 |         27 |        433 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\CustomerInfoFooter.tsx                        | TypeScript JSX     |        122 |          2 |         16 |        140 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\FulfillmentCard.tsx                           | TypeScript JSX     |        222 |          4 |          6 |        232 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemBuilder.tsx                           | TypeScript JSX     |        340 |         12 |         21 |        373 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemsSection.tsx                          | TypeScript JSX     |      1,040 |         61 |        102 |      1,203 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\LineItemsTable.tsx                            | TypeScript JSX     |        316 |         13 |         26 |        355 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\ProductOptionsPanel.tsx                       | TypeScript JSX     |        595 |          7 |         58 |        660 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\ProductOptionsPanelV2.tsx                     | TypeScript JSX     |        334 |          2 |         48 |        384 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\QuoteHeader.tsx                               | TypeScript JSX     |        112 |          9 |         11 |        132 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\components\SummaryCard.tsx                               | TypeScript JSX     |        427 |         23 |         24 |        474 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\types.ts                                                 | TypeScript         |         44 |         10 |          4 |         58 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\useQuoteEditorState.ts                                   | TypeScript         |      2,094 |        333 |        313 |      2,740 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\editor\utils.ts                                                 | TypeScript         |         17 |          8 |          3 |         28 |
+| c:\titan-automation\QuoteVaultPro\client\src\features\quotes\utils\formatQuoteNumberWithVariant.ts                           | TypeScript         |         10 |          0 |          6 |         16 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\use-mobile.tsx                                                            | TypeScript JSX     |         15 |          0 |          5 |         20 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\use-toast.ts                                                              | TypeScript         |        159 |          2 |         31 |        192 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useAuth.ts                                                                | TypeScript         |         68 |          8 |         16 |         92 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useContacts.ts                                                            | TypeScript         |        169 |         10 |         23 |        202 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useCustomer.ts                                                            | TypeScript         |        102 |          6 |          9 |        117 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useGlobalSearch.ts                                                        | TypeScript         |         75 |          3 |         18 |         96 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useInvoices.ts                                                            | TypeScript         |        367 |         15 |         20 |        402 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useJobs.ts                                                                | TypeScript         |        226 |          2 |         18 |        246 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useListViewSettings.ts                                                    | TypeScript         |         48 |          1 |         12 |         61 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useManualReservations.ts                                                  | TypeScript         |         79 |          0 |         12 |         91 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useMaterials.ts                                                           | TypeScript         |        258 |          3 |         17 |        278 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useOrderAttachments.ts                                                    | TypeScript         |         30 |          0 |          6 |         36 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useOrderFiles.ts                                                          | TypeScript         |        247 |         53 |         42 |        342 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useOrderLineItemPreviews.ts                                               | TypeScript         |         23 |          0 |          3 |         26 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useOrderState.ts                                                          | TypeScript         |        118 |         27 |         17 |        162 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useOrderStatusPills.ts                                                    | TypeScript         |        222 |         31 |         32 |        285 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useOrders.ts                                                              | TypeScript         |        642 |         66 |         79 |        787 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useOrgPreferences.ts                                                      | TypeScript         |        121 |          5 |         14 |        140 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\usePortal.ts                                                              | TypeScript         |        170 |          0 |         11 |        181 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\usePrepress.tsx                                                           | TypeScript JSX     |        167 |         31 |         30 |        228 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\usePricingFormulas.ts                                                     | TypeScript         |        139 |          0 |         12 |        151 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useProductBuilderDraft.ts                                                 | TypeScript         |         71 |          8 |         14 |         93 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useProductTypes.ts                                                        | TypeScript         |         99 |          0 |          9 |        108 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useProduction.ts                                                          | TypeScript         |        488 |          4 |         27 |        519 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useProductionSettings.ts                                                  | TypeScript         |         48 |          1 |          5 |         54 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\usePurchaseOrders.ts                                                      | TypeScript         |        185 |          0 |         13 |        198 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useQuoteWorkflowState.ts                                                  | TypeScript         |         17 |          3 |          6 |         26 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useShipments.ts                                                           | TypeScript         |        137 |          7 |         13 |        157 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useTableColumnConfig.ts                                                   | TypeScript         |         55 |          1 |         10 |         66 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useTheme.tsx                                                              | TypeScript JSX     |         75 |          8 |         11 |         94 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useUserPreferences.ts                                                     | TypeScript         |         41 |          8 |         14 |         63 |
+| c:\titan-automation\QuoteVaultPro\client\src\hooks\useVendors.ts                                                             | TypeScript         |        114 |          0 |          9 |        123 |
+| c:\titan-automation\QuoteVaultPro\client\src\index.css                                                                       | PostCSS            |        350 |         25 |         87 |        462 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\__tests__\productionHelpers.test.ts                                         | TypeScript         |         92 |         12 |         22 |        126 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\apiConfig.ts                                                                | TypeScript         |         24 |         58 |         10 |         92 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\attachments.ts                                                              | TypeScript         |         54 |         35 |         18 |        107 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\attachments\attachmentStatus.ts                                             | TypeScript         |         45 |         41 |         19 |        105 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\authUtils.ts                                                                | TypeScript         |          3 |          0 |          1 |          4 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\config\storage.ts                                                           | TypeScript         |         11 |          1 |          3 |         15 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\downloadFile.ts                                                             | TypeScript         |        117 |         23 |         22 |        162 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\fileUtils.ts                                                                | TypeScript         |         61 |         25 |         14 |        100 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\getThumbSrc.ts                                                              | TypeScript         |         39 |         18 |         14 |         71 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\lineItems\lineItemDerivation.ts                                             | TypeScript         |         83 |          2 |         16 |        101 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\nav.ts                                                                      | TypeScript         |         64 |          4 |          5 |         73 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\optionChoiceValidation.ts                                                   | TypeScript         |         20 |          0 |          6 |         26 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\optionTreeV2PricingCodec.ts                                                 | TypeScript         |        105 |         14 |         13 |        132 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\orderUtils.ts                                                               | TypeScript         |         28 |         20 |          8 |         56 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\pbv2\pbv2Outputs.ts                                                         | TypeScript         |         10 |          0 |          2 |         12 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\pbv2\pbv2ViewModel.ts                                                       | TypeScript         |        370 |         49 |         57 |        476 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\pdfUrls.ts                                                                  | TypeScript         |         45 |         17 |         11 |         73 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\productionHelpers.ts                                                        | TypeScript         |         90 |         26 |         16 |        132 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\queryClient.ts                                                              | TypeScript         |         60 |          4 |         13 |         77 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\stripeClient.ts                                                             | TypeScript         |         14 |         18 |          6 |         38 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\tests\optionTreeV2PricingCodec.test.ts                                      | TypeScript         |         76 |          1 |         14 |         91 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\ui\persistExpandedLineItem.ts                                               | TypeScript         |         34 |         29 |          5 |         68 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\ui\persistScrollPosition.ts                                                 | TypeScript         |         26 |         22 |          5 |         53 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\uploads\fileToBase64.ts                                                     | TypeScript         |         20 |          1 |          5 |         26 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\utils.ts                                                                    | TypeScript         |         28 |          7 |          9 |         44 |
+| c:\titan-automation\QuoteVaultPro\client\src\lib\viewUrlForIframe.ts                                                         | TypeScript         |         40 |         16 |         12 |         68 |
+| c:\titan-automation\QuoteVaultPro\client\src\main.tsx                                                                        | TypeScript JSX     |         21 |          3 |          4 |         28 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\ApprovalsPage.tsx                                                         | TypeScript JSX     |        307 |          5 |         15 |        327 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\ProductEditorPage.tsx                                                     | TypeScript JSX     |        324 |          3 |         27 |        354 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\admin-users.tsx                                                           | TypeScript JSX     |        393 |          0 |         20 |        413 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\admin.tsx                                                                 | TypeScript JSX     |         50 |          0 |          8 |         58 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\audit-logs.tsx                                                            | TypeScript JSX     |        295 |          2 |         22 |        319 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\company-settings.tsx                                                      | TypeScript JSX     |        272 |          3 |         23 |        298 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\contact-detail.tsx                                                        | TypeScript JSX     |        327 |         17 |         25 |        369 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\contacts.tsx                                                              | TypeScript JSX     |        568 |         17 |         25 |        610 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\create-order.tsx                                                          | TypeScript JSX     |         72 |          3 |          6 |         81 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\create-quote.tsx                                                          | TypeScript JSX     |         74 |          2 |          5 |         81 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\customer-detail-enhanced.tsx                                              | TypeScript JSX     |         24 |          7 |          6 |         37 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\customer-detail.tsx                                                       | TypeScript JSX     |        656 |          6 |         37 |        699 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\customer-quotes.tsx                                                       | TypeScript JSX     |        250 |          1 |         18 |        269 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\customers.tsx                                                             | TypeScript JSX     |        237 |         36 |         30 |        303 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\debug-user.tsx                                                            | TypeScript JSX     |         45 |          0 |          5 |         50 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\dev\DevLineItemRowEnterprisePreview.tsx                                   | TypeScript JSX     |        144 |          0 |         19 |        163 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\edit-quote.tsx                                                            | TypeScript JSX     |      1,047 |         40 |         72 |      1,159 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\force-password-change.tsx                                                 | TypeScript JSX     |        128 |          3 |         16 |        147 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\forgot-password.tsx                                                       | TypeScript JSX     |        148 |          0 |         14 |        162 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\home.tsx                                                                  | TypeScript JSX     |        317 |          6 |         22 |        345 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\internal-quotes.tsx                                                       | TypeScript JSX     |      1,450 |         56 |        124 |      1,630 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\invoice-detail.tsx                                                        | TypeScript JSX     |      1,799 |         18 |        181 |      1,998 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\invoices.tsx                                                              | TypeScript JSX     |        207 |          4 |         17 |        228 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\job-detail.tsx                                                            | TypeScript JSX     |        254 |         15 |         20 |        289 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\landing.tsx                                                               | TypeScript JSX     |         80 |          0 |          7 |         87 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\login.tsx                                                                 | TypeScript JSX     |        141 |          5 |         16 |        162 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\material-detail.tsx                                                       | TypeScript JSX     |        128 |          3 |          7 |        138 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\materials.tsx                                                             | TypeScript JSX     |        243 |          3 |         14 |        260 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\not-found.tsx                                                             | TypeScript JSX     |         19 |          0 |          3 |         22 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\order-detail.tsx                                                          | TypeScript JSX     |      2,705 |         87 |        213 |      3,005 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\order-new.tsx                                                             | TypeScript JSX     |          4 |          6 |          2 |         12 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\orders.tsx                                                                | TypeScript JSX     |      1,008 |         41 |        103 |      1,152 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\portal\my-orders.tsx                                                      | TypeScript JSX     |        109 |          0 |          8 |        117 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\portal\my-quotes.tsx                                                      | TypeScript JSX     |        107 |          0 |          8 |        115 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\portal\quote-checkout.tsx                                                 | TypeScript JSX     |        259 |          7 |         30 |        296 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\prepress.tsx                                                              | TypeScript JSX     |        495 |         20 |         37 |        552 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\product-builder-v2.tsx                                                    | TypeScript JSX     |         19 |          8 |          5 |         32 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\production-job-detail.tsx                                                 | TypeScript JSX     |        682 |         32 |         61 |        775 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\production.tsx                                                            | TypeScript JSX     |        190 |         15 |         23 |        228 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\products.tsx                                                              | TypeScript JSX     |      2,773 |         79 |        115 |      2,967 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\purchase-order-detail.tsx                                                 | TypeScript JSX     |         83 |          0 |          8 |         91 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\purchase-orders.tsx                                                       | TypeScript JSX     |        156 |          0 |          9 |        165 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\quote-detail.tsx                                                          | TypeScript JSX     |        485 |          9 |         24 |        518 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\quote-editor-old.tsx                                                      | TypeScript JSX     |      1,794 |        101 |        133 |      2,028 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\quote-editor.tsx                                                          | TypeScript JSX     |         31 |          9 |         10 |         50 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\reset-password.tsx                                                        | TypeScript JSX     |        220 |          0 |         21 |        241 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\set-password.tsx                                                          | TypeScript JSX     |        173 |          4 |         17 |        194 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\settings\SettingsLayout.tsx                                               | TypeScript JSX     |        788 |          8 |         64 |        860 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\settings\email.tsx                                                        | TypeScript JSX     |        367 |         15 |         28 |        410 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\settings\integrations.tsx                                                 | TypeScript JSX     |        929 |         18 |         65 |      1,012 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\settings\pricing-formulas.tsx                                             | TypeScript JSX     |        745 |         19 |         44 |        808 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\settings\product-types.tsx                                                | TypeScript JSX     |        213 |          4 |         17 |        234 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\settings\users.tsx                                                        | TypeScript JSX     |        308 |          4 |         20 |        332 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\user-management.tsx                                                       | TypeScript JSX     |        420 |          1 |         21 |        442 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\vendor-detail.tsx                                                         | TypeScript JSX     |         76 |          0 |          7 |         83 |
+| c:\titan-automation\QuoteVaultPro\client\src\pages\vendors.tsx                                                               | TypeScript JSX     |        118 |          0 |          8 |        126 |
+| c:\titan-automation\QuoteVaultPro\components.json                                                                            | JSON               |         20 |          0 |          0 |         20 |
+| c:\titan-automation\QuoteVaultPro\debug-artwork-urls.ts                                                                      | TypeScript         |         30 |          4 |          7 |         41 |
+| c:\titan-automation\QuoteVaultPro\debug-jobs.ts                                                                              | TypeScript         |         25 |          0 |          8 |         33 |
+| c:\titan-automation\QuoteVaultPro\debug-orders.ts                                                                            | TypeScript         |         13 |          0 |          6 |         19 |
+| c:\titan-automation\QuoteVaultPro\debug-output.json                                                                          | JSON               |          0 |          0 |          1 |          1 |
+| c:\titan-automation\QuoteVaultPro\design_guidelines.md                                                                       | Markdown           |        108 |          0 |         23 |        131 |
+| c:\titan-automation\QuoteVaultPro\dev-canonicalize-thumb-keys.ts                                                             | TypeScript         |        263 |         37 |         45 |        345 |
+| c:\titan-automation\QuoteVaultPro\docs\ARCHITECTURE.md                                                                       | Markdown           |        218 |          0 |        105 |        323 |
+| c:\titan-automation\QuoteVaultPro\docs\CONTACTS_LIST_ENHANCEMENTS.md                                                         | Markdown           |        302 |          0 |         74 |        376 |
+| c:\titan-automation\QuoteVaultPro\docs\CUSTOMER_PORTAL_IMPLEMENTATION.md                                                     | Markdown           |        285 |          0 |         59 |        344 |
+| c:\titan-automation\QuoteVaultPro\docs\CUSTOMER_PORTAL_TESTING.md                                                            | Markdown           |        241 |          0 |         64 |        305 |
+| c:\titan-automation\QuoteVaultPro\docs\DEVELOPMENT_FLOW.md                                                                   | Markdown           |        119 |          0 |         58 |        177 |
+| c:\titan-automation\QuoteVaultPro\docs\GIT_WORKFLOW.md                                                                       | Markdown           |        339 |          0 |        140 |        479 |
+| c:\titan-automation\QuoteVaultPro\docs\MODULE_DEPENDENCIES.md                                                                | Markdown           |         57 |          0 |         19 |         76 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\CUSTOMER_MODULE_UI_REBUILD.md                                                 | Markdown           |        297 |          0 |         60 |        357 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\FEATURE_STATUS.md                                                             | Markdown           |        272 |          0 |         95 |        367 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_ARTWORK_FILE_HANDLING.md                                    | Markdown           |        397 |          0 |         52 |        449 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_CRM_CUSTOMERS.md                                            | Markdown           |         94 |          0 |         13 |        107 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_CUSTOMER_PORTAL.md                                          | Markdown           |         74 |          0 |         12 |         86 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_FULFILLMENT_SHIPPING.md                                     | Markdown           |         69 |          0 |         13 |         82 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_INVENTORY_MANAGEMENT.md                                     | Markdown           |         81 |          0 |         13 |         94 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_INVOICING_PAYMENTS.md                                       | Markdown           |         82 |          0 |         13 |         95 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_JOBS_PRODUCTION.md                                          | Markdown           |         93 |          0 |         13 |        106 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_MULTI_TENANT_ARCHITECTURE.md                                | Markdown           |        760 |          0 |        204 |        964 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_PRICING_FORMULA_ENGINE.md                                   | Markdown           |        485 |          0 |         88 |        573 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_PRODUCT_CATALOG_OPTIONS.md                                  | Markdown           |        620 |          0 |        102 |        722 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_QUICKBOOKS_INTEGRATION.md                                   | Markdown           |        348 |          0 |         38 |        386 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_QUOTES_ORDERS.md                                            | Markdown           |         75 |          0 |         13 |         88 |
+| c:\titan-automation\QuoteVaultPro\docs\Modules\MODULE_COMPLETION_VENDORS_PURCHASE_ORDERS.md                                  | Markdown           |        108 |          0 |         13 |        121 |
+| c:\titan-automation\QuoteVaultPro\docs\ORDER_STATE_ARCHITECTURE.ts                                                           | TypeScript         |         33 |        275 |         27 |        335 |
+| c:\titan-automation\QuoteVaultPro\docs\ORDER_TRANSITION_CONFIG.md                                                            | Markdown           |        174 |          0 |         53 |        227 |
+| c:\titan-automation\QuoteVaultPro\docs\PBV2_OVERRIDE_WORKFLOW.md                                                             | Markdown           |         25 |          0 |         15 |         40 |
+| c:\titan-automation\QuoteVaultPro\docs\PREPRESS_SERVICE.md                                                                   | Markdown           |        290 |          0 |         83 |        373 |
+| c:\titan-automation\QuoteVaultPro\docs\PREPRESS_TOOLCHAIN.md                                                                 | Markdown           |        217 |          0 |         91 |        308 |
+| c:\titan-automation\QuoteVaultPro\docs\PRODUCTION_UPDATES.md                                                                 | Markdown           |        145 |          0 |         19 |        164 |
+| c:\titan-automation\QuoteVaultPro\docs\PRODUCT_OPTIONS_IMPLEMENTATION.md                                                     | Markdown           |        498 |          0 |         75 |        573 |
+| c:\titan-automation\QuoteVaultPro\docs\PROMPTS_KERNEL_STYLE.md                                                               | Markdown           |        122 |          0 |         47 |        169 |
+| c:\titan-automation\QuoteVaultPro\docs\QUOTE_APPROVAL_ENFORCEMENT_TESTING.md                                                 | Markdown           |        144 |          0 |         23 |        167 |
+| c:\titan-automation\QuoteVaultPro\docs\QUOTE_ORDER_SNAPSHOTS_PHASE1.md                                                       | Markdown           |        233 |          0 |         45 |        278 |
+| c:\titan-automation\QuoteVaultPro\docs\QUOTE_ORDER_SNAPSHOTS_PHASE2_COMPLETE.md                                              | Markdown           |        289 |          0 |         92 |        381 |
+| c:\titan-automation\QuoteVaultPro\docs\QUOTE_SYSTEM_IMPLEMENTATION.md                                                        | Markdown           |        267 |          0 |         60 |        327 |
+| c:\titan-automation\QuoteVaultPro\docs\QUOTE_WORKFLOW_PHASE1_IMPLEMENTATION.md                                               | Markdown           |        319 |          0 |         95 |        414 |
+| c:\titan-automation\QuoteVaultPro\docs\README.md                                                                             | Markdown           |         94 |          0 |         35 |        129 |
+| c:\titan-automation\QuoteVaultPro\docs\TODO_ISSUES.md                                                                        | Markdown           |         16 |          0 |          5 |         21 |
+| c:\titan-automation\QuoteVaultPro\docs\USER_CUSTOMER_LINKAGE_FIX.md                                                          | Markdown           |        138 |          0 |         40 |        178 |
+| c:\titan-automation\QuoteVaultPro\docs\VOLUME_PRICING.md                                                                     | Markdown           |         80 |          0 |         26 |        106 |
+| c:\titan-automation\QuoteVaultPro\docs\attachments-and-thumbnails.md                                                         | Markdown           |        449 |          0 |        131 |        580 |
+| c:\titan-automation\QuoteVaultPro\docs\db-reset.md                                                                           | Markdown           |         77 |          0 |         21 |         98 |
+| c:\titan-automation\QuoteVaultPro\drizzle.config.ts                                                                          | TypeScript         |         17 |          0 |          3 |         20 |
+| c:\titan-automation\QuoteVaultPro\fix-object-keys-org-prefix.ts                                                              | TypeScript         |        155 |         17 |         32 |        204 |
+| c:\titan-automation\QuoteVaultPro\fix-user-role.ts                                                                           | TypeScript         |         49 |          2 |         12 |         63 |
+| c:\titan-automation\QuoteVaultPro\jest.config.js                                                                             | JavaScript         |         31 |          1 |          1 |         33 |
+| c:\titan-automation\QuoteVaultPro\migrate-product-types.ts                                                                   | TypeScript         |         23 |          1 |          6 |         30 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0000_cool_taskmaster.sql                                        | MS SQL             |        150 |         11 |          0 |        161 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0001_clever_human_torch.sql                                     | MS SQL             |          1 |          0 |          0 |          1 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0002_luxuriant_veda.sql                                         | MS SQL             |          1 |          0 |          0 |          1 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0003_add_nesting_calculator.sql                                 | MS SQL             |          5 |          1 |          2 |          8 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0004_make_pricing_formula_optional.sql                          | MS SQL             |          2 |          1 |          2 |          5 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0004b_crm_orders_foundation.sql                                 | MS SQL             |        379 |         70 |         48 |        497 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0005_production_workflow.sql                                    | MS SQL             |         70 |          6 |         10 |         86 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0006_invoicing.sql                                              | MS SQL             |         76 |          5 |          5 |         86 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0007_shipping_fulfillment.sql                                   | MS SQL             |         41 |          4 |          5 |         50 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0008_inventory_management.sql                                   | MS SQL             |         75 |         10 |         11 |         96 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0009_vendors_purchase_orders.sql                                | MS SQL             |         69 |          7 |          6 |         82 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0011_artwork_file_handling.sql                                  | MS SQL             |         47 |         16 |         13 |         76 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0020_multi_tenant_organizations.sql                             | MS SQL             |         72 |         24 |         15 |        111 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0021_add_organization_id_to_tables.sql                          | MS SQL             |        291 |         70 |         73 |        434 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0022_structured_addresses.sql                                   | MS SQL             |         60 |         10 |         20 |         90 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0023_add_product_pricing_fields.sql                             | MS SQL             |         50 |         10 |          8 |         68 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0024_add_pricing_profile_fields.sql                             | MS SQL             |         34 |         10 |          7 |         51 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0024_material_usages_tracking.sql                               | MS SQL             |         12 |          7 |          7 |         26 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0025_pricing_formulas.sql                                       | MS SQL             |         27 |         10 |         12 |         49 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0026_materials_thickness_unit.sql                               | MS SQL             |          7 |          4 |          3 |         14 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0027_wholesale_retail_pricing.sql                               | MS SQL             |         80 |         27 |         19 |        126 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0028_customer_pricing_modifiers.sql                             | MS SQL             |         74 |         25 |         18 |        117 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0029_tax_system.sql                                             | MS SQL             |        211 |         48 |         37 |        296 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0030_saas_tax_zones.sql                                         | MS SQL             |         74 |          8 |         12 |         94 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0031_roll_width_tracking.sql                                    | MS SQL             |         21 |          7 |          5 |         33 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0032_quote_attachments.sql                                      | MS SQL             |         15 |          2 |          2 |         19 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0033_add_quotes_status_column.sql                               | MS SQL             |          8 |          5 |          5 |         18 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0034_add_attachment_thumbnail_scaffolding.sql                   | MS SQL             |         15 |          6 |          6 |         27 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0035_add_order_attachment_thumbnail_keys.sql                    | MS SQL             |          5 |          5 |          4 |         14 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0036_add_quote_attachments_page_count.sql                       | MS SQL             |          3 |          4 |          4 |         11 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0037_add_pdf_processing_status_fields.sql                       | MS SQL             |         13 |         10 |          6 |         29 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\0038_add_quote_attachments_pdf_derived_fields.sql               | MS SQL             |         13 |          7 |          6 |         26 |
+| c:\titan-automation\QuoteVaultPro\migrations__legacy_ignored\meta\_journal.json                                              | JSON               |        111 |          0 |          0 |        111 |
+| c:\titan-automation\QuoteVaultPro\package-lock.json                                                                          | JSON               |     18,411 |          0 |          1 |     18,412 |
+| c:\titan-automation\QuoteVaultPro\package.json                                                                               | JSON               |        176 |          0 |          1 |        177 |
+| c:\titan-automation\QuoteVaultPro\postcss.config.js                                                                          | JavaScript         |          6 |          3 |          1 |         10 |
+| c:\titan-automation\QuoteVaultPro\replit.md                                                                                  | Markdown           |         39 |          0 |         22 |         61 |
+| c:\titan-automation\QuoteVaultPro\run-artwork-migration.cjs                                                                  | JavaScript         |         19 |          1 |          5 |         25 |
+| c:\titan-automation\QuoteVaultPro\run-artwork-migration.js                                                                   | JavaScript         |         18 |          1 |          5 |         24 |
+| c:\titan-automation\QuoteVaultPro\run-migration-0009.mjs                                                                     | JavaScript         |         35 |          0 |          8 |         43 |
+| c:\titan-automation\QuoteVaultPro\run-migration.ts                                                                           | TypeScript         |         25 |          1 |          6 |         32 |
+| c:\titan-automation\QuoteVaultPro\run-pricing-formulas-migration.ts                                                          | TypeScript         |         49 |          3 |          7 |         59 |
+| c:\titan-automation\QuoteVaultPro\run-roll-width-migration.ts                                                                | TypeScript         |         42 |          2 |         11 |         55 |
+| c:\titan-automation\QuoteVaultPro\scripts\db-migrate-verbose.ts                                                              | TypeScript         |        113 |          3 |         25 |        141 |
+| c:\titan-automation\QuoteVaultPro\scripts\db-status.ts                                                                       | TypeScript         |        119 |          4 |         26 |        149 |
+| c:\titan-automation\QuoteVaultPro\scripts\db-verify-stripe.ts                                                                | TypeScript         |        109 |          3 |         20 |        132 |
+| c:\titan-automation\QuoteVaultPro\scripts\db\pbv2-schema-check.ts                                                            | TypeScript         |        164 |          0 |         26 |        190 |
+| c:\titan-automation\QuoteVaultPro\scripts\pbv2-http-smoke.ts                                                                 | TypeScript         |        116 |          6 |         25 |        147 |
+| c:\titan-automation\QuoteVaultPro\scripts\pbv2-smoke.ts                                                                      | TypeScript         |        133 |          9 |         25 |        167 |
+| c:\titan-automation\QuoteVaultPro\scripts\pdf-gen-local.ts                                                                   | TypeScript         |         71 |          3 |          9 |         83 |
+| c:\titan-automation\QuoteVaultPro\scripts\pdf-smoke.ts                                                                       | TypeScript         |        153 |          6 |         32 |        191 |
+| c:\titan-automation\QuoteVaultPro\scripts\prepress-smoke.ts                                                                  | TypeScript         |        134 |         15 |         35 |        184 |
+| c:\titan-automation\QuoteVaultPro\scripts\prepress-worker.ts                                                                 | TypeScript         |          3 |          9 |          4 |         16 |
+| c:\titan-automation\QuoteVaultPro\scripts\run_file_storage_migration.ps1                                                     | PowerShell         |         32 |          7 |          7 |         46 |
+| c:\titan-automation\QuoteVaultPro\scripts\sync-drizzle-journal.ts                                                            | TypeScript         |        137 |          6 |         30 |        173 |
+| c:\titan-automation\QuoteVaultPro\server.log                                                                                 | Log                |        142 |          0 |          5 |        147 |
+| c:\titan-automation\QuoteVaultPro\server\NestingCalculator.js                                                                | JavaScript         |        410 |         68 |         90 |        568 |
+| c:\titan-automation\QuoteVaultPro\server\PricingPipeline.js                                                                  | JavaScript         |        160 |          4 |         22 |        186 |
+| c:\titan-automation\QuoteVaultPro\server\db.ts                                                                               | TypeScript         |        101 |         21 |         21 |        143 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0000_baseline.sql                                                     | MS SQL             |          0 |         14 |          1 |         15 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0001_add_quote_attachment_pages.sql                                   | MS SQL             |         27 |          0 |          4 |         31 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0002_import_jobs_and_customer_qb_overrides.sql                        | MS SQL             |         51 |          6 |         10 |         67 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0003_fix_missing_customer_qb_field_overrides.sql                      | MS SQL             |         38 |          2 |          0 |         40 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0004_add_pending_approval_to_quote_status.sql                         | MS SQL             |         11 |          5 |          2 |         18 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0009_quote_list_notes_and_settings.sql                                | MS SQL             |         24 |          5 |          6 |         35 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0010_add_order_list_notes.sql                                         | MS SQL             |         14 |          3 |          4 |         21 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0011_add_order_attachments_thumbnail_columns.sql                      | MS SQL             |         57 |          6 |          8 |         71 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0012_add_order_state_timestamps.sql                                   | MS SQL             |          8 |          5 |          3 |         16 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0012_order_state_architecture.sql                                     | MS SQL             |         80 |         13 |         14 |        107 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0013_asset_pipeline.sql                                               | MS SQL             |         91 |         16 |         16 |        123 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0014_standardize_organization_id.sql                                  | MS SQL             |         64 |         61 |         28 |        153 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0015_tenant_hardening.sql                                             | MS SQL             |         42 |         27 |         22 |         91 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0016_add_quote_shipping_cents.sql                                     | MS SQL             |         14 |          3 |          2 |         19 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0017_add_order_shipping_cents.sql                                     | MS SQL             |         14 |          2 |          2 |         18 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0018_mvp_invoicing_billing_ready.sql                                  | MS SQL             |         50 |          7 |         13 |         70 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0019_invoice_versioning.sql                                           | MS SQL             |         10 |          2 |          6 |         18 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0020_add_product_artwork_policy.sql                                   | MS SQL             |          2 |          2 |          2 |          6 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0021_option_tree_v2.sql                                               | MS SQL             |          8 |          5 |          5 |         18 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0022_pbv2_tree_versions.sql                                           | MS SQL             |         35 |          6 |         11 |         52 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0023_add_order_line_item_pbv2_snapshot.sql                            | MS SQL             |          6 |          1 |          4 |         11 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0024_order_line_item_components.sql                                   | MS SQL             |         35 |          2 |         15 |         52 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0025_inventory_reservations.sql                                       | MS SQL             |         23 |          1 |         10 |         34 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0026_stripe_payments_v1.sql                                           | MS SQL             |         92 |         10 |         13 |        115 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0027_stripe_connect_integration_connections.sql                       | MS SQL             |         20 |          5 |          5 |         30 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0028_production_mvp.sql                                               | MS SQL             |         42 |          5 |         11 |         58 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0029_production_line_item_intake.sql                                  | MS SQL             |         25 |         10 |          9 |         44 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0030_prepress_jobs.sql                                                | MS SQL             |         32 |         14 |         12 |         58 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0031_prepress_findings_and_fixes.sql                                  | MS SQL             |         62 |         21 |         20 |        103 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\0032_user_invite_system.sql                                           | MS SQL             |          7 |          7 |          4 |         18 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\FUTURE_0009_quote_workflow_enum_enhancement.sql                       | MS SQL             |         22 |        165 |         13 |        200 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations\meta\_journal.json                                                    | JSON               |        174 |          0 |          1 |        175 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations_BACKUP\0000_baseline.sql                                              | MS SQL             |          0 |         14 |          1 |         15 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations_BACKUP\0000_fix_missing_customer_qb_field_overrides.sql               | MS SQL             |         38 |          2 |          0 |         40 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations_BACKUP\0001_add_quote_attachment_pages.sql                            | MS SQL             |         27 |          0 |          4 |         31 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations_BACKUP\0002_import_jobs_and_customer_qb_overrides.sql                 | MS SQL             |         51 |          6 |         10 |         67 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations_BACKUP\meta\_journal.json                                             | JSON               |         13 |          0 |          0 |         13 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0005_add_nesting_pricing_fields.sql               | MS SQL             |          4 |          3 |          4 |         11 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0005_customer_portal_mvp.sql                      | MS SQL             |         44 |          2 |          4 |         50 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0006_move_volume_pricing_to_variants.sql          | MS SQL             |          8 |          9 |          6 |         23 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0007_add_audit_logs.sql                           | MS SQL             |         47 |          4 |         12 |         63 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0008_add_orders_tables.sql                        | MS SQL             |         53 |          8 |          6 |         67 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0009_add_customer_user_link.sql                   | MS SQL             |          5 |          6 |          5 |         16 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0009_add_selected_options_to_order_line_items.sql | MS SQL             |         14 |          5 |          4 |         23 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0009_file_storage_model.sql                       | MS SQL             |         47 |         11 |         10 |         68 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0010_add_temp_flags_to_quote_line_items.sql       | MS SQL             |          6 |          3 |          4 |         13 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0010_production_workflow_mvp.sql                  | MS SQL             |         67 |         14 |         12 |         93 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0010_quickbooks_integration.sql                   | MS SQL             |         63 |          9 |         15 |         87 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0011_ensure_jobs_order_id.sql                     | MS SQL             |         23 |          3 |          3 |         29 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0012_add_product_types.sql                        | MS SQL             |         28 |          7 |          6 |         41 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0013_add_roll_material_fields.sql                 | MS SQL             |         14 |          9 |          3 |         26 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0014_add_quote_order_snapshots.sql                | MS SQL             |        192 |         41 |         72 |        305 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0015_add_label_to_quotes_orders.sql               | MS SQL             |         18 |          4 |          3 |         25 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0016_add_po_number_to_orders.sql                  | MS SQL             |         10 |          4 |          3 |         17 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0017_add_quote_line_item_attachments.sql          | MS SQL             |         15 |          5 |          4 |         24 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0018_add_quote_line_item_status.sql               | MS SQL             |          9 |          3 |          5 |         17 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0019_add_quote_status.sql                         | MS SQL             |          9 |          3 |          5 |         17 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0020_add_async_artwork_processing.sql             | MS SQL             |         21 |          6 |          6 |         33 |
+| c:\titan-automation\QuoteVaultPro\server\db\migrations__archive_2025_12_23\0021_add_price_override_fields.sql                | MS SQL             |         10 |          7 |          6 |         23 |
+| c:\titan-automation\QuoteVaultPro\server\db\syncUsersToCustomers.ts                                                          | TypeScript         |        150 |         25 |         29 |        204 |
+| c:\titan-automation\QuoteVaultPro\server\emailService.ts                                                                     | TypeScript         |        432 |         48 |         61 |        541 |
+| c:\titan-automation\QuoteVaultPro\server\fulfillmentService.ts                                                               | TypeScript         |        198 |          1 |         20 |        219 |
+| c:\titan-automation\QuoteVaultPro\server\index.ts                                                                            | TypeScript         |        250 |         26 |         39 |        315 |
+| c:\titan-automation\QuoteVaultPro\server\invoicesService.ts                                                                  | TypeScript         |        247 |         10 |         32 |        289 |
+| c:\titan-automation\QuoteVaultPro\server\lib\duplicateProductTransform.ts                                                    | TypeScript         |         55 |          2 |         19 |         76 |
+| c:\titan-automation\QuoteVaultPro\server\lib\invoicePdf.ts                                                                   | TypeScript         |        725 |         36 |        139 |        900 |
+| c:\titan-automation\QuoteVaultPro\server\lib\invoicePdfTheme.ts                                                              | TypeScript         |        205 |          5 |         33 |        243 |
+| c:\titan-automation\QuoteVaultPro\server\lib\manualInventoryReservationsRepo.ts                                              | TypeScript         |        222 |          0 |         25 |        247 |
+| c:\titan-automation\QuoteVaultPro\server\lib\pbv2ComponentUpsert.ts                                                          | TypeScript         |         59 |          0 |         11 |         70 |
+| c:\titan-automation\QuoteVaultPro\server\lib\pbv2InventoryReservations.ts                                                    | TypeScript         |        154 |          2 |         27 |        183 |
+| c:\titan-automation\QuoteVaultPro\server\lib\pbv2OrderRollupResponse.ts                                                      | TypeScript         |         62 |          0 |          6 |         68 |
+| c:\titan-automation\QuoteVaultPro\server\lib\pbv2OverrideConfig.ts                                                           | TypeScript         |         47 |          0 |         12 |         59 |
+| c:\titan-automation\QuoteVaultPro\server\lib\pbv2TreeVersionGuards.ts                                                        | TypeScript         |         12 |          1 |          3 |         16 |
+| c:\titan-automation\QuoteVaultPro\server\lib\stripe.ts                                                                       | TypeScript         |         87 |          0 |         20 |        107 |
+| c:\titan-automation\QuoteVaultPro\server\lib\supabaseObjectHelpers.ts                                                        | TypeScript         |        203 |         29 |         31 |        263 |
+| c:\titan-automation\QuoteVaultPro\server\lib\thumbnailContract.ts                                                            | TypeScript         |         27 |          8 |          5 |         40 |
+| c:\titan-automation\QuoteVaultPro\server\localAuth.ts                                                                        | TypeScript         |        481 |         64 |         82 |        627 |
+| c:\titan-automation\QuoteVaultPro\server\objectAcl.ts                                                                        | TypeScript         |        104 |          0 |         20 |        124 |
+| c:\titan-automation\QuoteVaultPro\server\objectStorage.ts                                                                    | TypeScript         |        245 |          2 |         37 |        284 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\adapters\InputAdapter.ts                                                   | TypeScript         |         22 |         35 |          7 |         64 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\adapters\OutputAdapter.ts                                                  | TypeScript         |         33 |         37 |          8 |         78 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\findings-service.ts                                                        | TypeScript         |        111 |         53 |         12 |        176 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\pipeline.ts                                                                | TypeScript         |        251 |         59 |         44 |        354 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\routes.ts                                                                  | TypeScript         |        357 |         42 |         66 |        465 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\schema.ts                                                                  | TypeScript         |        161 |         36 |         38 |        235 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\storage.ts                                                                 | TypeScript         |         77 |         51 |         16 |        144 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\toolchain\detector.ts                                                      | TypeScript         |         69 |         27 |         16 |        112 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\toolchain\ghostscript.ts                                                   | TypeScript         |         46 |         28 |         11 |         85 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\toolchain\normalizer.ts                                                    | TypeScript         |        307 |         54 |         53 |        414 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\toolchain\pdfinfo.ts                                                       | TypeScript         |        126 |         26 |         27 |        179 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\toolchain\qpdf.ts                                                          | TypeScript         |         66 |         21 |         13 |        100 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\toolchain\renderer.ts                                                      | TypeScript         |         61 |         31 |         16 |        108 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\types.ts                                                                   | TypeScript         |        126 |         27 |         24 |        177 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\worker\cleanup.ts                                                          | TypeScript         |         61 |         27 |         20 |        108 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\worker\in-process.ts                                                       | TypeScript         |         30 |         19 |         14 |         63 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\worker\main.ts                                                             | TypeScript         |         34 |         15 |         14 |         63 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\worker\poller.ts                                                           | TypeScript         |         54 |         19 |         19 |         92 |
+| c:\titan-automation\QuoteVaultPro\server\prepress\worker\processor.ts                                                        | TypeScript         |        111 |         35 |         25 |        171 |
+| c:\titan-automation\QuoteVaultPro\server\pricingService.ts                                                                   | TypeScript         |        383 |        179 |         67 |        629 |
+| c:\titan-automation\QuoteVaultPro\server\productionHelpers.ts                                                                | TypeScript         |        109 |          5 |         15 |        129 |
+| c:\titan-automation\QuoteVaultPro\server\quickbooksService.ts                                                                | TypeScript         |      1,453 |        124 |        242 |      1,819 |
+| c:\titan-automation\QuoteVaultPro\server\quoteOrderPricing.ts                                                                | TypeScript         |        110 |         40 |         15 |        165 |
+| c:\titan-automation\QuoteVaultPro\server\replitAuth.ts                                                                       | TypeScript         |        162 |          4 |         27 |        193 |
+| c:\titan-automation\QuoteVaultPro\server\routes.ts                                                                           | TypeScript         |     11,122 |        826 |      1,504 |     13,452 |
+| c:\titan-automation\QuoteVaultPro\server\routes\attachments.routes.ts                                                        | TypeScript         |      1,864 |        287 |        299 |      2,450 |
+| c:\titan-automation\QuoteVaultPro\server\routes\mvpInvoicing.routes.ts                                                       | TypeScript         |      1,744 |        104 |        275 |      2,123 |
+| c:\titan-automation\QuoteVaultPro\server\routes\orders.routes.ts                                                             | TypeScript         |      4,833 |        184 |        685 |      5,702 |
+| c:\titan-automation\QuoteVaultPro\server\scripts\auditTenantColumns.ts                                                       | TypeScript         |        197 |         21 |         28 |        246 |
+| c:\titan-automation\QuoteVaultPro\server\services\artworkProcessor.ts                                                        | TypeScript         |        123 |         33 |         29 |        185 |
+| c:\titan-automation\QuoteVaultPro\server\services\assets\AssetPreviewGenerator.ts                                            | TypeScript         |        326 |         63 |         58 |        447 |
+| c:\titan-automation\QuoteVaultPro\server\services\assets\AssetRepository.ts                                                  | TypeScript         |        277 |         63 |         38 |        378 |
+| c:\titan-automation\QuoteVaultPro\server\services\assets\enrichAssetWithUrls.ts                                              | TypeScript         |         52 |         22 |         11 |         85 |
+| c:\titan-automation\QuoteVaultPro\server\services\chunkedUploads.ts                                                          | TypeScript         |        314 |         17 |         54 |        385 |
+| c:\titan-automation\QuoteVaultPro\server\services\invoicePdf.ts                                                              | TypeScript         |          1 |          0 |          1 |          2 |
+| c:\titan-automation\QuoteVaultPro\server\services\localStoragePath.ts                                                        | TypeScript         |         28 |         27 |         10 |         65 |
+| c:\titan-automation\QuoteVaultPro\server\services\optionTreeV2Evaluator.ts                                                   | TypeScript         |        219 |         10 |         49 |        278 |
+| c:\titan-automation\QuoteVaultPro\server\services\orderBillingService.ts                                                     | TypeScript         |         97 |          6 |         28 |        131 |
+| c:\titan-automation\QuoteVaultPro\server\services\orderStateService.ts                                                       | TypeScript         |        239 |         59 |         42 |        340 |
+| c:\titan-automation\QuoteVaultPro\server\services\orderStatusPillService.ts                                                  | TypeScript         |        273 |         60 |         48 |        381 |
+| c:\titan-automation\QuoteVaultPro\server\services\orderTransition.ts                                                         | TypeScript         |        191 |         46 |         41 |        278 |
+| c:\titan-automation\QuoteVaultPro\server\services\pdfProcessing.ts                                                           | TypeScript         |        543 |         79 |         62 |        684 |
+| c:\titan-automation\QuoteVaultPro\server\services\productionScheduling.ts                                                    | TypeScript         |        203 |         33 |         31 |        267 |
+| c:\titan-automation\QuoteVaultPro\server\services\quickbooksSyncQueueWorker.ts                                               | TypeScript         |        324 |          4 |         40 |        368 |
+| c:\titan-automation\QuoteVaultPro\server\services\storageTarget.ts                                                           | TypeScript         |         78 |          5 |         19 |        102 |
+| c:\titan-automation\QuoteVaultPro\server\services\tests\optionTreeV2Weight.test.ts                                           | TypeScript         |        220 |          5 |         29 |        254 |
+| c:\titan-automation\QuoteVaultPro\server\services\thumbnailGenerator.ts                                                      | TypeScript         |        361 |         68 |         55 |        484 |
+| c:\titan-automation\QuoteVaultPro\server\storage.ts                                                                          | TypeScript         |          3 |         20 |          3 |         26 |
+| c:\titan-automation\QuoteVaultPro\server\storage\accounting.repo.ts                                                          | TypeScript         |        190 |          3 |         15 |        208 |
+| c:\titan-automation\QuoteVaultPro\server\storage\audit.repo.ts                                                               | TypeScript         |         46 |          0 |          8 |         54 |
+| c:\titan-automation\QuoteVaultPro\server\storage\customers.repo.ts                                                           | TypeScript         |        445 |         27 |         84 |        556 |
+| c:\titan-automation\QuoteVaultPro\server\storage\import.repo.ts                                                              | TypeScript         |        114 |          0 |         15 |        129 |
+| c:\titan-automation\QuoteVaultPro\server\storage\index.ts                                                                    | TypeScript         |        379 |         61 |         49 |        489 |
+| c:\titan-automation\QuoteVaultPro\server\storage\inventory.repo.ts                                                           | TypeScript         |        152 |          4 |         24 |        180 |
+| c:\titan-automation\QuoteVaultPro\server\storage\jobs.repo.ts                                                                | TypeScript         |        172 |         11 |         21 |        204 |
+| c:\titan-automation\QuoteVaultPro\server\storage\orders.repo.ts                                                              | TypeScript         |      1,071 |         53 |        121 |      1,245 |
+| c:\titan-automation\QuoteVaultPro\server\storage\quotes.repo.ts                                                              | TypeScript         |      1,089 |         83 |        138 |      1,310 |
+| c:\titan-automation\QuoteVaultPro\server\storage\shared.repo.ts                                                              | TypeScript         |        813 |         32 |        126 |        971 |
+| c:\titan-automation\QuoteVaultPro\server\supabaseStorage.ts                                                                  | TypeScript         |        209 |         63 |         53 |        325 |
+| c:\titan-automation\QuoteVaultPro\server\taxRepo.ts                                                                          | TypeScript         |        173 |         47 |         26 |        246 |
+| c:\titan-automation\QuoteVaultPro\server\tenantContext.ts                                                                    | TypeScript         |        272 |         72 |         48 |        392 |
+| c:\titan-automation\QuoteVaultPro\server\tenantStorage.ts                                                                    | TypeScript         |         27 |        105 |          8 |        140 |
+| c:\titan-automation\QuoteVaultPro\server\tests\duplicateProductTransform.test.ts                                             | TypeScript         |         93 |          2 |          7 |        102 |
+| c:\titan-automation\QuoteVaultPro\server\tests\invoicePdfLayoutSystem.test.ts                                                | TypeScript         |        104 |          5 |         13 |        122 |
+| c:\titan-automation\QuoteVaultPro\server\tests\lineItems.optionSelectionsJson.test.ts                                        | TypeScript         |        178 |          3 |         27 |        208 |
+| c:\titan-automation\QuoteVaultPro\server\tests\multiTenant.smoke.test.ts                                                     | TypeScript         |        685 |        111 |        162 |        958 |
+| c:\titan-automation\QuoteVaultPro\server\tests\orderTransition.test.ts                                                       | TypeScript         |        329 |          7 |         44 |        380 |
+| c:\titan-automation\QuoteVaultPro\server\tests\pbv2ComponentUpsert.test.ts                                                   | TypeScript         |        134 |          8 |         18 |        160 |
+| c:\titan-automation\QuoteVaultPro\server\tests\pbv2InventoryReservations.test.ts                                             | TypeScript         |        122 |          5 |         13 |        140 |
+| c:\titan-automation\QuoteVaultPro\server\tests\pbv2OrderRollup.contract.test.ts                                              | TypeScript         |         81 |          6 |         12 |         99 |
+| c:\titan-automation\QuoteVaultPro\server\tests\pbv2OverrideConfig.test.ts                                                    | TypeScript         |         46 |          0 |          7 |         53 |
+| c:\titan-automation\QuoteVaultPro\server\tests\pbv2TreeVersionGuards.test.ts                                                 | TypeScript         |         18 |          0 |          3 |         21 |
+| c:\titan-automation\QuoteVaultPro\server\tests\pbv2TreeVersions.smoke.test.ts                                                | TypeScript         |          5 |          2 |          2 |          9 |
+| c:\titan-automation\QuoteVaultPro\server\tests\setup.ts                                                                      | TypeScript         |          7 |          9 |          5 |         21 |
+| c:\titan-automation\QuoteVaultPro\server\tests\test-order-transition-integration.ts                                          | TypeScript         |        132 |         13 |         20 |        165 |
+| c:\titan-automation\QuoteVaultPro\server\tests\thumbnailContract.test.ts                                                     | TypeScript         |         41 |          0 |          9 |         50 |
+| c:\titan-automation\QuoteVaultPro\server\types\intuit-oauth.d.ts                                                             | TypeScript         |          1 |          0 |          1 |          2 |
+| c:\titan-automation\QuoteVaultPro\server\utils\fileStorage.ts                                                                | TypeScript         |        179 |        109 |         29 |        317 |
+| c:\titan-automation\QuoteVaultPro\server\utils\orgKeys.ts                                                                    | TypeScript         |         93 |         39 |         25 |        157 |
+| c:\titan-automation\QuoteVaultPro\server\vite.ts                                                                             | TypeScript         |         70 |          4 |         13 |         87 |
+| c:\titan-automation\QuoteVaultPro\server\workers\assetPreviewWorker.ts                                                       | TypeScript         |         60 |         15 |         13 |         88 |
+| c:\titan-automation\QuoteVaultPro\server\workers\syncProcessor.ts                                                            | TypeScript         |        128 |         32 |         24 |        184 |
+| c:\titan-automation\QuoteVaultPro\server\workers\thumbnailWorker.ts                                                          | TypeScript         |        360 |         35 |         49 |        444 |
+| c:\titan-automation\QuoteVaultPro\server\workers\workerGates.ts                                                              | TypeScript         |         70 |         48 |         16 |        134 |
+| c:\titan-automation\QuoteVaultPro\shared\csv.ts                                                                              | TypeScript         |         13 |          0 |          3 |         16 |
+| c:\titan-automation\QuoteVaultPro\shared\desktop.ini                                                                         | Ini                |          4 |          0 |          1 |          5 |
+| c:\titan-automation\QuoteVaultPro\shared\inventoryPolicy.ts                                                                  | TypeScript         |         67 |         13 |         15 |         95 |
+| c:\titan-automation\QuoteVaultPro\shared\inventoryPolicyPreferences.ts                                                       | TypeScript         |        112 |         19 |         25 |        156 |
+| c:\titan-automation\QuoteVaultPro\shared\inventoryReservationsRollups.ts                                                     | TypeScript         |         82 |          8 |         20 |        110 |
+| c:\titan-automation\QuoteVaultPro\shared\lineItemFlags.ts                                                                    | TypeScript         |        105 |          3 |         18 |        126 |
+| c:\titan-automation\QuoteVaultPro\shared\lineItemOptionSummary.ts                                                            | TypeScript         |        164 |         15 |         36 |        215 |
+| c:\titan-automation\QuoteVaultPro\shared\optionTreeV2.ts                                                                     | TypeScript         |        241 |         13 |         32 |        286 |
+| c:\titan-automation\QuoteVaultPro\shared\optionTreeV2Initializer.ts                                                          | TypeScript         |        150 |          2 |         35 |        187 |
+| c:\titan-automation\QuoteVaultPro\shared\optionTreeV2Runtime.ts                                                              | TypeScript         |         93 |          1 |         15 |        109 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\componentDiscounts.ts                                                          | TypeScript         |        182 |          3 |         40 |        225 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\expressionSpec.ts                                                              | TypeScript         |         78 |          0 |          8 |         86 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\findings.ts                                                                    | TypeScript         |         28 |          3 |          7 |         38 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\formulaValidation.ts                                                           | TypeScript         |         52 |          0 |          5 |         57 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\pbv2ComponentDiff.ts                                                           | TypeScript         |        148 |          2 |         26 |        176 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\pbv2EffectIndex.ts                                                             | TypeScript         |         41 |          2 |          9 |         52 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\pbv2InputSignature.ts                                                          | TypeScript         |         90 |          5 |         19 |        114 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\pbv2OrderRollup.ts                                                             | TypeScript         |        182 |          2 |         27 |        211 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\pricingAdapter.ts                                                              | TypeScript         |      1,005 |         10 |        204 |      1,219 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\refContract.ts                                                                 | TypeScript         |         65 |          0 |          9 |         74 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\refResolver.ts                                                                 | TypeScript         |        395 |          4 |         41 |        440 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\starterTree.ts                                                                 | TypeScript         |        412 |         29 |         14 |        455 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\symbolTable.ts                                                                 | TypeScript         |        194 |          6 |         37 |        237 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\bannerWeightOptionPricing.test.ts                                        | TypeScript         |        183 |          5 |         16 |        204 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\childItemProposals.test.ts                                               | TypeScript         |        100 |          3 |         11 |        114 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\componentDiscounts.test.ts                                               | TypeScript         |        115 |          3 |         14 |        132 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\formulaValidation.test.ts                                                | TypeScript         |         49 |          0 |         11 |         60 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\pricingAdapter.grommets.test.ts                                          | TypeScript         |         58 |          0 |         14 |         72 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\publishDecision.smoke.test.ts                                            | TypeScript         |         43 |          1 |          6 |         50 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\refResolver.test.ts                                                      | TypeScript         |         49 |          0 |         14 |         63 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\symbolTable.test.ts                                                      | TypeScript         |         28 |          0 |          5 |         33 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\typeChecker.test.ts                                                      | TypeScript         |         48 |          1 |         11 |         60 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\validator\validateEvalGate.test.ts                                       | TypeScript         |         12 |          0 |          3 |         15 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\validator\validatePublish.test.ts                                        | TypeScript         |        195 |          0 |         20 |        215 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\validator\validateRestore.test.ts                                        | TypeScript         |         54 |          0 |          9 |         63 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\tests\variableCatalog.test.ts                                                  | TypeScript         |         28 |          2 |          6 |         36 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\typeChecker.ts                                                                 | TypeScript         |        535 |         11 |         62 |        608 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\validator\index.ts                                                             | TypeScript         |          4 |          0 |          1 |          5 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\validator\types.ts                                                             | TypeScript         |         27 |          0 |          6 |         33 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\validator\validateEvalGate.ts                                                  | TypeScript         |         58 |          1 |          9 |         68 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\validator\validatePublish.ts                                                   | TypeScript         |      1,694 |         24 |        175 |      1,893 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\validator\validateRestore.ts                                                   | TypeScript         |        446 |          8 |         81 |        535 |
+| c:\titan-automation\QuoteVaultPro\shared\pbv2\variableCatalog.ts                                                             | TypeScript         |        162 |          8 |         19 |        189 |
+| c:\titan-automation\QuoteVaultPro\shared\pricingProfiles.ts                                                                  | TypeScript         |        307 |        121 |         40 |        468 |
+| c:\titan-automation\QuoteVaultPro\shared\productOptionUi.ts                                                                  | TypeScript         |        524 |         61 |         65 |        650 |
+| c:\titan-automation\QuoteVaultPro\shared\quickBooksPreferences.ts                                                            | TypeScript         |         14 |          0 |          6 |         20 |
+| c:\titan-automation\QuoteVaultPro\shared\quoteWorkflow.ts                                                                    | TypeScript         |        174 |        118 |         44 |        336 |
+| c:\titan-automation\QuoteVaultPro\shared\rollups\invoicePaymentRollup.ts                                                     | TypeScript         |         85 |          0 |         20 |        105 |
+| c:\titan-automation\QuoteVaultPro\shared\schema.ts                                                                           | TypeScript         |      3,314 |        287 |        366 |      3,967 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\inventoryPolicyGate.test.ts                                                   | TypeScript         |         58 |          0 |         10 |         68 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\inventoryPolicyPreferences.test.ts                                            | TypeScript         |         79 |          1 |         13 |         93 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\invoicePaymentRollup.test.ts                                                  | TypeScript         |         95 |          0 |         13 |        108 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\manualInventoryReservationsRollups.test.ts                                    | TypeScript         |         60 |          0 |          9 |         69 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\optionTreeV2Initializer.test.ts                                               | TypeScript         |         86 |          3 |          7 |         96 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\pbv2ComponentDiff.test.ts                                                     | TypeScript         |        144 |          0 |         17 |        161 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\pbv2InputSignature.test.ts                                                    | TypeScript         |         31 |          0 |          7 |         38 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\pbv2OrderRollup.test.ts                                                       | TypeScript         |         74 |          3 |          9 |         86 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\productOptionUi.grouping.test.ts                                              | TypeScript         |         86 |          0 |         11 |         97 |
+| c:\titan-automation\QuoteVaultPro\shared\tests\uomConversions.test.ts                                                        | TypeScript         |         57 |          2 |         11 |         70 |
+| c:\titan-automation\QuoteVaultPro\shared\timelineEvents.ts                                                                   | TypeScript         |         19 |          0 |          2 |         21 |
+| c:\titan-automation\QuoteVaultPro\shared\uomConversions.ts                                                                   | TypeScript         |        102 |          4 |         18 |        124 |
+| c:\titan-automation\QuoteVaultPro\sync-users-customers.ts                                                                    | TypeScript         |         29 |          4 |          8 |         41 |
+| c:\titan-automation\QuoteVaultPro\tailwind.config.ts                                                                         | TypeScript         |        162 |          5 |          2 |        169 |
+| c:\titan-automation\QuoteVaultPro\test-approval-requester-tracking.ts                                                        | TypeScript         |        142 |         10 |         28 |        180 |
+| c:\titan-automation\QuoteVaultPro\test-approvals-api-full.ts                                                                 | TypeScript         |        153 |         11 |         27 |        191 |
+| c:\titan-automation\QuoteVaultPro\test-db.js                                                                                 | JavaScript         |         22 |          0 |          8 |         30 |
+| c:\titan-automation\QuoteVaultPro\test-formula-templates.js                                                                  | JavaScript         |         21 |          0 |          6 |         27 |
+| c:\titan-automation\QuoteVaultPro\test-nesting-24x36.js                                                                      | JavaScript         |         91 |          8 |         12 |        111 |
+| c:\titan-automation\QuoteVaultPro\test-orders-schema.ts                                                                      | TypeScript         |         54 |          3 |         14 |         71 |
+| c:\titan-automation\QuoteVaultPro\test-pending-approval-transition.ts                                                        | TypeScript         |         89 |          8 |         21 |        118 |
+| c:\titan-automation\QuoteVaultPro\test-production-api.ts                                                                     | TypeScript         |         33 |          4 |          7 |         44 |
+| c:\titan-automation\QuoteVaultPro\test-server.ts                                                                             | TypeScript         |         26 |          0 |          9 |         35 |
+| c:\titan-automation\QuoteVaultPro\test-tenant-isolation.ts                                                                   | TypeScript         |        221 |         34 |         44 |        299 |
+| c:\titan-automation\QuoteVaultPro\test-titanos-phase2.ts                                                                     | TypeScript         |        157 |         24 |         33 |        214 |
+| c:\titan-automation\QuoteVaultPro\test-tsx.ts                                                                                | TypeScript         |          3 |          0 |          2 |          5 |
+| c:\titan-automation\QuoteVaultPro\tests\csv.test.ts                                                                          | TypeScript         |         28 |          0 |          5 |         33 |
+| c:\titan-automation\QuoteVaultPro\tsconfig.json                                                                              | JSON with Comments |         23 |          0 |          1 |         24 |
+| c:\titan-automation\QuoteVaultPro\update-order-transition-prefs.ts                                                           | TypeScript         |         93 |         19 |         23 |        135 |
+| c:\titan-automation\QuoteVaultPro\vercel.json                                                                                | JSON               |         16 |          0 |          1 |         17 |
+| c:\titan-automation\QuoteVaultPro\verify-enum-migration.ts                                                                   | TypeScript         |         30 |          2 |          8 |         40 |
+| c:\titan-automation\QuoteVaultPro\verify-snapshot-migration.ts                                                               | TypeScript         |         36 |          0 |          7 |         43 |
+| c:\titan-automation\QuoteVaultPro\verify-user-role.ts                                                                        | TypeScript         |         22 |          2 |          9 |         33 |
+| c:\titan-automation\QuoteVaultPro\vite.config.ts                                                                             | TypeScript         |         40 |          0 |          2 |         42 |
+| Total                                                                                                                        |                    |    201,406 |     10,964 |     25,183 |    237,553 |
++------------------------------------------------------------------------------------------------------------------------------+--------------------+------------+------------+------------+------------+

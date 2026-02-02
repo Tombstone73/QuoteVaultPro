@@ -17,7 +17,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
-import { pbv2ToPricingAddons } from "@shared/pbv2/pricingAdapter";
+import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
 import type { Finding } from "@shared/pbv2/findings";
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
@@ -206,6 +206,31 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
       };
     } catch (err) {
       console.error('Pricing preview error:', err);
+      return null;
+    }
+  }, [localTreeJson]);
+
+  // Compute weight preview
+  const weightPreview = useMemo(() => {
+    if (!localTreeJson) return null;
+
+    try {
+      const result = pbv2ToWeightTotal({
+        tree: localTreeJson as any,
+        selections: { schemaVersion: 2, selected: {} },
+        widthIn: 24,
+        heightIn: 36,
+        quantity: 500,
+      });
+
+      // Hide if no weight data
+      if (result.totalOz === 0 && result.breakdown.length === 0) {
+        return null;
+      }
+
+      return result;
+    } catch (err) {
+      console.error('Weight preview error:', err);
       return null;
     }
   }, [localTreeJson]);
@@ -409,6 +434,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
         canPublish={canPublish}
         findings={findings}
         pricingPreview={pricingPreview}
+        weightPreview={weightPreview}
         onSelectGroup={setSelectedGroupId}
         onSelectOption={setSelectedOptionId}
         onAddGroup={handleAddGroup}
