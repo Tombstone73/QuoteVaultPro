@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowDown, ArrowUp, Plus, Trash2, Edit2, GripVertical, MoreVertical, Layers } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, Trash2, Edit2, GripVertical, MoreVertical, Layers, Settings2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
 import {
@@ -268,564 +268,512 @@ export default function ProductOptionsPanelV2_Mvp({
   // If no tree, show init UI
   if (!treeData) {
     return (
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 lg:col-span-3">
-          <Card className="h-full">
-            <CardHeader>
-              <CardTitle className="text-base">Product Options</CardTitle>
-              <CardDescription>Initialize PBV2 tree to begin.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="rounded-md border border-border p-4 space-y-3">
-                <div className="text-sm font-medium">No PBV2 data</div>
-                <div className="text-xs text-muted-foreground">
-                  Initialize the PBV2 tree to start building product options.
-                </div>
-                <Button type="button" onClick={initTree} className="w-full">
-                  Initialize Tree
-                </Button>
+      <div className="flex h-full overflow-hidden bg-background">
+        <aside className="w-72 border-r border-border bg-card flex flex-col">
+          <div className="border-b border-border p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-muted-foreground" />
+                <h2 className="font-semibold text-foreground">Option Groups</h2>
               </div>
-            </CardContent>
-          </Card>
-        </div>
-        <div className="col-span-12 lg:col-span-9">
-          <Card className="h-full">
-            <CardContent className="pt-6">
-              <div className="text-center text-muted-foreground">
-                Initialize the tree to begin editing.
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+              <Badge variant="outline" className="text-xs">0</Badge>
+            </div>
+            <Button type="button" onClick={initTree} className="w-full gap-2" size="sm">
+              <Plus className="h-4 w-4" />
+              Initialize Tree
+            </Button>
+          </div>
+          <div className="flex-1 p-4 flex items-center justify-center">
+            <div className="text-center text-sm text-muted-foreground">
+              Initialize PBV2 tree to begin building options.
+            </div>
+          </div>
+          <div className="border-t border-border p-3 text-xs text-muted-foreground">
+            Advanced editors open as drawers. Dev drawer: Ctrl+Shift+D.
+          </div>
+        </aside>
+        
+        <main className="flex-1 overflow-y-auto">
+          <div className="flex items-center justify-center h-full text-muted-foreground">
+            <div className="text-center">
+              <Settings2 className="h-12 w-12 mx-auto mb-3 opacity-50" />
+              <p>Initialize the tree to begin editing</p>
+            </div>
+          </div>
+        </main>
+        
+        <aside className="w-80 border-l border-border bg-card p-4">
+          <div className="text-sm text-muted-foreground">Preview & validation will appear here</div>
+        </aside>
       </div>
     );
   }
 
   if (!editorModel) {
     return (
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12">
-          <Card>
-            <CardContent className="pt-6">
-              <div className="text-center text-destructive">
-                Failed to parse PBV2 tree. Check console for errors.
-              </div>
-            </CardContent>
-          </Card>
+      <div className="flex h-full items-center justify-center bg-background">
+        <div className="text-center text-destructive">
+          <p className="font-semibold">Failed to parse PBV2 tree</p>
+          <p className="text-sm mt-2">Check console for errors</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-12 gap-4">
+    <>
+      <div className="flex h-full overflow-hidden bg-background">
       {/* LEFT: Option Groups Sidebar */}
-      <div className="col-span-12 lg:col-span-3">
-        <Card className="h-full flex flex-col">
-          <CardHeader className="space-y-1">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Layers className="h-4 w-4 text-muted-foreground" />
-                <CardTitle className="text-base">Option Groups</CardTitle>
-              </div>
-              <Badge variant="outline" className="text-xs">
-                {editorModel.groups.length}
-              </Badge>
+      <aside className="w-72 border-r border-border bg-card flex flex-col">
+        <div className="border-b border-border p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Layers className="h-4 w-4 text-muted-foreground" />
+              <h2 className="font-semibold text-foreground">Option Groups</h2>
             </div>
-            <CardDescription>Organize options into groups.</CardDescription>
-          </CardHeader>
-          
-          <CardContent className="flex-1 flex flex-col space-y-3 overflow-hidden">
-            <Button type="button" onClick={addGroup} size="sm" className="w-full">
-              <Plus className="h-4 w-4 mr-2" />
-              Add Group
-            </Button>
+            <Badge variant="outline" className="text-xs">
+              {editorModel.groups.length}
+            </Badge>
+          </div>
+          <Button type="button" onClick={addGroup} className="w-full gap-2" size="sm">
+            <Plus className="h-4 w-4" />
+            Add Group
+          </Button>
+        </div>
+        
+        <ScrollArea className="flex-1">
+          <div className="p-2">
+            {editorModel.groups.map((group, index) => {
+              const isActive = group.id === selectedGroupId;
+              const optionCount = group.optionIds.length;
 
-            <ScrollArea className="flex-1 rounded-md border border-border">
-              <div className="p-2 space-y-2">
-                {editorModel.groups.map((group, index) => {
-                  const isActive = group.id === selectedGroupId;
-                  const optionCount = group.optionIds.length;
-
-                  return (
-                    <div
-                      key={group.id}
-                      className={`
-                        relative rounded-md border transition-colors
-                        ${isActive
-                          ? 'bg-muted border-primary'
-                          : 'bg-background border-border hover:bg-muted/50'
-                        }
-                      `}
+              return (
+                <div key={group.id}>
+                  {index > 0 && (
+                    <div className="h-px bg-border/50 my-2 mx-3" />
+                  )}
+                  <div
+                    className={`
+                      rounded-md transition-colors relative
+                      ${isActive
+                        ? 'bg-accent/50 border border-accent'
+                        : 'hover:bg-accent/30 border border-transparent'
+                      }
+                    `}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedGroupId(group.id);
+                        setSelectedOptionId(null);
+                      }}
+                      className="w-full text-left p-3 pr-8"
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedGroupId(group.id);
-                          setSelectedOptionId(null);
-                        }}
-                        className="w-full text-left p-3 pr-10"
-                      >
-                        <div className="flex items-start gap-2 mb-2">
-                          <GripVertical className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium text-sm truncate">{group.name}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {optionCount} option{optionCount !== 1 ? 's' : ''}
-                            </div>
+                      <div className="flex items-start gap-2 mb-2">
+                        <GripVertical className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-sm truncate text-foreground">
+                            {group.name}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {optionCount} option{optionCount !== 1 ? 's' : ''}
                           </div>
                         </div>
-
-                        <div className="flex items-center gap-1.5 flex-wrap ml-6">
-                          {group.isRequired && (
-                            <Badge variant="outline" className="text-xs">Required</Badge>
-                          )}
-                          {group.isMultiSelect && (
-                            <Badge variant="outline" className="text-xs">Multi</Badge>
-                          )}
-                        </div>
-                      </button>
-
-                      <div className="absolute top-3 right-3">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={(e) => e.stopPropagation()}
-                              className="inline-flex items-center justify-center h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
-                            >
-                              <MoreVertical className="h-4 w-4" />
-                            </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedGroupId(group.id);
-                                setSelectedOptionId(null);
-                              }}
-                            >
-                              <Edit2 className="h-4 w-4 mr-2" />
-                              Edit group
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                moveGroup(group.id, 'up');
-                              }}
-                              disabled={index === 0}
-                            >
-                              <ArrowUp className="h-4 w-4 mr-2" />
-                              Move up
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                moveGroup(group.id, 'down');
-                              }}
-                              disabled={index === editorModel.groups.length - 1}
-                            >
-                              <ArrowDown className="h-4 w-4 mr-2" />
-                              Move down
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDeleteGroupConfirm({ groupId: group.id, groupName: group.name });
-                              }}
-                              className="text-destructive"
-                            >
-                              <Trash2 className="h-4 w-4 mr-2" />
-                              Delete group
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
                       </div>
+
+                      <div className="flex items-center gap-1.5 flex-wrap ml-6">
+                        {group.isRequired && (
+                          <Badge variant="outline" className="text-xs">Required</Badge>
+                        )}
+                        {group.isMultiSelect && (
+                          <Badge variant="outline" className="text-xs">Multi</Badge>
+                        )}
+                      </div>
+                    </button>
+
+                    <div className="absolute top-3 right-3">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center justify-center h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedGroupId(group.id);
+                              setSelectedOptionId(null);
+                            }}
+                          >
+                            <Edit2 className="h-4 w-4 mr-2" />
+                            Edit group
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              moveGroup(group.id, 'up');
+                            }}
+                            disabled={index === 0}
+                          >
+                            <ArrowUp className="h-4 w-4 mr-2" />
+                            Move up
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              moveGroup(group.id, 'down');
+                            }}
+                            disabled={index === editorModel.groups.length - 1}
+                          >
+                            <ArrowDown className="h-4 w-4 mr-2" />
+                            Move down
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteGroupConfirm({ groupId: group.id, groupName: group.name });
+                            }}
+                            className="text-destructive"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete group
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
-                  );
-                })}
-
-                {editorModel.groups.length === 0 && (
-                  <div className="text-center text-sm text-muted-foreground py-8">
-                    No groups yet. Add your first group to begin.
                   </div>
-                )}
-              </div>
-            </ScrollArea>
+                </div>
+              );
+            })}
 
-            {/* Options list for selected group */}
-            {selectedGroup && (
-              <div className="space-y-2 border-t border-border pt-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium">Options</div>
+            {editorModel.groups.length === 0 && (
+              <div className="text-center text-sm text-muted-foreground py-8">
+                No groups yet. Add your first group to begin.
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+
+        <div className="border-t border-border p-3 text-xs text-muted-foreground">
+          Advanced editors open as drawers. Dev drawer: Ctrl+Shift+D.
+        </div>
+      </aside>
+
+      {/* CENTER: Option Editor */}
+      <main className="flex-1 overflow-y-auto">
+        {!selectedGroup && (
+          <div className="flex items-center justify-center h-full text-muted-foreground">
+            <div className="text-center">
+              <Settings2 className="h-12 w-12 mx-auto mb-3 opacity-50" />
+              <p>Select an option group to begin editing</p>
+            </div>
+          </div>
+        )}
+
+        {selectedGroup && (
+          <div className="h-full flex flex-col">
+            {/* Group Header */}
+            <div className="border-b border-border bg-card p-5">
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex-1">
+                  <Input
+                    value={selectedGroup.name}
+                    onChange={(e) => updateGroup(selectedGroup.id, { name: e.target.value })}
+                    className="text-lg font-semibold mb-2 border-transparent hover:border-border focus:border-primary px-2 -ml-2 bg-transparent"
+                  />
+                  <Textarea
+                    value={selectedGroup.description}
+                    onChange={(e) => updateGroup(selectedGroup.id, { description: e.target.value })}
+                    placeholder="Group description..."
+                    className="text-sm min-h-[50px] border-transparent hover:border-border focus:border-primary bg-transparent resize-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-6 ml-2">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="required" className="font-medium cursor-pointer text-sm">
+                    Required Group
+                  </Label>
+                  <Button
+                    type="button"
+                    id="required"
+                    variant={selectedGroup.isRequired ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => updateGroup(selectedGroup.id, { isRequired: !selectedGroup.isRequired })}
+                    className="h-7 text-xs"
+                  >
+                    {selectedGroup.isRequired ? 'Yes' : 'No'}
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="multiselect" className="font-medium cursor-pointer text-sm">
+                    Multi-select
+                  </Label>
+                  <Button
+                    type="button"
+                    id="multiselect"
+                    variant={selectedGroup.isMultiSelect ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => updateGroup(selectedGroup.id, { isMultiSelect: !selectedGroup.isMultiSelect })}
+                    className="h-7 text-xs"
+                  >
+                    {selectedGroup.isMultiSelect ? 'Yes' : 'No'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Options List */}
+            <ScrollArea className="flex-1">
+              <div className="p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold">Options</h3>
+                    <Badge variant="secondary" className="text-xs">
+                      {selectedGroup.optionIds.length}
+                    </Badge>
+                  </div>
                   <Button
                     type="button"
                     onClick={(e) => addOption(selectedGroup.id, e)}
                     size="sm"
                     variant="outline"
+                    className="gap-2"
                   >
-                    <Plus className="h-3 w-3 mr-1" />
-                    Add
+                    <Plus className="h-3 w-3" />
+                    Add Option
                   </Button>
                 </div>
 
-                <ScrollArea className="max-h-[200px] rounded-md border border-border">
-                  <div className="p-2 space-y-1">
-                    {selectedGroup.optionIds.map((optionId, index) => {
-                      const option = editorModel.options[optionId];
-                      if (!option) return null;
+                <div className="space-y-2">
+                  {selectedGroup.optionIds.map((optionId, index) => {
+                    const option = editorModel.options[optionId];
+                    if (!option) return null;
 
-                      const isActive = optionId === selectedOptionId;
+                    const isActive = optionId === selectedOptionId;
 
-                      return (
-                        <div
-                          key={optionId}
-                          className={`
-                            relative rounded-md border transition-colors
-                            ${isActive
-                              ? 'bg-muted border-primary'
-                              : 'bg-background border-border hover:bg-muted/50'
-                            }
-                          `}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => setSelectedOptionId(optionId)}
-                            className="w-full text-left p-2 pr-10"
-                          >
-                            <div className="flex items-center gap-2">
+                    return (
+                      <div
+                        key={optionId}
+                        className={`
+                          rounded-md border transition-colors cursor-pointer
+                          ${isActive
+                            ? 'bg-accent/50 border-accent'
+                            : 'bg-card border-border hover:bg-accent/30'
+                          }
+                        `}
+                        onClick={() => setSelectedOptionId(optionId)}
+                      >
+                        <div className="p-3">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <GripVertical className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                               <div className="flex-1 min-w-0">
-                                <div className="text-sm font-medium truncate">{option.name}</div>
-                                <div className="text-xs text-muted-foreground truncate">{option.type}</div>
+                                <div className="font-medium text-sm truncate">{option.name}</div>
+                                <div className="text-xs text-muted-foreground">{option.type}</div>
                               </div>
                             </div>
-                          </button>
-
-                          <div className="absolute top-2 right-2">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="inline-flex items-center justify-center h-5 w-5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
-                                >
-                                  <MoreVertical className="h-3 w-3" />
-                                </button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedOptionId(optionId);
-                                  }}
-                                >
-                                  <Edit2 className="h-4 w-4 mr-2" />
-                                  Edit option
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    moveOption(optionId, 'up');
-                                  }}
-                                  disabled={index === 0}
-                                >
-                                  <ArrowUp className="h-4 w-4 mr-2" />
-                                  Move up
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    moveOption(optionId, 'down');
-                                  }}
-                                  disabled={index === selectedGroup.optionIds.length - 1}
-                                >
-                                  <ArrowDown className="h-4 w-4 mr-2" />
-                                  Move down
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setDeleteOptionConfirm({ optionId, optionName: option.name });
-                                  }}
-                                  className="text-destructive"
-                                >
-                                  <Trash2 className="h-4 w-4 mr-2" />
-                                  Delete option
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                            <div className="flex items-center gap-1">
+                              {option.isRequired && (
+                                <Badge variant="outline" className="text-xs">Required</Badge>
+                              )}
+                              {option.isDefault && (
+                                <Badge variant="outline" className="text-xs">Default</Badge>
+                              )}
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="inline-flex items-center justify-center h-6 w-6 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+                                  >
+                                    <MoreVertical className="h-3 w-3" />
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedOptionId(optionId);
+                                    }}
+                                  >
+                                    <Edit2 className="h-4 w-4 mr-2" />
+                                    Edit option
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      moveOption(optionId, 'up');
+                                    }}
+                                    disabled={index === 0}
+                                  >
+                                    <ArrowUp className="h-4 w-4 mr-2" />
+                                    Move up
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      moveOption(optionId, 'down');
+                                    }}
+                                    disabled={index === selectedGroup.optionIds.length - 1}
+                                  >
+                                    <ArrowDown className="h-4 w-4 mr-2" />
+                                    Move down
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteOptionConfirm({ optionId, optionName: option.name });
+                                    }}
+                                    className="text-destructive"
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Delete option
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
                           </div>
+
+                          {/* Option Details - Expanded */}
+                          {isActive && (
+                            <div className="mt-4 pt-4 border-t border-border space-y-4">
+                              <div className="space-y-2">
+                                <Label className="text-xs">Option Name</Label>
+                                <Input
+                                  value={option.name}
+                                  onChange={(e) => updateOption(option.id, { name: e.target.value })}
+                                  placeholder="e.g., Glossy Finish"
+                                />
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label className="text-xs">Description</Label>
+                                <Textarea
+                                  value={option.description}
+                                  onChange={(e) => updateOption(option.id, { description: e.target.value })}
+                                  placeholder="Describe this option..."
+                                  className="min-h-[60px] resize-none"
+                                />
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label className="text-xs">Type</Label>
+                                <div className="flex gap-2 flex-wrap">
+                                  {(['radio', 'checkbox', 'dropdown', 'numeric'] as const).map((type) => (
+                                    <Button
+                                      key={type}
+                                      type="button"
+                                      variant={option.type === type ? "default" : "outline"}
+                                      size="sm"
+                                      onClick={() => updateOption(option.id, { type })}
+                                      className="text-xs"
+                                    >
+                                      {type}
+                                    </Button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-4">
+                                <div className="flex items-center gap-2">
+                                  <Label className="text-xs">Required</Label>
+                                  <Button
+                                    type="button"
+                                    variant={option.isRequired ? "default" : "outline"}
+                                    size="sm"
+                                    onClick={() => updateOption(option.id, { isRequired: !option.isRequired })}
+                                    className="h-7 text-xs"
+                                  >
+                                    {option.isRequired ? 'Yes' : 'No'}
+                                  </Button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Label className="text-xs">Default</Label>
+                                  <Button
+                                    type="button"
+                                    variant={option.isDefault ? "default" : "outline"}
+                                    size="sm"
+                                    onClick={() => updateOption(option.id, { isDefault: !option.isDefault })}
+                                    className="h-7 text-xs"
+                                  >
+                                    {option.isDefault ? 'Yes' : 'No'}
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {(option.hasPricing || option.hasProductionFlags || option.hasConditionals) && (
+                                <div className="flex gap-2 flex-wrap">
+                                  {option.hasPricing && <Badge variant="secondary" className="text-xs">Has Pricing</Badge>}
+                                  {option.hasProductionFlags && <Badge variant="secondary" className="text-xs">Has Production Flags</Badge>}
+                                  {option.hasConditionals && <Badge variant="secondary" className="text-xs">Has Conditionals</Badge>}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                      );
-                    })}
-
-                    {selectedGroup.optionIds.length === 0 && (
-                      <div className="text-center text-xs text-muted-foreground py-4">
-                        No options yet. Add one to begin.
                       </div>
-                    )}
-                  </div>
-                </ScrollArea>
+                    );
+                  })}
+
+                  {selectedGroup.optionIds.length === 0 && (
+                    <div className="text-center text-sm text-muted-foreground py-8 border border-dashed border-border rounded-md">
+                      No options yet. Add your first option above.
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
+            </ScrollArea>
+          </div>
+        )}
+      </main>
 
-            <div className="text-xs text-muted-foreground border-t border-border pt-3">
-              Advanced editors open as drawers. Dev drawer: Ctrl+Shift+D.
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* CENTER: Group/Option Editor */}
-      <div className="col-span-12 lg:col-span-6">
-        <Card className="h-full">
-          <CardHeader>
-            <CardTitle className="text-base">
-              {selectedOption ? 'Option Editor' : selectedGroup ? 'Group Editor' : 'Editor'}
-            </CardTitle>
-            <CardDescription>
-              {selectedOption
-                ? `Editing option: ${selectedOption.name}`
-                : selectedGroup
-                ? `Editing group: ${selectedGroup.name}`
-                : 'Select a group or option to edit'}
-            </CardDescription>
-          </CardHeader>
-
-          <CardContent className="space-y-6">
-            {!selectedGroup && !selectedOption && (
-              <div className="text-center text-muted-foreground py-12">
-                Select a group or option from the left sidebar to begin editing.
-              </div>
-            )}
-
-            {selectedGroup && !selectedOption && (
-              <>
-                <div className="space-y-3">
-                  <div className="text-sm font-semibold">Group Settings</div>
-                  
-                  <div className="space-y-1">
-                    <Label>Group Name</Label>
-                    <Input
-                      value={selectedGroup.name}
-                      onChange={(e) => updateGroup(selectedGroup.id, { name: e.target.value })}
-                      placeholder="e.g., Material Options"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label>Description</Label>
-                    <Textarea
-                      value={selectedGroup.description}
-                      onChange={(e) => updateGroup(selectedGroup.id, { description: e.target.value })}
-                      placeholder="Describe this group..."
-                      className="min-h-[80px]"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-md border border-border p-3">
-                    <div>
-                      <div className="text-sm font-medium">Required Group</div>
-                      <div className="text-xs text-muted-foreground">
-                        Customer must select an option from this group.
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant={selectedGroup.isRequired ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => updateGroup(selectedGroup.id, { isRequired: !selectedGroup.isRequired })}
-                    >
-                      {selectedGroup.isRequired ? 'Yes' : 'No'}
-                    </Button>
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-md border border-border p-3">
-                    <div>
-                      <div className="text-sm font-medium">Multi-Select</div>
-                      <div className="text-xs text-muted-foreground">
-                        Allow selecting multiple options from this group.
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant={selectedGroup.isMultiSelect ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => updateGroup(selectedGroup.id, { isMultiSelect: !selectedGroup.isMultiSelect })}
-                    >
-                      {selectedGroup.isMultiSelect ? 'Yes' : 'No'}
-                    </Button>
-                  </div>
+      {/* RIGHT: Preview & Validation Panel */}
+      <aside className="w-80 border-l border-border bg-card overflow-y-auto">
+        <ScrollArea className="h-full">
+          <div className="p-4 space-y-6">
+            <div>
+              <h3 className="text-sm font-semibold mb-3">Summary</h3>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Groups:</span>
+                  <span className="font-medium">{editorModel.groups.length}</span>
                 </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <div className="text-sm font-semibold">Group Information</div>
-                  <div className="rounded-md border border-border p-3 space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Options:</span>
-                      <span className="font-medium">{selectedGroup.optionIds.length}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Sort Order:</span>
-                      <span className="font-medium">{selectedGroup.sortOrder}</span>
-                    </div>
-                  </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Options:</span>
+                  <span className="font-medium">{Object.keys(editorModel.options).length}</span>
                 </div>
-              </>
-            )}
-
-            {selectedOption && (
-              <>
-                <div className="space-y-3">
-                  <div className="text-sm font-semibold">Option Identity</div>
-                  
-                  <div className="space-y-1">
-                    <Label>Option Name</Label>
-                    <Input
-                      value={selectedOption.name}
-                      onChange={(e) => updateOption(selectedOption.id, { name: e.target.value })}
-                      placeholder="e.g., Glossy Finish"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label>Description</Label>
-                    <Textarea
-                      value={selectedOption.description}
-                      onChange={(e) => updateOption(selectedOption.id, { description: e.target.value })}
-                      placeholder="Describe this option..."
-                      className="min-h-[80px]"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label>Selection Key</Label>
-                    <Input
-                      value={selectedOption.selectionKey}
-                      disabled
-                      className="bg-muted"
-                    />
-                    <div className="text-xs text-muted-foreground">
-                      Internal identifier used in formulas and integrations.
-                    </div>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="text-sm font-semibold">Option Type</div>
-                  
-                  <div className="flex gap-2 flex-wrap">
-                    {(['radio', 'checkbox', 'dropdown', 'numeric'] as const).map((type) => (
-                      <Button
-                        key={type}
-                        type="button"
-                        variant={selectedOption.type === type ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => updateOption(selectedOption.id, { type })}
-                      >
-                        {type}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="text-sm font-semibold">Option Flags</div>
-
-                  <div className="flex items-center justify-between rounded-md border border-border p-3">
-                    <div>
-                      <div className="text-sm font-medium">Required</div>
-                      <div className="text-xs text-muted-foreground">
-                        This option must be filled.
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant={selectedOption.isRequired ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => updateOption(selectedOption.id, { isRequired: !selectedOption.isRequired })}
-                    >
-                      {selectedOption.isRequired ? 'Yes' : 'No'}
-                    </Button>
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-md border border-border p-3">
-                    <div>
-                      <div className="text-sm font-medium">Default Selection</div>
-                      <div className="text-xs text-muted-foreground">
-                        Pre-select this option by default.
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant={selectedOption.isDefault ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => updateOption(selectedOption.id, { isDefault: !selectedOption.isDefault })}
-                    >
-                      {selectedOption.isDefault ? 'Yes' : 'No'}
-                    </Button>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <div className="text-sm font-semibold">Indicators</div>
-                  <div className="flex gap-2 flex-wrap">
-                    {selectedOption.hasPricing && <Badge>Has Pricing</Badge>}
-                    {selectedOption.hasProductionFlags && <Badge>Has Production Flags</Badge>}
-                    {selectedOption.hasConditionals && <Badge>Has Conditionals</Badge>}
-                    {!selectedOption.hasPricing && !selectedOption.hasProductionFlags && !selectedOption.hasConditionals && (
-                      <span className="text-sm text-muted-foreground">No special indicators</span>
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* RIGHT: Preview/Validation Panel */}
-      <div className="col-span-12 lg:col-span-3">
-        <Card className="h-full">
-          <CardHeader>
-            <CardTitle className="text-base">Preview & Validation</CardTitle>
-            <CardDescription>Live preview and validation.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="rounded-md border border-border p-3">
-              <div className="text-xs font-medium text-muted-foreground mb-2">Status</div>
-              <div className="text-sm">
-                {editorModel.groups.length} group{editorModel.groups.length !== 1 ? 's' : ''}
-                <br />
-                {Object.keys(editorModel.options).length} option{Object.keys(editorModel.options).length !== 1 ? 's' : ''}
               </div>
             </div>
 
-            <div className="rounded-md border border-border p-3">
-              <div className="text-xs font-medium text-muted-foreground mb-2">Validation</div>
-              <div className="text-sm text-muted-foreground">
-                Validation logic will appear here.
+            <Separator />
+
+            <div>
+              <h3 className="text-sm font-semibold mb-3">Validation</h3>
+              <div className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+                Validation checks will appear here
               </div>
             </div>
 
-            <div className="rounded-md border border-border p-3">
-              <div className="text-xs font-medium text-muted-foreground mb-2">Customer Preview</div>
-              <div className="text-sm text-muted-foreground">
-                Customer-facing preview will render here.
+            <Separator />
+
+            <div>
+              <h3 className="text-sm font-semibold mb-3">Preview</h3>
+              <div className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+                Customer preview will render here
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </ScrollArea>
+      </aside>
       </div>
 
       {/* Confirmation Modals */}
@@ -890,6 +838,6 @@ export default function ProductOptionsPanelV2_Mvp({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
