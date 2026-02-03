@@ -684,13 +684,20 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
   // Set valueType separately to avoid TypeScript error
   (newNode.input as any).valueType = 'TEXT';
 
-  // Don't create edge from GROUP - options are standalone until connected via conditionals
-  // GROUP is a UI organizational concept only, not part of runtime graph
+  // Create edge from GROUP to new option so it appears in UI
+  const newEdge: PBV2Edge = {
+    id: newEdgeId,
+    fromNodeId: groupId,
+    toNodeId: newOptionId,
+    status: 'ENABLED',
+    condition: undefined, // No condition - always show
+    priority: nodes.filter(n => n.id === groupId).length > 0 ? edges.filter(e => e.fromNodeId === groupId).length : 0,
+  };
 
   const patchedTree = {
     ...tree,
     nodes: [...nodes, newNode],
-    edges, // No new edge
+    edges: [...edges, newEdge],
   };
 
   const repairedTree = ensureTreeInvariants(patchedTree);

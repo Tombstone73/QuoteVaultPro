@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -463,32 +464,9 @@ export const ProductForm = ({
             <CardDescription>Configure selectable add-ons and finishing.</CardDescription>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-md border px-3 py-2">
-              <span className="text-xs text-muted-foreground">Options Mode</span>
-              <span className="text-xs font-medium">{optionsMode === "legacy" ? "Legacy" : "Tree v2"}</span>
-              <Switch
-                checked={optionsMode === "treeV2"}
-                onCheckedChange={(checked) => {
-                  if (checked) {
-                    setAndPersistOptionsMode("treeV2");
-                    setOptionTreeErrors([]);
-                    form.clearErrors("optionTreeJson");
-                    try {
-                      setOptionTreeText(optionTreeJson ? JSON.stringify(optionTreeJson, null, 2) : "");
-                    } catch {
-                      setOptionTreeText("");
-                    }
-                    return;
-                  }
-
-                  // Switching back to legacy disables v2 by clearing optionTreeJson.
-                  setAndPersistOptionsMode("legacy");
-                  form.setValue("optionTreeJson", null, { shouldDirty: true });
-                  form.clearErrors("optionTreeJson");
-                  setOptionTreeErrors([]);
-                }}
-              />
-            </div>
+            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30 px-3 py-1.5">
+              PBV2 Enabled
+            </Badge>
 
             {optionsMode === "legacy" && (
               <Button
