@@ -288,10 +288,18 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
     },
   };
 
+  // Add new group to rootNodeIds so it appears in the UI
+  const existingRoots = Array.isArray((tree as any).rootNodeIds) ? (tree as any).rootNodeIds : [];
+  const updatedRoots = [...existingRoots];
+  if (!updatedRoots.includes(newGroupId)) {
+    updatedRoots.push(newGroupId);
+  }
+
   const patchedTree = {
     ...tree,
     nodes: [...nodes, newNode],
     edges,
+    rootNodeIds: updatedRoots,
   };
 
   const repairedTree = ensureTreeInvariants(patchedTree);
@@ -960,26 +968,24 @@ export function ensureTreeInvariants(treeJson: unknown): any {
         mutated = true;
       }
     }
-
-    // Also check if FROM node is a GROUP (GROUP nodes are design-time only, no runtime edges)
-    const fromNode = edge.fromNodeId ? nodesById.get(edge.fromNodeId) : null;
-    if (fromNode && fromNode.type?.toUpperCase() === 'GROUP' && edge.status === 'ENABLED') {
-      // GROUP nodes are organizational containers only, they should not have ENABLED edges
-      edge.status = 'DISABLED';
-      mutated = true;
-    }
   }
 
-  // 5. Root auto-repair - ensure rootNodeIds includes all orphaned ENABLED runtime nodes
+  // 5. Root auto-repair - ensure rootNodeIds includes all top-level GROUP nodes
   const rootNodeIds = Array.isArray((tree as any).rootNodeIds) ? (tree as any).rootNodeIds : [];
   
-  // Find nodes with incoming ENABLED edges
+  // Find nodes with incoming edges (any status)
   const nodesWithIncoming = new Set<string>();
   for (const edge of edges) {
-    if (edge.status === 'ENABLED' && edge.toNodeId) {
+    if (edge.status !== 'DELETED' && edge.toNodeId) {
       nodesWithIncoming.add(edge.toNodeId);
     }
   }
+  
+  // Find all ENABLED GROUP nodes (top-level organizational containers)
+  const groupNodes = nodes.filter(n => 
+    n.status === 'ENABLED' && 
+    n.type?.toUpperCase() === 'GROUP'
+  );
   
   // Find valid runtime nodes (ENABLED, non-GROUP, non-DELETED)
   const validRuntimeNodes = nodes.filter(n => 
@@ -990,20 +996,33 @@ export function ensureTreeInvariants(treeJson: unknown): any {
   
   // Orphaned nodes are valid runtime nodes without incoming edges
   const orphanedNodes = validRuntimeNodes.filter(n => !nodesWithIncoming.has(n.id));
+  
+  // Top-level groups are GROUPs without incoming edges
+  const topLevelGroups = groupNodes.filter(n => !nodesWithIncoming.has(n.id));
 
-  // Check if current roots are valid
+  // Check if current roots are valid (can be GROUPs or runtime nodes)
   const validRoots = rootNodeIds.filter((id: string) => {
     const node = nodesById.get(id);
-    return node && 
-           node.status === 'ENABLED' && 
-           node.type?.toUpperCase() !== 'GROUP';
+    return node && node.status === 'ENABLED';
   });
   
-  // Build new root set: existing valid roots + orphaned nodes
-  const newRootSet = new Set([...validRoots, ...orphanedNodes.map(n => n.id)]);
+  // Build new root set: top-level GROUPs + orphaned runtime nodes
+  // Priority: If we have GROUPs, use them; otherwise use orphaned nodes
+  let newRootSet: Set<string>;
+  if (topLevelGroups.length > 0) {
+    // Use top-level GROUPs as roots (preferred for builder UI)
+    newRootSet = new Set([...topLevelGroups.map(n => n.id), ...orphanedNodes.map(n => n.id)]);
+  } else {
+    // No GROUPs, use existing valid roots + orphaned runtime nodes
+    newRootSet = new Set([...validRoots, ...orphanedNodes.map(n => n.id)]);
+  }
   const newRoots = Array.from(newRootSet);
 
-  if (newRoots.length === 0 && validRuntimeNodes.length > 0) {
+  // Special case: If rootNodeIds is empty but we have GROUPs, populate with all GROUPs
+  if (rootNodeIds.length === 0 && groupNodes.length > 0) {
+    (tree as any).rootNodeIds = groupNodes.map(n => n.id);
+    mutated = true;
+  } else if (newRoots.length === 0 && validRuntimeNodes.length > 0) {
     // No valid roots, set to first available enabled runtime node
     (tree as any).rootNodeIds = [validRuntimeNodes[0].id];
     mutated = true;
@@ -1011,7 +1030,7 @@ export function ensureTreeInvariants(treeJson: unknown): any {
     // Roots changed, update
     (tree as any).rootNodeIds = newRoots;
     mutated = true;
-  } else if (newRoots.length === 0 && validRuntimeNodes.length === 0) {
+  } else if (newRoots.length === 0 && validRuntimeNodes.length === 0 && groupNodes.length === 0) {
     // No valid nodes at all, clear roots
     (tree as any).rootNodeIds = [];
     mutated = true;
