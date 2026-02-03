@@ -139,14 +139,21 @@ const ProductEditorPage = () => {
         optionTreeJson: (data as any).optionTreeJson ?? null,
       };
       
-      // DEV-ONLY: Log payload before sending
+      // DEV-ONLY: Verify optionTreeJson is in payload if form is dirty
       if (import.meta.env.DEV) {
-        console.log("[ProductEditorPage] Save payload:", {
-          hasOptionTreeJson: 'optionTreeJson' in payload,
-          optionTreeJsonType: typeof payload.optionTreeJson,
-          optionTreeJsonLength: payload.optionTreeJson ? JSON.stringify(payload.optionTreeJson).length : 0,
-          dirtyFields: form.formState.dirtyFields,
+        const isDirty = form.formState.dirtyFields.optionTreeJson;
+        const hasField = 'optionTreeJson' in payload;
+        console.log("[ProductEditorPage] Save payload validation:", {
+          isDirty,
+          hasField,
+          isNull: payload.optionTreeJson === null,
+          keys: Object.keys(payload).filter(k => k.includes('option') || k.includes('tree')),
         });
+        
+        if (isDirty && !hasField) {
+          console.error("[ProductEditorPage] CRITICAL: optionTreeJson marked dirty but missing from payload!");
+          console.error("[ProductEditorPage] Form data keys:", Object.keys(data));
+        }
       }
       
       if (isNewProduct) {
