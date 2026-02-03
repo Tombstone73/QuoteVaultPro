@@ -30,6 +30,7 @@ import {
   type EditorOptionGroup,
   type EditorOption,
 } from "@/lib/pbv2/pbv2ViewModel";
+import { coerceOrMigrateToPBV2 } from "@shared/optionTreeV2Initializer";
 
 type Props = {
   productId: string;
@@ -38,72 +39,24 @@ type Props = {
 };
 
 /**
- * Detect the shape of parsed tree data
+ * Parse and auto-migrate to PBV2 tree
+ * Always returns a valid PBV2 tree (never shows legacy UI)
  */
-type TreeShape = 
-  | { ok: true; tree: any }
-  | { ok: false; detectedShape: 'array' | 'null' | 'graph' | 'unknown' };
-
-function detectTreeShape(parsed: any): TreeShape {
-  if (parsed == null) {
-    return { ok: false, detectedShape: 'null' };
-  }
-  
-  // Legacy array format (old options structure)
-  if (Array.isArray(parsed)) {
-    return { ok: false, detectedShape: 'array' };
-  }
-  
-  // Not an object at all
-  if (typeof parsed !== 'object') {
-    return { ok: false, detectedShape: 'unknown' };
-  }
-  
-  // Legacy graph format (has nodes/edges but not PBV2 structure)
-  if ((parsed.nodes || parsed.edges) && !parsed.schemaVersion) {
-    return { ok: false, detectedShape: 'graph' };
-  }
-  
-  // Valid PBV2 format (object with proper structure)
-  // Don't enforce strict validation here - just check it's an object
-  // that looks like PBV2 (has nodes/edges or is empty starter tree)
-  return { ok: true, tree: parsed };
-}
-
-/**
- * Parse and normalize PBV2 tree JSON
- */
-function parseTreeJson(jsonString: string | null): TreeShape {
+function parseAndMigrateTree(jsonString: string | null): any {
   if (!jsonString || !jsonString.trim()) {
-    return { ok: false, detectedShape: 'null' };
+    // Empty/null → auto-initialize
+    return coerceOrMigrateToPBV2(null);
   }
   
   try {
     const parsed = JSON.parse(jsonString);
-    return detectTreeShape(parsed);
+    // Auto-migrate to PBV2 (handles array, legacy, null, invalid)
+    return coerceOrMigrateToPBV2(parsed);
   } catch {
-    return { ok: false, detectedShape: 'unknown' };
+    // Parse error → return empty tree
+    console.warn('[ProductOptionsPanelV2_Mvp] JSON parse error, using empty tree');
+    return coerceOrMigrateToPBV2(null);
   }
-}
-
-/**
- * Initialize a minimal valid PBV2 tree matching optionTreeV2Schema
- * Schema requires:
- * - schemaVersion: literal number 2
- * - rootNodeIds: string[] (can be empty)
- * - nodes: Record<string, OptionNodeV2> (object, not array)
- * - meta?: optional metadata
- */
-function initializeTree(): any {
-  return {
-    schemaVersion: 2,
-    rootNodeIds: [],
-    nodes: {},
-    meta: {
-      title: 'New Options Tree',
-      updatedAt: new Date().toISOString(),
-    },
-  };
 }
 
 export default function ProductOptionsPanelV2_Mvp({
@@ -113,19 +66,18 @@ export default function ProductOptionsPanelV2_Mvp({
 }: Props) {
   const { toast } = useToast();
 
-  // Parse tree with safe legacy detection
-  const parseResult = React.useMemo(() => parseTreeJson(optionTreeJson), [optionTreeJson]);
+  // Auto-migrate tree (always returns valid PBV2)
+  const tree = React.useMemo(() => parseAndMigrateTree(optionTreeJson), [optionTreeJson]);
   
-  // Only attempt to build editor model if we have valid PBV2 shape
+  // Build editor model from valid PBV2 tree
   const editorModel = React.useMemo(() => {
-    if (!parseResult.ok) return null;
     try {
-      return pbv2TreeToEditorModel(parseResult.tree);
+      return pbv2TreeToEditorModel(tree);
     } catch (e) {
       console.error('Failed to parse PBV2 tree:', e);
       return null;
     }
-  }, [parseResult]);
+  }, [tree]);
 
   // Selection state
   const [selectedGroupId, setSelectedGroupId] = React.useState<string | null>(null);
@@ -172,18 +124,17 @@ export default function ProductOptionsPanelV2_Mvp({
    * Apply a patch and commit to parent
    */
   const commitPatch = React.useCallback((patch: { nodes?: any[]; edges?: any[] }) => {
-    if (!parseResult.ok) return;
-    const updated = applyPatchToTree(parseResult.tree, patch);
+    const updated = applyPatchToTree(tree, patch);
     onChangeOptionTreeJson(JSON.stringify(updated, null, 2));
-  }, [parseResult, onChangeOptionTreeJson]);
+  }, [tree, onChangeOptionTreeJson]);
 
   /**
-   * Initialize empty tree
+   * Initialize empty tree (no longer needed - auto-migrates, but keep for backwards compat)
    */
   const initTree = React.useCallback((e?: React.MouseEvent) => {
     e?.preventDefault();
     e?.stopPropagation();
-    const newTree = initializeTree();
+    const newTree = coerceOrMigrateToPBV2(null);
     onChangeOptionTreeJson(JSON.stringify(newTree, null, 2));
     toast({
       title: "Tree initialized",
@@ -197,8 +148,7 @@ export default function ProductOptionsPanelV2_Mvp({
   const addGroup = React.useCallback((e?: React.MouseEvent) => {
     e?.preventDefault();
     e?.stopPropagation();
-    if (!parseResult.ok) return;
-    const { patch, newGroupId } = createAddGroupPatch(parseResult.tree);
+    const { patch, newGroupId } = createAddGroupPatch(tree);
     commitPatch(patch);
     setSelectedGroupId(newGroupId);
     setSelectedOptionId(null);
@@ -206,23 +156,21 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Group added",
       description: "New group created. Update its name and settings.",
     });
-  }, [parseResult, commitPatch, toast]);
+  }, [tree, commitPatch, toast]);
 
   /**
    * Update group
    */
   const updateGroup = React.useCallback((groupId: string, updates: Partial<EditorOptionGroup>) => {
-    if (!parseResult.ok) return;
-    const { patch } = createUpdateGroupPatch(parseResult.tree, groupId, updates);
+    const { patch } = createUpdateGroupPatch(tree, groupId, updates);
     commitPatch(patch);
-  }, [parseResult, commitPatch]);
+  }, [tree, commitPatch]);
 
   /**
    * Delete group (cascade deletes all options)
    */
   const deleteGroup = React.useCallback((groupId: string) => {
-    if (!parseResult.ok) return;
-    const { patch } = createDeleteGroupPatch(parseResult.tree, groupId);
+    const { patch } = createDeleteGroupPatch(tree, groupId);
     commitPatch(patch);
     if (selectedGroupId === groupId) {
       setSelectedGroupId(null);
@@ -232,7 +180,7 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Group deleted",
       description: "Group and all its options have been removed.",
     });
-  }, [parseResult, commitPatch, selectedGroupId, toast]);
+  }, [tree, commitPatch, selectedGroupId, toast]);
 
   /**
    * Add option to selected group
@@ -240,8 +188,7 @@ export default function ProductOptionsPanelV2_Mvp({
   const addOption = React.useCallback((groupId: string, e?: React.MouseEvent) => {
     e?.preventDefault();
     e?.stopPropagation();
-    if (!parseResult.ok) return;
-    const { patch, newOptionId } = createAddOptionPatch(parseResult.tree, groupId);
+    const { patch, newOptionId } = createAddOptionPatch(tree, groupId);
     commitPatch(patch);
     setSelectedGroupId(groupId);
     setSelectedOptionId(newOptionId);
@@ -249,23 +196,21 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Option added",
       description: "New option created. Configure its settings.",
     });
-  }, [parseResult, commitPatch, toast]);
+  }, [tree, commitPatch, toast]);
 
   /**
    * Update option
    */
   const updateOption = React.useCallback((optionId: string, updates: Partial<EditorOption>) => {
-    if (!parseResult.ok) return;
-    const { patch } = createUpdateOptionPatch(parseResult.tree, optionId, updates);
+    const { patch } = createUpdateOptionPatch(tree, optionId, updates);
     commitPatch(patch);
-  }, [parseResult, commitPatch]);
+  }, [tree, commitPatch]);
 
   /**
    * Delete option
    */
   const deleteOption = React.useCallback((optionId: string) => {
-    if (!parseResult.ok) return;
-    const { patch } = createDeleteOptionPatch(parseResult.tree, optionId);
+    const { patch } = createDeleteOptionPatch(tree, optionId);
     commitPatch(patch);
     if (selectedOptionId === optionId) {
       setSelectedOptionId(null);
@@ -274,7 +219,7 @@ export default function ProductOptionsPanelV2_Mvp({
       title: "Option deleted",
       description: "Option has been removed.",
     });
-  }, [parseResult, commitPatch, selectedOptionId, toast]);
+  }, [tree, commitPatch, selectedOptionId, toast]);
 
   /**
    * Move group up/down in list
@@ -292,10 +237,9 @@ export default function ProductOptionsPanelV2_Mvp({
     reordered.splice(newIndex, 0, removed);
 
     // Update sortOrder in tree nodes
-    if (!parseResult.ok) return;
-    const { patch } = createUpdateGroupPatch(parseResult.tree, groupId, {});
+    const { patch } = createUpdateGroupPatch(tree, groupId, {});
     commitPatch(patch);
-  }, [editorModel, parseResult, commitPatch]);
+  }, [editorModel, tree, commitPatch]);
 
   /**
    * Move option up/down in group
@@ -309,75 +253,12 @@ export default function ProductOptionsPanelV2_Mvp({
 
     // Reorder is handled by edge priority in pbv2ViewModel
     // For now, just update the option
-    if (!parseResult.ok) return;
-    const { patch } = createUpdateOptionPatch(parseResult.tree, optionId, {});
+    const { patch } = createUpdateOptionPatch(tree, optionId, {});
     commitPatch(patch);
-  }, [selectedGroup, parseResult, commitPatch]);
+  }, [selectedGroup, tree, commitPatch]);
 
-  // If legacy format detected, show banner with init option
-  if (!parseResult.ok) {
-    return (
-      <div className="flex h-full overflow-hidden bg-[#0a0e1a]">
-        <aside className="w-72 border-r border-[#334155] bg-[#0f172a] flex flex-col">
-          <div className="border-b border-[#334155] p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Layers className="h-4 w-4 text-slate-400" />
-                <h2 className="font-semibold text-slate-200">Option Groups</h2>
-              </div>
-              <Badge variant="outline" className="text-xs bg-slate-800 text-slate-300 border-slate-600">0</Badge>
-            </div>
-            <Button type="button" onClick={initTree} className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm" size="sm">
-              <Plus className="h-4 w-4" />
-              Initialize Tree
-            </Button>
-          </div>
-          <div className="flex-1 p-4 flex items-center justify-center">
-            <div className="text-center text-sm text-slate-400">
-              Initialize PBV2 tree to begin building options.
-            </div>
-          </div>
-          <div className="border-t border-[#334155] p-3 text-xs text-slate-400">
-            Advanced editors open as drawers. Dev drawer: Ctrl+Shift+D.
-          </div>
-        </aside>
-        
-        <main className="flex-1 overflow-y-auto border-r border-[#334155]">
-          <div className="flex items-center justify-center h-full bg-[#0a0e1a]">
-            <div className="text-center space-y-4 max-w-md p-6">
-              <div className="flex justify-center">
-                <div className="rounded-full bg-yellow-500/10 p-4">
-                  <Layers className="h-8 w-8 text-yellow-600" />
-                </div>
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold mb-2 text-slate-200">Legacy Format Detected</h3>
-                <p className="text-sm text-slate-400 mb-3">
-                  Tree v2 requires PBV2 format. Current data is <strong className="text-slate-200">{parseResult.detectedShape}</strong> format.
-                </p>
-                <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-left">
-                  <div className="font-medium mb-1 text-slate-300">What will happen:</div>
-                  <ul className="list-disc pl-4 space-y-1 text-slate-400">
-                    <li>Current {parseResult.detectedShape} data will be replaced</li>
-                    <li>A new empty PBV2 tree will be created</li>
-                    <li>You can then add groups and options</li>
-                  </ul>
-                </div>
-              </div>
-              <Button type="button" onClick={initTree} className="w-full bg-blue-600 hover:bg-blue-700 text-white">
-                <Plus className="h-4 w-4 mr-2" />
-                Initialize Tree v2
-              </Button>
-            </div>
-          </div>
-        </main>
-        
-        <aside className="w-96 border-l border-[#334155] bg-[#0f172a] p-4">
-          <div className="text-sm text-slate-400">Preview & validation will appear here</div>
-        </aside>
-      </div>
-    );
-  }
+  // No legacy UI - auto-migration handles all cases
+  // Render main builder UI immediately
 
   if (!editorModel) {
     return (
@@ -889,7 +770,7 @@ export default function ProductOptionsPanelV2_Mvp({
               <div className="space-y-2">
                 <div className="text-sm font-medium">Current Tree JSON</div>
                 <Textarea
-                  value={parseResult.ok ? JSON.stringify(parseResult.tree, null, 2) : 'Legacy format - not parseable'}
+                  value={JSON.stringify(tree, null, 2)}
                   readOnly
                   className="font-mono text-xs min-h-[400px]"
                 />

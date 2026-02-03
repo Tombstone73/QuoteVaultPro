@@ -11,7 +11,7 @@ import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEdito
 import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
-import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
+import { buildOptionTreeV2FromLegacyOptions, createEmptyPBV2Tree, coerceOrMigrateToPBV2 } from "@shared/optionTreeV2Initializer";
 import ProductOptionsPanelV2_Mvp from "@/components/ProductOptionsPanelV2_Mvp";
 import { useToast } from "@/hooks/use-toast";
 
@@ -110,23 +110,19 @@ export const ProductForm = ({
   }, [determineInitialMode, optionsMode, productId]);
 
   React.useEffect(() => {
-    // Auto-initialize PBV2 for new products (no optionTreeJson)
-    if (!productId && !optionTreeJson) {
-      // New product with no tree - initialize with PBV2 empty state
-      // Matches optionTreeV2Schema: schemaVersion=2, rootNodeIds=[], nodes={}
-      const emptyPBV2 = {
-        schemaVersion: 2,
-        rootNodeIds: [],
-        nodes: {},
-        meta: {
-          title: 'New Options Tree',
-          updatedAt: new Date().toISOString(),
-        },
-      };
-      form.setValue("optionTreeJson", emptyPBV2, { shouldDirty: false });
-      setOptionTreeText(JSON.stringify(emptyPBV2, null, 2));
+    // Auto-migrate on mount: coerce to valid PBV2 regardless of input state
+    const currentTree = form.getValues("optionTreeJson");
+    const legacyOptions = form.getValues("optionsJson");
+    
+    const migratedTree = coerceOrMigrateToPBV2(currentTree, legacyOptions);
+    
+    // If migration changed the tree, update the form
+    if (currentTree !== migratedTree) {
+      form.setValue("optionTreeJson", migratedTree, { shouldDirty: false });
+      setOptionTreeText(JSON.stringify(migratedTree, null, 2));
+      console.log('[ProductForm] Auto-migrated tree on mount');
     }
-  }, [productId, optionTreeJson, form]);
+  }, [productId, form]); // Run once on mount or when productId changes
 
   React.useEffect(() => {
     if (optionsMode !== "treeV2") return;
@@ -167,62 +163,33 @@ export const ProductForm = ({
       return;
     }
 
-    // Detect if this is legacy format - skip validation if so
-    const isLegacy = Array.isArray(parsed) || 
-                     (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
-    
-    if (isLegacy) {
-      // Legacy format detected - don't validate, just store as-is
-      form.clearErrors("optionTreeJson");
-      setOptionTreeErrors([]);
-      form.setValue("optionTreeJson", parsed, { shouldDirty: true });
-      return;
-    }
+    // Auto-coerce to valid PBV2 (handles array/null/legacy/invalid)
+    const legacyOptions = form.getValues("optionsJson");
+    const coerced = coerceOrMigrateToPBV2(parsed, legacyOptions);
 
-    // PBV2 mode: Only validate structure, NOT legacy graph rules
-    // Skip validateOptionTreeV2 (legacy graph validator with rootNodeIds requirement)
-    // PBV2 uses groups/options model and doesn't require rootNodeIds
-    const zodRes = optionTreeV2Schema.safeParse(parsed);
-    if (!zodRes.success) {
-      form.setError("optionTreeJson", {
-        type: "manual",
-        message: "Invalid optionTreeJson (v2)",
-      });
-      setOptionTreeErrors(zodRes.error.issues.map((i) => i.message));
-      return;
-    }
-
-    // DO NOT call validateOptionTreeV2 here - it's a legacy graph validator
-    // PBV2 empty state (nodes: [], edges: []) is valid
-    // Legacy validator requires rootNodeIds.length > 0 which breaks PBV2
-
+    // Always use the coerced tree - no manual init required
     form.clearErrors("optionTreeJson");
     setOptionTreeErrors([]);
-    form.setValue("optionTreeJson", zodRes.data, { shouldDirty: true });
+    form.setValue("optionTreeJson", coerced, { shouldDirty: true });
   };
 
-  const initTreeV2 = () => {
-    const legacyOptionsJson = form.getValues("optionsJson");
-    const tree = buildOptionTreeV2FromLegacyOptions(legacyOptionsJson);
-
-    // DO NOT call validateOptionTreeV2 - it's a legacy graph validator
-    // that requires rootNodeIds.length > 0, breaking PBV2 empty state
-    // PBV2 uses groups/options model and is valid with empty nodes/edges arrays
-
-    form.setValue("optionTreeJson", tree as any, { shouldDirty: true });
-    form.clearErrors("optionTreeJson");
-    setOptionTreeErrors([]);
-    setOptionTreeText(JSON.stringify(tree, null, 2));
-    
-    toast({
-      title: "Tree v2 Initialized",
-      description: "PBV2 options tree created. You can now add groups and options.",
-    });
-  };
+  // Defensive wrapper around onSave to ensure tree is never an array
+  const handleSave = React.useCallback((data: any) => {
+    // Final defensive check before saving
+    const tree = data.optionTreeJson;
+    if (Array.isArray(tree)) {
+      console.warn('[ProductForm] Blocking save: optionTreeJson is array, coercing to empty tree');
+      data.optionTreeJson = coerceOrMigrateToPBV2(null);
+    } else if (tree && typeof tree === 'object' && tree.schemaVersion !== 2) {
+      console.log('[ProductForm] Coercing tree to PBV2 before save');
+      data.optionTreeJson = coerceOrMigrateToPBV2(tree, data.optionsJson);
+    }
+    return onSave(data);
+  }, [onSave]);
 
   return (
     <form
-      onSubmit={form.handleSubmit(onSave)}
+      onSubmit={form.handleSubmit(handleSave)}
       id={formId}
       className="space-y-6"
     >
@@ -523,7 +490,7 @@ export const ProductForm = ({
               />
             </div>
 
-            {optionsMode === "legacy" ? (
+            {optionsMode === "legacy" && (
               <Button
                 type="button"
                 variant="outline"
@@ -532,10 +499,6 @@ export const ProductForm = ({
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add Option Group
-              </Button>
-            ) : (
-              <Button type="button" variant="outline" size="sm" onClick={initTreeV2}>
-                Initialize Tree v2
               </Button>
             )}
           </div>
