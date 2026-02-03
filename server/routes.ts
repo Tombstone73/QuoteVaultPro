@@ -1849,8 +1849,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!product) return res.status(404).json({ success: false, message: "Product not found" });
 
-      // Return product.optionTreeJson as a synthetic draft for PBV2 UI
-      const treeJson = product.optionTreeJson || { schemaVersion: 1, nodes: {}, edges: [] };
+      // Return product.optionTreeJson (DB-backed, persistent)
+      let treeJson = product.optionTreeJson || { schemaVersion: 1, nodes: {}, edges: [] };
+      
+      // CRITICAL: Repair rootNodeIds if empty but GROUP nodes exist
+      if (typeof treeJson === 'object' && treeJson && !Array.isArray(treeJson)) {
+        const nodes = (treeJson as any).nodes || {};
+        const rootNodeIds = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds : [];
+        
+        // Find all GROUP nodes
+        const groupNodeIds: string[] = [];
+        for (const [nodeId, node] of Object.entries(nodes)) {
+          if (typeof node === 'object' && node && (node as any).type?.toUpperCase() === 'GROUP' && (node as any).status === 'ENABLED') {
+            groupNodeIds.push(nodeId);
+          }
+        }
+        
+        // If rootNodeIds is empty but we have GROUP nodes, populate it
+        if (rootNodeIds.length === 0 && groupNodeIds.length > 0) {
+          (treeJson as any).rootNodeIds = groupNodeIds;
+          
+          if (process.env.NODE_ENV !== 'production') {
+            console.log(`[GET /api/products/${productId}/pbv2/tree] REPAIRED rootNodeIds: empty → [${groupNodeIds.join(', ')}]`);
+          }
+        }
+      }
       
       // DEV-ONLY: Log what we're returning
       if (process.env.NODE_ENV !== 'production') {
@@ -1860,8 +1883,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const enabledEdges = Array.isArray((treeJson as any).edges) 
           ? (treeJson as any).edges.filter((e: any) => e.status === 'ENABLED').length 
           : 0;
-        console.log(`[GET /api/products/${productId}/pbv2/tree] Returning product.optionTreeJson:`, {
-          source: 'product.optionTreeJson',
+        console.log(`[GET /api/products/${productId}/pbv2/tree] Returning DB-backed tree:`, {
+          source: 'product.optionTreeJson (DB)',
           nodeCount,
           rootCount,
           edgeCount,
@@ -1870,8 +1893,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      const syntheticDraft = {
-        id: `synthetic-${productId}`,
+      // Return tree directly wrapped as draft (client expects {draft, active} shape)
+      // Using product ID as draft ID to indicate this is DB-backed, not synthetic
+      const draftWrapper = {
+        id: `draft-${productId}`,
         productId: productId,
         organizationId: organizationId,
         status: "DRAFT" as const,
@@ -1882,7 +1907,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         updatedByUserId: null,
       };
 
-      return res.json({ success: true, data: { draft: syntheticDraft, active: null } });
+      return res.json({ success: true, data: { draft: draftWrapper, active: null } });
     } catch (error: any) {
       console.error("Error fetching PBV2 tree:", error);
       return res.status(500).json({ success: false, message: "Failed to fetch PBV2 tree" });
@@ -1949,11 +1974,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { id } = req.params;
 
-      // Extract productId from synthetic ID (format: "synthetic-{productId}")
-      if (!id.startsWith("synthetic-")) {
+      // Extract productId from draft ID (format: "draft-{productId}" or legacy "synthetic-{productId}")
+      let productId: string;
+      if (id.startsWith("draft-")) {
+        productId = id.replace("draft-", "");
+      } else if (id.startsWith("synthetic-")) {
+        // Legacy format for backward compatibility
+        productId = id.replace("synthetic-", "");
+      } else {
         return res.status(400).json({ success: false, message: "Invalid tree version ID" });
       }
-      const productId = id.replace("synthetic-", "");
 
       const treeJson = (req.body as any)?.treeJson;
       if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
@@ -1986,9 +2016,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ success: false, message: "Product not found" });
       }
 
-      // Return synthetic draft format for client compatibility
-      const syntheticDraft = {
-        id: `synthetic-${productId}`,
+      // Return draft wrapper for client compatibility (DB-backed)
+      const draftWrapper = {
+        id: `draft-${productId}`,
         productId: productId,
         organizationId: organizationId,
         status: "DRAFT" as const,
@@ -1999,7 +2029,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         updatedByUserId: null,
       };
 
-      return res.json({ success: true, data: syntheticDraft });
+      return res.json({ success: true, data: draftWrapper });
     } catch (error: any) {
       console.error("Error updating PBV2 tree:", error);
       return res.status(500).json({ success: false, message: "Failed to update PBV2 tree version" });
