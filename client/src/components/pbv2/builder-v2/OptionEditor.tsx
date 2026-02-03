@@ -147,6 +147,7 @@ export function OptionEditor({
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-semibold text-slate-200">Options</h3>
             <Button
+              type="button"
               onClick={() => onAddOption(selectedGroup.id)}
               size="sm"
               className="gap-2 bg-blue-600 hover:bg-blue-700 text-white"
@@ -241,6 +242,7 @@ export function OptionEditor({
                       {/* Reorder buttons */}
                       <div className="flex flex-col">
                         <Button
+                          type="button"
                           variant="ghost"
                           size="sm"
                           onClick={() => {
@@ -255,6 +257,7 @@ export function OptionEditor({
                           <ArrowUp className="h-3 w-3" />
                         </Button>
                         <Button
+                          type="button"
                           variant="ghost"
                           size="sm"
                           onClick={() => {
@@ -272,6 +275,7 @@ export function OptionEditor({
 
                       {/* Duplicate button */}
                       <Button
+                        type="button"
                         variant="ghost"
                         size="sm"
                         onClick={() => onDuplicateOption(selectedGroup.id, option.id)}
@@ -284,6 +288,7 @@ export function OptionEditor({
                       {/* Move to group dropdown */}
                       <div className="relative" data-move-dropdown>
                         <Button
+                          type="button"
                           variant="ghost"
                           size="sm"
                           onClick={() => setMoveDropdownOpen(moveDropdownOpen === option.id ? null : option.id)}
@@ -299,6 +304,7 @@ export function OptionEditor({
                                 .filter(g => g.id !== selectedGroup.id)
                                 .map(group => (
                                   <button
+                                    type="button"
                                     key={group.id}
                                     onClick={() => {
                                       onMoveOption(selectedGroup.id, group.id, option.id);
@@ -319,6 +325,7 @@ export function OptionEditor({
 
                       {/* Delete button */}
                       <Button
+                        type="button"
                         variant="ghost"
                         size="sm"
                         onClick={() => onDeleteOption(selectedGroup.id, option.id)}

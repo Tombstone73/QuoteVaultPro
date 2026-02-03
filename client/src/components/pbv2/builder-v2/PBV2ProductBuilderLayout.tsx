@@ -96,8 +96,23 @@ export function PBV2ProductBuilderLayout({
 }: PBV2ProductBuilderLayoutProps) {
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
 
+  // Prevent Enter key from submitting parent form when editing within PBV2 builder
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && e.target instanceof HTMLInputElement) {
+      // Only prevent if it's not the Save/Publish buttons (they should submit)
+      const target = e.target as HTMLElement;
+      if (!target.closest('button[type="submit"]')) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+  };
+
   return (
-    <div className="w-full h-full flex flex-col bg-[#0a0e1a]">
+    <div 
+      className="w-full h-full flex flex-col bg-[#0a0e1a]"
+      onKeyDown={handleKeyDown}
+    >
       {/* Fixed header */}
       <ProductHeader
         productName={editorModel.productMeta.name}
