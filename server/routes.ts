@@ -1842,35 +1842,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { productId } = req.params;
 
       const [product] = await db
-        .select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+        .select({ id: products.id, optionTreeJson: products.optionTreeJson })
         .from(products)
         .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
         .limit(1);
 
       if (!product) return res.status(404).json({ success: false, message: "Product not found" });
 
-      const [draft] = await db
-        .select()
-        .from(pbv2TreeVersions)
-        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.productId, productId), eq(pbv2TreeVersions.status, "DRAFT")))
-        .orderBy(desc(pbv2TreeVersions.updatedAt))
-        .limit(1);
+      // Return product.optionTreeJson as a synthetic draft for PBV2 UI
+      const treeJson = product.optionTreeJson || { schemaVersion: 1, nodes: {}, edges: [] };
+      
+      const syntheticDraft = {
+        id: `synthetic-${productId}`,
+        productId: productId,
+        organizationId: organizationId,
+        status: "DRAFT" as const,
+        treeJson: treeJson,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        createdByUserId: null,
+        updatedByUserId: null,
+      };
 
-      const activeId = product.pbv2ActiveTreeVersionId;
-      const active = activeId
-        ? (
-            await db
-              .select()
-              .from(pbv2TreeVersions)
-              .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, activeId)))
-              .limit(1)
-          )[0]
-        : undefined;
-
-      return res.json({ success: true, data: { draft: draft ?? null, active: active ?? null } });
+      return res.json({ success: true, data: { draft: syntheticDraft, active: null } });
     } catch (error: any) {
-      console.error("Error fetching PBV2 tree versions:", error);
-      return res.status(500).json({ success: false, message: "Failed to fetch PBV2 tree versions" });
+      console.error("Error fetching PBV2 tree:", error);
+      return res.status(500).json({ success: false, message: "Failed to fetch PBV2 tree" });
     }
   });
 
@@ -1933,18 +1930,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
 
       const { id } = req.params;
-      const userId = getUserId(req.user);
 
-      const [existing] = await db
-        .select()
-        .from(pbv2TreeVersions)
-        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)))
-        .limit(1);
-
-      if (!existing) return res.status(404).json({ success: false, message: "Tree version not found" });
-      if (existing.status !== "DRAFT") {
-        return res.status(409).json({ success: false, message: "Only DRAFT tree versions can be edited" });
+      // Extract productId from synthetic ID (format: "synthetic-{productId}")
+      if (!id.startsWith("synthetic-")) {
+        return res.status(400).json({ success: false, message: "Invalid tree version ID" });
       }
+      const productId = id.replace("synthetic-", "");
 
       const treeJson = (req.body as any)?.treeJson;
       if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
@@ -1962,22 +1953,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const normalizedTreeJson: Record<string, any> = {
         ...treeJson,
         schemaVersion: 1,
-        status: "DRAFT",
       };
 
+      // Write to product.optionTreeJson (canonical storage)
       const [updated] = await db
-        .update(pbv2TreeVersions)
+        .update(products)
         .set({
-          treeJson: normalizedTreeJson,
-          updatedAt: new Date(),
-          updatedByUserId: userId ?? null,
+          optionTreeJson: normalizedTreeJson,
         })
-        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, id)))
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
         .returning();
 
-      return res.json({ success: true, data: updated });
+      if (!updated) {
+        return res.status(404).json({ success: false, message: "Product not found" });
+      }
+
+      // Return synthetic draft format for client compatibility
+      const syntheticDraft = {
+        id: `synthetic-${productId}`,
+        productId: productId,
+        organizationId: organizationId,
+        status: "DRAFT" as const,
+        treeJson: normalizedTreeJson,
+        createdAt: updated.createdAt,
+        updatedAt: new Date(),
+        createdByUserId: null,
+        updatedByUserId: null,
+      };
+
+      return res.json({ success: true, data: syntheticDraft });
     } catch (error: any) {
-      console.error("Error updating PBV2 tree version:", error);
+      console.error("Error updating PBV2 tree:", error);
       return res.status(500).json({ success: false, message: "Failed to update PBV2 tree version" });
     }
   });
