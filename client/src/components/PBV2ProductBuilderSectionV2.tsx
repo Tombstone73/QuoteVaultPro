@@ -33,6 +33,9 @@ import {
   createUpdateChoicePatch,
   createDeleteChoicePatch,
   createReorderChoicePatch,
+  createUpdateNodePricingPatch,
+  createAddPricingRulePatch,
+  createDeletePricingRulePatch,
   applyPatchToTree,
 } from "@/lib/pbv2/pbv2ViewModel";
 import type { EditorOptionGroup } from "@/lib/pbv2/pbv2ViewModel";
@@ -339,6 +342,36 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     setHasLocalChanges(true);
   };
 
+  const handleUpdateNodePricing = (
+    optionId: string,
+    pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>
+  ) => {
+    if (!localTreeJson) return;
+    const { patch } = createUpdateNodePricingPatch(localTreeJson, optionId, pricingImpact);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleAddPricingRule = (
+    optionId: string,
+    rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }
+  ) => {
+    if (!localTreeJson) return;
+    const { patch } = createAddPricingRulePatch(localTreeJson, optionId, rule);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleDeletePricingRule = (optionId: string, ruleIndex: number) => {
+    if (!localTreeJson) return;
+    const { patch } = createDeletePricingRulePatch(localTreeJson, optionId, ruleIndex);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
   const handleUpdateProduct = (updates: any) => {
     if (!localTreeJson) return;
     const tree = JSON.parse(JSON.stringify(localTreeJson));
@@ -492,6 +525,9 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
         onUpdateChoice={handleUpdateChoice}
         onDeleteChoice={handleDeleteChoice}
         onReorderChoice={handleReorderChoice}
+        onUpdateNodePricing={handleUpdateNodePricing}
+        onAddPricingRule={handleAddPricingRule}
+        onDeletePricingRule={handleDeletePricingRule}
         onUpdateProduct={handleUpdateProduct}
         onSave={handleSave}
         onPublish={handlePublish}

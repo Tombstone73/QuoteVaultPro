@@ -277,10 +277,18 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
     },
   };
 
+  const patchedTree = {
+    ...tree,
+    nodes: [...nodes, newNode],
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: [...nodes, newNode],
-      edges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
     newGroupId,
   };
@@ -312,10 +320,18 @@ export function createUpdateGroupPatch(
     return updated;
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
   };
 }
@@ -346,10 +362,18 @@ export function createDeleteGroupPatch(treeJson: unknown, groupId: string): { pa
     return e;
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges: updatedEdges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges: updatedEdges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
   };
 }
@@ -404,10 +428,18 @@ export function createUpdateOptionPatch(
     return updated;
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
   };
 }
@@ -447,10 +479,18 @@ export function createAddChoicePatch(
     };
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
     newChoiceValue: newValue,
   };
@@ -463,7 +503,7 @@ export function createUpdateChoicePatch(
   treeJson: unknown,
   optionId: string,
   choiceValue: string,
-  updates: { label?: string; value?: string; description?: string }
+  updates: { label?: string; value?: string; description?: string; priceDeltaCents?: number }
 ): { patch: any; validationError?: string } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
   
@@ -491,6 +531,7 @@ export function createUpdateChoicePatch(
       if (updates.label !== undefined) updated.label = updates.label;
       if (updates.value !== undefined) updated.value = updates.value;
       if (updates.description !== undefined) updated.description = updates.description;
+      if (updates.priceDeltaCents !== undefined) updated.priceDeltaCents = updates.priceDeltaCents;
       return updated;
     });
 
@@ -507,10 +548,18 @@ export function createUpdateChoicePatch(
     };
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
   };
 }
@@ -543,10 +592,18 @@ export function createDeleteChoicePatch(
     };
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
   };
 }
@@ -581,10 +638,18 @@ export function createReorderChoicePatch(
     };
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
   };
 }
@@ -624,10 +689,18 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
     priority: 0,
   };
 
+  const patchedTree = {
+    ...tree,
+    nodes: [...nodes, newNode],
+    edges: [...edges, newEdge],
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: [...nodes, newNode],
-      edges: [...edges, newEdge],
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
     newOptionId,
   };
@@ -653,10 +726,18 @@ export function createDeleteOptionPatch(treeJson: unknown, optionId: string): { 
     return e;
   });
 
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges: updatedEdges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
   return {
     patch: {
-      nodes: updatedNodes,
-      edges: updatedEdges,
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
     },
   };
 }
@@ -675,4 +756,372 @@ export function applyPatchToTree(treeJson: unknown, patch: { nodes?: PBV2Node[];
   }
 
   return tree;
+}
+
+/**
+ * Helper to slugify a string for use as selectionKey or other identifiers
+ */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .substring(0, 50) || 'key';
+}
+
+/**
+ * Enforce tree invariants to prevent common authoring errors.
+ * This function auto-repairs common issues:
+ * 
+ * 1. INPUT nodes without selectionKey - sets from internalId/label/id
+ * 2. INPUT nodes without valueType - infers from input.type
+ * 3. Invalid edge conditions - replaces with null (unconditional)
+ * 4. ENABLED edges to GROUP nodes - rewires to first child or disables
+ * 5. Invalid rootNodeIds - repairs to first valid ENABLED runtime node
+ */
+export function ensureTreeInvariants(treeJson: unknown): any {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  // Map nodes and edges by ID for quick lookup
+  const nodesById = new Map(nodes.map(n => [n.id, n]));
+  const edgesById = new Map(edges.map(e => [e.id, e]));
+
+  // Track changes
+  let mutated = false;
+
+  // 1. INPUT selectionKey auto-repair
+  for (const node of nodes) {
+    if (node.status === 'DELETED') continue;
+    if (node.type?.toUpperCase() !== 'INPUT') continue;
+
+    const input = node.input ?? {};
+    
+    // Check if selectionKey is missing or empty
+    if (!node.key || !node.key.trim()) {
+      // Generate selectionKey from internalId, label, or id (in that order)
+      const internalId = (node as any).internalId;
+      const label = node.label;
+      const fallback = node.id;
+
+      let newKey = '';
+      if (internalId && typeof internalId === 'string' && internalId.trim()) {
+        newKey = slugify(internalId);
+      } else if (label && typeof label === 'string' && label.trim()) {
+        newKey = slugify(label);
+      } else {
+        newKey = slugify(fallback);
+      }
+
+      node.key = newKey;
+      mutated = true;
+    }
+  }
+
+  // 2. INPUT valueType auto-repair
+  for (const node of nodes) {
+    if (node.status === 'DELETED') continue;
+    if (node.type?.toUpperCase() !== 'INPUT') continue;
+
+    const input = node.input ?? {};
+    const inputType = input.type?.toLowerCase();
+    
+    // Check if valueType is missing or unknown
+    let currentValueType = (input as any).valueType;
+    if (!currentValueType || typeof currentValueType !== 'string') {
+      // Infer valueType from input.type
+      let newValueType = 'string'; // default
+      
+      switch (inputType) {
+        case 'boolean':
+          newValueType = 'boolean';
+          break;
+        case 'number':
+          newValueType = 'number';
+          break;
+        case 'dimension':
+          newValueType = 'dimension';
+          break;
+        case 'select':
+        case 'multiselect':
+        case 'text':
+        case 'textarea':
+        default:
+          newValueType = 'string';
+          break;
+      }
+
+      if (!node.input) node.input = {};
+      (node.input as any).valueType = newValueType;
+      mutated = true;
+    }
+  }
+
+  // 3. Edge condition validity
+  for (const edge of edges) {
+    if (edge.status === 'DELETED') continue;
+    
+    const condition = edge.condition;
+    
+    // Check if condition is present but invalid (not null, undefined, or a valid object)
+    if (condition !== null && condition !== undefined) {
+      // Simple validation: condition should be an object with 'op' field
+      const isValidCondition = 
+        typeof condition === 'object' && 
+        condition !== null && 
+        'op' in condition &&
+        typeof (condition as any).op === 'string';
+      
+      if (!isValidCondition) {
+        // Replace with null for unconditional
+        edge.condition = null;
+        mutated = true;
+      }
+    }
+  }
+
+  // 4. ENABLED edges cannot connect to GROUP nodes - rewire or disable
+  for (const edge of edges) {
+    if (edge.status !== 'ENABLED') continue;
+    if (!edge.toNodeId) continue;
+
+    const targetNode = nodesById.get(edge.toNodeId);
+    if (!targetNode) continue;
+
+    // Check if target is a GROUP node
+    if (targetNode.type?.toUpperCase() === 'GROUP') {
+      // Find child edges from this GROUP node
+      const childEdges = edges.filter(e => 
+        e.fromNodeId === targetNode.id && 
+        e.status !== 'DELETED' &&
+        e.toNodeId
+      );
+
+      if (childEdges.length > 0) {
+        // Rewire to first child option node
+        const firstChild = nodesById.get(childEdges[0].toNodeId!);
+        if (firstChild && firstChild.type?.toUpperCase() !== 'GROUP') {
+          edge.toNodeId = firstChild.id;
+          mutated = true;
+        } else {
+          // No valid child, disable the edge
+          edge.status = 'DISABLED';
+          mutated = true;
+        }
+      } else {
+        // No children, disable the edge
+        edge.status = 'DISABLED';
+        mutated = true;
+      }
+    }
+
+    // Also check if FROM node is a GROUP (edges FROM group nodes should be disabled in runtime)
+    const fromNode = edge.fromNodeId ? nodesById.get(edge.fromNodeId) : null;
+    if (fromNode && fromNode.type?.toUpperCase() === 'GROUP') {
+      // GROUP nodes can have ENABLED edges in authoring (they represent the group's options)
+      // This is actually OK - don't disable
+      // The runtime evaluator will handle this properly
+    }
+  }
+
+  // 5. Root auto-repair - ensure rootNodeIds points to at least one ENABLED runtime node
+  const rootNodeIds = Array.isArray((tree as any).rootNodeIds) ? (tree as any).rootNodeIds : [];
+  
+  // Find valid runtime nodes (ENABLED, non-GROUP, non-DELETED)
+  const validRuntimeNodes = nodes.filter(n => 
+    n.status === 'ENABLED' && 
+    n.type?.toUpperCase() !== 'GROUP' &&
+    n.type?.toUpperCase() !== 'DELETED'
+  );
+
+  // Check if current roots are valid
+  const validRoots = rootNodeIds.filter((id: string) => {
+    const node = nodesById.get(id);
+    return node && 
+           node.status === 'ENABLED' && 
+           node.type?.toUpperCase() !== 'GROUP';
+  });
+
+  if (validRoots.length === 0 && validRuntimeNodes.length > 0) {
+    // No valid roots, set to first available enabled runtime node
+    (tree as any).rootNodeIds = [validRuntimeNodes[0].id];
+    mutated = true;
+  } else if (validRoots.length === 0 && validRuntimeNodes.length === 0) {
+    // No valid nodes at all, clear roots
+    (tree as any).rootNodeIds = [];
+    mutated = true;
+  } else if (validRoots.length < rootNodeIds.length) {
+    // Some roots were invalid, keep only valid ones
+    (tree as any).rootNodeIds = validRoots;
+    mutated = true;
+  }
+
+  // Return potentially mutated tree
+  return tree;
+}
+
+/**
+ * Create patch to update node-level pricing impact rules
+ */
+export function createUpdateNodePricingPatch(
+  treeJson: unknown,
+  nodeId: string,
+  pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    return {
+      ...n,
+      pricingImpact: pricingImpact.map(rule => ({
+        mode: rule.mode,
+        amountCents: rule.cents,
+        label: rule.label,
+      })),
+    };
+  });
+
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
+  return {
+    patch: {
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
+    },
+  };
+}
+
+/**
+ * Create patch to add a pricing rule to a node
+ */
+export function createAddPricingRulePatch(
+  treeJson: unknown,
+  nodeId: string,
+  rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const existingRules = n.pricingImpact || [];
+    const newRule = {
+      mode: rule.mode,
+      amountCents: rule.cents,
+      label: rule.label,
+    };
+
+    return {
+      ...n,
+      pricingImpact: [...existingRules, newRule],
+    };
+  });
+
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
+  return {
+    patch: {
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
+    },
+  };
+}
+
+/**
+ * Create patch to delete a pricing rule from a node
+ */
+export function createDeletePricingRulePatch(
+  treeJson: unknown,
+  nodeId: string,
+  ruleIndex: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const existingRules = n.pricingImpact || [];
+    const updatedRules = existingRules.filter((_, idx) => idx !== ruleIndex);
+
+    return {
+      ...n,
+      pricingImpact: updatedRules,
+    };
+  });
+
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
+  return {
+    patch: {
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
+    },
+  };
+}
+
+/**
+ * Create patch to update a choice's price delta
+ */
+export function createUpdateChoicePriceDeltaPatch(
+  treeJson: unknown,
+  optionId: string,
+  choiceValue: string,
+  priceDeltaCents: number | undefined
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== optionId) return n;
+
+    const updatedChoices = (n.choices || []).map((c: any) => {
+      if (c.value !== choiceValue) return c;
+      
+      const updated = { ...c };
+      if (priceDeltaCents === undefined) {
+        delete updated.priceDeltaCents;
+      } else {
+        updated.priceDeltaCents = priceDeltaCents;
+      }
+      return updated;
+    });
+
+    return {
+      ...n,
+      choices: updatedChoices,
+    };
+  });
+
+  const patchedTree = {
+    ...tree,
+    nodes: updatedNodes,
+    edges,
+  };
+
+  const repairedTree = ensureTreeInvariants(patchedTree);
+
+  return {
+    patch: {
+      nodes: repairedTree.nodes,
+      edges: repairedTree.edges,
+    },
+  };
 }

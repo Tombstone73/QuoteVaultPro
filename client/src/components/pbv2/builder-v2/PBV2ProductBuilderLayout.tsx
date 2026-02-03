@@ -44,6 +44,9 @@ export interface PBV2ProductBuilderLayoutProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
+  onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>) => void;
+  onAddPricingRule: (optionId: string, rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }) => void;
+  onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
@@ -82,6 +85,9 @@ export function PBV2ProductBuilderLayout({
   onUpdateChoice,
   onDeleteChoice,
   onReorderChoice,
+  onUpdateNodePricing,
+  onAddPricingRule,
+  onDeletePricingRule,
   onUpdateProduct,
   onSave,
   onPublish,
@@ -135,6 +141,9 @@ export function PBV2ProductBuilderLayout({
             onUpdateChoice={onUpdateChoice}
             onDeleteChoice={onDeleteChoice}
             onReorderChoice={onReorderChoice}
+            onUpdateNodePricing={onUpdateNodePricing}
+            onAddPricingRule={onAddPricingRule}
+            onDeletePricingRule={onDeletePricingRule}
           />
         </div>
         

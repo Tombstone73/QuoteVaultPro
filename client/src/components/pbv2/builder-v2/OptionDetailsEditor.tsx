@@ -17,6 +17,9 @@ interface OptionDetailsEditorProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
+  onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>) => void;
+  onAddPricingRule: (optionId: string, rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }) => void;
+  onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
   editingChoiceValue: { optionId: string; value: string } | null;
   setEditingChoiceValue: (val: { optionId: string; value: string } | null) => void;
 }
@@ -29,6 +32,9 @@ export function OptionDetailsEditor({
   onUpdateChoice,
   onDeleteChoice,
   onReorderChoice,
+  onUpdateNodePricing,
+  onAddPricingRule,
+  onDeletePricingRule,
   editingChoiceValue,
   setEditingChoiceValue
 }: OptionDetailsEditorProps) {
@@ -137,6 +143,7 @@ export function OptionDetailsEditor({
                 )}
               </div>
               <Button
+                type="button"
                 onClick={() => onAddChoice(option.id)}
                 size="sm"
                 variant="outline"
@@ -161,6 +168,7 @@ export function OptionDetailsEditor({
                       <div className="flex items-start gap-2">
                         <div className="flex flex-col gap-1 mt-2">
                           <Button
+                            type="button"
                             variant="ghost"
                             size="sm"
                             onClick={() => index > 0 && onReorderChoice(option.id, index, index - 1)}
@@ -170,6 +178,7 @@ export function OptionDetailsEditor({
                             <ChevronUp className="h-3.5 w-3.5" />
                           </Button>
                           <Button
+                            type="button"
                             variant="ghost"
                             size="sm"
                             onClick={() => index < choices.length - 1 && onReorderChoice(option.id, index, index + 1)}
@@ -224,6 +233,7 @@ export function OptionDetailsEditor({
                                     autoFocus
                                   />
                                   <Button
+                                    type="button"
                                     size="sm"
                                     onClick={() => {
                                       if (editingChoiceValue) {
@@ -241,6 +251,7 @@ export function OptionDetailsEditor({
                                     {choice.value}
                                   </code>
                                   <Button
+                                    type="button"
                                     size="sm"
                                     variant="outline"
                                     onClick={() => setEditingChoiceValue({ optionId: option.id, value: choice.value })}
@@ -258,9 +269,37 @@ export function OptionDetailsEditor({
                               </div>
                             )}
                           </div>
+
+                          <div>
+                            <Label className="text-xs text-slate-400 mb-1 block">Price Delta (cents)</Label>
+                            <Input
+                              type="number"
+                              value={choice.priceDeltaCents ?? ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                onUpdateChoice(option.id, choice.value, {
+                                  priceDeltaCents: value === '' ? undefined : parseInt(value, 10) || 0
+                                });
+                              }}
+                              onBlur={(e) => {
+                                const value = e.target.value;
+                                if (value === '') {
+                                  onUpdateChoice(option.id, choice.value, { priceDeltaCents: undefined });
+                                }
+                              }}
+                              placeholder="0 (optional)"
+                              className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
+                            />
+                            {choice.priceDeltaCents !== undefined && choice.priceDeltaCents !== null && (
+                              <div className="text-xs text-slate-400 mt-1">
+                                {choice.priceDeltaCents >= 0 ? '+' : ''}${((choice.priceDeltaCents || 0) / 100).toFixed(2)}
+                              </div>
+                            )}
+                          </div>
                         </div>
 
                         <Button
+                          type="button"
                           variant="ghost"
                           size="sm"
                           onClick={() => onDeleteChoice(option.id, choice.value)}
@@ -307,6 +346,160 @@ export function OptionDetailsEditor({
           </div>
         </>
       )}
+
+      <Separator className="bg-slate-700" />
+      
+      {/* Pricing Impact Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <Label className="text-slate-300">Pricing Impact</Label>
+            <p className="text-xs text-slate-400 mt-0.5">Add pricing rules that apply when this option is selected</p>
+          </div>
+          <Button
+            type="button"
+            onClick={() => {
+              onAddPricingRule(option.id, { mode: 'addFlatCents', cents: 0, label: '' });
+            }}
+            size="sm"
+            variant="outline"
+            className="gap-1.5 text-xs"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add Pricing Rule
+          </Button>
+        </div>
+
+        {nodeData?.pricingImpact && Array.isArray(nodeData.pricingImpact) && nodeData.pricingImpact.length > 0 && (
+          <div className="space-y-2">
+            {nodeData.pricingImpact.map((rule: any, index: number) => {
+              const mode = rule.mode || 'addFlatCents';
+              const cents = rule.amountCents ?? 0;
+              const label = rule.label || '';
+
+              return (
+                <div
+                  key={index}
+                  className="bg-[#1e293b] border border-slate-700 rounded-lg p-3 space-y-2"
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 space-y-2">
+                      <div>
+                        <Label className="text-xs text-slate-400 mb-1 block">Mode</Label>
+                        <Select
+                          value={mode}
+                          onValueChange={(value) => {
+                            const updatedRules = [...(nodeData.pricingImpact || [])];
+                            updatedRules[index] = { ...updatedRules[index], mode: value };
+                            onUpdateNodePricing(
+                              option.id,
+                              updatedRules.map((r: any) => ({
+                                mode: r.mode || 'addFlatCents',
+                                cents: r.amountCents ?? 0,
+                                label: r.label,
+                              }))
+                            );
+                          }}
+                        >
+                          <SelectTrigger className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="addFlatCents">Add Flat Amount</SelectItem>
+                            <SelectItem value="addPerQtyCents">Add Per Quantity</SelectItem>
+                            <SelectItem value="addPerSqftCents">Add Per Square Foot</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div className="text-xs text-slate-400 mt-1">
+                          {mode === 'addFlatCents' && '• Adds a fixed amount once'}
+                          {mode === 'addPerQtyCents' && '• Multiplies by quantity'}
+                          {mode === 'addPerSqftCents' && '• Multiplies by square footage (width × height ÷ 144)'}
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs text-slate-400 mb-1 block">Amount (cents)</Label>
+                        <Input
+                          type="number"
+                          value={cents === 0 ? '' : cents}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            if (value === '') return; // Don't update while empty
+                            
+                            const updatedRules = [...(nodeData.pricingImpact || [])];
+                            updatedRules[index] = { ...updatedRules[index], amountCents: parseInt(value, 10) || 0 };
+                            onUpdateNodePricing(
+                              option.id,
+                              updatedRules.map((r: any) => ({
+                                mode: r.mode || 'addFlatCents',
+                                cents: r.amountCents ?? 0,
+                                label: r.label,
+                              }))
+                            );
+                          }}
+                          onBlur={(e) => {
+                            const value = e.target.value;
+                            if (value === '') {
+                              // Clear to 0 on blur if empty
+                              const updatedRules = [...(nodeData.pricingImpact || [])];
+                              updatedRules[index] = { ...updatedRules[index], amountCents: 0 };
+                              onUpdateNodePricing(
+                                option.id,
+                                updatedRules.map((r: any) => ({
+                                  mode: r.mode || 'addFlatCents',
+                                  cents: r.amountCents ?? 0,
+                                  label: r.label,
+                                }))
+                              );
+                            }
+                          }}
+                          placeholder="0"
+                          className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
+                        />
+                        <div className="text-xs text-slate-400 mt-1">
+                          ${((cents || 0) / 100).toFixed(2)}
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs text-slate-400 mb-1 block">Label (optional)</Label>
+                        <Input
+                          type="text"
+                          value={label}
+                          onChange={(e) => {
+                            const updatedRules = [...(nodeData.pricingImpact || [])];
+                            updatedRules[index] = { ...updatedRules[index], label: e.target.value };
+                            onUpdateNodePricing(
+                              option.id,
+                              updatedRules.map((r: any) => ({
+                                mode: r.mode || 'addFlatCents',
+                                cents: r.amountCents ?? 0,
+                                label: r.label,
+                              }))
+                            );
+                          }}
+                          placeholder="e.g., Setup fee"
+                          className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onDeletePricingRule(option.id, index)}
+                      className="text-red-400 hover:text-red-300 hover:bg-red-500/10 mt-1"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {(hasEmptyLabels || hasEmptyValues || duplicateValues.size > 0) && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 space-y-1">
