@@ -1125,3 +1125,196 @@ export function createUpdateChoicePriceDeltaPatch(
     },
   };
 }
+
+/**
+ * Create patch to update base pricing (perSqftCents, perPieceCents, minimumChargeCents).
+ */
+export function createUpdatePricingV2BasePatch(
+  treeJson: unknown,
+  base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }
+): { patch: any } {
+  const { tree } = normalizeArrays(treeJson);
+  
+  const currentPricing = tree.meta?.pricingV2 || {};
+  const updatedPricing = {
+    ...currentPricing,
+    base: {
+      ...(currentPricing.base || {}),
+      ...base,
+    },
+  };
+
+  const repairedTree = ensureTreeInvariants({
+    ...tree,
+    meta: {
+      ...tree.meta,
+      pricingV2: updatedPricing,
+    },
+  });
+
+  return {
+    patch: {
+      meta: repairedTree.meta,
+    },
+  };
+}
+
+/**
+ * Create patch to update unit system (imperial/metric).
+ */
+export function createUpdatePricingV2UnitSystemPatch(
+  treeJson: unknown,
+  unitSystem: 'imperial' | 'metric'
+): { patch: any } {
+  const { tree } = normalizeArrays(treeJson);
+  
+  const currentPricing = tree.meta?.pricingV2 || {};
+  const updatedPricing = {
+    ...currentPricing,
+    unitSystem,
+  };
+
+  const repairedTree = ensureTreeInvariants({
+    ...tree,
+    meta: {
+      ...tree.meta,
+      pricingV2: updatedPricing,
+    },
+  });
+
+  return {
+    patch: {
+      meta: repairedTree.meta,
+    },
+  };
+}
+
+/**
+ * Create patch to add a pricing tier (qty or sqft).
+ */
+export function createAddPricingV2TierPatch(
+  treeJson: unknown,
+  kind: 'qty' | 'sqft'
+): { patch: any } {
+  const { tree } = normalizeArrays(treeJson);
+  
+  const currentPricing = tree.meta?.pricingV2 || {};
+  const tiersKey = kind === 'qty' ? 'qtyTiers' : 'sqftTiers';
+  const currentTiers = currentPricing[tiersKey] || [];
+
+  const newTier = kind === 'qty'
+    ? { minQty: 1, perSqftCents: undefined, perPieceCents: undefined, minimumChargeCents: undefined }
+    : { minSqft: 0, perSqftCents: undefined, perPieceCents: undefined, minimumChargeCents: undefined };
+
+  const updatedTiers = [...currentTiers, newTier];
+
+  const updatedPricing = {
+    ...currentPricing,
+    [tiersKey]: updatedTiers,
+  };
+
+  const repairedTree = ensureTreeInvariants({
+    ...tree,
+    meta: {
+      ...tree.meta,
+      pricingV2: updatedPricing,
+    },
+  });
+
+  return {
+    patch: {
+      meta: repairedTree.meta,
+    },
+  };
+}
+
+/**
+ * Create patch to update a pricing tier.
+ */
+export function createUpdatePricingV2TierPatch(
+  treeJson: unknown,
+  kind: 'qty' | 'sqft',
+  index: number,
+  tier: any
+): { patch: any } {
+  const { tree } = normalizeArrays(treeJson);
+  
+  const currentPricing = tree.meta?.pricingV2 || {};
+  const tiersKey = kind === 'qty' ? 'qtyTiers' : 'sqftTiers';
+  const currentTiers = currentPricing[tiersKey] || [];
+
+  if (index < 0 || index >= currentTiers.length) {
+    // Invalid index, no-op
+    return { patch: {} };
+  }
+
+  const updatedTiers = [...currentTiers];
+  updatedTiers[index] = tier;
+
+  // Auto-sort tiers by min ascending
+  updatedTiers.sort((a, b) => {
+    const minA = kind === 'qty' ? (a.minQty || 0) : (a.minSqft || 0);
+    const minB = kind === 'qty' ? (b.minQty || 0) : (b.minSqft || 0);
+    return minA - minB;
+  });
+
+  const updatedPricing = {
+    ...currentPricing,
+    [tiersKey]: updatedTiers,
+  };
+
+  const repairedTree = ensureTreeInvariants({
+    ...tree,
+    meta: {
+      ...tree.meta,
+      pricingV2: updatedPricing,
+    },
+  });
+
+  return {
+    patch: {
+      meta: repairedTree.meta,
+    },
+  };
+}
+
+/**
+ * Create patch to delete a pricing tier.
+ */
+export function createDeletePricingV2TierPatch(
+  treeJson: unknown,
+  kind: 'qty' | 'sqft',
+  index: number
+): { patch: any } {
+  const { tree } = normalizeArrays(treeJson);
+  
+  const currentPricing = tree.meta?.pricingV2 || {};
+  const tiersKey = kind === 'qty' ? 'qtyTiers' : 'sqftTiers';
+  const currentTiers = currentPricing[tiersKey] || [];
+
+  if (index < 0 || index >= currentTiers.length) {
+    // Invalid index, no-op
+    return { patch: {} };
+  }
+
+  const updatedTiers = currentTiers.filter((_: any, i: number) => i !== index);
+
+  const updatedPricing = {
+    ...currentPricing,
+    [tiersKey]: updatedTiers,
+  };
+
+  const repairedTree = ensureTreeInvariants({
+    ...tree,
+    meta: {
+      ...tree.meta,
+      pricingV2: updatedPricing,
+    },
+  });
+
+  return {
+    patch: {
+      meta: repairedTree.meta,
+    },
+  };
+}

@@ -3,6 +3,7 @@ import { ProductHeader } from './ProductHeader';
 import { OptionGroupsSidebar } from './OptionGroupsSidebar';
 import { OptionEditor } from './OptionEditor';
 import { PricingValidationPanel } from './PricingValidationPanel';
+import { BasePricingEditor } from './BasePricingEditor';
 import type { EditorModel } from '@/lib/pbv2/pbv2ViewModel';
 import type { Finding } from '@shared/pbv2/findings';
 
@@ -47,6 +48,11 @@ export interface PBV2ProductBuilderLayoutProps {
   onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>) => void;
   onAddPricingRule: (optionId: string, rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }) => void;
   onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
+  onUpdatePricingV2Base: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
+  onUpdatePricingV2UnitSystem: (unitSystem: 'imperial' | 'metric') => void;
+  onAddPricingV2Tier: (kind: 'qty' | 'sqft') => void;
+  onUpdatePricingV2Tier: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
+  onDeletePricingV2Tier: (kind: 'qty' | 'sqft', index: number) => void;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
@@ -88,6 +94,11 @@ export function PBV2ProductBuilderLayout({
   onUpdateNodePricing,
   onAddPricingRule,
   onDeletePricingRule,
+  onUpdatePricingV2Base,
+  onUpdatePricingV2UnitSystem,
+  onAddPricingV2Tier,
+  onUpdatePricingV2Tier,
+  onDeletePricingV2Tier,
   onUpdateProduct,
   onSave,
   onPublish,
@@ -110,6 +121,18 @@ export function PBV2ProductBuilderLayout({
         onImportJson={onImportJson}
         onUpdateProductName={(name) => onUpdateProduct({ name })}
       />
+      
+      {/* Base Pricing Model section */}
+      <div className="px-4 py-3 border-b border-slate-700">
+        <BasePricingEditor
+          pricingV2={(treeJson as any)?.meta?.pricingV2 || null}
+          onUpdateBase={onUpdatePricingV2Base}
+          onUpdateUnitSystem={onUpdatePricingV2UnitSystem}
+          onAddTier={onAddPricingV2Tier}
+          onUpdateTier={onUpdatePricingV2Tier}
+          onDeleteTier={onDeletePricingV2Tier}
+        />
+      </div>
       
       {/* 3-column layout: flex-1 fills remaining space, overflow-hidden prevents scroll leaks */}
       <div className="flex-1 flex overflow-hidden">

@@ -26,6 +26,27 @@ export type WeightImpact =
   | { mode: "addPerQty"; oz: number; applyWhen?: ConditionExpr; label?: string }
   | { mode: "addPerSqft"; oz: number; applyWhen?: ConditionExpr; label?: string };
 
+export type PricingV2Tier = {
+  minQty?: number;
+  minSqft?: number;
+  perSqftCents?: number;
+  perPieceCents?: number;
+  minimumChargeCents?: number;
+};
+
+export type PricingV2Base = {
+  perSqftCents?: number;
+  perPieceCents?: number;
+  minimumChargeCents?: number;
+};
+
+export type PricingV2 = {
+  unitSystem?: "imperial" | "metric";
+  base?: PricingV2Base;
+  qtyTiers?: PricingV2Tier[];
+  sqftTiers?: PricingV2Tier[];
+};
+
 export type Effect =
   | { type: "setFlag"; flagCode: string; tone?: string; message?: string }
   | { type: "requireArtwork"; required: boolean }
@@ -80,6 +101,7 @@ export type OptionTreeV2 = {
     updatedByUserId?: string;
     notes?: string;
     baseWeightOz?: number;
+    pricingV2?: PricingV2;
   };
 };
 
@@ -121,6 +143,27 @@ export const weightImpactSchema: z.ZodType<WeightImpact> = z.discriminatedUnion(
   z.object({ mode: z.literal("addPerQty"), oz: z.number(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
   z.object({ mode: z.literal("addPerSqft"), oz: z.number(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
 ]);
+
+export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
+  minQty: z.number().int().min(1).optional(),
+  minSqft: z.number().positive().optional(),
+  perSqftCents: z.number().int().min(0).optional(),
+  perPieceCents: z.number().int().min(0).optional(),
+  minimumChargeCents: z.number().int().min(0).optional(),
+});
+
+export const pricingV2BaseSchema: z.ZodType<PricingV2Base> = z.object({
+  perSqftCents: z.number().int().min(0).optional(),
+  perPieceCents: z.number().int().min(0).optional(),
+  minimumChargeCents: z.number().int().min(0).optional(),
+});
+
+export const pricingV2Schema: z.ZodType<PricingV2> = z.object({
+  unitSystem: z.enum(["imperial", "metric"]).optional(),
+  base: pricingV2BaseSchema.optional(),
+  qtyTiers: z.array(pricingV2TierSchema).optional(),
+  sqftTiers: z.array(pricingV2TierSchema).optional(),
+});
 
 export const effectSchema: z.ZodType<Effect> = z.discriminatedUnion("type", [
   z.object({ type: z.literal("setFlag"), flagCode: z.string(), tone: z.string().optional(), message: z.string().optional() }),
@@ -198,6 +241,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       updatedByUserId: z.string().optional(),
       notes: z.string().optional(),
       baseWeightOz: z.number().optional(),
+      pricingV2: pricingV2Schema.optional(),
     })
     .optional(),
 });

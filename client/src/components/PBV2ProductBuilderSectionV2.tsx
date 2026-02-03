@@ -36,6 +36,11 @@ import {
   createUpdateNodePricingPatch,
   createAddPricingRulePatch,
   createDeletePricingRulePatch,
+  createUpdatePricingV2BasePatch,
+  createUpdatePricingV2UnitSystemPatch,
+  createAddPricingV2TierPatch,
+  createUpdatePricingV2TierPatch,
+  createDeletePricingV2TierPatch,
   applyPatchToTree,
 } from "@/lib/pbv2/pbv2ViewModel";
 import type { EditorOptionGroup } from "@/lib/pbv2/pbv2ViewModel";
@@ -372,6 +377,46 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     setHasLocalChanges(true);
   };
 
+  const handleUpdatePricingV2Base = (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => {
+    if (!localTreeJson) return;
+    const { patch } = createUpdatePricingV2BasePatch(localTreeJson, base);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleUpdatePricingV2UnitSystem = (unitSystem: 'imperial' | 'metric') => {
+    if (!localTreeJson) return;
+    const { patch } = createUpdatePricingV2UnitSystemPatch(localTreeJson, unitSystem);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleAddPricingV2Tier = (kind: 'qty' | 'sqft') => {
+    if (!localTreeJson) return;
+    const { patch } = createAddPricingV2TierPatch(localTreeJson, kind);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleUpdatePricingV2Tier = (kind: 'qty' | 'sqft', index: number, tier: any) => {
+    if (!localTreeJson) return;
+    const { patch } = createUpdatePricingV2TierPatch(localTreeJson, kind, index, tier);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
+  const handleDeletePricingV2Tier = (kind: 'qty' | 'sqft', index: number) => {
+    if (!localTreeJson) return;
+    const { patch } = createDeletePricingV2TierPatch(localTreeJson, kind, index);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+  };
+
   const handleUpdateProduct = (updates: any) => {
     if (!localTreeJson) return;
     const tree = JSON.parse(JSON.stringify(localTreeJson));
@@ -528,6 +573,11 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
         onUpdateNodePricing={handleUpdateNodePricing}
         onAddPricingRule={handleAddPricingRule}
         onDeletePricingRule={handleDeletePricingRule}
+        onUpdatePricingV2Base={handleUpdatePricingV2Base}
+        onUpdatePricingV2UnitSystem={handleUpdatePricingV2UnitSystem}
+        onAddPricingV2Tier={handleAddPricingV2Tier}
+        onUpdatePricingV2Tier={handleUpdatePricingV2Tier}
+        onDeletePricingV2Tier={handleDeletePricingV2Tier}
         onUpdateProduct={handleUpdateProduct}
         onSave={handleSave}
         onPublish={handlePublish}
