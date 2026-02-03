@@ -33,6 +33,7 @@ import {
 import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSection from "@/components/PBV2ProductBuilderSection";
+import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -50,6 +51,11 @@ const ProductEditorPage = () => {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const lastLoadedRef = useRef<ProductFormData | null>(null);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [optionsMode, setOptionsMode] = useState<"legacy" | "treeV2">("treeV2");
+
+  // Check if we should use legacy builder (from URL query param)
+  const searchParams = new URLSearchParams(window.location.search);
+  const useLegacyBuilder = searchParams.get('legacy') === 'true';
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
@@ -114,13 +120,33 @@ const ProductEditorPage = () => {
       };
       lastLoadedRef.current = nextValues;
       form.reset(nextValues);
+      
+      // Determine optionsMode based on product data
+      const optionTreeJson = (product as any).optionTreeJson;
+      if (optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
+        setOptionsMode("treeV2");
+      } else if (!productId) {
+        // New products default to Tree v2
+        setOptionsMode("treeV2");
+      } else {
+        // Check localStorage for existing products
+        const storageKey = `productEditor:optionsMode:${productId}`;
+        try {
+          const stored = localStorage.getItem(storageKey);
+          setOptionsMode(stored === 'treeV2' ? 'treeV2' : 'legacy');
+        } catch {
+          setOptionsMode('legacy');
+        }
+      }
     }
-  }, [product, isNewProduct, form]);
+  }, [product, isNewProduct, form, productId]);
 
   useEffect(() => {
     // For new products, keep a discard baseline so "Discard" works.
     if (isNewProduct) {
       lastLoadedRef.current = form.getValues();
+      // Default to Tree v2 for new products
+      setOptionsMode("treeV2");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNewProduct]);
@@ -337,9 +363,30 @@ const ProductEditorPage = () => {
               productTypes={productTypes}
               onSave={handleSave}
               formId="product-editor-form"
+              optionsModeState={{
+                mode: optionsMode,
+                setMode: (mode) => {
+                  setOptionsMode(mode);
+                  // Persist to localStorage
+                  if (productId) {
+                    try {
+                      localStorage.setItem(`productEditor:optionsMode:${productId}`, mode);
+                    } catch (e) {
+                      console.warn('Failed to persist optionsMode:', e);
+                    }
+                  }
+                },
+              }}
             />
 
-            {!isNewProduct && productId ? <PBV2ProductBuilderSection productId={productId} /> : null}
+            {/* Render PBV2 builder only when Tree v2 is enabled and for saved products */}
+            {!isNewProduct && productId && optionsMode === "treeV2" ? (
+              useLegacyBuilder ? (
+                <PBV2ProductBuilderSection productId={productId} />
+              ) : (
+                <PBV2ProductBuilderSectionV2 productId={productId} />
+              )
+            ) : null}
           </div>
         </Form>
       }
