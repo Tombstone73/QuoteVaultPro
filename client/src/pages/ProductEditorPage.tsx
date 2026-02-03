@@ -34,6 +34,7 @@ import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSection from "@/components/PBV2ProductBuilderSection";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
+import { createEmptyOptionTreeV2, optionTreeV2Schema } from "@shared/optionTreeV2";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -51,7 +52,7 @@ const ProductEditorPage = () => {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const lastLoadedRef = useRef<ProductFormData | null>(null);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
-  const [optionsMode, setOptionsMode] = useState<"legacy" | "treeV2">("treeV2");
+  const [treeWasMigrated, setTreeWasMigrated] = useState(false);
 
   // Check if we should use legacy builder (from URL query param)
   const searchParams = new URLSearchParams(window.location.search);
@@ -91,12 +92,26 @@ const ProductEditorPage = () => {
       isActive: true,
       requiresProductionJob: true,
       isTaxable: true,
+      optionTreeJson: createEmptyOptionTreeV2(), // New products always start with PBV2
     },
   });
 
   // Load product data when editing
   useEffect(() => {
     if (product && !isNewProduct) {
+      // Fail-soft migration: validate optionTreeJson and replace if invalid
+      let optionTreeJson = (product as any).optionTreeJson;
+      let wasMigrated = false;
+
+      // Check if valid OptionTreeV2 object
+      const parseResult = optionTreeV2Schema.safeParse(optionTreeJson);
+      if (!parseResult.success || !optionTreeJson || Array.isArray(optionTreeJson)) {
+        // Invalid/missing/legacy array - migrate to empty PBV2 tree
+        optionTreeJson = createEmptyOptionTreeV2();
+        wasMigrated = true;
+        console.warn('[ProductEditor] Migrated invalid/legacy optionTreeJson to empty OptionTreeV2');
+      }
+
       const nextValues: ProductFormData = {
         name: product.name,
         description: product.description || "",
@@ -110,7 +125,7 @@ const ProductEditorPage = () => {
         artworkPolicy: (product as any).artworkPolicy || "not_required",
         primaryMaterialId: product.primaryMaterialId || null,
         optionsJson: product.optionsJson || [],
-        optionTreeJson: (product as any).optionTreeJson ?? null,
+        optionTreeJson,
         storeUrl: product.storeUrl || "",
         showStoreLink: product.showStoreLink ?? true,
         isActive: product.isActive ?? true,
@@ -119,34 +134,21 @@ const ProductEditorPage = () => {
         isTaxable: product.isTaxable ?? true,
       };
       lastLoadedRef.current = nextValues;
-      form.reset(nextValues);
+      form.reset(nextValues, { keepDirty: false });
+      setTreeWasMigrated(wasMigrated);
       
-      // Determine optionsMode based on product data
-      const optionTreeJson = (product as any).optionTreeJson;
-      if (optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
-        setOptionsMode("treeV2");
-      } else if (!productId) {
-        // New products default to Tree v2
-        setOptionsMode("treeV2");
-      } else {
-        // Check localStorage for existing products
-        const storageKey = `productEditor:optionsMode:${productId}`;
-        try {
-          const stored = localStorage.getItem(storageKey);
-          setOptionsMode(stored === 'treeV2' ? 'treeV2' : 'legacy');
-        } catch {
-          setOptionsMode('legacy');
-        }
+      // Mark form dirty if migration happened so user can save
+      if (wasMigrated) {
+        form.setValue('optionTreeJson', optionTreeJson, { shouldDirty: true });
       }
     }
-  }, [product, isNewProduct, form, productId]);
+  }, [product, isNewProduct, form]);
 
   useEffect(() => {
     // For new products, keep a discard baseline so "Discard" works.
     if (isNewProduct) {
       lastLoadedRef.current = form.getValues();
-      // Default to Tree v2 for new products
-      setOptionsMode("treeV2");
+      setTreeWasMigrated(false); // New products start fresh, not migrated
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNewProduct]);
@@ -363,24 +365,11 @@ const ProductEditorPage = () => {
               productTypes={productTypes}
               onSave={handleSave}
               formId="product-editor-form"
-              optionsModeState={{
-                mode: optionsMode,
-                setMode: (mode) => {
-                  setOptionsMode(mode);
-                  // Persist to localStorage
-                  if (productId) {
-                    try {
-                      localStorage.setItem(`productEditor:optionsMode:${productId}`, mode);
-                    } catch (e) {
-                      console.warn('Failed to persist optionsMode:', e);
-                    }
-                  }
-                },
-              }}
+              treeWasMigrated={treeWasMigrated}
             />
 
-            {/* Render PBV2 builder only when Tree v2 is enabled and for saved products */}
-            {!isNewProduct && productId && optionsMode === "treeV2" ? (
+            {/* Always render PBV2 builder for saved products */}
+            {!isNewProduct && productId ? (
               useLegacyBuilder ? (
                 <PBV2ProductBuilderSection productId={productId} />
               ) : (

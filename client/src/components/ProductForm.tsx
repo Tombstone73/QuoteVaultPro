@@ -7,11 +7,7 @@ import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessa
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
-import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEditor";
-import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
-import { optionTreeV2Schema, validateOptionTreeV2, createEmptyOptionTreeV2 } from "@shared/optionTreeV2";
-import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
 import { useToast } from "@/hooks/use-toast";
 
 // Required field indicator component
@@ -36,7 +32,7 @@ export const ProductForm = ({
   productTypes,
   onSave,
   formId,
-  optionsModeState,
+  treeWasMigrated = false,
 }: {
   form: any;
   materials: any;
@@ -44,189 +40,10 @@ export const ProductForm = ({
   productTypes: any;
   onSave: any;
   formId?: string;
-  optionsModeState?: { mode: "legacy" | "treeV2"; setMode: (mode: "legacy" | "treeV2") => void };
+  treeWasMigrated?: boolean;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
-  const [addGroupSignal, setAddGroupSignal] = React.useState<number | null>(null);
-  
-  const optionTreeJson = form.watch("optionTreeJson");
-  const productId = form.watch("id");
-  
-  // Determine optionsMode based on actual data presence, then fall back to localStorage
-  // Decision order:
-  // 1. If optionTreeJson has schemaVersion=2 => Tree v2 mode
-  // 2. Else if legacy data (array/graph without schemaVersion) => check localStorage preference
-  // 3. For new products (no id, no data) => Tree v2 mode by default
-  const determineInitialMode = React.useCallback((): "legacy" | "treeV2" => {
-    // If we have PBV2 data, always use Tree v2
-    if (optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
-      return "treeV2";
-    }
-    
-    // For new products, default to Tree v2
-    if (!productId) {
-      return "treeV2";
-    }
-    
-    // For existing products with legacy data, check localStorage preference
-    const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
-    try {
-      const stored = localStorage.getItem(storageKey);
-      return stored === 'treeV2' ? 'treeV2' : 'legacy';
-    } catch {
-      return 'legacy';
-    }
-  }, [optionTreeJson, productId]);
-  
-  const [internalOptionsMode, setInternalOptionsMode] = React.useState<"legacy" | "treeV2">(determineInitialMode);
-  
-  // Use external state if provided, otherwise use internal
-  const optionsMode = optionsModeState?.mode ?? internalOptionsMode;
-  const setOptionsMode = optionsModeState?.setMode ?? setInternalOptionsMode;
-
-  const [optionTreeText, setOptionTreeText] = React.useState<string>("");
-  const [optionTreeErrors, setOptionTreeErrors] = React.useState<string[]>([]);
-
-  // Wrapper to persist optionsMode changes to localStorage (per-product)
-  const setAndPersistOptionsMode = React.useCallback((mode: "legacy" | "treeV2") => {
-    setOptionsMode(mode);
-    const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
-    try {
-      localStorage.setItem(storageKey, mode);
-    } catch (e) {
-      console.warn('Failed to persist optionsMode:', e);
-    }
-  }, []);
-
-  // Re-evaluate mode when optionTreeJson or productId changes
-  React.useEffect(() => {
-    const correctMode = determineInitialMode();
-    if (correctMode !== optionsMode) {
-      setOptionsMode(correctMode);
-      // Also persist the auto-determined mode
-      const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
-      try {
-        localStorage.setItem(storageKey, correctMode);
-      } catch (e) {
-        console.warn('Failed to persist optionsMode:', e);
-      }
-    }
-  }, [determineInitialMode, optionsMode, productId]);
-
-  React.useEffect(() => {
-    // Auto-initialize PBV2 for new products (no optionTreeJson)
-    if (!productId && !optionTreeJson) {
-      // New product with no tree - initialize with canonical empty OptionTreeV2
-      const emptyPBV2 = createEmptyOptionTreeV2();
-      form.setValue("optionTreeJson", emptyPBV2, { shouldDirty: false });
-      setOptionTreeText(JSON.stringify(emptyPBV2, null, 2));
-    }
-  }, [productId, optionTreeJson, form]);
-
-  React.useEffect(() => {
-    if (optionsMode !== "treeV2") return;
-    if (optionTreeJson == null) {
-      setOptionTreeText("");
-      setOptionTreeErrors([]);
-      return;
-    }
-    try {
-      setOptionTreeText(JSON.stringify(optionTreeJson, null, 2));
-      setOptionTreeErrors([]);
-    } catch {
-      setOptionTreeText("");
-      setOptionTreeErrors(["optionTreeJson is not serializable"]);
-    }
-  }, [optionsMode]);
-
-  const setTreeTextAndValidate = (nextText: string) => {
-    setOptionTreeText(nextText);
-
-    const trimmed = nextText.trim();
-    if (trimmed.length === 0) {
-      form.setValue("optionTreeJson", null, { shouldDirty: true });
-      form.clearErrors("optionTreeJson");
-      setOptionTreeErrors([]);
-      return;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(nextText);
-    } catch (e) {
-      form.setError("optionTreeJson", {
-        type: "manual",
-        message: e instanceof Error ? e.message : "Invalid JSON",
-      });
-      setOptionTreeErrors(["Invalid JSON"]);
-      return;
-    }
-
-    // Detect if this is legacy format - skip validation if so
-    const isLegacy = Array.isArray(parsed) || 
-                     (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
-    
-    if (isLegacy) {
-      // Legacy format detected - don't validate, just store as-is
-      form.clearErrors("optionTreeJson");
-      setOptionTreeErrors([]);
-      form.setValue("optionTreeJson", parsed, { shouldDirty: true });
-      return;
-    }
-
-    // PBV2 mode: Only validate structure, NOT legacy graph rules
-    // Skip validateOptionTreeV2 (legacy graph validator with rootNodeIds requirement)
-    // PBV2 uses groups/options model and doesn't require rootNodeIds
-    
-    // Runtime migration: handle legacy arrays
-    if (Array.isArray(parsed)) {
-      console.warn('[ProductForm] Legacy array detected in optionTreeJson, migrating to empty OptionTreeV2');
-      const migrated = createEmptyOptionTreeV2();
-      form.clearErrors("optionTreeJson");
-      setOptionTreeErrors(['⚠️ Legacy array format detected. Migrated to empty PBV2 tree - please add groups/options.']);
-      form.setValue("optionTreeJson", migrated, { shouldDirty: true });
-      setOptionTreeText(JSON.stringify(migrated, null, 2));
-      return;
-    }
-    
-    const zodRes = optionTreeV2Schema.safeParse(parsed);
-    if (!zodRes.success) {
-      form.setError("optionTreeJson", {
-        type: "manual",
-        message: "Invalid optionTreeJson (v2)",
-      });
-      setOptionTreeErrors(zodRes.error.issues.map((i) => i.message));
-      return;
-    }
-
-    // DO NOT call validateOptionTreeV2 here - it's a legacy graph validator
-    // PBV2 empty state (nodes: [], edges: []) is valid
-    // Legacy validator requires rootNodeIds.length > 0 which breaks PBV2
-
-    form.clearErrors("optionTreeJson");
-    setOptionTreeErrors([]);
-    form.setValue("optionTreeJson", zodRes.data, { shouldDirty: true });
-  };
-
-  const initTreeV2 = () => {
-    const legacyOptionsJson = form.getValues("optionsJson");
-    const tree = buildOptionTreeV2FromLegacyOptions(legacyOptionsJson);
-
-    // DO NOT call validateOptionTreeV2 - it's a legacy graph validator
-    // that requires rootNodeIds.length > 0, breaking PBV2 empty state
-    // PBV2 uses groups/options model and is valid with empty nodes/edges arrays
-
-    form.setValue("optionTreeJson", tree as any, { shouldDirty: true });
-    form.clearErrors("optionTreeJson");
-    setOptionTreeErrors([]);
-    setOptionTreeText(JSON.stringify(tree, null, 2));
-    
-    toast({
-      title: "Tree v2 Initialized",
-      description: "PBV2 options tree created. You can now add groups and options.",
-    });
-  };
 
   return (
     <form
@@ -501,106 +318,25 @@ export const ProductForm = ({
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div className="space-y-1">
             <CardTitle className="text-base">Options & Add-ons</CardTitle>
-            <CardDescription>Configure selectable add-ons and finishing.</CardDescription>
+            <CardDescription>Configure selectable add-ons and finishing using PBV2 builder below.</CardDescription>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-md border px-3 py-2">
-              <span className="text-xs text-muted-foreground">Options Mode</span>
-              <span className="text-xs font-medium">{optionsMode === "legacy" ? "Legacy" : "Tree v2"}</span>
-              <Switch
-                checked={optionsMode === "treeV2"}
-                onCheckedChange={(checked) => {
-                  if (checked) {
-                    setAndPersistOptionsMode("treeV2");
-                    setOptionTreeErrors([]);
-                    form.clearErrors("optionTreeJson");
-                    try {
-                      setOptionTreeText(optionTreeJson ? JSON.stringify(optionTreeJson, null, 2) : "");
-                    } catch {
-                      setOptionTreeText("");
-                    }
-                    return;
-                  }
-
-                  // Switching back to legacy disables v2 by clearing optionTreeJson.
-                  setAndPersistOptionsMode("legacy");
-                  form.setValue("optionTreeJson", null, { shouldDirty: true });
-                  form.clearErrors("optionTreeJson");
-                  setOptionTreeErrors([]);
-                }}
-              />
-            </div>
-
-            {optionsMode === "legacy" ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setAddGroupSignal(Date.now())}
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Add Option Group
-              </Button>
+          <div className="flex items-center gap-2">
+            {treeWasMigrated ? (
+              <div className="flex items-center gap-2 rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-1.5">
+                <span className="text-xs font-medium text-amber-600">PBV2: migrated, save to persist</span>
+              </div>
             ) : (
-              <Button type="button" variant="outline" size="sm" onClick={initTreeV2}>
-                Initialize Tree v2
-              </Button>
+              <div className="flex items-center gap-2 rounded-md bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5">
+                <span className="text-xs font-medium text-emerald-600">PBV2: persisted</span>
+              </div>
             )}
           </div>
         </CardHeader>
-        <CardContent className="p-0">
-          {optionsMode === "legacy" ? (
-            <div className="p-6">
-              <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
-            </div>
-          ) : (
-            <div className="p-6 text-center text-slate-400">
-              <p className="text-sm">Options are managed in the PBV2 Builder section below.</p>
-              <p className="text-xs mt-1">Scroll down to add groups and options.</p>
-            </div>
-          )}
+        <CardContent className="p-6 text-center text-slate-400">
+          <p className="text-sm">Options are managed in the PBV2 Builder section below.</p>
+          <p className="text-xs mt-1">Scroll down to add groups and options.</p>
         </CardContent>
       </Card>
-
-      {optionsMode === "treeV2" && (() => {
-        // Only show red error box if we have PBV2 data with validation errors
-        // Do NOT show for legacy format (that's handled by yellow banner in PBV2 panel)
-        const trimmed = optionTreeText.trim();
-        if (!trimmed) return null;
-        
-        try {
-          const parsed = JSON.parse(trimmed);
-          const isLegacy = Array.isArray(parsed) || 
-                           (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
-          
-          // Only render error box if NOT legacy and we have errors
-          if (isLegacy || optionTreeErrors.length === 0) return null;
-          
-          return (
-            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-              <div className="font-medium">Option Tree v2 errors</div>
-              <ul className="mt-1 list-disc pl-4">
-                {optionTreeErrors.map((err) => (
-                  <li key={err}>{err}</li>
-                ))}
-              </ul>
-            </div>
-          );
-        } catch {
-          // JSON parse error - show errors if any
-          if (optionTreeErrors.length === 0) return null;
-          return (
-            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-              <div className="font-medium">Option Tree v2 errors</div>
-              <ul className="mt-1 list-disc pl-4">
-                {optionTreeErrors.map((err) => (
-                  <li key={err}>{err}</li>
-                ))}
-              </ul>
-            </div>
-          );
-        }
-      })()}
 
       {/* #advanced */}
       <Card>
