@@ -676,23 +676,21 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
     input: {
       type: 'select',
       required: false,
-    },
+    } as any,
     pricingImpact: [],
     weightImpact: [],
   };
+  
+  // Set valueType separately to avoid TypeScript error
+  (newNode.input as any).valueType = 'TEXT';
 
-  const newEdge: PBV2Edge = {
-    id: newEdgeId,
-    status: 'ENABLED',
-    fromNodeId: groupId,
-    toNodeId: newOptionId,
-    priority: 0,
-  };
+  // Don't create edge from GROUP - options are standalone until connected via conditionals
+  // GROUP is a UI organizational concept only, not part of runtime graph
 
   const patchedTree = {
     ...tree,
     nodes: [...nodes, newNode],
-    edges: [...edges, newEdge],
+    edges, // No new edge
   };
 
   const repairedTree = ensureTreeInvariants(patchedTree);
@@ -817,7 +815,7 @@ export function ensureTreeInvariants(treeJson: unknown): any {
     }
   }
 
-  // 2. INPUT valueType auto-repair
+  // 2. INPUT valueType auto-repair (use UPPERCASE tokens as expected by validator)
   for (const node of nodes) {
     if (node.status === 'DELETED') continue;
     if (node.type?.toUpperCase() !== 'INPUT') continue;
@@ -825,28 +823,30 @@ export function ensureTreeInvariants(treeJson: unknown): any {
     const input = node.input ?? {};
     const inputType = input.type?.toLowerCase();
     
-    // Check if valueType is missing or unknown
+    // Check if valueType is missing or not in valid set
     let currentValueType = (input as any).valueType;
-    if (!currentValueType || typeof currentValueType !== 'string') {
-      // Infer valueType from input.type
-      let newValueType = 'string'; // default
+    const validValueTypes = ['NUMBER', 'BOOLEAN', 'TEXT', 'JSON', 'NULL'];
+    const isValid = currentValueType && typeof currentValueType === 'string' && 
+                    validValueTypes.includes(currentValueType.toUpperCase());
+    
+    if (!isValid) {
+      // Infer valueType from input.type (use UPPERCASE tokens)
+      let newValueType = 'TEXT'; // default
       
       switch (inputType) {
         case 'boolean':
-          newValueType = 'boolean';
+          newValueType = 'BOOLEAN';
           break;
         case 'number':
-          newValueType = 'number';
-          break;
         case 'dimension':
-          newValueType = 'dimension';
+          newValueType = 'NUMBER';
           break;
         case 'select':
         case 'multiselect':
         case 'text':
         case 'textarea':
         default:
-          newValueType = 'string';
+          newValueType = 'TEXT';
           break;
       }
 
@@ -856,24 +856,29 @@ export function ensureTreeInvariants(treeJson: unknown): any {
     }
   }
 
-  // 3. Edge condition validity
+  // 3. Edge condition validity (must be undefined, null, or valid AST with 'op')
   for (const edge of edges) {
     if (edge.status === 'DELETED') continue;
     
     const condition = edge.condition;
     
-    // Check if condition is present but invalid (not null, undefined, or a valid object)
+    // Check if condition is present but invalid
     if (condition !== null && condition !== undefined) {
-      // Simple validation: condition should be an object with 'op' field
+      // Condition must be an object with a valid 'op' field
       const isValidCondition = 
         typeof condition === 'object' && 
         condition !== null && 
         'op' in condition &&
-        typeof (condition as any).op === 'string';
+        typeof (condition as any).op === 'string' &&
+        (condition as any).op.length > 0;
       
-      if (!isValidCondition) {
-        // Replace with null for unconditional
-        edge.condition = null;
+      // Empty objects {} or invalid structures should become undefined
+      const isEmptyObject = typeof condition === 'object' && 
+                           Object.keys(condition).length === 0;
+      
+      if (!isValidCondition || isEmptyObject) {
+        // Replace with undefined for unconditional edges
+        edge.condition = undefined;
         mutated = true;
       }
     }
@@ -914,17 +919,25 @@ export function ensureTreeInvariants(treeJson: unknown): any {
       }
     }
 
-    // Also check if FROM node is a GROUP (edges FROM group nodes should be disabled in runtime)
+    // Also check if FROM node is a GROUP (GROUP nodes are design-time only, no runtime edges)
     const fromNode = edge.fromNodeId ? nodesById.get(edge.fromNodeId) : null;
-    if (fromNode && fromNode.type?.toUpperCase() === 'GROUP') {
-      // GROUP nodes can have ENABLED edges in authoring (they represent the group's options)
-      // This is actually OK - don't disable
-      // The runtime evaluator will handle this properly
+    if (fromNode && fromNode.type?.toUpperCase() === 'GROUP' && edge.status === 'ENABLED') {
+      // GROUP nodes are organizational containers only, they should not have ENABLED edges
+      edge.status = 'DISABLED';
+      mutated = true;
     }
   }
 
-  // 5. Root auto-repair - ensure rootNodeIds points to at least one ENABLED runtime node
+  // 5. Root auto-repair - ensure rootNodeIds includes all orphaned ENABLED runtime nodes
   const rootNodeIds = Array.isArray((tree as any).rootNodeIds) ? (tree as any).rootNodeIds : [];
+  
+  // Find nodes with incoming ENABLED edges
+  const nodesWithIncoming = new Set<string>();
+  for (const edge of edges) {
+    if (edge.status === 'ENABLED' && edge.toNodeId) {
+      nodesWithIncoming.add(edge.toNodeId);
+    }
+  }
   
   // Find valid runtime nodes (ENABLED, non-GROUP, non-DELETED)
   const validRuntimeNodes = nodes.filter(n => 
@@ -932,6 +945,9 @@ export function ensureTreeInvariants(treeJson: unknown): any {
     n.type?.toUpperCase() !== 'GROUP' &&
     n.type?.toUpperCase() !== 'DELETED'
   );
+  
+  // Orphaned nodes are valid runtime nodes without incoming edges
+  const orphanedNodes = validRuntimeNodes.filter(n => !nodesWithIncoming.has(n.id));
 
   // Check if current roots are valid
   const validRoots = rootNodeIds.filter((id: string) => {
@@ -940,18 +956,22 @@ export function ensureTreeInvariants(treeJson: unknown): any {
            node.status === 'ENABLED' && 
            node.type?.toUpperCase() !== 'GROUP';
   });
+  
+  // Build new root set: existing valid roots + orphaned nodes
+  const newRootSet = new Set([...validRoots, ...orphanedNodes.map(n => n.id)]);
+  const newRoots = Array.from(newRootSet);
 
-  if (validRoots.length === 0 && validRuntimeNodes.length > 0) {
+  if (newRoots.length === 0 && validRuntimeNodes.length > 0) {
     // No valid roots, set to first available enabled runtime node
     (tree as any).rootNodeIds = [validRuntimeNodes[0].id];
     mutated = true;
-  } else if (validRoots.length === 0 && validRuntimeNodes.length === 0) {
+  } else if (newRoots.length > 0 && JSON.stringify(newRoots.sort()) !== JSON.stringify([...rootNodeIds].sort())) {
+    // Roots changed, update
+    (tree as any).rootNodeIds = newRoots;
+    mutated = true;
+  } else if (newRoots.length === 0 && validRuntimeNodes.length === 0) {
     // No valid nodes at all, clear roots
     (tree as any).rootNodeIds = [];
-    mutated = true;
-  } else if (validRoots.length < rootNodeIds.length) {
-    // Some roots were invalid, keep only valid ones
-    (tree as any).rootNodeIds = validRoots;
     mutated = true;
   }
 
