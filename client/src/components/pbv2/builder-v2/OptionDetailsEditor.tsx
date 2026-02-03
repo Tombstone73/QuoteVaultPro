@@ -526,6 +526,7 @@ export function OptionDetailsEditor({
                 )}
               </div>
               <Button
+                type="button"
                 onClick={() => onAddChoice(option.id)}
                 size="sm"
                 variant="outline"
@@ -550,6 +551,7 @@ export function OptionDetailsEditor({
                       <div className="flex items-start gap-2">
                         <div className="flex flex-col gap-1 mt-2">
                           <Button
+                            type="button"
                             variant="ghost"
                             size="sm"
                             onClick={() => index > 0 && onReorderChoice(option.id, index, index - 1)}
@@ -559,6 +561,7 @@ export function OptionDetailsEditor({
                             <ChevronUp className="h-3.5 w-3.5" />
                           </Button>
                           <Button
+                            type="button"
                             variant="ghost"
                             size="sm"
                             onClick={() => index < choices.length - 1 && onReorderChoice(option.id, index, index + 1)}
@@ -613,6 +616,7 @@ export function OptionDetailsEditor({
                                     autoFocus
                                   />
                                   <Button
+                                    type="button"
                                     size="sm"
                                     onClick={() => {
                                       if (editingChoiceValue) {
@@ -630,6 +634,7 @@ export function OptionDetailsEditor({
                                     {choice.value}
                                   </code>
                                   <Button
+                                    type="button"
                                     size="sm"
                                     variant="outline"
                                     onClick={() => setEditingChoiceValue({ optionId: option.id, value: choice.value })}
@@ -650,6 +655,7 @@ export function OptionDetailsEditor({
                         </div>
 
                         <Button
+                          type="button"
                           variant="ghost"
                           size="sm"
                           onClick={() => onDeleteChoice(option.id, choice.value)}

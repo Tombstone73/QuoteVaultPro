@@ -53,6 +53,7 @@ export function OptionGroupsSidebar({
           </Badge>
         </div>
         <Button
+          type="button"
           onClick={onAddGroup}
           className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm"
           size="sm"

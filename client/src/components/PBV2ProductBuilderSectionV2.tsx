@@ -574,14 +574,8 @@ export default function PBV2ProductBuilderSectionV2({
     return <div className="p-8 text-center text-slate-400">Loading PBV2 tree...</div>;
   }
 
-  if (!isDraftMode && !draft) {
-    return (
-      <div className="p-8 text-center">
-        <div className="text-slate-400 mb-4">No draft exists for this product.</div>
-        <Button onClick={() => window.location.reload()}>Create Draft</Button>
-      </div>
-    );
-  }
+  // In server mode, draft should exist (but don't gate on it - render empty if missing)
+  // In draft mode, we always render using local state
 
   const canPublish = isDraftMode ? false : (validationResult.errors.length === 0 && hasLocalChanges === false);
 
