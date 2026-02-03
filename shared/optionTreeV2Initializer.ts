@@ -204,6 +204,7 @@ export function createEmptyPBV2Tree(meta?: { title?: string; updatedAt?: string 
  * Handles:
  * - null/undefined → empty PBV2 tree
  * - array → empty PBV2 tree (with warning)
+ * - string → try JSON.parse, then validate
  * - legacy object (no schemaVersion) → attempt migration, fallback to empty
  * - valid PBV2 tree → return as-is
  * 
@@ -213,19 +214,41 @@ export function coerceOrMigrateToPBV2(
   input: unknown,
   legacyOptionsJson?: unknown
 ): OptionTreeV2 {
+  // DEV-ONLY: Log input details
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+    const inputType = input == null ? 'null/undefined' : Array.isArray(input) ? 'array' : typeof input;
+    const preview = typeof input === 'string' ? input.slice(0, 100) : null;
+    const nodeCount = typeof input === 'object' && input && !Array.isArray(input) ? Object.keys((input as any).nodes || {}).length : 0;
+    console.log('[coerceOrMigrateToPBV2] INPUT:', { inputType, preview, nodeCount, schemaVersion: (input as any)?.schemaVersion });
+  }
+
   // Case 1: null/undefined → empty tree
   if (input == null) {
     console.log('[coerceOrMigrateToPBV2] null/undefined input → empty PBV2 tree');
     return createEmptyPBV2Tree({ title: 'Auto-initialized PBV2 tree' });
   }
 
-  // Case 2: array → empty tree with warning
+  // Case 2: string → try parse as JSON
+  if (typeof input === 'string') {
+    console.log('[coerceOrMigrateToPBV2] String input detected, attempting JSON.parse');
+    try {
+      const parsed = JSON.parse(input);
+      console.log('[coerceOrMigrateToPBV2] Successfully parsed string to object');
+      // Recursively call with parsed object
+      return coerceOrMigrateToPBV2(parsed, legacyOptionsJson);
+    } catch (error) {
+      console.error('[coerceOrMigrateToPBV2] JSON.parse failed:', error);
+      return createEmptyPBV2Tree({ title: 'JSON parse error' });
+    }
+  }
+
+  // Case 3: array → empty tree with warning
   if (Array.isArray(input)) {
     console.warn('[coerceOrMigrateToPBV2] Array detected (legacy corruption), replacing with empty PBV2 tree');
     return createEmptyPBV2Tree({ title: 'Recovered from array corruption' });
   }
 
-  // Case 3: not an object → empty tree with warning
+  // Case 4: not an object → empty tree with warning
   if (typeof input !== 'object') {
     console.warn('[coerceOrMigrateToPBV2] Non-object input, replacing with empty PBV2 tree');
     return createEmptyPBV2Tree({ title: 'Auto-initialized PBV2 tree' });
@@ -263,5 +286,13 @@ export function coerceOrMigrateToPBV2(
     obj.meta = {};
   }
 
-  return obj as OptionTreeV2;
+  const result = obj as OptionTreeV2;
+  
+  // DEV-ONLY: Log output details
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+    const outputNodeCount = Object.keys(result.nodes || {}).length;
+    console.log('[coerceOrMigrateToPBV2] OUTPUT:', { outputNodeCount, schemaVersion: result.schemaVersion });
+  }
+
+  return result;
 }
