@@ -770,6 +770,84 @@ function evaluateActiveComputeOutputs(nodes: NodeRec[], activeNodeIds: ReadonlyS
   }
 }
 
+/**
+ * Compute base price from meta.pricingV2 before applying node/choice deltas.
+ * 
+ * Tier precedence: Apply qtyTier overrides first, then sqftTier overrides.
+ * Missing tier fields fall back to base values.
+ * 
+ * @param tree - PBV2 tree with optional meta.pricingV2
+ * @param quantity - Current quantity (defaults to 1)
+ * @param sqft - Current square footage (computed from width/height or 0)
+ * @returns Base price in cents
+ */
+function computeBasePriceFromPricingV2(tree: AnyRecord, quantity: number, sqft: number): number {
+  const meta = asRecord(tree.meta);
+  if (!meta) return 0;
+
+  const pricingV2 = asRecord((meta as any).pricingV2);
+  if (!pricingV2) return 0;
+
+  const base = asRecord((pricingV2 as any).base) ?? {};
+  const qtyTiers = Array.isArray((pricingV2 as any).qtyTiers) ? (pricingV2 as any).qtyTiers : [];
+  const sqftTiers = Array.isArray((pricingV2 as any).sqftTiers) ? (pricingV2 as any).sqftTiers : [];
+
+  // Start with base rates
+  let perSqftCents = typeof base.perSqftCents === 'number' ? base.perSqftCents : 0;
+  let perPieceCents = typeof base.perPieceCents === 'number' ? base.perPieceCents : 0;
+  let minimumChargeCents = typeof base.minimumChargeCents === 'number' ? base.minimumChargeCents : 0;
+
+  // Apply best-match qtyTier (highest minQty <= quantity)
+  let bestQtyTier: AnyRecord | null = null;
+  for (const tier of qtyTiers) {
+    const t = asRecord(tier);
+    if (!t) continue;
+    const minQty = typeof t.minQty === 'number' ? t.minQty : 0;
+    if (minQty <= quantity) {
+      if (!bestQtyTier || minQty > (bestQtyTier.minQty as number || 0)) {
+        bestQtyTier = t;
+      }
+    }
+  }
+
+  if (bestQtyTier) {
+    if (typeof bestQtyTier.perSqftCents === 'number') perSqftCents = bestQtyTier.perSqftCents;
+    if (typeof bestQtyTier.perPieceCents === 'number') perPieceCents = bestQtyTier.perPieceCents;
+    if (typeof bestQtyTier.minimumChargeCents === 'number') minimumChargeCents = bestQtyTier.minimumChargeCents;
+  }
+
+  // Apply best-match sqftTier (highest minSqft <= sqft)
+  let bestSqftTier: AnyRecord | null = null;
+  for (const tier of sqftTiers) {
+    const t = asRecord(tier);
+    if (!t) continue;
+    const minSqft = typeof t.minSqft === 'number' ? t.minSqft : 0;
+    if (minSqft <= sqft) {
+      if (!bestSqftTier || minSqft > (bestSqftTier.minSqft as number || 0)) {
+        bestSqftTier = t;
+      }
+    }
+  }
+
+  if (bestSqftTier) {
+    if (typeof bestSqftTier.perSqftCents === 'number') perSqftCents = bestSqftTier.perSqftCents;
+    if (typeof bestSqftTier.perPieceCents === 'number') perPieceCents = bestSqftTier.perPieceCents;
+    if (typeof bestSqftTier.minimumChargeCents === 'number') minimumChargeCents = bestSqftTier.minimumChargeCents;
+  }
+
+  // Compute total
+  const sqftComponent = perSqftCents * sqft;
+  const pieceComponent = perPieceCents * quantity;
+  let total = sqftComponent + pieceComponent;
+
+  // Apply minimum charge
+  if (minimumChargeCents > 0 && total < minimumChargeCents) {
+    total = minimumChargeCents;
+  }
+
+  return Math.round(total);
+}
+
 export function pbv2ToPricingAddons(
   treeJson: unknown,
   selections: Pbv2Selections | Record<string, unknown> | undefined,
@@ -828,6 +906,14 @@ export function pbv2ToPricingAddons(
 
   // Evaluate COMPUTE nodes in dependency order (active subset)
   evaluateActiveComputeOutputs(nodes, activeNodeIds, evalCtx);
+
+  // Compute base price from meta.pricingV2 BEFORE adding node/choice deltas
+  const quantity = Number.isFinite(Number(envMap.quantity)) ? Number(envMap.quantity) : 1;
+  const widthIn = Number.isFinite(Number(envMap.widthIn)) ? Number(envMap.widthIn) : 0;
+  const heightIn = Number.isFinite(Number(envMap.heightIn)) ? Number(envMap.heightIn) : 0;
+  const sqft = widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0;
+
+  const basePriceCents = computeBasePriceFromPricingV2(tree, quantity, sqft);
 
   // Evaluate PRICE nodes/components
   const breakdownRaw: Pbv2PricingBreakdownLine[] = [];
@@ -938,7 +1024,21 @@ export function pbv2ToPricingAddons(
     addOnCents += updated.amountCents;
   }
 
-  addOnCents = Math.round(addOnCents);
+  // Add base price to total
+  addOnCents = Math.round(addOnCents + basePriceCents);
+
+  // Include base price in breakdown if non-zero
+  if (basePriceCents !== 0) {
+    breakdown.unshift({
+      nodeId: '__base__',
+      componentIndex: 0,
+      kind: 'BASE_PRICE_V2',
+      amountCents: basePriceCents,
+      quantity,
+      unitPriceCents: Math.round(basePriceCents / quantity),
+    });
+  }
+
   return { addOnCents, breakdown };
 }
 
