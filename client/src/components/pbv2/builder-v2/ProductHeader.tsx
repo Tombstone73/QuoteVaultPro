@@ -70,6 +70,7 @@ export function ProductHeader({
         )}
 
         <Button
+          type="button"
           variant="outline"
           onClick={onExportJson}
           className="gap-2 border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white"
@@ -80,6 +81,7 @@ export function ProductHeader({
         </Button>
 
         <Button
+          type="button"
           variant="outline"
           onClick={onImportJson}
           className="gap-2 border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white"
@@ -90,6 +92,7 @@ export function ProductHeader({
         </Button>
         
         <Button
+          type="button"
           variant="outline"
           onClick={onSave}
           disabled={!hasUnsavedChanges}
@@ -101,6 +104,7 @@ export function ProductHeader({
         </Button>
         
         <Button
+          type="button"
           onClick={onPublish}
           disabled={!canPublish}
           className="gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"

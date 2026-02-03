@@ -44,6 +44,7 @@ export function ConfirmationModal({
         </DialogHeader>
         <DialogFooter>
           <Button
+            type="button"
             variant="outline"
             onClick={() => onOpenChange(false)}
             className="border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700"
@@ -51,6 +52,7 @@ export function ConfirmationModal({
             Cancel
           </Button>
           <Button
+            type="button"
             onClick={handleConfirm}
             className={variant === 'danger' ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}
           >

@@ -25,6 +25,9 @@ interface OptionEditorProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
+  onUpdateNodePricing: (optionId: string, pricingImpact: Array<{ mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }>) => void;
+  onAddPricingRule: (optionId: string, rule: { mode: 'addFlatCents' | 'addPerQtyCents' | 'addPerSqftCents'; cents: number; label?: string }) => void;
+  onDeletePricingRule: (optionId: string, ruleIndex: number) => void;
   treeJson: any;
 }
 
@@ -41,6 +44,9 @@ export function OptionEditor({
   onUpdateChoice,
   onDeleteChoice,
   onReorderChoice,
+  onUpdateNodePricing,
+  onAddPricingRule,
+  onDeletePricingRule,
   treeJson
 }: OptionEditorProps) {
   const [expandedOptions, setExpandedOptions] = React.useState<Set<string>>(new Set());
@@ -214,6 +220,7 @@ export function OptionEditor({
                     </button>
 
                     <Button
+                      type="button"
                       variant="ghost"
                       size="sm"
                       onClick={() => onDeleteOption(selectedGroup.id, option.id)}
@@ -235,6 +242,9 @@ export function OptionEditor({
                           onUpdateChoice={onUpdateChoice}
                           onDeleteChoice={onDeleteChoice}
                           onReorderChoice={onReorderChoice}
+                          onUpdateNodePricing={onUpdateNodePricing}
+                          onAddPricingRule={onAddPricingRule}
+                          onDeletePricingRule={onDeletePricingRule}
                           editingChoiceValue={editingChoiceValue}
                           setEditingChoiceValue={setEditingChoiceValue}
                         />
