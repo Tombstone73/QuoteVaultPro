@@ -54,6 +54,21 @@ export const ProductForm = ({
   const optionTreeJson = form.watch("optionTreeJson");
   const productId = form.watch("id");
   
+  // DEV-ONLY: Log what optionTreeJson the form is rendering
+  React.useEffect(() => {
+    if (import.meta.env.DEV) {
+      const nodeCount = typeof optionTreeJson === 'object' && optionTreeJson ? Object.keys((optionTreeJson as any).nodes || {}).length : 0;
+      const rootCount = Array.isArray((optionTreeJson as any)?.rootNodeIds) ? (optionTreeJson as any).rootNodeIds.length : 0;
+      console.log('[ProductForm] Rendering with optionTreeJson:', {
+        hasValue: !!optionTreeJson,
+        type: typeof optionTreeJson,
+        nodeCount,
+        rootCount,
+        schemaVersion: (optionTreeJson as any)?.schemaVersion,
+      });
+    }
+  }, [optionTreeJson]);
+  
   // Determine optionsMode based on actual data presence, then fall back to localStorage
   // Decision order:
   // 1. If optionTreeJson has schemaVersion=2 => Tree v2 mode
