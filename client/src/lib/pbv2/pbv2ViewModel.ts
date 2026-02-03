@@ -172,7 +172,7 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
 
     return {
       id: node.id,
-      name: node.label || node.key || node.id,
+      name: node.label || '',
       description: node.description || '',
       sortOrder: index,
       isRequired: node.input?.required || false,
@@ -289,8 +289,15 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
     },
   };
 
+  // Part B: Ensure rootNodeIds array exists (will be populated when options are added)
+  let updatedTree = { ...tree };
+  if (!Array.isArray(tree.rootNodeIds)) {
+    updatedTree.rootNodeIds = [];
+  }
+
   return {
     patch: {
+      ...updatedTree,
       nodes: [...nodes, newNode],
       edges,
     },
@@ -623,6 +630,7 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
     type: 'INPUT',
     status: 'ENABLED',
     key: selectionKey,
+    selectionKey: selectionKey, // Part D: Add selectionKey for contract compliance
     label: 'New Option',
     description: '',
     input: {
@@ -639,10 +647,25 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
     fromNodeId: groupId,
     toNodeId: newOptionId,
     priority: 0,
+    // Part C: No condition field - omit rather than placeholder
   };
+
+  // Part B: Add to rootNodeIds if this is a top-level option (not under another INPUT)
+  const fromNode = nodes.find(n => n.id === groupId);
+  const isTopLevel = !fromNode || fromNode.type === 'GROUP';
+  
+  let updatedTree = { ...tree };
+  if (isTopLevel) {
+    const existingRoots = Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [];
+    // Add this option as a root if not already present
+    if (!existingRoots.includes(newOptionId)) {
+      updatedTree.rootNodeIds = [...existingRoots, newOptionId];
+    }
+  }
 
   return {
     patch: {
+      ...updatedTree,
       nodes: [...nodes, newNode],
       edges: [...edges, newEdge],
     },
@@ -697,25 +720,40 @@ export function createDuplicateOptionPatch(
   // Deep copy the node with new ID
   const newOptionId = makeId('opt_', existingIds);
   const newEdgeId = makeId('edge_', existingIds);
+  const newSelectionKey = `option_${Date.now()}`;
   
   const duplicatedNode: PBV2Node = {
     ...JSON.parse(JSON.stringify(sourceNode)),
     id: newOptionId,
-    key: `option_${Date.now()}`,
+    key: newSelectionKey,
+    selectionKey: newSelectionKey, // Part D: Ensure selectionKey is set
     label: sourceNode.label ? `${sourceNode.label} (Copy)` : 'New Option (Copy)',
   };
 
   // Create edge from group to new option
+  const fromNode = nodes.find(n => n.id === groupId);
+  const isGroupEdge = fromNode?.type === 'GROUP';
+  
   const newEdge: PBV2Edge = {
     id: newEdgeId,
-    status: 'ENABLED',
+    status: isGroupEdge ? 'DISABLED' : 'ENABLED', // Part A: GROUP edges are metadata only
     fromNodeId: groupId,
     toNodeId: newOptionId,
     priority: 0,
   };
 
+  // Part B: Add to rootNodeIds if this is a top-level option
+  let updatedTree = { ...tree };
+  if (isGroupEdge) {
+    const existingRoots = Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [];
+    if (!existingRoots.includes(newOptionId)) {
+      updatedTree.rootNodeIds = [...existingRoots, newOptionId];
+    }
+  }
+
   return {
     patch: {
+      ...updatedTree,
       nodes: [...nodes, duplicatedNode],
       edges: [...edges, newEdge],
     },
@@ -771,15 +809,43 @@ export function createMoveOptionPatch(
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
+  const toNode = nodes.find(n => n.id === toGroupId);
+  const isTargetGroup = toNode?.type === 'GROUP';
+
   // Update the edge that connects to this option
   const updatedEdges = edges.map(e => {
     if (e.toNodeId === optionId && e.fromNodeId === fromGroupId) {
-      return { ...e, fromNodeId: toGroupId };
+      return { 
+        ...e, 
+        fromNodeId: toGroupId,
+        status: isTargetGroup ? 'DISABLED' : 'ENABLED' // Part A: GROUP edges are metadata only
+      };
     }
     return e;
   });
 
+  // Part B: Update rootNodeIds when moving to/from groups
+  let updatedTree = { ...tree };
+  const existingRoots = Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [];
+  
+  if (isTargetGroup) {
+    // Moving TO a group - add to roots if not present
+    if (!existingRoots.includes(optionId)) {
+      updatedTree.rootNodeIds = [...existingRoots, optionId];
+    }
+  } else {
+    // Moving FROM a group to a runtime node - remove from roots
+    updatedTree.rootNodeIds = existingRoots.filter(id => id !== optionId);
+  }
+
   return {
+    patch: {
+      ...updatedTree,
+      nodes,
+      edges: updatedEdges,
+    },
+  };
+}
     patch: {
       nodes,
       edges: updatedEdges,
