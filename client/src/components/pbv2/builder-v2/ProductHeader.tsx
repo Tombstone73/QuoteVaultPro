@@ -11,11 +11,13 @@ interface ProductHeaderProps {
   productStatus: ProductStatus;
   hasUnsavedChanges: boolean;
   canPublish: boolean;
+  baseWeightOz?: number;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
   onImportJson: () => void;
   onUpdateProductName: (name: string) => void;
+  onUpdateBaseWeight: (weightOz?: number) => void;
 }
 
 export function ProductHeader({
@@ -23,11 +25,13 @@ export function ProductHeader({
   productStatus,
   hasUnsavedChanges,
   canPublish,
+  baseWeightOz,
   onSave,
   onPublish,
   onExportJson,
   onImportJson,
-  onUpdateProductName
+  onUpdateProductName,
+  onUpdateBaseWeight
 }: ProductHeaderProps) {
   const statusColors = {
     draft: 'bg-slate-700/50 text-slate-300 border-slate-600',
@@ -62,6 +66,40 @@ export function ProductHeader({
       </div>
 
       <div className="flex items-center gap-3">
+        {/* Part A: Base Weight Input */}
+        <div className="flex items-center gap-2 border-r border-slate-600 pr-3">
+          <label className="text-xs text-slate-400 whitespace-nowrap">Base Weight (oz)</label>
+          <Input
+            type="number"
+            value={baseWeightOz !== undefined ? String(baseWeightOz) : ''}
+            onChange={(e) => {
+              const val = e.target.value.trim();
+              if (val === '') {
+                onUpdateBaseWeight(undefined);
+              } else {
+                const parsed = parseFloat(val);
+                if (!isNaN(parsed) && parsed >= 0) {
+                  onUpdateBaseWeight(parsed);
+                }
+              }
+            }}
+            onBlur={(e) => {
+              // On blur, ensure valid value
+              const val = e.target.value.trim();
+              if (val !== '') {
+                const parsed = parseFloat(val);
+                if (isNaN(parsed) || parsed < 0) {
+                  onUpdateBaseWeight(undefined);
+                }
+              }
+            }}
+            placeholder="0"
+            className="w-20 h-8 text-sm bg-slate-800 border-slate-600 text-slate-100"
+            min="0"
+            step="0.1"
+          />
+        </div>
+
         {hasUnsavedChanges && (
           <div className="flex items-center gap-2 text-amber-400 text-sm">
             <AlertCircle className="h-4 w-4" />

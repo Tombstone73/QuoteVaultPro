@@ -37,6 +37,10 @@ import {
   createUpdateChoicePatch,
   createDeleteChoicePatch,
   createReorderChoicePatch,
+  createUpdateBaseWeightPatch,
+  createAddWeightImpactPatch,
+  createUpsertWeightImpactPatch,
+  createDeleteWeightImpactPatch,
   applyPatchToTree,
 } from "@/lib/pbv2/pbv2ViewModel";
 import type { EditorOptionGroup } from "@/lib/pbv2/pbv2ViewModel";
@@ -446,6 +450,44 @@ export default function PBV2ProductBuilderSectionV2({
     if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
+  // Part A: Base weight update handler
+  const handleUpdateBaseWeight = (baseWeightOz?: number) => {
+    if (!localTreeJson) return;
+    const { patch } = createUpdateBaseWeightPatch(localTreeJson, baseWeightOz);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
+  };
+
+  // Part B: Weight impact handlers
+  const handleAddWeightImpact = (nodeId: string) => {
+    if (!localTreeJson) return;
+    const { patch } = createAddWeightImpactPatch(localTreeJson, nodeId);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
+  };
+
+  const handleUpdateWeightImpact = (nodeId: string, index: number, updates: any) => {
+    if (!localTreeJson) return;
+    const { patch } = createUpsertWeightImpactPatch(localTreeJson, nodeId, index, updates);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
+  };
+
+  const handleDeleteWeightImpact = (nodeId: string, index: number) => {
+    if (!localTreeJson) return;
+    const { patch } = createDeleteWeightImpactPatch(localTreeJson, nodeId, index);
+    const updatedTree = applyPatchToTree(localTreeJson, patch);
+    setLocalTreeJson(updatedTree);
+    setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
+  };
+
   const handleUpdateProduct = (updates: any) => {
     if (!localTreeJson) return;
     const tree = JSON.parse(JSON.stringify(localTreeJson));
@@ -609,6 +651,10 @@ export default function PBV2ProductBuilderSectionV2({
         onDeleteChoice={handleDeleteChoice}
         onReorderChoice={handleReorderChoice}
         onUpdateProduct={handleUpdateProduct}
+        onUpdateBaseWeight={handleUpdateBaseWeight}
+        onAddWeightImpact={handleAddWeightImpact}
+        onUpdateWeightImpact={handleUpdateWeightImpact}
+        onDeleteWeightImpact={handleDeleteWeightImpact}
         onSave={handleSave}
         onPublish={handlePublish}
         onExportJson={handleExportJson}

@@ -487,7 +487,7 @@ export function createUpdateChoicePatch(
   treeJson: unknown,
   optionId: string,
   choiceValue: string,
-  updates: { label?: string; value?: string; description?: string }
+  updates: { label?: string; value?: string; description?: string; weightOz?: number }
 ): { patch: any; validationError?: string } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
   
@@ -515,6 +515,10 @@ export function createUpdateChoicePatch(
       if (updates.label !== undefined) updated.label = updates.label;
       if (updates.value !== undefined) updated.value = updates.value;
       if (updates.description !== undefined) updated.description = updates.description;
+      if (updates.weightOz !== undefined) {
+        // Part C: Support weightOz on choices
+        updated.weightOz = updates.weightOz >= 0 ? updates.weightOz : undefined;
+      }
       return updated;
     });
 
@@ -835,7 +839,7 @@ export function createMoveOptionPatch(
     }
   } else {
     // Moving FROM a group to a runtime node - remove from roots
-    updatedTree.rootNodeIds = existingRoots.filter(id => id !== optionId);
+    updatedTree.rootNodeIds = existingRoots.filter((id: string) => id !== optionId);
   }
 
   return {
@@ -846,25 +850,141 @@ export function createMoveOptionPatch(
     },
   };
 }
+
+/**
+ * Apply a patch to tree JSON (replaces nodes/edges)
+ */
+export function applyPatchToTree(treeJson: unknown, patch: any): any {
+  const tree = asRecord(treeJson) ? { ...(treeJson as any) } : {};
+
+  // Copy over patch properties (nodes, edges, rootNodeIds, meta, etc.)
+  Object.keys(patch).forEach(key => {
+    if (patch[key] !== undefined) {
+      tree[key] = patch[key];
+    }
+  });
+
+  return tree;
+}
+
+/**
+ * Part D: Create patch to update product base weight
+ */
+export function createUpdateBaseWeightPatch(
+  treeJson: unknown,
+  baseWeightOz?: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+  
+  const updatedMeta = {
+    ...(tree.meta || {}),
+    baseWeightOz: baseWeightOz !== undefined && baseWeightOz >= 0 ? baseWeightOz : undefined,
+  };
+
+  return {
     patch: {
       nodes,
-      edges: updatedEdges,
+      edges,
+      meta: updatedMeta,
     },
   };
 }
 
 /**
- * Apply a patch to tree JSON (replaces nodes/edges)
+ * Part D: Create patch to add a weight impact rule to a node
  */
-export function applyPatchToTree(treeJson: unknown, patch: { nodes?: PBV2Node[]; edges?: PBV2Edge[] }): any {
-  const tree = asRecord(treeJson) ? { ...(treeJson as any) } : {};
+export function createAddWeightImpactPatch(
+  treeJson: unknown,
+  nodeId: string
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
 
-  if (patch.nodes !== undefined) {
-    tree.nodes = patch.nodes;
-  }
-  if (patch.edges !== undefined) {
-    tree.edges = patch.edges;
-  }
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
 
-  return tree;
+    const existingImpacts = Array.isArray(n.weightImpact) ? n.weightImpact : [];
+    const newImpact = {
+      mode: 'addFlat' as const,
+      oz: 0,
+      label: '',
+    };
+
+    return {
+      ...n,
+      weightImpact: [...existingImpacts, newImpact],
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Part D: Create patch to update a weight impact rule
+ */
+export function createUpsertWeightImpactPatch(
+  treeJson: unknown,
+  nodeId: string,
+  index: number,
+  updates: { mode?: 'addFlat' | 'addPerQty' | 'addPerSqft'; oz?: number; label?: string }
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const impacts = Array.isArray(n.weightImpact) ? [...n.weightImpact] : [];
+    if (index < 0 || index >= impacts.length) return n;
+
+    impacts[index] = {
+      ...impacts[index],
+      ...updates,
+    };
+
+    return {
+      ...n,
+      weightImpact: impacts,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Part D: Create patch to delete a weight impact rule
+ */
+export function createDeleteWeightImpactPatch(
+  treeJson: unknown,
+  nodeId: string,
+  index: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const impacts = Array.isArray(n.weightImpact) ? [...n.weightImpact] : [];
+    impacts.splice(index, 1);
+
+    return {
+      ...n,
+      weightImpact: impacts.length > 0 ? impacts : undefined,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
 }
