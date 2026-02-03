@@ -29,6 +29,7 @@ export function PricingValidationPanel({
   const publishOnlyErrorCodes = new Set([
     'PBV2_E_TREE_NO_ROOTS',
     'PBV2_E_TREE_STATUS_INVALID',
+    'PBV2_E_REQUIRED_INPUT_UNREACHABLE', // Also publish-only until roots exist
   ]);
 
   const filteredFindings = publishAttempted 
