@@ -21,6 +21,7 @@ export interface PBV2ProductBuilderLayoutProps {
   
   // Validation/preview
   findings: Finding[];
+  publishAttempted: boolean; // Part D: Track if user attempted publish
   pricingPreview: {
     addOnCents: number;
     breakdown: Array<{ label: string; cents: number }>;
@@ -75,6 +76,7 @@ export function PBV2ProductBuilderLayout({
   hasUnsavedChanges,
   canPublish,
   findings,
+  publishAttempted,
   pricingPreview,
   weightPreview,
   onSelectGroup,
@@ -183,6 +185,7 @@ export function PBV2ProductBuilderLayout({
         <div className="w-96 shrink-0 overflow-hidden">
           <PricingValidationPanel
             findings={findings}
+            publishAttempted={publishAttempted}
             pricingPreview={pricingPreview}
             weightPreview={weightPreview}
           />
