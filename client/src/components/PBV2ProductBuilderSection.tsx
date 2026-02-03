@@ -1350,7 +1350,8 @@ export default function PBV2ProductBuilderSection({
         ) : null}
         {lastError ? <div className="text-sm text-destructive">{lastError}</div> : null}
 
-        {isAdminUser ? (
+        {/* Hide dev-only sections in production */}
+        {import.meta.env.DEV && isAdminUser ? (
           <div className="rounded-md border border-border bg-muted/20 p-4 space-y-3">
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-1">
@@ -1449,6 +1450,9 @@ export default function PBV2ProductBuilderSection({
           </div>
         ) : null}
 
+        {/* Hide draft editor and all dev tools in production */}
+        {!import.meta.env.DEV ? null : (
+          <>
         <Separator />
 
         <div className="grid grid-cols-1 gap-3">
@@ -3543,6 +3547,8 @@ export default function PBV2ProductBuilderSection({
             </div>
           ) : null}
         </div>
+          </>
+        )}
       </CardContent>
     </Card>
 
