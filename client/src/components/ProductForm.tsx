@@ -339,16 +339,16 @@ export const ProductForm = ({
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {productId ? (
-            useLegacyBuilder ? (
-              <PBV2ProductBuilderSection productId={productId} />
-            ) : (
-              <PBV2ProductBuilderSectionV2 productId={productId} />
-            )
+          {useLegacyBuilder ? (
+            <PBV2ProductBuilderSection productId={productId || ''} />
           ) : (
-            <div className="p-6 text-center text-slate-400">
-              <p className="text-sm">Save the product first to enable the options builder.</p>
-            </div>
+            <PBV2ProductBuilderSectionV2 
+              productId={productId}
+              draftTreeJson={form.watch('optionTreeJson')}
+              onDraftChange={(tree) => {
+                form.setValue('optionTreeJson', tree as any, { shouldDirty: true });
+              }}
+            />
           )}
         </CardContent>
       </Card>

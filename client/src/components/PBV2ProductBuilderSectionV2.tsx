@@ -98,7 +98,15 @@ function envelopeMessage(status: number, json: any, fallback: string) {
   return `${fallback} (${status})`;
 }
 
-export default function PBV2ProductBuilderSectionV2({ productId }: { productId: string }) {
+export default function PBV2ProductBuilderSectionV2({ 
+  productId, 
+  draftTreeJson,
+  onDraftChange,
+}: { 
+  productId?: string;
+  draftTreeJson?: unknown;
+  onDraftChange?: (tree: unknown) => void;
+}) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
 
@@ -116,9 +124,13 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
   const [jsonImportOpen, setJsonImportOpen] = useState(false);
   const [jsonImportText, setJsonImportText] = useState("");
 
-  // Fetch draft/active tree
+  // Draft mode: Use provided draft tree instead of fetching from server
+  const isDraftMode = !productId;
+
+  // Fetch draft/active tree (only if we have a productId)
   const treeQuery = useQuery<TreeResponse>({
     queryKey: ["/api/products", productId, "pbv2", "tree"],
+    enabled: !isDraftMode && !!productId,
     queryFn: async () => {
       const res = await fetch(`/api/products/${productId}/pbv2/tree`, { credentials: "include" });
       const json = (await readJsonSafe(res)) as any;
@@ -129,11 +141,34 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     },
   });
 
-  const draft = treeQuery.data?.data?.draft ?? null;
-  const active = treeQuery.data?.data?.active ?? null;
+  const draft = isDraftMode ? null : (treeQuery.data?.data?.draft ?? null);
+  const active = isDraftMode ? null : (treeQuery.data?.data?.active ?? null);
 
-  // Initialize local tree from draft
+  // Initialize local tree from draft or provided draftTreeJson
   useEffect(() => {
+    if (isDraftMode) {
+      // Draft mode: use provided draftTreeJson
+      if (!draftTreeJson) {
+        const emptyTree = createEmptyOptionTreeV2();
+        setLocalTreeJson(emptyTree);
+        return;
+      }
+
+      // Runtime migration: handle legacy arrays
+      let safeTreeJson = draftTreeJson;
+      if (Array.isArray(draftTreeJson)) {
+        console.warn('[PBV2 Draft Mode] Legacy array tree, migrating to empty OptionTreeV2');
+        safeTreeJson = createEmptyOptionTreeV2();
+      } else if (!draftTreeJson || typeof draftTreeJson !== 'object') {
+        console.warn('[PBV2 Draft Mode] Invalid tree JSON, using empty OptionTreeV2');
+        safeTreeJson = createEmptyOptionTreeV2();
+      }
+
+      setLocalTreeJson(safeTreeJson);
+      return;
+    }
+
+    // Server mode: use fetched draft
     if (!draft) {
       setLocalTreeJson(null);
       setHasLocalChanges(false);
@@ -265,6 +300,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
     setSelectedGroupId(newGroupId);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
     toast({ title: "Group added" });
   };
 
@@ -274,6 +310,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
   const handleDeleteGroup = (groupId: string) => {
@@ -288,6 +325,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
     if (selectedGroupId === deleteGroupTarget.id) {
       setSelectedGroupId(null);
     }
@@ -303,6 +341,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
     setSelectedOptionId(newOptionId);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
     toast({ title: "Option added" });
   };
 
@@ -313,6 +352,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
     setSelectedOptionId(newOptionId);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
     toast({ title: "Option duplicated" });
   };
 
@@ -322,6 +362,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
     
     // Smart fallback selection
     if (selectedOptionId === optionId) {
@@ -347,6 +388,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
   const handleMoveOption = (fromGroupId: string, toGroupId: string, optionId: string) => {
@@ -355,6 +397,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
     toast({ title: "Option moved" });
   };
 
@@ -364,6 +407,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
   const handleAddChoice = (optionId: string) => {
@@ -372,6 +416,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
   const handleUpdateChoice = (optionId: string, choiceValue: string, updates: any) => {
@@ -380,6 +425,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
   const handleDeleteChoice = (optionId: string, choiceValue: string) => {
@@ -388,6 +434,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
   const handleReorderChoice = (optionId: string, fromIndex: number, toIndex: number) => {
@@ -396,6 +443,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     setLocalTreeJson(updatedTree);
     setHasLocalChanges(true);
+    if (isDraftMode && onDraftChange) onDraftChange(updatedTree);
   };
 
   const handleUpdateProduct = (updates: any) => {
@@ -411,6 +459,11 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
   };
 
   const handleSave = async () => {
+    if (isDraftMode) {
+      toast({ title: "Draft mode", description: "Save the product first, then options will auto-save.", variant: "default" });
+      return;
+    }
+
     if (!draft || !localTreeJson) {
       toast({ title: "No draft to save", variant: "destructive" });
       return;
@@ -432,6 +485,11 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
   };
 
   const handlePublish = async () => {
+    if (isDraftMode) {
+      toast({ title: "Draft mode", description: "Save the product first to enable publish.", variant: "default" });
+      return;
+    }
+
     if (!draft) {
       toast({ title: "No draft to publish", variant: "destructive" });
       return;
@@ -512,11 +570,11 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     }
   };
 
-  if (treeQuery.isLoading) {
+  if (!isDraftMode && treeQuery.isLoading) {
     return <div className="p-8 text-center text-slate-400">Loading PBV2 tree...</div>;
   }
 
-  if (!draft) {
+  if (!isDraftMode && !draft) {
     return (
       <div className="p-8 text-center">
         <div className="text-slate-400 mb-4">No draft exists for this product.</div>
@@ -525,7 +583,7 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
     );
   }
 
-  const canPublish = validationResult.errors.length === 0 && hasLocalChanges === false;
+  const canPublish = isDraftMode ? false : (validationResult.errors.length === 0 && hasLocalChanges === false);
 
   return (
     <>
