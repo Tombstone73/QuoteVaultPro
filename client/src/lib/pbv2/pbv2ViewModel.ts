@@ -142,6 +142,17 @@ function normalizeArrays(treeRaw: any): { tree: any; nodes: PBV2Node[]; edges: P
 }
 
 /**
+ * Convert nodes/edges arrays back to Record format for OptionTreeV2 schema compliance
+ */
+function arraysToRecords(nodes: PBV2Node[], edges: PBV2Edge[]): { nodes: Record<string, PBV2Node>; edges: PBV2Edge[] } {
+  const nodesRecord: Record<string, PBV2Node> = {};
+  for (const node of nodes) {
+    nodesRecord[node.id] = node;
+  }
+  return { nodes: nodesRecord, edges };
+}
+
+/**
  * Convert PBV2 tree JSON to editor model for UI rendering
  */
 export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
@@ -385,11 +396,14 @@ export function createUpdateOptionPatch(
   treeJson: unknown,
   optionId: string,
   updates: {
+    name?: string; // UI field
     label?: string;
     description?: string;
     type?: string;
     required?: boolean;
+    isRequired?: boolean; // UI field
     defaultValue?: any;
+    isDefault?: boolean; // UI field
     choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number }>;
   }
 ): { patch: any } {
@@ -399,6 +413,8 @@ export function createUpdateOptionPatch(
     if (n.id !== optionId) return n;
 
     const updated = { ...n };
+    // Map UI field 'name' to tree field 'label'
+    if (updates.name !== undefined) updated.label = updates.name;
     if (updates.label !== undefined) updated.label = updates.label;
     if (updates.description !== undefined) updated.description = updates.description;
     
@@ -413,8 +429,21 @@ export function createUpdateOptionPatch(
       updated.input = { ...updated.input, type: typeMap[updates.type] || 'select' };
     }
 
-    if (updates.required !== undefined && updated.input) {
-      updated.input = { ...updated.input, required: updates.required };
+    // Map UI field 'isRequired' to tree field 'required'
+    const requiredValue = updates.isRequired !== undefined ? updates.isRequired : updates.required;
+    if (requiredValue !== undefined && updated.input) {
+      updated.input = { ...updated.input, required: requiredValue };
+    }
+
+    // Map UI field 'isDefault' to setting defaultValue
+    if (updates.isDefault !== undefined && updated.input) {
+      if (updates.isDefault) {
+        // Set a default value if not already present
+        updated.input = { ...updated.input, defaultValue: updated.input.defaultValue ?? true };
+      } else {
+        // Clear default value
+        updated.input = { ...updated.input, defaultValue: undefined };
+      }
     }
 
     if (updates.defaultValue !== undefined && updated.input) {
@@ -753,10 +782,16 @@ export function createDeleteOptionPatch(treeJson: unknown, optionId: string): { 
 export function applyPatchToTree(treeJson: unknown, patch: { nodes?: PBV2Node[]; edges?: PBV2Edge[] }): any {
   const tree = asRecord(treeJson) ? { ...(treeJson as any) } : {};
 
-  if (patch.nodes !== undefined) {
-    tree.nodes = patch.nodes;
-  }
-  if (patch.edges !== undefined) {
+  if (patch.nodes !== undefined && patch.edges !== undefined) {
+    // Convert arrays to Record format for OptionTreeV2 schema
+    const { nodes, edges } = arraysToRecords(patch.nodes, patch.edges);
+    tree.nodes = nodes;
+    tree.edges = edges;
+  } else if (patch.nodes !== undefined) {
+    // Only nodes provided
+    const { nodes } = arraysToRecords(patch.nodes, []);
+    tree.nodes = nodes;
+  } else if (patch.edges !== undefined) {
     tree.edges = patch.edges;
   }
 
