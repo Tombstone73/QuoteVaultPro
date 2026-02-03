@@ -206,6 +206,13 @@ export const ProductForm = ({
       id={formId}
       className="space-y-6"
     >
+      {/* Hidden field to register optionTreeJson with RHF so it's included in form submissions */}
+      <FormField
+        control={form.control}
+        name="optionTreeJson"
+        render={({ field }) => <input type="hidden" {...field} value={field.value ? JSON.stringify(field.value) : ""} />}
+      />
+      
       {/* #basics */}
       <Card>
         <CardHeader>
