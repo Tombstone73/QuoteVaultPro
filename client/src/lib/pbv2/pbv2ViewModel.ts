@@ -66,11 +66,13 @@ type PBV2Node = {
   type?: string;
   status?: string;
   key?: string;
+  selectionKey?: string; // Legacy top-level selectionKey (backward compat)
   input?: {
     type?: "boolean" | "select" | "multiselect" | "number" | "text" | "textarea" | "file" | "dimension";
     required?: boolean;
     defaultValue?: any;
     constraints?: any;
+    selectionKey?: string; // Proper location per schema
   };
   label?: string;
   description?: string;
@@ -266,6 +268,91 @@ function makeId(prefix: string, existingIds: Set<string>): string {
 }
 
 /**
+ * Part A: Enforce tree invariants to prevent validation errors.
+ * 
+ * This function normalizes a tree to ensure:
+ * 1. Every INPUT node has input.selectionKey (stable identifier)
+ * 2. tree.rootNodeIds contains at least one ENABLED runtime node
+ * 3. Edges to GROUP nodes are marked DISABLED (GROUP nodes are metadata)
+ * 4. edge.condition is undefined or valid AST (not {})
+ * 
+ * Call this after every patch application to maintain valid tree structure.
+ */
+export function ensureTreeInvariants(treeJson: unknown): any {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+  
+  // Invariant 1: Ensure every INPUT node has input.selectionKey
+  const fixedNodes = nodes.map(node => {
+    if (node.type === 'INPUT' && node.input) {
+      const selectionKey = node.input.selectionKey || node.selectionKey || node.key || node.id;
+      return {
+        ...node,
+        input: {
+          ...node.input,
+          selectionKey,
+        },
+      };
+    }
+    return node;
+  });
+
+  // Invariant 3: Disable edges pointing to GROUP nodes (they're not runtime nodes)
+  const groupIds = new Set(fixedNodes.filter(n => n.type === 'GROUP').map(n => n.id));
+  const fixedEdges = edges.map(edge => {
+    if (edge.toNodeId && groupIds.has(edge.toNodeId) && edge.status === 'ENABLED') {
+      return { ...edge, status: 'DISABLED' };
+    }
+    // Invariant 4: Normalize invalid condition objects
+    if (edge.condition !== undefined && edge.condition !== null) {
+      const cond = edge.condition;
+      // If condition is an empty object or doesn't look like a valid AST, remove it
+      if (typeof cond === 'object' && Object.keys(cond).length === 0) {
+        const { condition, ...rest } = edge;
+        return rest;
+      }
+    }
+    return edge;
+  });
+
+  // Invariant 2: Ensure rootNodeIds contains at least one ENABLED runtime node
+  let fixedRootNodeIds = Array.isArray(tree.rootNodeIds) ? [...tree.rootNodeIds] : [];
+  
+  // Filter out GROUP nodes from roots (they're not runtime nodes)
+  fixedRootNodeIds = fixedRootNodeIds.filter(id => !groupIds.has(id));
+  
+  // If no valid roots, find all top-level INPUT nodes (no incoming ENABLED edges from runtime nodes)
+  if (fixedRootNodeIds.length === 0) {
+    const runtimeNodes = fixedNodes.filter(n => n.type !== 'GROUP');
+    const nodesWithIncomingEdges = new Set(
+      fixedEdges
+        .filter(e => e.status === 'ENABLED' && e.fromNodeId && !groupIds.has(e.fromNodeId))
+        .map(e => e.toNodeId)
+        .filter(Boolean)
+    );
+    
+    const topLevelInputs = runtimeNodes
+      .filter(n => n.type === 'INPUT' && !nodesWithIncomingEdges.has(n.id));
+    
+    if (topLevelInputs.length > 0) {
+      fixedRootNodeIds = topLevelInputs.map(n => n.id);
+    } else if (runtimeNodes.length > 0) {
+      // Fallback: if there are runtime nodes but no clear top-level ones, use first INPUT
+      const firstInput = runtimeNodes.find(n => n.type === 'INPUT');
+      if (firstInput) {
+        fixedRootNodeIds = [firstInput.id];
+      }
+    }
+  }
+
+  return {
+    ...tree,
+    nodes: fixedNodes,
+    edges: fixedEdges,
+    rootNodeIds: fixedRootNodeIds,
+  };
+}
+
+/**
  * Create patch to add a new option group
  */
 export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId: string } {
@@ -289,18 +376,17 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
     },
   };
 
-  // Part B: Ensure rootNodeIds array exists (will be populated when options are added)
-  let updatedTree = { ...tree };
-  if (!Array.isArray(tree.rootNodeIds)) {
-    updatedTree.rootNodeIds = [];
-  }
+  // Part C: GROUP nodes are not runtime nodes - don't add to rootNodeIds
+  // ensureTreeInvariants will populate roots when options are added
+  const patch = {
+    ...tree,
+    nodes: [...nodes, newNode],
+    edges,
+    rootNodeIds: Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [],
+  };
 
   return {
-    patch: {
-      ...updatedTree,
-      nodes: [...nodes, newNode],
-      edges,
-    },
+    patch: ensureTreeInvariants(patch),
     newGroupId,
   };
 }
@@ -628,51 +714,43 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
   const newEdgeId = makeId('edge_', existingIds);
   const selectionKey = `option_${Date.now()}`;
 
+  // Part B: Create INPUT node with proper selectionKey in input field
   const newNode: PBV2Node = {
     id: newOptionId,
     kind: 'question',
     type: 'INPUT',
     status: 'ENABLED',
     key: selectionKey,
-    selectionKey: selectionKey, // Part D: Add selectionKey for contract compliance
     label: 'New Option',
     description: '',
     input: {
       type: 'select',
       required: false,
+      selectionKey, // Critical: selectionKey must be in input field
     },
     pricingImpact: [],
     weightImpact: [],
   };
 
+  // Part B: Create edge with proper status and no invalid condition
   const newEdge: PBV2Edge = {
     id: newEdgeId,
     status: 'ENABLED',
     fromNodeId: groupId,
     toNodeId: newOptionId,
     priority: 0,
-    // Part C: No condition field - omit rather than placeholder
+    // Part B: Omit condition entirely (no {} placeholder)
   };
 
-  // Part B: Add to rootNodeIds if this is a top-level option (not under another INPUT)
-  const fromNode = nodes.find(n => n.id === groupId);
-  const isTopLevel = !fromNode || fromNode.type === 'GROUP';
-  
-  let updatedTree = { ...tree };
-  if (isTopLevel) {
-    const existingRoots = Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [];
-    // Add this option as a root if not already present
-    if (!existingRoots.includes(newOptionId)) {
-      updatedTree.rootNodeIds = [...existingRoots, newOptionId];
-    }
-  }
+  const patch = {
+    ...tree,
+    nodes: [...nodes, newNode],
+    edges: [...edges, newEdge],
+  };
 
+  // Part E: Apply invariants to ensure rootNodeIds is correct
   return {
-    patch: {
-      ...updatedTree,
-      nodes: [...nodes, newNode],
-      edges: [...edges, newEdge],
-    },
+    patch: ensureTreeInvariants(patch),
     newOptionId,
   };
 }
@@ -726,41 +804,41 @@ export function createDuplicateOptionPatch(
   const newEdgeId = makeId('edge_', existingIds);
   const newSelectionKey = `option_${Date.now()}`;
   
+  // Part D: Duplicate must have NEW selectionKey to avoid collisions
   const duplicatedNode: PBV2Node = {
     ...JSON.parse(JSON.stringify(sourceNode)),
     id: newOptionId,
     key: newSelectionKey,
-    selectionKey: newSelectionKey, // Part D: Ensure selectionKey is set
     label: sourceNode.label ? `${sourceNode.label} (Copy)` : 'New Option (Copy)',
   };
 
+  // Part D: Ensure selectionKey is in input field, not just top level
+  if (duplicatedNode.type === 'INPUT' && duplicatedNode.input) {
+    duplicatedNode.input = {
+      ...duplicatedNode.input,
+      selectionKey: newSelectionKey,
+    };
+  }
+
   // Create edge from group to new option
-  const fromNode = nodes.find(n => n.id === groupId);
-  const isGroupEdge = fromNode?.type === 'GROUP';
-  
   const newEdge: PBV2Edge = {
     id: newEdgeId,
-    status: isGroupEdge ? 'DISABLED' : 'ENABLED', // Part A: GROUP edges are metadata only
+    status: 'ENABLED',
     fromNodeId: groupId,
     toNodeId: newOptionId,
     priority: 0,
+    // Part B: No condition placeholder
   };
 
-  // Part B: Add to rootNodeIds if this is a top-level option
-  let updatedTree = { ...tree };
-  if (isGroupEdge) {
-    const existingRoots = Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [];
-    if (!existingRoots.includes(newOptionId)) {
-      updatedTree.rootNodeIds = [...existingRoots, newOptionId];
-    }
-  }
+  const patch = {
+    ...tree,
+    nodes: [...nodes, duplicatedNode],
+    edges: [...edges, newEdge],
+  };
 
+  // Part E: Apply invariants
   return {
-    patch: {
-      ...updatedTree,
-      nodes: [...nodes, duplicatedNode],
-      edges: [...edges, newEdge],
-    },
+    patch: ensureTreeInvariants(patch),
     newOptionId,
   };
 }
@@ -813,46 +891,33 @@ export function createMoveOptionPatch(
 ): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
-  const toNode = nodes.find(n => n.id === toGroupId);
-  const isTargetGroup = toNode?.type === 'GROUP';
-
   // Update the edge that connects to this option
   const updatedEdges = edges.map(e => {
     if (e.toNodeId === optionId && e.fromNodeId === fromGroupId) {
       return { 
         ...e, 
         fromNodeId: toGroupId,
-        status: isTargetGroup ? 'DISABLED' : 'ENABLED' // Part A: GROUP edges are metadata only
+        status: 'ENABLED', // ensureTreeInvariants will fix if toGroupId is GROUP
       };
     }
     return e;
   });
 
-  // Part B: Update rootNodeIds when moving to/from groups
-  let updatedTree = { ...tree };
-  const existingRoots = Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [];
-  
-  if (isTargetGroup) {
-    // Moving TO a group - add to roots if not present
-    if (!existingRoots.includes(optionId)) {
-      updatedTree.rootNodeIds = [...existingRoots, optionId];
-    }
-  } else {
-    // Moving FROM a group to a runtime node - remove from roots
-    updatedTree.rootNodeIds = existingRoots.filter((id: string) => id !== optionId);
-  }
+  const patch = {
+    ...tree,
+    nodes,
+    edges: updatedEdges,
+  };
 
+  // Part D & E: Apply invariants to handle rootNodeIds and edge status
   return {
-    patch: {
-      ...updatedTree,
-      nodes,
-      edges: updatedEdges,
-    },
+    patch: ensureTreeInvariants(patch),
   };
 }
 
 /**
  * Apply a patch to tree JSON (replaces nodes/edges)
+ * Part E: Enforce invariants at the boundary after every patch application
  */
 export function applyPatchToTree(treeJson: unknown, patch: any): any {
   const tree = asRecord(treeJson) ? { ...(treeJson as any) } : {};
@@ -864,7 +929,8 @@ export function applyPatchToTree(treeJson: unknown, patch: any): any {
     }
   });
 
-  return tree;
+  // Part E: Apply invariants to ensure tree validity
+  return ensureTreeInvariants(tree);
 }
 
 /**
