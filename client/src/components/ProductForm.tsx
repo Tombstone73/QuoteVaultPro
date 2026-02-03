@@ -12,7 +12,6 @@ import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { optionTreeV2Schema, validateOptionTreeV2, createEmptyOptionTreeV2 } from "@shared/optionTreeV2";
 import { buildOptionTreeV2FromLegacyOptions } from "@shared/optionTreeV2Initializer";
-import ProductOptionsPanelV2_Mvp from "@/components/ProductOptionsPanelV2_Mvp";
 import { useToast } from "@/hooks/use-toast";
 
 // Required field indicator component
@@ -37,6 +36,7 @@ export const ProductForm = ({
   productTypes,
   onSave,
   formId,
+  optionsModeState,
 }: {
   form: any;
   materials: any;
@@ -44,6 +44,7 @@ export const ProductForm = ({
   productTypes: any;
   onSave: any;
   formId?: string;
+  optionsModeState?: { mode: "legacy" | "treeV2"; setMode: (mode: "legacy" | "treeV2") => void };
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -78,7 +79,11 @@ export const ProductForm = ({
     }
   }, [optionTreeJson, productId]);
   
-  const [optionsMode, setOptionsMode] = React.useState<"legacy" | "treeV2">(determineInitialMode);
+  const [internalOptionsMode, setInternalOptionsMode] = React.useState<"legacy" | "treeV2">(determineInitialMode);
+  
+  // Use external state if provided, otherwise use internal
+  const optionsMode = optionsModeState?.mode ?? internalOptionsMode;
+  const setOptionsMode = optionsModeState?.setMode ?? setInternalOptionsMode;
 
   const [optionTreeText, setOptionTreeText] = React.useState<string>("");
   const [optionTreeErrors, setOptionTreeErrors] = React.useState<string[]>([]);
@@ -549,12 +554,9 @@ export const ProductForm = ({
               <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
             </div>
           ) : (
-            <div className="h-[600px]">
-              <ProductOptionsPanelV2_Mvp
-                productId={String(form.getValues("id") ?? "new")}
-                optionTreeJson={optionTreeText}
-                onChangeOptionTreeJson={setTreeTextAndValidate}
-              />
+            <div className="p-6 text-center text-slate-400">
+              <p className="text-sm">Options are managed in the PBV2 Builder section below.</p>
+              <p className="text-xs mt-1">Scroll down to add groups and options.</p>
             </div>
           )}
         </CardContent>
