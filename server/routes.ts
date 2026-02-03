@@ -2480,6 +2480,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!product) {
         return res.status(404).json({ message: "Product not found" });
       }
+      
+      // DEV-ONLY: Log what's being returned
+      if (process.env.NODE_ENV !== 'production' && product.optionTreeJson) {
+        const nodeCount = typeof product.optionTreeJson === 'object' 
+          ? Object.keys((product.optionTreeJson as any).nodes || {}).length 
+          : 0;
+        console.log('[GET /api/products/:id] RETURNING optionTreeJson:', {
+          type: typeof product.optionTreeJson,
+          nodeCount,
+          isString: typeof product.optionTreeJson === 'string',
+          preview: typeof product.optionTreeJson === 'string' ? (product.optionTreeJson as string).slice(0, 100) : null,
+        });
+      }
+      
       res.json(product);
     } catch (error) {
       console.error("Error fetching product:", error);
@@ -2605,6 +2619,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const product = await storage.updateProduct(organizationId, productId, productData as UpdateProduct);
+      
+      // DEV-ONLY: Verify what was actually written to DB
+      if (process.env.NODE_ENV !== 'production' && 'optionTreeJson' in productData) {
+        const dbNodeCount = product.optionTreeJson && typeof product.optionTreeJson === 'object' 
+          ? Object.keys((product.optionTreeJson as any).nodes || {}).length 
+          : 0;
+        console.log('[PATCH /api/products/:id] DB WRITE VERIFIED:', {
+          returnedType: typeof product.optionTreeJson,
+          dbNodeCount,
+          schemaVersion: (product.optionTreeJson as any)?.schemaVersion,
+        });
+      }
+      
       res.json(product);
     } catch (error) {
       if (error instanceof z.ZodError) {

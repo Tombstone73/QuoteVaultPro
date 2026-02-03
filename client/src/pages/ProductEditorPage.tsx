@@ -91,6 +91,21 @@ const ProductEditorPage = () => {
   // Load product data when editing
   useEffect(() => {
     if (product && !isNewProduct) {
+      // DEV-ONLY: Log what we received from API
+      if (import.meta.env.DEV && (product as any).optionTreeJson) {
+        const loadedTree = (product as any).optionTreeJson;
+        const nodeCount = typeof loadedTree === 'object' && !Array.isArray(loadedTree)
+          ? Object.keys(loadedTree.nodes || {}).length
+          : 0;
+        console.log("[ProductEditorPage] Loading product with optionTreeJson:", {
+          type: typeof loadedTree,
+          nodeCount,
+          isString: typeof loadedTree === 'string',
+          preview: typeof loadedTree === 'string' ? loadedTree.slice(0, 100) : null,
+          schemaVersion: loadedTree?.schemaVersion,
+        });
+      }
+      
       const nextValues: ProductFormData = {
         name: product.name,
         description: product.description || "",
@@ -169,7 +184,26 @@ const ProductEditorPage = () => {
       if (isNewProduct) {
         return await apiRequest("POST", "/api/products", payload);
       } else {
-        return await apiRequest("PATCH", `/api/products/${productId}`, payload);
+        const response = await apiRequest("PATCH", `/api/products/${productId}`, payload);
+        
+        // DEV-ONLY: Log what server returned
+        if (import.meta.env.DEV && response) {
+          const responseData = await response.json();
+          const returnedTree = (responseData as any)?.optionTreeJson;
+          if (returnedTree) {
+            const returnedNodeCount = typeof returnedTree === 'object' 
+              ? Object.keys(returnedTree.nodes || {}).length 
+              : 0;
+            console.log("[ProductEditorPage] PATCH response optionTreeJson:", {
+              type: typeof returnedTree,
+              nodeCount: returnedNodeCount,
+              isString: typeof returnedTree === 'string',
+            });
+          }
+          return { json: () => Promise.resolve(responseData) } as any;
+        }
+        
+        return response;
       }
     },
     onSuccess: () => {

@@ -116,7 +116,37 @@ export const ProductForm = ({
     const currentTree = form.getValues("optionTreeJson");
     const legacyOptions = form.getValues("optionsJson");
     
+    // DEV-ONLY: Log what we're about to coerce
+    if (import.meta.env.DEV) {
+      const inputNodeCount = typeof currentTree === 'object' && currentTree && !Array.isArray(currentTree)
+        ? Object.keys((currentTree as any).nodes || {}).length
+        : 0;
+      console.log('[ProductForm] Auto-migration on mount INPUT:', {
+        inputType: typeof currentTree,
+        inputNodeCount,
+        inputSchemaVersion: (currentTree as any)?.schemaVersion,
+        productId,
+      });
+    }
+    
     const migratedTree = coerceOrMigrateToPBV2(currentTree, legacyOptions);
+    
+    // DEV-ONLY: Check if we're about to wipe data
+    if (import.meta.env.DEV) {
+      const inputNodeCount = typeof currentTree === 'object' && currentTree && !Array.isArray(currentTree)
+        ? Object.keys((currentTree as any).nodes || {}).length
+        : 0;
+      const outputNodeCount = Object.keys(migratedTree.nodes || {}).length;
+      
+      if (inputNodeCount > 0 && outputNodeCount === 0) {
+        console.error('[ProductForm] CRITICAL: Auto-migration on mount would WIPE', inputNodeCount, 'nodes!');
+        console.error('[ProductForm] BLOCKING auto-migration to prevent data loss');
+        console.error('[ProductForm] Keeping current tree as-is');
+        // Don't migrate - keep the current tree even if structure is slightly off
+        setOptionTreeText(JSON.stringify(currentTree, null, 2));
+        return;
+      }
+    }
     
     // If migration changed the tree, update the form
     if (currentTree !== migratedTree) {
@@ -165,6 +195,18 @@ export const ProductForm = ({
       return;
     }
 
+    // DEV-ONLY: Log parsed input before coercion
+    if (import.meta.env.DEV) {
+      const inputNodeCount = typeof parsed === 'object' && parsed && !Array.isArray(parsed) 
+        ? Object.keys((parsed as any).nodes || {}).length 
+        : 0;
+      console.log('[ProductForm] setTreeTextAndValidate BEFORE coerce:', { 
+        inputType: typeof parsed, 
+        inputNodeCount,
+        inputSchemaVersion: (parsed as any)?.schemaVersion 
+      });
+    }
+
     // Auto-coerce to valid PBV2 (handles array/null/legacy/invalid)
     const legacyOptions = form.getValues("optionsJson");
     const coerced = coerceOrMigrateToPBV2(parsed, legacyOptions);
@@ -172,6 +214,22 @@ export const ProductForm = ({
     // Always use the coerced tree - no manual init required
     form.clearErrors("optionTreeJson");
     setOptionTreeErrors([]);
+    
+    // CRITICAL: Check if we're about to wipe user data
+    const inputNodeCount = typeof parsed === 'object' && parsed && !Array.isArray(parsed) 
+      ? Object.keys((parsed as any).nodes || {}).length 
+      : 0;
+    const outputNodeCount = Object.keys(coerced.nodes || {}).length;
+    
+    if (import.meta.env.DEV && inputNodeCount > 0 && outputNodeCount === 0) {
+      console.error('[ProductForm] DATA LOSS PREVENTED: coercion would wipe', inputNodeCount, 'nodes!');
+      console.error('[ProductForm] Keeping original parsed value to prevent data loss');
+      // Use parsed value as-is instead of empty coerced result
+      form.setValue("optionTreeJson", parsed, { shouldDirty: false });
+      setOptionTreeErrors(['Warning: Tree structure may be invalid but data preserved']);
+      return;
+    }
+    
     form.setValue("optionTreeJson", coerced, { shouldDirty: true, shouldTouch: true });
     
     // DEV-ONLY: Verify setValue worked
