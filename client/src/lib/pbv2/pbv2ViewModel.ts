@@ -76,7 +76,7 @@ type PBV2Node = {
   };
   label?: string;
   description?: string;
-  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number }>;
+  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number; priceDeltaCents?: number }>;
   data?: any;
   priceComponents?: any[];
   pricingImpact?: any[];
@@ -268,10 +268,23 @@ function makeId(prefix: string, existingIds: Set<string>): string {
 }
 
 /**
+ * Helper function to slugify text for selectionKey generation.
+ * Converts text to lowercase, replaces non-alphanumeric with underscores.
+ */
+function slugifyForSelectionKey(input: string): string {
+  const raw = String(input || "").trim().toLowerCase();
+  const cleaned = raw
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+  return cleaned || "field";
+}
+
+/**
  * Part A: Enforce tree invariants to prevent validation errors.
  * 
  * This function normalizes a tree to ensure:
- * 1. Every INPUT node has input.selectionKey (stable identifier)
+ * 1. Every INPUT node has input.selectionKey (stable, deterministic identifier)
  * 2. tree.rootNodeIds contains at least one ENABLED runtime node
  * 3. Edges to GROUP nodes are marked DISABLED (GROUP nodes are metadata)
  * 4. edge.condition is undefined or valid AST (not {})
@@ -282,9 +295,27 @@ export function ensureTreeInvariants(treeJson: unknown): any {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
   
   // Invariant 1: Ensure every INPUT node has input.selectionKey
+  // Priority: input.selectionKey > slugify(node.internalId) > slugify(node.label) > node.id
   const fixedNodes = nodes.map(node => {
     if (node.type === 'INPUT' && node.input) {
-      const selectionKey = node.input.selectionKey || node.selectionKey || node.key || node.id;
+      let selectionKey = node.input.selectionKey;
+      
+      // If missing, generate deterministic selectionKey
+      if (!selectionKey) {
+        // Prefer internalId if present (stable across edits)
+        if (node.internalId && typeof node.internalId === 'string' && node.internalId.trim()) {
+          selectionKey = slugifyForSelectionKey(node.internalId);
+        }
+        // Fallback to label (less stable but better than ID)
+        else if (node.label && typeof node.label === 'string' && node.label.trim()) {
+          selectionKey = slugifyForSelectionKey(node.label);
+        }
+        // Last resort: use node ID
+        else {
+          selectionKey = node.id;
+        }
+      }
+      
       return {
         ...node,
         input: {
@@ -317,8 +348,9 @@ export function ensureTreeInvariants(treeJson: unknown): any {
   // Invariant 2: Ensure rootNodeIds contains at least one ENABLED runtime node
   let fixedRootNodeIds = Array.isArray(tree.rootNodeIds) ? [...tree.rootNodeIds] : [];
   
-  // Filter out GROUP nodes from roots (they're not runtime nodes)
-  fixedRootNodeIds = fixedRootNodeIds.filter(id => !groupIds.has(id));
+  // Filter out GROUP nodes and missing nodes from roots (they're not valid runtime roots)
+  const validNodeIds = new Set(fixedNodes.map(n => n.id));
+  fixedRootNodeIds = fixedRootNodeIds.filter(id => !groupIds.has(id) && validNodeIds.has(id));
   
   // If no valid roots, find all top-level INPUT nodes (no incoming ENABLED edges from runtime nodes)
   if (fixedRootNodeIds.length === 0) {
@@ -1044,6 +1076,183 @@ export function createDeleteWeightImpactPatch(
     return {
       ...n,
       weightImpact: impacts.length > 0 ? impacts : undefined,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Part C: Create patch to update product base price
+ */
+export function createUpdateBasePricePatch(
+  treeJson: unknown,
+  basePriceCents?: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+  
+  const updatedMeta = {
+    ...(tree.meta || {}),
+    basePriceCents: basePriceCents !== undefined && basePriceCents >= 0 ? Math.floor(basePriceCents) : undefined,
+  };
+
+  return {
+    patch: {
+      nodes,
+      edges,
+      meta: updatedMeta,
+    },
+  };
+}
+
+/**
+ * Part C: Create patch to add a pricing impact rule to a node
+ */
+export function createAddPricingImpactPatch(
+  treeJson: unknown,
+  nodeId: string
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const existingImpacts = Array.isArray(n.pricingImpact) ? n.pricingImpact : [];
+    const newImpact = {
+      mode: 'addFlat' as const,
+      amountCents: 0,
+      label: '',
+    };
+
+    return {
+      ...n,
+      pricingImpact: [...existingImpacts, newImpact],
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Part C: Create patch to update a pricing impact rule
+ */
+export function createUpsertPricingImpactPatch(
+  treeJson: unknown,
+  nodeId: string,
+  index: number,
+  updates: { mode?: 'addFlat' | 'addPerQty' | 'addPerSqft'; amountCents?: number; label?: string }
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const impacts = Array.isArray(n.pricingImpact) ? [...n.pricingImpact] : [];
+    if (index < 0 || index >= impacts.length) return n;
+
+    const existing = impacts[index];
+    // Ensure amountCents is integer if provided
+    const amountCents = updates.amountCents !== undefined 
+      ? Math.floor(updates.amountCents)
+      : existing.amountCents;
+
+    impacts[index] = {
+      ...existing,
+      ...updates,
+      amountCents,
+    };
+
+    return {
+      ...n,
+      pricingImpact: impacts,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Part C: Create patch to delete a pricing impact rule
+ */
+export function createDeletePricingImpactPatch(
+  treeJson: unknown,
+  nodeId: string,
+  index: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const impacts = Array.isArray(n.pricingImpact) ? [...n.pricingImpact] : [];
+    impacts.splice(index, 1);
+
+    return {
+      ...n,
+      pricingImpact: impacts.length > 0 ? impacts : undefined,
+    };
+  });
+
+  return {
+    patch: {
+      nodes: updatedNodes,
+      edges,
+    },
+  };
+}
+
+/**
+ * Part C: Create patch to update a choice's price delta
+ */
+export function createUpdateChoicePriceDeltaPatch(
+  treeJson: unknown,
+  nodeId: string,
+  choiceValue: string,
+  priceDeltaCents?: number
+): { patch: any } {
+  const { tree, nodes, edges } = normalizeArrays(treeJson);
+
+  const updatedNodes = nodes.map(n => {
+    if (n.id !== nodeId) return n;
+
+    const choices = Array.isArray(n.choices) ? n.choices : [];
+    const updatedChoices = choices.map(c => {
+      if (c.value !== choiceValue) return c;
+
+      // Convert to integer or remove if undefined/negative
+      const finalPriceDelta = priceDeltaCents !== undefined && priceDeltaCents >= 0
+        ? Math.floor(priceDeltaCents)
+        : undefined;
+
+      if (finalPriceDelta === undefined) {
+        const { priceDeltaCents: _, ...rest } = c;
+        return rest;
+      }
+
+      return {
+        ...c,
+        priceDeltaCents: finalPriceDelta,
+      };
+    });
+
+    return {
+      ...n,
+      choices: updatedChoices,
     };
   });
 

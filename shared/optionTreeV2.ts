@@ -63,7 +63,7 @@ export type OptionNodeV2 = {
       dimension?: { minWidthIn?: number; maxWidthIn?: number; minHeightIn?: number; maxHeightIn?: number; allowRotate?: boolean };
     };
   };
-  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number }>;
+  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number; priceDeltaCents?: number }>;
   visibility?: { condition?: ConditionExpr };
   edges?: { children?: BranchEdge[] };
   pricingImpact?: PricingImpact[];
@@ -81,6 +81,7 @@ export type OptionTreeV2 = {
     updatedByUserId?: string;
     notes?: string;
     baseWeightOz?: number;
+    basePriceCents?: number;
   };
 };
 
@@ -181,6 +182,7 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
         description: z.string().optional(),
         sortOrder: z.number().optional(),
         weightOz: z.number().optional(),
+        priceDeltaCents: z.number().int().optional(),
       })
     )
     .optional(),
@@ -202,6 +204,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       updatedByUserId: z.string().optional(),
       notes: z.string().optional(),
       baseWeightOz: z.number().optional(),
+      basePriceCents: z.number().int().optional(),
     })
     .optional(),
 });
