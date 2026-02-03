@@ -29,6 +29,9 @@ interface OptionEditorProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
+  onAddWeightImpact: (nodeId: string) => void;
+  onUpdateWeightImpact: (nodeId: string, index: number, updates: any) => void;
+  onDeleteWeightImpact: (nodeId: string, index: number) => void;
   treeJson: any;
 }
 
@@ -49,6 +52,9 @@ export function OptionEditor({
   onUpdateChoice,
   onDeleteChoice,
   onReorderChoice,
+  onAddWeightImpact,
+  onUpdateWeightImpact,
+  onDeleteWeightImpact,
   treeJson
 }: OptionEditorProps) {
   const [expandedOptions, setExpandedOptions] = React.useState<Set<string>>(new Set());
@@ -357,6 +363,9 @@ export function OptionEditor({
                           onUpdateChoice={onUpdateChoice}
                           onDeleteChoice={onDeleteChoice}
                           onReorderChoice={onReorderChoice}
+                          onAddWeightImpact={onAddWeightImpact}
+                          onUpdateWeightImpact={onUpdateWeightImpact}
+                          onDeleteWeightImpact={onDeleteWeightImpact}
                           editingChoiceValue={editingChoiceValue}
                           setEditingChoiceValue={setEditingChoiceValue}
                         />

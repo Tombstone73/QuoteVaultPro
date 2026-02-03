@@ -17,6 +17,9 @@ interface OptionDetailsEditorProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
+  onAddWeightImpact: (nodeId: string) => void;
+  onUpdateWeightImpact: (nodeId: string, index: number, updates: any) => void;
+  onDeleteWeightImpact: (nodeId: string, index: number) => void;
   editingChoiceValue: { optionId: string; value: string } | null;
   setEditingChoiceValue: (val: { optionId: string; value: string } | null) => void;
 }
@@ -29,6 +32,9 @@ export function OptionDetailsEditor({
   onUpdateChoice,
   onDeleteChoice,
   onReorderChoice,
+  onAddWeightImpact,
+  onUpdateWeightImpact,
+  onDeleteWeightImpact,
   editingChoiceValue,
   setEditingChoiceValue
 }: OptionDetailsEditorProps) {
@@ -652,6 +658,35 @@ export function OptionDetailsEditor({
                               </div>
                             )}
                           </div>
+
+                          <div>
+                            <Label className="text-xs text-slate-400 mb-1 block">Weight (oz)</Label>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={choice.weightOz ?? ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === '') {
+                                  onUpdateChoice(option.id, choice.value, { weightOz: undefined });
+                                } else {
+                                  const parsed = parseFloat(val);
+                                  if (!isNaN(parsed) && parsed >= 0) {
+                                    onUpdateChoice(option.id, choice.value, { weightOz: parsed });
+                                  }
+                                }
+                              }}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                if (val !== '' && (isNaN(parseFloat(val)) || parseFloat(val) < 0)) {
+                                  onUpdateChoice(option.id, choice.value, { weightOz: undefined });
+                                }
+                              }}
+                              placeholder="Optional"
+                              className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
+                            />
+                          </div>
                         </div>
 
                         <Button
@@ -702,6 +737,106 @@ export function OptionDetailsEditor({
           </div>
         </>
       )}
+
+      {/* Weight Impact Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <Label className="text-slate-300">Weight Impact</Label>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => onAddWeightImpact(option.id)}
+            className="h-7 text-xs"
+          >
+            <Plus className="h-3 w-3 mr-1" />
+            Add Rule
+          </Button>
+        </div>
+
+        {nodeData?.weightImpact && nodeData.weightImpact.length > 0 && (
+          <div className="space-y-2">
+            {nodeData.weightImpact.map((impact: any, index: number) => (
+              <div key={index} className="bg-[#1e293b] rounded-lg p-3 space-y-2 border border-slate-600">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">Mode</Label>
+                    <Select
+                      value={impact.mode || 'addFlat'}
+                      onValueChange={(mode) => onUpdateWeightImpact(option.id, index, { mode })}
+                    >
+                      <SelectTrigger className="bg-[#0f172a] border-slate-700 text-slate-100 h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="addFlat">Add Flat</SelectItem>
+                        <SelectItem value="addPerQty">Add Per Quantity</SelectItem>
+                        <SelectItem value="addPerSqft">Add Per Sqft</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">Weight (oz)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={impact.oz ?? ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '') {
+                          onUpdateWeightImpact(option.id, index, { oz: 0 });
+                        } else {
+                          const parsed = parseFloat(val);
+                          if (!isNaN(parsed) && parsed >= 0) {
+                            onUpdateWeightImpact(option.id, index, { oz: parsed });
+                          }
+                        }
+                      }}
+                      onBlur={(e) => {
+                        if (e.target.value === '' || isNaN(parseFloat(e.target.value))) {
+                          onUpdateWeightImpact(option.id, index, { oz: 0 });
+                        }
+                      }}
+                      className="bg-[#0f172a] border-slate-700 text-slate-100 h-8 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-xs text-slate-400 mb-1 block">Label (optional)</Label>
+                  <Input
+                    value={impact.label || ''}
+                    onChange={(e) => onUpdateWeightImpact(option.id, index, { label: e.target.value })}
+                    placeholder="e.g., 'Cardboard tube'"
+                    className="bg-[#0f172a] border-slate-700 text-slate-100 h-8 text-xs"
+                  />
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onDeleteWeightImpact(option.id, index)}
+                    className="h-7 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    Remove
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(!nodeData?.weightImpact || nodeData.weightImpact.length === 0) && (
+          <div className="text-xs text-slate-500 italic">
+            No weight impact rules. Click "Add Rule" to create one.
+          </div>
+        )}
+      </div>
 
       {(hasEmptyLabels || hasEmptyValues || duplicateValues.size > 0) && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 space-y-1">

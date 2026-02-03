@@ -47,6 +47,10 @@ export interface PBV2ProductBuilderLayoutProps {
   onUpdateChoice: (optionId: string, choiceValue: string, updates: any) => void;
   onDeleteChoice: (optionId: string, choiceValue: string) => void;
   onReorderChoice: (optionId: string, fromIndex: number, toIndex: number) => void;
+  onUpdateBaseWeight: (weightOz?: number) => void;
+  onAddWeightImpact: (nodeId: string) => void;
+  onUpdateWeightImpact: (nodeId: string, index: number, updates: any) => void;
+  onDeleteWeightImpact: (nodeId: string, index: number) => void;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
@@ -89,12 +93,19 @@ export function PBV2ProductBuilderLayout({
   onDeleteChoice,
   onReorderChoice,
   onUpdateProduct,
+  onUpdateBaseWeight,
+  onAddWeightImpact,
+  onUpdateWeightImpact,
+  onDeleteWeightImpact,
   onSave,
   onPublish,
   onExportJson,
   onImportJson,
 }: PBV2ProductBuilderLayoutProps) {
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
+
+  // Extract base weight from tree
+  const baseWeightOz = (treeJson?.meta?.baseWeightOz !== undefined) ? Number(treeJson.meta.baseWeightOz) : undefined;
 
   // Prevent Enter key from submitting parent form when editing within PBV2 builder
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -119,11 +130,13 @@ export function PBV2ProductBuilderLayout({
         productStatus={editorModel.productMeta.status}
         hasUnsavedChanges={hasUnsavedChanges}
         canPublish={canPublish}
+        baseWeightOz={baseWeightOz}
         onSave={onSave}
         onPublish={onPublish}
         onExportJson={onExportJson}
         onImportJson={onImportJson}
         onUpdateProductName={(name) => onUpdateProduct({ name })}
+        onUpdateBaseWeight={onUpdateBaseWeight}
       />
       
       {/* 3-column layout: flex-1 fills remaining space, overflow-hidden prevents scroll leaks */}
@@ -160,6 +173,9 @@ export function PBV2ProductBuilderLayout({
             onUpdateChoice={onUpdateChoice}
             onDeleteChoice={onDeleteChoice}
             onReorderChoice={onReorderChoice}
+            onAddWeightImpact={onAddWeightImpact}
+            onUpdateWeightImpact={onUpdateWeightImpact}
+            onDeleteWeightImpact={onDeleteWeightImpact}
           />
         </div>
         
