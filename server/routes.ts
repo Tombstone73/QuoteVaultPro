@@ -2549,6 +2549,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ success: false, message: "No fields to update" });
       }
 
+      // DEV-ONLY: Log productData before storage.updateProduct
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[PATCH /api/products/:id] productData keys:", Object.keys(productData));
+        console.log("[PATCH /api/products/:id] optionTreeJson:", {
+          hasField: 'optionTreeJson' in productData,
+          type: typeof productData.optionTreeJson,
+          length: productData.optionTreeJson ? JSON.stringify(productData.optionTreeJson).length : 0,
+        });
+      }
+
       // Validate optionsJson is JSON-safe + enforce a reasonable size limit.
       if (Object.prototype.hasOwnProperty.call(productData, "optionsJson")) {
         const optionsJson = productData.optionsJson;

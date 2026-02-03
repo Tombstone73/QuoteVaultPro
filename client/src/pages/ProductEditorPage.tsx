@@ -139,6 +139,16 @@ const ProductEditorPage = () => {
         optionTreeJson: (data as any).optionTreeJson ?? null,
       };
       
+      // DEV-ONLY: Log payload before sending
+      if (import.meta.env.DEV) {
+        console.log("[ProductEditorPage] Save payload:", {
+          hasOptionTreeJson: 'optionTreeJson' in payload,
+          optionTreeJsonType: typeof payload.optionTreeJson,
+          optionTreeJsonLength: payload.optionTreeJson ? JSON.stringify(payload.optionTreeJson).length : 0,
+          dirtyFields: form.formState.dirtyFields,
+        });
+      }
+      
       if (isNewProduct) {
         return await apiRequest("POST", "/api/products", payload);
       } else {
