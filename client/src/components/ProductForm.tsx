@@ -176,6 +176,18 @@ export const ProductForm = ({
 
   // Defensive wrapper around onSave to ensure tree is never an array
   const handleSave = React.useCallback((data: any) => {
+    // DEV-ONLY: Log form state before save
+    if (import.meta.env.DEV) {
+      console.log('[ProductForm] handleSave data keys:', Object.keys(data));
+      console.log('[ProductForm] handleSave optionTreeJson:', {
+        hasField: 'optionTreeJson' in data,
+        type: typeof data.optionTreeJson,
+        isNull: data.optionTreeJson === null,
+        isUndefined: data.optionTreeJson === undefined,
+        length: data.optionTreeJson ? JSON.stringify(data.optionTreeJson).length : 0,
+      });
+    }
+    
     // Final defensive check before saving
     const tree = data.optionTreeJson;
     if (Array.isArray(tree)) {
