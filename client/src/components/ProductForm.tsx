@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Controller } from "react-hook-form";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
@@ -171,34 +172,54 @@ export const ProductForm = ({
     // Always use the coerced tree - no manual init required
     form.clearErrors("optionTreeJson");
     setOptionTreeErrors([]);
-    form.setValue("optionTreeJson", coerced, { shouldDirty: true });
+    form.setValue("optionTreeJson", coerced, { shouldDirty: true, shouldTouch: true });
+    
+    // DEV-ONLY: Verify setValue worked
+    if (import.meta.env.DEV) {
+      const actualValue = form.getValues("optionTreeJson");
+      console.log("[ProductForm] setValue result:", {
+        setValueCalled: true,
+        valueMatches: actualValue === coerced,
+        hasNodes: coerced?.nodes ? Object.keys(coerced.nodes).length : 0,
+        isDirty: form.formState.dirtyFields.optionTreeJson,
+      });
+    }
   };
 
   // Defensive wrapper around onSave to ensure tree is never an array
   const handleSave = React.useCallback((data: any) => {
+    // CRITICAL: Explicitly include optionTreeJson from form state
+    // Controller might not include it in handleSubmit data, so we force it
+    const optionTreeJsonValue = form.getValues("optionTreeJson");
+    const mergedData = {
+      ...data,
+      optionTreeJson: optionTreeJsonValue,
+    };
+    
     // DEV-ONLY: Log form state before save
     if (import.meta.env.DEV) {
-      console.log('[ProductForm] handleSave data keys:', Object.keys(data));
+      console.log('[ProductForm] handleSave data keys:', Object.keys(mergedData));
       console.log('[ProductForm] handleSave optionTreeJson:', {
-        hasField: 'optionTreeJson' in data,
-        type: typeof data.optionTreeJson,
-        isNull: data.optionTreeJson === null,
-        isUndefined: data.optionTreeJson === undefined,
-        length: data.optionTreeJson ? JSON.stringify(data.optionTreeJson).length : 0,
+        hasField: 'optionTreeJson' in mergedData,
+        type: typeof mergedData.optionTreeJson,
+        isNull: mergedData.optionTreeJson === null,
+        isUndefined: mergedData.optionTreeJson === undefined,
+        length: mergedData.optionTreeJson ? JSON.stringify(mergedData.optionTreeJson).length : 0,
+        fromFormState: optionTreeJsonValue === mergedData.optionTreeJson,
       });
     }
     
     // Final defensive check before saving
-    const tree = data.optionTreeJson;
+    const tree = mergedData.optionTreeJson;
     if (Array.isArray(tree)) {
       console.warn('[ProductForm] Blocking save: optionTreeJson is array, coercing to empty tree');
-      data.optionTreeJson = coerceOrMigrateToPBV2(null);
+      mergedData.optionTreeJson = coerceOrMigrateToPBV2(null);
     } else if (tree && typeof tree === 'object' && tree.schemaVersion !== 2) {
       console.log('[ProductForm] Coercing tree to PBV2 before save');
-      data.optionTreeJson = coerceOrMigrateToPBV2(tree, data.optionsJson);
+      mergedData.optionTreeJson = coerceOrMigrateToPBV2(tree, mergedData.optionsJson);
     }
-    return onSave(data);
-  }, [onSave]);
+    return onSave(mergedData);
+  }, [form, onSave]);
 
   return (
     <form
@@ -206,11 +227,11 @@ export const ProductForm = ({
       id={formId}
       className="space-y-6"
     >
-      {/* Hidden field to register optionTreeJson with RHF so it's included in form submissions */}
-      <FormField
+      {/* Register optionTreeJson with RHF so it's included in form submissions */}
+      <Controller
         control={form.control}
         name="optionTreeJson"
-        render={({ field }) => <input type="hidden" {...field} value={field.value ? JSON.stringify(field.value) : ""} />}
+        render={() => <></>}
       />
       
       {/* #basics */}
@@ -609,8 +630,6 @@ export const ProductForm = ({
               </FormItem>
             )}
           />
-
-          <Button type="submit">Save Changes</Button>
         </CardContent>
       </Card>
     </form>
