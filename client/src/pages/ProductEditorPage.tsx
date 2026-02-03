@@ -78,7 +78,6 @@ const ProductEditorPage = () => {
       artworkPolicy: "not_required",
       primaryMaterialId: null,
       optionsJson: [],
-      optionTreeJson: null,
       storeUrl: "",
       showStoreLink: true,
       thumbnailUrls: [],
@@ -92,7 +91,7 @@ const ProductEditorPage = () => {
       isActive: true,
       requiresProductionJob: true,
       isTaxable: true,
-      optionTreeJson: createEmptyOptionTreeV2(), // New products always start with PBV2
+      optionTreeJson: createEmptyOptionTreeV2() as any, // New products always start with PBV2
     },
   });
 
@@ -366,16 +365,9 @@ const ProductEditorPage = () => {
               onSave={handleSave}
               formId="product-editor-form"
               treeWasMigrated={treeWasMigrated}
+              productId={productId}
+              useLegacyBuilder={useLegacyBuilder}
             />
-
-            {/* Always render PBV2 builder for saved products */}
-            {!isNewProduct && productId ? (
-              useLegacyBuilder ? (
-                <PBV2ProductBuilderSection productId={productId} />
-              ) : (
-                <PBV2ProductBuilderSectionV2 productId={productId} />
-              )
-            ) : null}
           </div>
         </Form>
       }

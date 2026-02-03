@@ -9,6 +9,8 @@ import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula }
 import React from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
+import PBV2ProductBuilderSection from "@/components/PBV2ProductBuilderSection";
+import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -33,6 +35,8 @@ export const ProductForm = ({
   onSave,
   formId,
   treeWasMigrated = false,
+  productId,
+  useLegacyBuilder = false,
 }: {
   form: any;
   materials: any;
@@ -41,6 +45,8 @@ export const ProductForm = ({
   onSave: any;
   formId?: string;
   treeWasMigrated?: boolean;
+  productId?: string;
+  useLegacyBuilder?: boolean;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -332,9 +338,18 @@ export const ProductForm = ({
             )}
           </div>
         </CardHeader>
-        <CardContent className="p-6 text-center text-slate-400">
-          <p className="text-sm">Options are managed in the PBV2 Builder section below.</p>
-          <p className="text-xs mt-1">Scroll down to add groups and options.</p>
+        <CardContent className="p-0">
+          {productId ? (
+            useLegacyBuilder ? (
+              <PBV2ProductBuilderSection productId={productId} />
+            ) : (
+              <PBV2ProductBuilderSectionV2 productId={productId} />
+            )
+          ) : (
+            <div className="p-6 text-center text-slate-400">
+              <p className="text-sm">Save the product first to enable the options builder.</p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
