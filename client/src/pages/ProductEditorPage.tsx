@@ -50,6 +50,7 @@ const ProductEditorPage = () => {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const lastLoadedRef = useRef<ProductFormData | null>(null);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [pbv2SaveFn, setPbv2SaveFn] = useState<(() => Promise<void>) | null>(null);
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
@@ -206,8 +207,28 @@ const ProductEditorPage = () => {
         return response;
       }
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setLastSavedAt(new Date());
+      
+      // If PBV2 has unsaved changes, save them too
+      if (pbv2SaveFn && typeof pbv2SaveFn === 'function') {
+        try {
+          if (import.meta.env.DEV) {
+            console.log('[ProductEditorPage] Saving PBV2 draft after product save');
+          }
+          await pbv2SaveFn();
+        } catch (error) {
+          console.error('[ProductEditorPage] PBV2 save failed:', error);
+          toast({
+            title: "Product Saved",
+            description: "Product updated but PBV2 changes failed to save. Please use Save Draft button.",
+            variant: "destructive",
+          });
+          // Don't navigate away if PBV2 save failed
+          return;
+        }
+      }
+      
       toast({
         title: isNewProduct ? "Product Created" : "Product Updated",
         description: isNewProduct
@@ -400,7 +421,12 @@ const ProductEditorPage = () => {
               formId="product-editor-form"
             />
 
-            {!isNewProduct && productId ? <PBV2ProductBuilderSection productId={productId} /> : null}
+            {!isNewProduct && productId ? (
+              <PBV2ProductBuilderSection 
+                productId={productId} 
+                onSaveRequested={(saveFn) => setPbv2SaveFn(() => saveFn)}
+              />
+            ) : null}
           </div>
         </Form>
       }
