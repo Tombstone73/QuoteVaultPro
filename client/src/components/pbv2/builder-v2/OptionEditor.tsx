@@ -103,6 +103,14 @@ export function OptionEditor({
             <Input
               value={selectedGroup.name}
               onChange={(e) => onUpdateGroup(selectedGroup.id, { name: e.target.value })}
+              onBlur={(e) => {
+                // Apply fallback only if field is empty/whitespace when user leaves
+                const trimmed = e.target.value.trim();
+                if (!trimmed) {
+                  onUpdateGroup(selectedGroup.id, { name: 'Options' });
+                }
+              }}
+              placeholder="Group name..."
               className="text-lg font-semibold mb-2 border-transparent hover:border-slate-600 focus:border-blue-500 px-2 -ml-2 bg-transparent text-slate-100"
             />
             <Textarea

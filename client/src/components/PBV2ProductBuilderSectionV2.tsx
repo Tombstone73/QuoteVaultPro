@@ -14,7 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
-import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
+import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish, validateTreeForDraft } from "@shared/pbv2/validator";
 import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
@@ -220,11 +220,11 @@ export default function PBV2ProductBuilderSectionV2({
     return pbv2TreeToEditorModel(localTreeJson);
   }, [localTreeJson]);
 
-  // Validate current tree
+  // Validate current tree (use draft validation - less strict during editing)
   const validationResult = useMemo(() => {
     if (!localTreeJson) return { errors: [], warnings: [], findings: [] };
     try {
-      return validateTreeForPublish(localTreeJson as any, DEFAULT_VALIDATE_OPTS);
+      return validateTreeForDraft(localTreeJson as any, DEFAULT_VALIDATE_OPTS);
     } catch (err) {
       return { errors: [{ severity: 'ERROR', message: String(err), code: 'VALIDATION_ERROR', path: 'tree' }], warnings: [], findings: [] };
     }
@@ -495,18 +495,20 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
-    // Check for errors
-    if (validationResult.errors.length > 0) {
+    // Part E: Run FULL publish validation (strict) when publish button is clicked
+    const fullValidation = validateTreeForPublish(localTreeJson as any, DEFAULT_VALIDATE_OPTS);
+    
+    if (fullValidation.errors.length > 0) {
       toast({ 
         title: "Cannot publish", 
-        description: `${validationResult.errors.length} error(s) must be fixed first.`,
+        description: `${fullValidation.errors.length} error(s) must be fixed first.`,
         variant: "destructive" 
       });
       return;
     }
 
     // If warnings exist, show confirmation
-    if (validationResult.warnings.length > 0) {
+    if (fullValidation.warnings.length > 0) {
       setConfirmOpen(true);
       return;
     }

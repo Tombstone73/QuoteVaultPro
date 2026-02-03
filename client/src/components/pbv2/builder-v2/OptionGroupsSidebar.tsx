@@ -95,7 +95,7 @@ export function OptionGroupsSidebar({
                         <GripVertical className="h-4 w-4 text-slate-500 mt-0.5 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
                           <div className="font-semibold text-slate-200 mb-0.5 truncate">
-                            {group.name}
+                            {group.name || <span className="italic text-slate-500">Untitled Group</span>}
                           </div>
                           <div className="text-xs text-slate-400">
                             {groupOptions.length} option{groupOptions.length !== 1 ? 's' : ''}
