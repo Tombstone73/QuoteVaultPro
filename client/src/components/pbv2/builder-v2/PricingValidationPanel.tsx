@@ -14,6 +14,7 @@ interface PricingValidationPanelProps {
     breakdown: Array<{ label: string; oz: number }>;
   } | null;
   findings: Finding[];
+  publishAttempted: boolean; // Part D: Show publish-only errors only after publish attempt
   previewQuantity?: number;
 }
 
@@ -21,11 +22,22 @@ export function PricingValidationPanel({
   pricingPreview,
   weightPreview,
   findings,
+  publishAttempted,
   previewQuantity = 500
 }: PricingValidationPanelProps) {
-  const errors = findings.filter(f => f.severity === 'ERROR');
-  const warnings = findings.filter(f => f.severity === 'WARNING');
-  const infos = findings.filter(f => f.severity === 'INFO');
+  // Part D: Filter publish-only errors unless user attempted to publish
+  const publishOnlyErrorCodes = new Set([
+    'PBV2_E_TREE_NO_ROOTS',
+    'PBV2_E_TREE_STATUS_INVALID',
+  ]);
+
+  const filteredFindings = publishAttempted 
+    ? findings 
+    : findings.filter(f => f.severity !== 'ERROR' || !publishOnlyErrorCodes.has(f.code));
+
+  const errors = filteredFindings.filter(f => f.severity === 'ERROR');
+  const warnings = filteredFindings.filter(f => f.severity === 'WARNING');
+  const infos = filteredFindings.filter(f => f.severity === 'INFO');
 
   const total = pricingPreview ? pricingPreview.addOnCents / 100 : 0;
 

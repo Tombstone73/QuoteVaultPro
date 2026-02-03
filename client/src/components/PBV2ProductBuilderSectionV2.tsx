@@ -120,6 +120,7 @@ export default function PBV2ProductBuilderSectionV2({
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [publishAttempted, setPublishAttempted] = useState(false); // Part D: Track publish attempts
 
   // Modal state
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -527,6 +528,9 @@ export default function PBV2ProductBuilderSectionV2({
   };
 
   const handlePublish = async () => {
+    // Part D: Mark that user attempted to publish
+    setPublishAttempted(true);
+
     if (isDraftMode) {
       toast({ title: "Draft mode", description: "Save the product first to enable publish.", variant: "default" });
       return;
@@ -633,6 +637,7 @@ export default function PBV2ProductBuilderSectionV2({
         hasUnsavedChanges={hasLocalChanges}
         canPublish={canPublish}
         findings={findings}
+        publishAttempted={publishAttempted}
         pricingPreview={pricingPreview}
         weightPreview={weightPreview}
         onSelectGroup={setSelectedGroupId}
