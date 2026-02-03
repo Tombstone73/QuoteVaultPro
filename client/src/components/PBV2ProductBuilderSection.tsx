@@ -266,6 +266,22 @@ export default function PBV2ProductBuilderSection({
       if (!res.ok) {
         return { success: false, message: envelopeMessage(res.status, json, "Failed to load PBV2") } as TreeResponse;
       }
+      
+      // DEV-ONLY: Log what API returned
+      if (import.meta.env.DEV && json?.data?.draft?.treeJson) {
+        const tree = json.data.draft.treeJson;
+        const nodeCount = Object.keys(tree?.nodes || {}).length;
+        const rootCount = Array.isArray(tree?.rootNodeIds) ? tree.rootNodeIds.length : 0;
+        const edgeCount = Array.isArray(tree?.edges) ? tree.edges.length : 0;
+        console.log('[PBV2ProductBuilderSection] API returned tree:', {
+          endpoint: `/api/products/${productId}/pbv2/tree`,
+          nodeCount,
+          rootCount,
+          edgeCount,
+          schemaVersion: tree?.schemaVersion,
+        });
+      }
+      
       return json as TreeResponse;
     },
   });

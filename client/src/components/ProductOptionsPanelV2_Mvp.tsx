@@ -67,7 +67,25 @@ export default function ProductOptionsPanelV2_Mvp({
   const { toast } = useToast();
 
   // Auto-migrate tree (always returns valid PBV2)
-  const tree = React.useMemo(() => parseAndMigrateTree(optionTreeJson), [optionTreeJson]);
+  const tree = React.useMemo(() => {
+    const result = parseAndMigrateTree(optionTreeJson);
+    
+    // DEV-ONLY: Log what we parsed
+    if (import.meta.env.DEV) {
+      const nodeCount = Object.keys(result?.nodes || {}).length;
+      const rootCount = Array.isArray(result?.rootNodeIds) ? result.rootNodeIds.length : 0;
+      const edgeCount = Array.isArray(result?.edges) ? result.edges.length : 0;
+      console.log('[ProductOptionsPanelV2_Mvp] Parsed tree:', {
+        source: 'optionTreeJson prop from ProductForm',
+        nodeCount,
+        rootCount,
+        edgeCount,
+        schemaVersion: result?.schemaVersion,
+      });
+    }
+    
+    return result;
+  }, [optionTreeJson]);
   
   // Build editor model from valid PBV2 tree
   const editorModel = React.useMemo(() => {

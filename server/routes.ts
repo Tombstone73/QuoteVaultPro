@@ -1852,6 +1852,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Return product.optionTreeJson as a synthetic draft for PBV2 UI
       const treeJson = product.optionTreeJson || { schemaVersion: 1, nodes: {}, edges: [] };
       
+      // DEV-ONLY: Log what we're returning
+      if (process.env.NODE_ENV !== 'production') {
+        const nodeCount = typeof treeJson === 'object' && treeJson ? Object.keys((treeJson as any).nodes || {}).length : 0;
+        const rootCount = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds.length : 0;
+        const edgeCount = Array.isArray((treeJson as any).edges) ? (treeJson as any).edges.length : 0;
+        const enabledEdges = Array.isArray((treeJson as any).edges) 
+          ? (treeJson as any).edges.filter((e: any) => e.status === 'ENABLED').length 
+          : 0;
+        console.log(`[GET /api/products/${productId}/pbv2/tree] Returning product.optionTreeJson:`, {
+          source: 'product.optionTreeJson',
+          nodeCount,
+          rootCount,
+          edgeCount,
+          enabledEdges,
+          schemaVersion: (treeJson as any)?.schemaVersion,
+        });
+      }
+      
       const syntheticDraft = {
         id: `synthetic-${productId}`,
         productId: productId,

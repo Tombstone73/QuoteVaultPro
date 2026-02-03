@@ -215,7 +215,15 @@ const ProductEditorPage = () => {
           ? "The product has been created successfully."
           : "The product has been updated successfully."
       });
+      
+      // Invalidate both product list and individual product cache
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      
+      // Invalidate PBV2 tree cache for this product
+      if (productId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
+      }
+      
       navigate("/products");
     },
     onError: (error: Error) => {
