@@ -1396,7 +1396,7 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
                 onClick={() => saveOverrideMutation.mutate()}
                 disabled={saveOverrideMutation.isPending}
               >
-                Save{overrideEnabled ? " & Enable" : ""}
+                Save Override{overrideEnabled ? " & Enable" : ""}
               </Button>
               <Button
                 type="button"

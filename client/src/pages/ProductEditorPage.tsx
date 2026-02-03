@@ -136,23 +136,33 @@ const ProductEditorPage = () => {
         ...data,
         optionsJson: data.optionsJson && data.optionsJson.length > 0 ? data.optionsJson : null,
         primaryMaterialId: data.primaryMaterialId || null,
-        optionTreeJson: (data as any).optionTreeJson ?? null,
+        // Preserve optionTreeJson as-is - don't nullify valid trees
+        optionTreeJson: (data as any).optionTreeJson !== undefined ? (data as any).optionTreeJson : null,
       };
       
       // DEV-ONLY: Verify optionTreeJson is in payload if form is dirty
       if (import.meta.env.DEV) {
         const isDirty = form.formState.dirtyFields.optionTreeJson;
         const hasField = 'optionTreeJson' in payload;
+        const treeValue = payload.optionTreeJson;
         console.log("[ProductEditorPage] Save payload validation:", {
           isDirty,
           hasField,
-          isNull: payload.optionTreeJson === null,
+          isNull: treeValue === null,
+          isUndefined: treeValue === undefined,
+          type: typeof treeValue,
+          hasNodes: treeValue?.nodes ? Object.keys(treeValue.nodes).length : 0,
+          schemaVersion: treeValue?.schemaVersion,
           keys: Object.keys(payload).filter(k => k.includes('option') || k.includes('tree')),
         });
         
         if (isDirty && !hasField) {
           console.error("[ProductEditorPage] CRITICAL: optionTreeJson marked dirty but missing from payload!");
           console.error("[ProductEditorPage] Form data keys:", Object.keys(data));
+        }
+        
+        if (hasField && treeValue && treeValue.nodes && Object.keys(treeValue.nodes).length > 0) {
+          console.log("[ProductEditorPage] PBV2 tree has", Object.keys(treeValue.nodes).length, "nodes - will be saved");
         }
       }
       
