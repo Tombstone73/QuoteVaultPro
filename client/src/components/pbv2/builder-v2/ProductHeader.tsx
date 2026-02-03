@@ -12,12 +12,14 @@ interface ProductHeaderProps {
   hasUnsavedChanges: boolean;
   canPublish: boolean;
   baseWeightOz?: number;
+  basePriceCents?: number;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
   onImportJson: () => void;
   onUpdateProductName: (name: string) => void;
   onUpdateBaseWeight: (weightOz?: number) => void;
+  onUpdateBasePrice: (priceCents?: number) => void;
 }
 
 export function ProductHeader({
@@ -26,12 +28,14 @@ export function ProductHeader({
   hasUnsavedChanges,
   canPublish,
   baseWeightOz,
+  basePriceCents,
   onSave,
   onPublish,
   onExportJson,
   onImportJson,
   onUpdateProductName,
-  onUpdateBaseWeight
+  onUpdateBaseWeight,
+  onUpdateBasePrice
 }: ProductHeaderProps) {
   const statusColors = {
     draft: 'bg-slate-700/50 text-slate-300 border-slate-600',
@@ -97,6 +101,40 @@ export function ProductHeader({
             className="w-20 h-8 text-sm bg-slate-800 border-slate-600 text-slate-100"
             min="0"
             step="0.1"
+          />
+        </div>
+
+        {/* Part C: Base Price Input */}
+        <div className="flex items-center gap-2 border-r border-slate-600 pr-3">
+          <label className="text-xs text-slate-400 whitespace-nowrap">Base Price (¢)</label>
+          <Input
+            type="number"
+            value={basePriceCents !== undefined ? String(basePriceCents) : ''}
+            onChange={(e) => {
+              const val = e.target.value.trim();
+              if (val === '') {
+                onUpdateBasePrice(undefined);
+              } else {
+                const parsed = parseFloat(val);
+                if (!isNaN(parsed) && parsed >= 0) {
+                  onUpdateBasePrice(Math.floor(parsed));
+                }
+              }
+            }}
+            onBlur={(e) => {
+              // On blur, ensure valid value
+              const val = e.target.value.trim();
+              if (val !== '') {
+                const parsed = parseFloat(val);
+                if (isNaN(parsed) || parsed < 0) {
+                  onUpdateBasePrice(undefined);
+                }
+              }
+            }}
+            placeholder="0"
+            className="w-20 h-8 text-sm bg-slate-800 border-slate-600 text-slate-100"
+            min="0"
+            step="1"
           />
         </div>
 

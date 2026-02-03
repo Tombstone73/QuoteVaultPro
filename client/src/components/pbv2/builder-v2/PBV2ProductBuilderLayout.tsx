@@ -52,6 +52,11 @@ export interface PBV2ProductBuilderLayoutProps {
   onAddWeightImpact: (nodeId: string) => void;
   onUpdateWeightImpact: (nodeId: string, index: number, updates: any) => void;
   onDeleteWeightImpact: (nodeId: string, index: number) => void;
+  onUpdateBasePrice: (priceCents?: number) => void;
+  onAddPricingImpact: (nodeId: string) => void;
+  onUpdatePricingImpact: (nodeId: string, index: number, updates: any) => void;
+  onDeletePricingImpact: (nodeId: string, index: number) => void;
+  onUpdateChoicePriceDelta: (nodeId: string, choiceValue: string, priceDeltaCents?: number) => void;
   onSave: () => void;
   onPublish: () => void;
   onExportJson: () => void;
@@ -99,6 +104,11 @@ export function PBV2ProductBuilderLayout({
   onAddWeightImpact,
   onUpdateWeightImpact,
   onDeleteWeightImpact,
+  onUpdateBasePrice,
+  onAddPricingImpact,
+  onUpdatePricingImpact,
+  onDeletePricingImpact,
+  onUpdateChoicePriceDelta,
   onSave,
   onPublish,
   onExportJson,
@@ -106,8 +116,9 @@ export function PBV2ProductBuilderLayout({
 }: PBV2ProductBuilderLayoutProps) {
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
 
-  // Extract base weight from tree
+  // Extract base weight and base price from tree
   const baseWeightOz = (treeJson?.meta?.baseWeightOz !== undefined) ? Number(treeJson.meta.baseWeightOz) : undefined;
+  const basePriceCents = (treeJson?.meta?.basePriceCents !== undefined) ? Number(treeJson.meta.basePriceCents) : undefined;
 
   // Prevent Enter key from submitting parent form when editing within PBV2 builder
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -133,12 +144,14 @@ export function PBV2ProductBuilderLayout({
         hasUnsavedChanges={hasUnsavedChanges}
         canPublish={canPublish}
         baseWeightOz={baseWeightOz}
+        basePriceCents={basePriceCents}
         onSave={onSave}
         onPublish={onPublish}
         onExportJson={onExportJson}
         onImportJson={onImportJson}
         onUpdateProductName={(name) => onUpdateProduct({ name })}
         onUpdateBaseWeight={onUpdateBaseWeight}
+        onUpdateBasePrice={onUpdateBasePrice}
       />
       
       {/* 3-column layout: flex-1 fills remaining space, overflow-hidden prevents scroll leaks */}
@@ -178,6 +191,10 @@ export function PBV2ProductBuilderLayout({
             onAddWeightImpact={onAddWeightImpact}
             onUpdateWeightImpact={onUpdateWeightImpact}
             onDeleteWeightImpact={onDeleteWeightImpact}
+            onAddPricingImpact={onAddPricingImpact}
+            onUpdatePricingImpact={onUpdatePricingImpact}
+            onDeletePricingImpact={onDeletePricingImpact}
+            onUpdateChoicePriceDelta={onUpdateChoicePriceDelta}
           />
         </div>
         

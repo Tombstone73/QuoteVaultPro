@@ -20,6 +20,10 @@ interface OptionDetailsEditorProps {
   onAddWeightImpact: (nodeId: string) => void;
   onUpdateWeightImpact: (nodeId: string, index: number, updates: any) => void;
   onDeleteWeightImpact: (nodeId: string, index: number) => void;
+  onAddPricingImpact: (nodeId: string) => void;
+  onUpdatePricingImpact: (nodeId: string, index: number, updates: any) => void;
+  onDeletePricingImpact: (nodeId: string, index: number) => void;
+  onUpdateChoicePriceDelta: (nodeId: string, choiceValue: string, priceDeltaCents?: number) => void;
   editingChoiceValue: { optionId: string; value: string } | null;
   setEditingChoiceValue: (val: { optionId: string; value: string } | null) => void;
 }
@@ -35,6 +39,10 @@ export function OptionDetailsEditor({
   onAddWeightImpact,
   onUpdateWeightImpact,
   onDeleteWeightImpact,
+  onAddPricingImpact,
+  onUpdatePricingImpact,
+  onDeletePricingImpact,
+  onUpdateChoicePriceDelta,
   editingChoiceValue,
   setEditingChoiceValue
 }: OptionDetailsEditorProps) {
@@ -687,6 +695,35 @@ export function OptionDetailsEditor({
                               className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
                             />
                           </div>
+
+                          <div>
+                            <Label className="text-xs text-slate-400 mb-1 block">Price Delta (¢)</Label>
+                            <Input
+                              type="number"
+                              step="1"
+                              min="0"
+                              value={choice.priceDeltaCents ?? ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === '') {
+                                  onUpdateChoicePriceDelta(option.id, choice.value, undefined);
+                                } else {
+                                  const parsed = parseFloat(val);
+                                  if (!isNaN(parsed) && parsed >= 0) {
+                                    onUpdateChoicePriceDelta(option.id, choice.value, Math.floor(parsed));
+                                  }
+                                }
+                              }}
+                              onBlur={(e) => {
+                                const val = e.target.value;
+                                if (val !== '' && (isNaN(parseFloat(val)) || parseFloat(val) < 0)) {
+                                  onUpdateChoicePriceDelta(option.id, choice.value, undefined);
+                                }
+                              }}
+                              placeholder="Optional"
+                              className="bg-[#0f172a] border-slate-600 text-slate-100 text-sm"
+                            />
+                          </div>
                         </div>
 
                         <Button
@@ -834,6 +871,106 @@ export function OptionDetailsEditor({
         {(!nodeData?.weightImpact || nodeData.weightImpact.length === 0) && (
           <div className="text-xs text-slate-500 italic">
             No weight impact rules. Click "Add Rule" to create one.
+          </div>
+        )}
+      </div>
+
+      {/* Pricing Impact Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <Label className="text-slate-300">Pricing Impact</Label>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => onAddPricingImpact(option.id)}
+            className="h-7 text-xs"
+          >
+            <Plus className="h-3 w-3 mr-1" />
+            Add Rule
+          </Button>
+        </div>
+
+        {nodeData?.pricingImpact && nodeData.pricingImpact.length > 0 && (
+          <div className="space-y-2">
+            {nodeData.pricingImpact.map((impact: any, index: number) => (
+              <div key={index} className="bg-[#1e293b] rounded-lg p-3 space-y-2 border border-slate-600">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">Mode</Label>
+                    <Select
+                      value={impact.mode || 'addFlat'}
+                      onValueChange={(mode) => onUpdatePricingImpact(option.id, index, { mode })}
+                    >
+                      <SelectTrigger className="bg-[#0f172a] border-slate-700 text-slate-100 h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="addFlat">Add Flat</SelectItem>
+                        <SelectItem value="addPerQty">Add Per Quantity</SelectItem>
+                        <SelectItem value="addPerSqft">Add Per Sqft</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-slate-400 mb-1 block">Amount (¢)</Label>
+                    <Input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={impact.amountCents ?? ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '') {
+                          onUpdatePricingImpact(option.id, index, { amountCents: 0 });
+                        } else {
+                          const parsed = parseFloat(val);
+                          if (!isNaN(parsed) && parsed >= 0) {
+                            onUpdatePricingImpact(option.id, index, { amountCents: Math.floor(parsed) });
+                          }
+                        }
+                      }}
+                      onBlur={(e) => {
+                        if (e.target.value === '' || isNaN(parseFloat(e.target.value))) {
+                          onUpdatePricingImpact(option.id, index, { amountCents: 0 });
+                        }
+                      }}
+                      className="bg-[#0f172a] border-slate-700 text-slate-100 h-8 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-xs text-slate-400 mb-1 block">Label (optional)</Label>
+                  <Input
+                    value={impact.label || ''}
+                    onChange={(e) => onUpdatePricingImpact(option.id, index, { label: e.target.value })}
+                    placeholder="e.g., 'Setup fee'"
+                    className="bg-[#0f172a] border-slate-700 text-slate-100 h-8 text-xs"
+                  />
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onDeletePricingImpact(option.id, index)}
+                    className="h-7 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    Remove
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(!nodeData?.pricingImpact || nodeData.pricingImpact.length === 0) && (
+          <div className="text-xs text-slate-500 italic">
+            No pricing impact rules. Click "Add Rule" to create one.
           </div>
         )}
       </div>
