@@ -25,6 +25,11 @@ export function PricingValidationPanel({
   publishAttempted,
   previewQuantity = 500
 }: PricingValidationPanelProps) {
+  // Step 1: Dev-only log to confirm this file is loaded
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    console.log('[PBV2] PricingValidationPanel rendered from:', import.meta.url);
+  }
+
   // Part D: Filter publish-only errors unless user attempted to publish
   const publishOnlyErrorCodes = new Set([
     'PBV2_E_TREE_NO_ROOTS',
@@ -35,6 +40,14 @@ export function PricingValidationPanel({
   const filteredFindings = publishAttempted 
     ? findings 
     : findings.filter(f => f.severity !== 'ERROR' || !publishOnlyErrorCodes.has(f.code));
+
+  // Step 3: Dev-only log to show filtering in action
+  if (import.meta.env.DEV) {
+    console.log('[PBV2] PricingValidationPanel - publishAttempted:', publishAttempted, 
+      'total findings:', findings.length, 
+      'filtered findings:', filteredFindings.length,
+      'hidden errors:', findings.filter(f => f.severity === 'ERROR' && publishOnlyErrorCodes.has(f.code)).map(f => f.code));
+  }
 
   const errors = filteredFindings.filter(f => f.severity === 'ERROR');
   const warnings = filteredFindings.filter(f => f.severity === 'WARNING');
