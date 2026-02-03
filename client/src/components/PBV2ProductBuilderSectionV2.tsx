@@ -200,6 +200,14 @@ export default function PBV2ProductBuilderSectionV2({
     }
   }, [draft?.id, draft?.treeJson]);
 
+  // Step 2: Reset publishAttempted when product/draft changes
+  useEffect(() => {
+    setPublishAttempted(false);
+    if (import.meta.env.DEV) {
+      console.log('[PBV2] Product/draft changed, reset publishAttempted to false. ProductId:', productId, 'DraftId:', draft?.id);
+    }
+  }, [productId, draft?.id]);
+
   // Build editor model from local tree
   const editorModel = useMemo(() => {
     if (!localTreeJson) {
@@ -237,7 +245,10 @@ export default function PBV2ProductBuilderSectionV2({
 
   useEffect(() => {
     setFindings(validationResult.findings as any);
-  }, [validationResult.findings]);
+    if (import.meta.env.DEV) {
+      console.log('[PBV2] Validation findings:', validationResult.findings.length, 'publishAttempted:', publishAttempted);
+    }
+  }, [validationResult.findings, publishAttempted]);
 
   // Compute pricing preview
   const pricingPreview = useMemo(() => {
@@ -530,6 +541,9 @@ export default function PBV2ProductBuilderSectionV2({
   const handlePublish = async () => {
     // Part D: Mark that user attempted to publish
     setPublishAttempted(true);
+    if (import.meta.env.DEV) {
+      console.log('[PBV2] User clicked Publish, set publishAttempted = true');
+    }
 
     if (isDraftMode) {
       toast({ title: "Draft mode", description: "Save the product first to enable publish.", variant: "default" });
