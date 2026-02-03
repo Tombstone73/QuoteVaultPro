@@ -184,3 +184,84 @@ export function buildOptionTreeV2FromLegacyOptions(optionsJson: unknown): Option
     meta: { title: "Initialized from legacy optionsJson" },
   };
 }
+
+/**
+ * Create an empty PBV2 tree with the correct object structure.
+ * Use this instead of [] or {} to ensure schema compliance.
+ */
+export function createEmptyPBV2Tree(meta?: { title?: string; updatedAt?: string }): OptionTreeV2 {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: [],
+    nodes: {},
+    meta: meta || {},
+  };
+}
+
+/**
+ * Auto-migrate or coerce any input to a valid PBV2 OptionTreeV2 tree.
+ * 
+ * Handles:
+ * - null/undefined → empty PBV2 tree
+ * - array → empty PBV2 tree (with warning)
+ * - legacy object (no schemaVersion) → attempt migration, fallback to empty
+ * - valid PBV2 tree → return as-is
+ * 
+ * Use this on load to eliminate manual "Initialize Tree v2" UI.
+ */
+export function coerceOrMigrateToPBV2(
+  input: unknown,
+  legacyOptionsJson?: unknown
+): OptionTreeV2 {
+  // Case 1: null/undefined → empty tree
+  if (input == null) {
+    console.log('[coerceOrMigrateToPBV2] null/undefined input → empty PBV2 tree');
+    return createEmptyPBV2Tree({ title: 'Auto-initialized PBV2 tree' });
+  }
+
+  // Case 2: array → empty tree with warning
+  if (Array.isArray(input)) {
+    console.warn('[coerceOrMigrateToPBV2] Array detected (legacy corruption), replacing with empty PBV2 tree');
+    return createEmptyPBV2Tree({ title: 'Recovered from array corruption' });
+  }
+
+  // Case 3: not an object → empty tree with warning
+  if (typeof input !== 'object') {
+    console.warn('[coerceOrMigrateToPBV2] Non-object input, replacing with empty PBV2 tree');
+    return createEmptyPBV2Tree({ title: 'Auto-initialized PBV2 tree' });
+  }
+
+  // Case 4: legacy object (no schemaVersion=2) → attempt migration
+  const obj = input as Record<string, unknown>;
+  if (obj.schemaVersion !== 2) {
+    console.log('[coerceOrMigrateToPBV2] Legacy format detected, attempting migration from legacyOptionsJson');
+    try {
+      const migrated = buildOptionTreeV2FromLegacyOptions(legacyOptionsJson);
+      // Defensive check: ensure migration succeeded
+      if (!migrated || typeof migrated !== 'object' || Array.isArray(migrated) || migrated.schemaVersion !== 2) {
+        console.warn('[coerceOrMigrateToPBV2] Migration failed, using empty tree');
+        return createEmptyPBV2Tree({ title: 'Migration failed' });
+      }
+      console.log('[coerceOrMigrateToPBV2] Successfully migrated from legacy format');
+      return migrated as OptionTreeV2;
+    } catch (error) {
+      console.error('[coerceOrMigrateToPBV2] Migration error:', error);
+      return createEmptyPBV2Tree({ title: 'Migration error' });
+    }
+  }
+
+  // Case 5: valid PBV2 tree → return as-is (but ensure it has the required structure)
+  if (!obj.nodes || typeof obj.nodes !== 'object') {
+    console.warn('[coerceOrMigrateToPBV2] Missing nodes property, fixing');
+    obj.nodes = {};
+  }
+  if (!Array.isArray(obj.rootNodeIds)) {
+    console.warn('[coerceOrMigrateToPBV2] Invalid rootNodeIds, fixing');
+    obj.rootNodeIds = [];
+  }
+  if (!obj.meta || typeof obj.meta !== 'object') {
+    obj.meta = {};
+  }
+
+  return obj as OptionTreeV2;
+}

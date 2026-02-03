@@ -1,6 +1,18 @@
-# PBV2 HOTFIX: Fixed Invalid Runtime State on Add Option
+# PBV2 HOTFIX: Fixed Invalid Runtime State + Initialization
 
-## Problem
+## Problems Fixed
+
+### 1. "Initialize Tree v2" Returns Array Instead of Object ❌ → ✅
+**Bug**: Clicking "Initialize Tree v2" occasionally produced validation error: "Option Tree v2 errors: Expected object, received array"
+
+**Root Cause**: No defensive checks when building tree from legacy options or when database returned corrupted data.
+
+**Fix**: 
+- Created canonical `createEmptyPBV2Tree()` factory function in `shared/optionTreeV2Initializer.ts`
+- Added defensive checks in `initTreeV2()` to ensure tree is always an object
+- All initialization paths now use the factory function
+
+### 2. Invalid Runtime State on First Option Add
 After implementing Phase 3 Steps 3/4, clicking "Add Option" immediately produced these validation errors:
 1. `PBV2_E_INPUT_TYPE_UNKNOWN`: node.input.valueType is unknown
 2. `PBV2_E_EDGE_CONDITION_INVALID`: edge.condition is not a valid AST (often {} or junk)
@@ -50,6 +62,51 @@ if (upper === "TEXT" || upper === "STRING") return "TEXT";
 - Updated root node handling to include all orphaned runtime nodes (nodes without incoming edges)
 
 ## Changes Made
+
+### File: `shared/optionTreeV2Initializer.ts`
+
+#### Added createEmptyPBV2Tree() Factory (Lines 188-200)
+```typescript
+/**
+ * Create an empty PBV2 tree with the correct object structure.
+ * Use this instead of [] or {} to ensure schema compliance.
+ */
+export function createEmptyPBV2Tree(meta?: { title?: string; updatedAt?: string }): OptionTreeV2 {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: [],
+    nodes: {},
+    meta: meta || {},
+  };
+}
+```
+
+### File: `client/src/components/ProductForm.tsx`
+
+#### 1. Import Factory Function (Line 14)
+```typescript
+import { buildOptionTreeV2FromLegacyOptions, createEmptyPBV2Tree } from \"@shared/optionTreeV2Initializer\";
+```
+
+#### 2. Use Factory for New Product Init (Lines 113-123)
+```typescript
+const emptyPBV2 = createEmptyPBV2Tree({
+  title: 'New Options Tree',
+  updatedAt: new Date().toISOString(),
+});
+form.setValue(\"optionTreeJson\", emptyPBV2, { shouldDirty: false });
+```
+
+#### 3. Add Defensive Check in initTreeV2 (Lines 204-212)
+```typescript
+let tree = buildOptionTreeV2FromLegacyOptions(legacyOptionsJson);
+
+// Defensive check: If tree is somehow an array or invalid, use empty tree
+if (Array.isArray(tree) || !tree || typeof tree !== 'object' || !('schemaVersion' in tree)) {
+  console.warn('buildOptionTreeV2FromLegacyOptions returned invalid tree, using empty tree');
+  tree = createEmptyPBV2Tree({ title: 'Options Tree' });
+}
+```
 
 ### File: `client/src/lib/pbv2/pbv2ViewModel.ts`
 
@@ -233,11 +290,13 @@ finishing → hemmingType (if finishing=Hemming)
 ```
 
 ### Manual Testing Checklist
-- [ ] New product → Add Group → Add Option → 0 errors
-- [ ] Inspect option node JSON → has selectionKey + valueType
-- [ ] Change option type (boolean/number/text) → valueType updates correctly
-- [ ] Save draft → reload → no errors
-- [ ] Publish → no errors
+- [ ] **Initialization Test**: New product → Click "Initialize Tree v2" → No "Expected object, received array" error
+- [ ] **Legacy Migration Test**: Product with legacy options → Click "Initialize Tree v2" → Valid tree created
+- [ ] **Add Option Test**: New product → Add Group → Add Option → 0 errors
+- [ ] **Inspect Option JSON**: New option has selectionKey + valueType (UPPERCASE)
+- [ ] **Change Option Type**: Change type (boolean/number/text) → valueType updates correctly
+- [ ] **Save/Reload Test**: Save draft → reload → no errors
+- [ ] **Publish Test**: Publish tree → no errors
 
 ## Backward Compatibility
 
