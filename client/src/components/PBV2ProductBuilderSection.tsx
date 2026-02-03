@@ -168,7 +168,13 @@ function makeId(prefix: string, taken: Set<string>): string {
   return `${prefix}${Date.now()}`;
 }
 
-export default function PBV2ProductBuilderSection({ productId }: { productId: string }) {
+export default function PBV2ProductBuilderSection({ 
+  productId,
+  onSaveRequested,
+}: { 
+  productId: string;
+  onSaveRequested?: (saveFn: () => Promise<void>) => void;
+}) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
   const [draftText, setDraftText] = useState<string>("");
@@ -268,6 +274,13 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
 
   const draft = treeQuery.data?.data?.draft ?? null;
   const active = treeQuery.data?.data?.active ?? null;
+
+  // Track if draft is dirty (different from saved version)
+  const isDraftDirty = useMemo(() => {
+    if (!draft) return false;
+    const savedText = stringifyPbv2TreeJson(draft.treeJson);
+    return draftText.trim() !== savedText.trim();
+  }, [draft, draftText]);
 
   const overrideQuery = useQuery<Pbv2OverrideState>({
     queryKey: ["/api/products", productId, "pbv2", "override"],
@@ -550,6 +563,27 @@ export default function PBV2ProductBuilderSection({ productId }: { productId: st
       toast({ title: "Draft save failed", description: error.message, variant: "destructive" });
     },
   });
+
+  // Register save function with parent component (ProductEditorPage) for main Save Changes button
+  useEffect(() => {
+    if (!onSaveRequested) return;
+
+    const saveFn = async () => {
+      if (!draft) {
+        if (import.meta.env.DEV) console.log("[PBV2ProductBuilderSection] Skipping save: no draft exists");
+        return;
+      }
+      if (!isDraftDirty) {
+        if (import.meta.env.DEV) console.log("[PBV2ProductBuilderSection] Skipping save: draft not dirty");
+        return;
+      }
+
+      if (import.meta.env.DEV) console.log("[PBV2ProductBuilderSection] Saving draft from main Save Changes");
+      await saveDraftMutation.mutateAsync();
+    };
+
+    onSaveRequested(saveFn);
+  }, [onSaveRequested, draft, isDraftDirty, saveDraftMutation]);
 
   const validateLocal = () => {
     if (!draft) {
