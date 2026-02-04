@@ -39,6 +39,7 @@ export const ProductForm = ({
   productTypes,
   onSave,
   formId,
+  onPbv2StateChange,
 }: {
   form: any;
   materials: any;
@@ -46,6 +47,7 @@ export const ProductForm = ({
   productTypes: any;
   onSave: any;
   formId?: string;
+  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -605,6 +607,7 @@ export const ProductForm = ({
                 productId={String(form.getValues("id") ?? "new")}
                 optionTreeJson={optionTreeText}
                 onChangeOptionTreeJson={setTreeTextAndValidate}
+                onPbv2StateChange={onPbv2StateChange}
               />
             </div>
           )}

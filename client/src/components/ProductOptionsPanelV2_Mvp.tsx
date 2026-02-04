@@ -36,6 +36,7 @@ type Props = {
   productId: string;
   optionTreeJson: string | null;
   onChangeOptionTreeJson: (nextJson: string) => void;
+  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
 };
 
 /**
@@ -63,6 +64,7 @@ export default function ProductOptionsPanelV2_Mvp({
   productId,
   optionTreeJson,
   onChangeOptionTreeJson,
+  onPbv2StateChange,
 }: Props) {
   const { toast } = useToast();
 
@@ -143,8 +145,28 @@ export default function ProductOptionsPanelV2_Mvp({
    */
   const commitPatch = React.useCallback((patch: { nodes?: any[]; edges?: any[] }) => {
     const updated = applyPatchToTree(tree, patch);
-    onChangeOptionTreeJson(JSON.stringify(updated, null, 2));
-  }, [tree, onChangeOptionTreeJson]);
+    const updatedJson = JSON.stringify(updated, null, 2);
+    onChangeOptionTreeJson(updatedJson);
+    
+    // Notify parent of PBV2 state change
+    if (onPbv2StateChange) {
+      onPbv2StateChange({
+        treeJson: updated,
+        hasChanges: true,
+        draftId: `draft-${productId}`,
+      });
+      
+      // DEV-ONLY: Log callback invocation
+      if (import.meta.env.DEV) {
+        console.log('[ProductOptionsPanelV2_Mvp] Called onPbv2StateChange after patch:', {
+          nodeCount: Object.keys(updated?.nodes || {}).length,
+          rootCount: Array.isArray(updated?.rootNodeIds) ? updated.rootNodeIds.length : 0,
+          hasChanges: true,
+          draftId: `draft-${productId}`,
+        });
+      }
+    }
+  }, [tree, onChangeOptionTreeJson, onPbv2StateChange, productId]);
 
   /**
    * Initialize empty tree (no longer needed - auto-migrates, but keep for backwards compat)

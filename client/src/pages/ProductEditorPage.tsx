@@ -54,6 +54,19 @@ const ProductEditorPage = () => {
   // Track PBV2 state for persistence
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
 
+  // DEV-ONLY: Log pbv2State changes
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      console.log('[ProductEditorPage] pbv2State changed:', {
+        hasState: !!pbv2State,
+        hasTreeJson: !!pbv2State?.treeJson,
+        hasChanges: pbv2State?.hasChanges,
+        draftId: pbv2State?.draftId,
+        nodeCount: pbv2State?.treeJson ? Object.keys((pbv2State.treeJson as any)?.nodes || {}).length : 0,
+      });
+    }
+  }, [pbv2State]);
+
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
     enabled: !isNewProduct,
@@ -212,6 +225,20 @@ const ProductEditorPage = () => {
     onSuccess: async (updatedProduct) => {
       setLastSavedAt(new Date());
       
+      // DEV-ONLY: Log save path entry
+      if (import.meta.env.DEV) {
+        console.log('[ProductEditorPage] saveMutation.onSuccess called:', {
+          isNewProduct,
+          hasPbv2State: !!pbv2State,
+          pbv2StateDetails: pbv2State ? {
+            hasTreeJson: !!pbv2State.treeJson,
+            hasChanges: pbv2State.hasChanges,
+            draftId: pbv2State.draftId,
+            nodeCount: pbv2State.treeJson ? Object.keys((pbv2State.treeJson as any)?.nodes || {}).length : 0,
+          } : null,
+        });
+      }
+      
       // Persist PBV2 draft to pbv2_tree_versions table
       if (!isNewProduct) {
         // HARD FAIL: Check if pbv2State exists
@@ -242,6 +269,15 @@ const ProductEditorPage = () => {
           }
           
           if (hasNodes) {
+            // DEV-ONLY: Log PUT attempt
+            if (import.meta.env.DEV) {
+              console.log('[ProductEditorPage] Attempting PUT to /api/products/:id/pbv2/draft:', {
+                productId,
+                nodeCount: Object.keys(nodes).length,
+                draftId: pbv2State.draftId,
+              });
+            }
+            
             try {
               const draftRes = await fetch(`/api/products/${productId}/pbv2/draft`, {
                 method: 'PUT',
@@ -492,6 +528,7 @@ const ProductEditorPage = () => {
               productTypes={productTypes}
               onSave={handleSave}
               formId="product-editor-form"
+              onPbv2StateChange={setPbv2State}
             />
 
             {!isNewProduct && productId ? (
