@@ -15,7 +15,8 @@
 import type { OptionNodeV2 } from '@shared/optionTreeV2';
 
 /**
- * Ensure rootNodeIds is populated with enabled GROUP nodes.
+ * Ensure rootNodeIds is populated with root nodes (nodes not pointed to by edges).
+ * Prioritizes GROUP nodes if present.
  * This is critical for tree rehydration - without rootNodeIds, the UI appears empty.
  * 
  * @param treeJson - PBV2 tree object
@@ -35,8 +36,13 @@ export function ensureRootNodeIds(treeJson: any): any {
     return treeJson;
   }
   
-  // Collect enabled GROUP nodes
-  const groupIds = nodeIds.filter(id => {
+  // Compute roots from edges: nodes not pointed to by any edge
+  const edges = treeJson.edges || [];
+  const toIds = new Set(edges.map((e: any) => e?.toNodeId).filter(Boolean));
+  const roots = nodeIds.filter(id => !toIds.has(id));
+  
+  // Prioritize GROUP nodes if present
+  const groupRoots = roots.filter(id => {
     const node = nodes[id];
     if (!node) return false;
     const isGroup = (node.type || '').toUpperCase() === 'GROUP';
@@ -44,10 +50,13 @@ export function ensureRootNodeIds(treeJson: any): any {
     return isGroup && isEnabled;
   });
   
-  // Return updated tree with rootNodeIds set
+  // Use groups if found, otherwise all roots
+  const finalRoots = groupRoots.length > 0 ? groupRoots : roots;
+  
+  // Return updated tree with rootNodeIds set (immutable)
   return {
     ...treeJson,
-    rootNodeIds: groupIds,
+    rootNodeIds: finalRoots,
   };
 }
 

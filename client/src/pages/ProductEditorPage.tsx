@@ -33,6 +33,7 @@ import {
 import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
+import { ensureRootNodeIds } from "@/lib/pbv2/pbv2ViewModel";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -230,22 +231,40 @@ const ProductEditorPage = () => {
       const targetProductId = isNewProduct ? updatedProduct.id : productId;
       
       if (pbv2State && pbv2State.treeJson) {
-        const nodes = (pbv2State.treeJson as any)?.nodes || {};
-        const hasNodes = Object.keys(nodes).length > 0;
+        // Server persists treeJson exactly as received; client must ensure rootNodeIds.
+        const repairedTree = ensureRootNodeIds(pbv2State.treeJson);
+        const nodes = (repairedTree as any)?.nodes || {};
+        const nodeCount = Object.keys(nodes).length;
+        const rootCount = Array.isArray((repairedTree as any)?.rootNodeIds) ? (repairedTree as any).rootNodeIds.length : 0;
         
-        if (hasNodes) {
+        // HARD FAIL: Block save if tree has nodes but no rootNodeIds after repair
+        if (nodeCount > 0 && rootCount === 0) {
+          toast({
+            title: "PBV2 Save Failed",
+            description: "PBV2 tree is invalid: missing root nodes. Save blocked.",
+            variant: "destructive"
+          });
+          console.error('[ProductEditorPage] PBV2 tree invalid:', {
+            productId: targetProductId,
+            nodeCount,
+            rootCount,
+            treeJson: repairedTree,
+          });
+          return; // Block navigation
+        }
+        
+        if (nodeCount > 0) {
           // DEV-ONLY: Log PUT attempt
           if (import.meta.env.DEV) {
             const groupCount = Object.values(nodes).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
-            const rootCount = Array.isArray((pbv2State.treeJson as any)?.rootNodeIds) ? (pbv2State.treeJson as any).rootNodeIds.length : 0;
             console.log('[ProductEditorPage] Attempting PUT to /api/products/:id/pbv2/draft:', {
               productId: targetProductId,
               isNewProduct,
-              nodeCount: Object.keys(nodes).length,
+              nodeCount,
               groupCount,
               rootCount,
               draftId: pbv2State.draftId,
-              rootNodeIds: (pbv2State.treeJson as any)?.rootNodeIds,
+              rootNodeIds: (repairedTree as any)?.rootNodeIds,
             });
           }
           
@@ -254,7 +273,7 @@ const ProductEditorPage = () => {
               method: 'PUT',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ treeJson: pbv2State.treeJson }),
+              body: JSON.stringify({ treeJson: repairedTree }),
             });
             
             if (!draftRes.ok) {
