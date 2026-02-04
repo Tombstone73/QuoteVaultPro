@@ -102,7 +102,13 @@ function envelopeMessage(status: number, json: any, fallback: string) {
   return `${fallback} (${status})`;
 }
 
-export default function PBV2ProductBuilderSectionV2({ productId }: { productId: string }) {
+export default function PBV2ProductBuilderSectionV2({ 
+  productId,
+  onPbv2StateChange 
+}: { 
+  productId: string;
+  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
+}) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
 
@@ -188,6 +194,17 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
   useEffect(() => {
     setFindings(validationResult.findings as any);
   }, [validationResult.findings]);
+
+  // Notify parent of PBV2 state changes
+  useEffect(() => {
+    if (onPbv2StateChange) {
+      onPbv2StateChange({
+        treeJson: localTreeJson,
+        hasChanges: hasLocalChanges,
+        draftId: draft?.id ?? null,
+      });
+    }
+  }, [localTreeJson, hasLocalChanges, draft?.id, onPbv2StateChange]);
 
   // Compute pricing preview
   const pricingPreview = useMemo(() => {

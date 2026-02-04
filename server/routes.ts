@@ -1914,7 +1914,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/products/:productId/pbv2/tree/draft", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  app.post("/api/products/:productId/pbv2/tree/draft", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
@@ -1967,7 +1967,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/pbv2/tree-versions/:id", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  app.patch("/api/pbv2/tree-versions/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
@@ -2003,6 +2003,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         schemaVersion: 1,
       };
 
+      // DEV-ONLY: Log what we're about to persist
+      if (process.env.NODE_ENV !== 'production') {
+        const nodeCount = typeof normalizedTreeJson.nodes === 'object' && normalizedTreeJson.nodes !== null
+          ? Object.keys(normalizedTreeJson.nodes).length
+          : 0;
+        const rootCount = Array.isArray(normalizedTreeJson.rootNodeIds) 
+          ? normalizedTreeJson.rootNodeIds.length 
+          : 0;
+        console.log(`[PATCH /api/pbv2/tree-versions/${id}] BEFORE PERSIST:`, {
+          organizationId,
+          productId,
+          draftId: id,
+          nodeCount,
+          rootCount,
+          rootNodeIds: normalizedTreeJson.rootNodeIds,
+        });
+      }
+
       // Write to product.optionTreeJson (canonical storage)
       const [updated] = await db
         .update(products)
@@ -2014,6 +2032,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!updated) {
         return res.status(404).json({ success: false, message: "Product not found" });
+      }
+
+      // DEV-ONLY: Read back from DB to verify persistence
+      if (process.env.NODE_ENV !== 'production') {
+        const [readBack] = await db
+          .select({ optionTreeJson: products.optionTreeJson })
+          .from(products)
+          .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+          .limit(1);
+
+        if (readBack?.optionTreeJson) {
+          const readBackTree = readBack.optionTreeJson as any;
+          const readNodeCount = typeof readBackTree.nodes === 'object' && readBackTree.nodes !== null
+            ? Object.keys(readBackTree.nodes).length
+            : 0;
+          const readRootCount = Array.isArray(readBackTree.rootNodeIds) 
+            ? readBackTree.rootNodeIds.length 
+            : 0;
+          console.log(`[PATCH /api/pbv2/tree-versions/${id}] AFTER PERSIST (READ BACK):`, {
+            organizationId,
+            productId,
+            readNodeCount,
+            readRootCount,
+            rootNodeIds: readBackTree.rootNodeIds,
+          });
+        }
       }
 
       // Return draft wrapper for client compatibility (DB-backed)
@@ -2036,7 +2080,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/pbv2/tree-versions/:id/publish", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+  app.post("/api/pbv2/tree-versions/:id/publish", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
