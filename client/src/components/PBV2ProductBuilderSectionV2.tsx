@@ -186,7 +186,14 @@ export default function PBV2ProductBuilderSectionV2({
           console.error('[PBV2ProductBuilderSectionV2] ⚠️ HYDRATION ISSUE: Tree has nodes but rootNodeIds is empty!');
         }
       }
-      setLocalTreeJson(draft.treeJson);
+      // Repair rootNodeIds on hydration (server returns tree by ref with no mutations)
+      const repairedDraft = ensureRootNodeIds(draft.treeJson);
+      if (import.meta.env.DEV) {
+        const nc = Object.keys((repairedDraft as any)?.nodes || {}).length;
+        const rc = Array.isArray((repairedDraft as any)?.rootNodeIds) ? (repairedDraft as any).rootNodeIds.length : 0;
+        console.log(`[PBV2ProductBuilderSectionV2] Hydrated: nodes=${nc}, roots=${rc}`);
+      }
+      setLocalTreeJson(repairedDraft);
     }
   }, [draft?.id, draft?.treeJson]);
 
