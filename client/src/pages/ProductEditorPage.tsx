@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
-import PBV2ProductBuilderSection from "@/components/PBV2ProductBuilderSection";
+import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -532,7 +532,7 @@ const ProductEditorPage = () => {
             />
 
             {!isNewProduct && productId ? (
-              <PBV2ProductBuilderSection 
+              <PBV2ProductBuilderSectionV2 
                 productId={productId}
                 onPbv2StateChange={setPbv2State}
               />
