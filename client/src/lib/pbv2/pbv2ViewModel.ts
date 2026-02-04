@@ -1018,14 +1018,17 @@ export function ensureTreeInvariants(treeJson: unknown): any {
   }
   const newRoots = Array.from(newRootSet);
 
-  // Special case: If rootNodeIds is empty but we have GROUPs, populate with all GROUPs
-  if (rootNodeIds.length === 0 && groupNodes.length > 0) {
-    (tree as any).rootNodeIds = groupNodes.map(n => n.id);
-    mutated = true;
-  } else if (newRoots.length === 0 && validRuntimeNodes.length > 0) {
-    // No valid roots, set to first available enabled runtime node
-    (tree as any).rootNodeIds = [validRuntimeNodes[0].id];
-    mutated = true;
+  // Always populate rootNodeIds when empty (critical for visibility)
+  if (rootNodeIds.length === 0) {
+    if (groupNodes.length > 0) {
+      // Use all enabled GROUP nodes as roots
+      (tree as any).rootNodeIds = groupNodes.map(n => n.id);
+      mutated = true;
+    } else if (validRuntimeNodes.length > 0) {
+      // No GROUPs, use first enabled runtime node
+      (tree as any).rootNodeIds = [validRuntimeNodes[0].id];
+      mutated = true;
+    }
   } else if (newRoots.length > 0 && JSON.stringify(newRoots.sort()) !== JSON.stringify([...rootNodeIds].sort())) {
     // Roots changed, update
     (tree as any).rootNodeIds = newRoots;

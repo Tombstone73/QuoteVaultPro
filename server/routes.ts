@@ -1940,11 +1940,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (existingDraft) return res.json({ success: true, data: existingDraft });
 
       const initialTreeJson: Record<string, any> = {
-        schemaVersion: 1,
-        status: "DRAFT",
-        roots: [],
+        schemaVersion: 2,
+        rootNodeIds: [],
         nodes: {},
-        edges: {},
+        meta: {},
       };
 
       const [draft] = await db
@@ -1953,7 +1952,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           organizationId,
           productId,
           status: "DRAFT",
-          schemaVersion: 1,
+          schemaVersion: 2,
           treeJson: initialTreeJson,
           createdByUserId: userId ?? null,
           updatedByUserId: userId ?? null,
@@ -2000,7 +1999,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Enforce PBV2 metadata invariants server-side.
       const normalizedTreeJson: Record<string, any> = {
         ...treeJson,
-        schemaVersion: 1,
+        schemaVersion: 2,
       };
 
       // DEV-ONLY: Log what we're about to persist
