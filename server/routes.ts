@@ -1929,19 +1929,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ success: false, message: "Product not found" });
       }
 
-      // LOG 2: Tree stats (persist exactly what is received, no mutations)
+      // LOG 2: Tree stats before rootNodeIds repair
       const nodes = (treeJson as any).nodes || {};
       const nodeCount = Object.keys(nodes).length;
       const edgeCount = Array.isArray((treeJson as any).edges) ? (treeJson as any).edges.length : 0;
-      const rootCount = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds.length : 0;
+      const rootCountBefore = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds.length : 0;
       const schemaVersion = (treeJson as any).schemaVersion ?? 2;
-      console.log('[PBV2_DRAFT_PUT] incoming tree stats', { 
-        schemaVersion,
-        nodeCount,
-        edgeCount,
-        rootCount,
-        rootNodeIds: (treeJson as any).rootNodeIds
-      });
+      
+      // ROOT NODE REPAIR: Compute deterministic rootNodeIds if missing/empty
+      if (nodeCount > 0 && rootCountBefore === 0) {
+        const nodeIds = Object.keys(nodes);
+        const edges = (treeJson as any).edges || [];
+        const toIds = new Set(edges.map((e: any) => e?.toNodeId).filter(Boolean));
+        const roots = nodeIds.filter(id => !toIds.has(id));
+        (treeJson as any).rootNodeIds = roots;
+        
+        console.log('[PBV2_DRAFT_PUT] rootNodeIds REPAIRED', {
+          nodeCount,
+          edgeCount,
+          rootCountBefore,
+          rootCountAfter: roots.length,
+          roots,
+        });
+      } else {
+        console.log('[PBV2_DRAFT_PUT] rootNodeIds OK (no repair needed)', {
+          schemaVersion,
+          nodeCount,
+          edgeCount,
+          rootCount: rootCountBefore,
+          rootNodeIds: (treeJson as any).rootNodeIds
+        });
+      }
 
       // Upsert: update if exists, insert if not
       const [existingDraft] = await db
