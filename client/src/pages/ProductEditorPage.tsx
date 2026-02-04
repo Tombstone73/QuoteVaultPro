@@ -212,59 +212,7 @@ const ProductEditorPage = () => {
     onSuccess: async (updatedProduct) => {
       setLastSavedAt(new Date());
       
-      // After product save succeeds, persist PBV2 tree if it has changes
-      if (!isNewProduct && pbv2State && pbv2State.hasChanges && pbv2State.treeJson) {
-        try {
-          // First ensure draft exists
-          let draftId = pbv2State.draftId;
-          
-          if (!draftId) {
-            // Create draft if it doesn't exist
-            const createRes = await fetch(`/api/products/${productId}/pbv2/tree/draft`, {
-              method: 'POST',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-            });
-            
-            if (createRes.ok) {
-              const createData = await createRes.json();
-              draftId = createData.data?.id;
-              
-              if (import.meta.env.DEV) {
-                console.log('[ProductEditorPage] Created PBV2 draft:', draftId);
-              }
-            }
-          }
-          
-          // Persist the tree
-          if (draftId) {
-            const patchRes = await fetch(`/api/pbv2/tree-versions/${draftId}`, {
-              method: 'PATCH',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ treeJson: pbv2State.treeJson }),
-            });
-            
-            if (patchRes.ok) {
-              if (import.meta.env.DEV) {
-                console.log('[ProductEditorPage] PBV2 tree persisted successfully');
-              }
-            } else {
-              const errData = await patchRes.json();
-              throw new Error(errData.message || 'Failed to persist PBV2 tree');
-            }
-          }
-        } catch (pbv2Error: any) {
-          // Don't block navigation but notify user
-          toast({ 
-            title: "PBV2 Save Failed", 
-            description: pbv2Error.message,
-            variant: "destructive" 
-          });
-          console.error('[ProductEditorPage] PBV2 persistence error:', pbv2Error);
-          return; // Stay on page if PBV2 save fails
-        }
-      }
+      // PBV2 persistence now handled by product.optionTreeJson (no split-brain draft)
       
       toast({
         title: isNewProduct ? "Product Created" : "Product Updated",
