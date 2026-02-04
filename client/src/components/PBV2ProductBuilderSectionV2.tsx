@@ -510,8 +510,24 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
+    // Ensure rootNodeIds before PUT (client has authority over this field)
+    const ensuredTree = ensureRootNodeIds(localTreeJson);
+    const nodes = (ensuredTree as any)?.nodes || {};
+    const edges = Array.isArray((ensuredTree as any)?.edges) ? (ensuredTree as any).edges : [];
+    const nodeCount = Object.keys(nodes).length;
+    const edgeCount = edges.length;
+    const rootCount = Array.isArray((ensuredTree as any)?.rootNodeIds) ? (ensuredTree as any).rootNodeIds.length : 0;
+
+    // DEV-ONLY: Log PUT details before sending
+    if (import.meta.env.DEV) {
+      console.log('[PBV2 PUT] nodeCount', nodeCount, 'edgeCount', edgeCount, 'rootCount', rootCount);
+      console.log('[PBV2 PUT] computedRootNodeIds', (ensuredTree as any)?.rootNodeIds);
+      console.log('[PBV2 PUT] sendingRootNodeIds', (ensuredTree as any)?.rootNodeIds);
+      console.log('[PBV2 PUT] body', { treeJson: ensuredTree });
+    }
+
     try {
-      const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: localTreeJson });
+      const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: ensuredTree });
 
       if (!result.ok || result.json.success !== true) {
         throw new Error(envelopeMessage(result.status, result.json, "Failed to save draft"));
