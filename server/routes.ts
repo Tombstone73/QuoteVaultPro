@@ -1841,86 +1841,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { productId } = req.params;
 
+      // Verify product exists
       const [product] = await db
-        .select({ id: products.id, optionTreeJson: products.optionTreeJson })
+        .select({ id: products.id })
         .from(products)
         .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
         .limit(1);
 
       if (!product) return res.status(404).json({ success: false, message: "Product not found" });
 
-      // Return product.optionTreeJson (DB-backed, persistent)
-      let treeJson = product.optionTreeJson || { schemaVersion: 1, nodes: {}, edges: [] };
-      
-      // CRITICAL: Repair rootNodeIds if empty but GROUP nodes exist
-      if (typeof treeJson === 'object' && treeJson && !Array.isArray(treeJson)) {
-        const nodes = (treeJson as any).nodes || {};
-        const rootNodeIds = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds : [];
-        
-        // Find all GROUP nodes
-        const groupNodeIds: string[] = [];
-        for (const [nodeId, node] of Object.entries(nodes)) {
-          if (typeof node === 'object' && node && (node as any).type?.toUpperCase() === 'GROUP' && (node as any).status === 'ENABLED') {
-            groupNodeIds.push(nodeId);
-          }
-        }
-        
-        // If rootNodeIds is empty but we have GROUP nodes, populate it
-        if (rootNodeIds.length === 0 && groupNodeIds.length > 0) {
-          (treeJson as any).rootNodeIds = groupNodeIds;
-          
-          if (process.env.NODE_ENV !== 'production') {
-            console.log(`[GET /api/products/${productId}/pbv2/tree] REPAIRED rootNodeIds: empty → [${groupNodeIds.join(', ')}]`);
-          }
-        }
-      }
-      
+      // Read DRAFT from pbv2_tree_versions table
+      const [draft] = await db
+        .select()
+        .from(pbv2TreeVersions)
+        .where(
+          and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.productId, productId),
+            eq(pbv2TreeVersions.status, "DRAFT")
+          )
+        )
+        .orderBy(desc(pbv2TreeVersions.updatedAt))
+        .limit(1);
+
       // DEV-ONLY: Log what we're returning
       if (process.env.NODE_ENV !== 'production') {
-        const nodeCount = typeof treeJson === 'object' && treeJson ? Object.keys((treeJson as any).nodes || {}).length : 0;
-        const rootCount = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds.length : 0;
-        const edgeCount = Array.isArray((treeJson as any).edges) ? (treeJson as any).edges.length : 0;
-        const enabledEdges = Array.isArray((treeJson as any).edges) 
-          ? (treeJson as any).edges.filter((e: any) => e.status === 'ENABLED').length 
-          : 0;
-        console.log(`[GET /api/products/${productId}/pbv2/tree] Returning DB-backed tree:`, {
-          source: 'product.optionTreeJson (DB)',
-          nodeCount,
-          rootCount,
-          edgeCount,
-          enabledEdges,
-          schemaVersion: (treeJson as any)?.schemaVersion,
-        });
+        if (draft) {
+          const nodeCount = typeof draft.treeJson === 'object' && draft.treeJson ? Object.keys((draft.treeJson as any).nodes || {}).length : 0;
+          const rootCount = Array.isArray((draft.treeJson as any).rootNodeIds) ? (draft.treeJson as any).rootNodeIds.length : 0;
+          console.log(`[GET /api/products/${productId}/pbv2/tree] Returning DRAFT from pbv2_tree_versions:`, {
+            draftId: draft.id,
+            nodeCount,
+            rootCount,
+            schemaVersion: (draft.treeJson as any)?.schemaVersion,
+          });
+        } else {
+          console.log(`[GET /api/products/${productId}/pbv2/tree] No DRAFT found in pbv2_tree_versions`);
+        }
       }
-      
-      // Return tree directly wrapped as draft (client expects {draft, active} shape)
-      // Using product ID as draft ID to indicate this is DB-backed, not synthetic
-      const draftWrapper = {
-        id: `draft-${productId}`,
-        productId: productId,
-        organizationId: organizationId,
-        status: "DRAFT" as const,
-        treeJson: treeJson,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        createdByUserId: null,
-        updatedByUserId: null,
-      };
 
-      return res.json({ success: true, data: { draft: draftWrapper, active: null } });
+      return res.json({ success: true, data: { draft: draft || null, active: null } });
     } catch (error: any) {
       console.error("Error fetching PBV2 tree:", error);
       return res.status(500).json({ success: false, message: "Failed to fetch PBV2 tree" });
     }
   });
 
-  app.post("/api/products/:productId/pbv2/tree/draft", isAuthenticated, tenantContext, async (req: any, res) => {
+  app.put("/api/products/:productId/pbv2/draft", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
 
       const { productId } = req.params;
       const userId = getUserId(req.user);
+      const treeJson = (req.body as any)?.treeJson;
+
+      if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
+        return res.status(400).json({ success: false, message: "treeJson must be an object" });
+      }
 
       const [product] = await db
         .select({ id: products.id })
@@ -1930,154 +1908,83 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!product) return res.status(404).json({ success: false, message: "Product not found" });
 
-      const [existingDraft] = await db
-        .select()
-        .from(pbv2TreeVersions)
-        .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.productId, productId), eq(pbv2TreeVersions.status, "DRAFT")))
-        .orderBy(desc(pbv2TreeVersions.updatedAt))
-        .limit(1);
-
-      if (existingDraft) return res.json({ success: true, data: existingDraft });
-
-      const initialTreeJson: Record<string, any> = {
-        schemaVersion: 2,
-        rootNodeIds: [],
-        nodes: {},
-        meta: {},
-      };
-
-      const [draft] = await db
-        .insert(pbv2TreeVersions)
-        .values({
-          organizationId,
-          productId,
-          status: "DRAFT",
-          schemaVersion: 2,
-          treeJson: initialTreeJson,
-          createdByUserId: userId ?? null,
-          updatedByUserId: userId ?? null,
-        })
-        .returning();
-
-      return res.json({ success: true, data: draft });
-    } catch (error: any) {
-      console.error("Error creating PBV2 draft:", error);
-      return res.status(500).json({ success: false, message: "Failed to create PBV2 draft" });
-    }
-  });
-
-  app.patch("/api/pbv2/tree-versions/:id", isAuthenticated, tenantContext, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
-
-      const { id } = req.params;
-
-      // Extract productId from draft ID (format: "draft-{productId}" or legacy "synthetic-{productId}")
-      let productId: string;
-      if (id.startsWith("draft-")) {
-        productId = id.replace("draft-", "");
-      } else if (id.startsWith("synthetic-")) {
-        // Legacy format for backward compatibility
-        productId = id.replace("synthetic-", "");
-      } else {
-        return res.status(400).json({ success: false, message: "Invalid tree version ID" });
+      // Repair rootNodeIds if empty
+      const nodes = (treeJson as any).nodes || {};
+      const rootNodeIds = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds : [];
+      const groupNodeIds: string[] = [];
+      for (const [nodeId, node] of Object.entries(nodes)) {
+        if (typeof node === 'object' && node && (node as any).type?.toUpperCase() === 'GROUP' && (node as any).status === 'ENABLED') {
+          groupNodeIds.push(nodeId);
+        }
+      }
+      if (rootNodeIds.length === 0 && groupNodeIds.length > 0) {
+        (treeJson as any).rootNodeIds = groupNodeIds;
       }
 
-      const treeJson = (req.body as any)?.treeJson;
-      if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
-        return res.status(400).json({ success: false, message: "treeJson must be an object" });
-      }
-
-      // Ensure JSON-serializable payload.
-      try {
-        JSON.stringify(treeJson);
-      } catch {
-        return res.status(400).json({ success: false, message: "treeJson must be valid JSON" });
-      }
-
-      // Enforce PBV2 metadata invariants server-side.
-      const normalizedTreeJson: Record<string, any> = {
+      const normalizedTreeJson = {
         ...treeJson,
         schemaVersion: 2,
       };
 
-      // DEV-ONLY: Log what we're about to persist
+      // Upsert: update if exists, insert if not
+      const [existingDraft] = await db
+        .select({ id: pbv2TreeVersions.id })
+        .from(pbv2TreeVersions)
+        .where(
+          and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.productId, productId),
+            eq(pbv2TreeVersions.status, "DRAFT")
+          )
+        )
+        .limit(1);
+
+      let draft;
+      if (existingDraft) {
+        [draft] = await db
+          .update(pbv2TreeVersions)
+          .set({
+            treeJson: normalizedTreeJson,
+            schemaVersion: 2,
+            updatedByUserId: userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(pbv2TreeVersions.id, existingDraft.id))
+          .returning();
+      } else {
+        [draft] = await db
+          .insert(pbv2TreeVersions)
+          .values({
+            organizationId,
+            productId,
+            status: "DRAFT",
+            schemaVersion: 2,
+            treeJson: normalizedTreeJson,
+            createdByUserId: userId ?? null,
+            updatedByUserId: userId ?? null,
+          })
+          .returning();
+      }
+
       if (process.env.NODE_ENV !== 'production') {
-        const nodeCount = typeof normalizedTreeJson.nodes === 'object' && normalizedTreeJson.nodes !== null
-          ? Object.keys(normalizedTreeJson.nodes).length
-          : 0;
-        const rootCount = Array.isArray(normalizedTreeJson.rootNodeIds) 
-          ? normalizedTreeJson.rootNodeIds.length 
-          : 0;
-        console.log(`[PATCH /api/pbv2/tree-versions/${id}] BEFORE PERSIST:`, {
-          organizationId,
-          productId,
-          draftId: id,
+        const nodeCount = Object.keys(nodes).length;
+        const rootCount = ((treeJson as any).rootNodeIds || []).length;
+        console.log(`[PUT /api/products/${productId}/pbv2/draft] Saved DRAFT:`, {
+          draftId: draft.id,
           nodeCount,
           rootCount,
-          rootNodeIds: normalizedTreeJson.rootNodeIds,
+          action: existingDraft ? 'UPDATE' : 'INSERT',
         });
       }
 
-      // Write to product.optionTreeJson (canonical storage)
-      const [updated] = await db
-        .update(products)
-        .set({
-          optionTreeJson: normalizedTreeJson,
-        })
-        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
-        .returning();
-
-      if (!updated) {
-        return res.status(404).json({ success: false, message: "Product not found" });
-      }
-
-      // DEV-ONLY: Read back from DB to verify persistence
-      if (process.env.NODE_ENV !== 'production') {
-        const [readBack] = await db
-          .select({ optionTreeJson: products.optionTreeJson })
-          .from(products)
-          .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
-          .limit(1);
-
-        if (readBack?.optionTreeJson) {
-          const readBackTree = readBack.optionTreeJson as any;
-          const readNodeCount = typeof readBackTree.nodes === 'object' && readBackTree.nodes !== null
-            ? Object.keys(readBackTree.nodes).length
-            : 0;
-          const readRootCount = Array.isArray(readBackTree.rootNodeIds) 
-            ? readBackTree.rootNodeIds.length 
-            : 0;
-          console.log(`[PATCH /api/pbv2/tree-versions/${id}] AFTER PERSIST (READ BACK):`, {
-            organizationId,
-            productId,
-            readNodeCount,
-            readRootCount,
-            rootNodeIds: readBackTree.rootNodeIds,
-          });
-        }
-      }
-
-      // Return draft wrapper for client compatibility (DB-backed)
-      const draftWrapper = {
-        id: `draft-${productId}`,
-        productId: productId,
-        organizationId: organizationId,
-        status: "DRAFT" as const,
-        treeJson: normalizedTreeJson,
-        createdAt: updated.createdAt,
-        updatedAt: new Date(),
-        createdByUserId: null,
-        updatedByUserId: null,
-      };
-
-      return res.json({ success: true, data: draftWrapper });
+      return res.json({ success: true, data: draft });
     } catch (error: any) {
-      console.error("Error updating PBV2 tree:", error);
-      return res.status(500).json({ success: false, message: "Failed to update PBV2 tree version" });
+      console.error("Error upserting PBV2 draft:", error);
+      return res.status(500).json({ success: false, message: "Failed to upsert PBV2 draft" });
     }
   });
+
+
 
   app.post("/api/pbv2/tree-versions/:id/publish", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

@@ -212,7 +212,40 @@ const ProductEditorPage = () => {
     onSuccess: async (updatedProduct) => {
       setLastSavedAt(new Date());
       
-      // PBV2 persistence now handled by product.optionTreeJson (no split-brain draft)
+      // Persist PBV2 draft to pbv2_tree_versions table
+      if (!isNewProduct && pbv2State && pbv2State.treeJson) {
+        const nodes = (pbv2State.treeJson as any)?.nodes || {};
+        const hasNodes = Object.keys(nodes).length > 0;
+        
+        if (hasNodes) {
+          try {
+            const draftRes = await fetch(`/api/products/${productId}/pbv2/draft`, {
+              method: 'PUT',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ treeJson: pbv2State.treeJson }),
+            });
+            
+            if (!draftRes.ok) {
+              const errData = await draftRes.json();
+              throw new Error(errData.message || 'Failed to persist PBV2 draft');
+            }
+            
+            if (import.meta.env.DEV) {
+              const draftData = await draftRes.json();
+              console.log('[ProductEditorPage] PBV2 draft persisted:', draftData.data?.id);
+            }
+          } catch (pbv2Error: any) {
+            toast({ 
+              title: "PBV2 Save Failed", 
+              description: pbv2Error.message,
+              variant: "destructive" 
+            });
+            console.error('[ProductEditorPage] PBV2 persistence error:', pbv2Error);
+            return; // Stay on page if PBV2 save fails
+          }
+        }
+      }
       
       toast({
         title: isNewProduct ? "Product Created" : "Product Updated",
