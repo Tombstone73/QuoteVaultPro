@@ -14,6 +14,43 @@
 
 import type { OptionNodeV2 } from '@shared/optionTreeV2';
 
+/**
+ * Ensure rootNodeIds is populated with enabled GROUP nodes.
+ * This is critical for tree rehydration - without rootNodeIds, the UI appears empty.
+ * 
+ * @param treeJson - PBV2 tree object
+ * @returns Updated tree with rootNodeIds set (immutable)
+ */
+export function ensureRootNodeIds(treeJson: any): any {
+  if (!treeJson || typeof treeJson !== 'object') return treeJson;
+  
+  const nodes = treeJson.nodes || {};
+  const nodeIds = Object.keys(nodes);
+  
+  // If no nodes, return as-is
+  if (nodeIds.length === 0) return treeJson;
+  
+  // If rootNodeIds already populated, return as-is
+  if (Array.isArray(treeJson.rootNodeIds) && treeJson.rootNodeIds.length > 0) {
+    return treeJson;
+  }
+  
+  // Collect enabled GROUP nodes
+  const groupIds = nodeIds.filter(id => {
+    const node = nodes[id];
+    if (!node) return false;
+    const isGroup = (node.type || '').toUpperCase() === 'GROUP';
+    const isEnabled = (node.status || 'ENABLED').toUpperCase() === 'ENABLED';
+    return isGroup && isEnabled;
+  });
+  
+  // Return updated tree with rootNodeIds set
+  return {
+    ...treeJson,
+    rootNodeIds: groupIds,
+  };
+}
+
 export type EditorOptionGroup = {
   id: string; // Node ID in PBV2 tree
   name: string;

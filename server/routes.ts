@@ -1929,35 +1929,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ success: false, message: "Product not found" });
       }
 
-      // LOG 2: Tree stats before rootNodeIds repair
+      // LOG 2: Tree stats (client should have set rootNodeIds via ensureRootNodeIds)
       const nodes = (treeJson as any).nodes || {};
       const nodeCount = Object.keys(nodes).length;
       const edgeCount = Array.isArray((treeJson as any).edges) ? (treeJson as any).edges.length : 0;
       const rootCountBefore = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds.length : 0;
       const schemaVersion = (treeJson as any).schemaVersion ?? 2;
       
-      // ROOT NODE REPAIR: Compute deterministic rootNodeIds if missing/empty
+      // DEFENSIVE: Warn if rootNodeIds is empty but nodes exist (should be fixed client-side)
       if (nodeCount > 0 && rootCountBefore === 0) {
-        const nodeIds = Object.keys(nodes);
-        const edges = (treeJson as any).edges || [];
-        const toIds = new Set(edges.map((e: any) => e?.toNodeId).filter(Boolean));
-        const roots = nodeIds.filter(id => !toIds.has(id));
-        (treeJson as any).rootNodeIds = roots;
-        
-        console.log('[PBV2_DRAFT_PUT] rootNodeIds REPAIRED', {
+        console.warn('[PBV2_DRAFT_PUT] ⚠️ rootNodeIds is empty but tree has nodes - client should call ensureRootNodeIds', {
           nodeCount,
           edgeCount,
-          rootCountBefore,
-          rootCountAfter: roots.length,
-          roots,
+          schemaVersion,
         });
       } else {
-        console.log('[PBV2_DRAFT_PUT] rootNodeIds OK (no repair needed)', {
+        console.log('[PBV2_DRAFT_PUT] incoming tree stats', {
           schemaVersion,
           nodeCount,
           edgeCount,
           rootCount: rootCountBefore,
-          rootNodeIds: (treeJson as any).rootNodeIds
+          rootNodeIds: (treeJson as any).rootNodeIds,
         });
       }
 

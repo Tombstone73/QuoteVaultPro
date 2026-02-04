@@ -42,6 +42,7 @@ import {
   createUpdatePricingV2TierPatch,
   createDeletePricingV2TierPatch,
   applyPatchToTree,
+  ensureRootNodeIds,
 } from "@/lib/pbv2/pbv2ViewModel";
 import type { EditorOptionGroup } from "@/lib/pbv2/pbv2ViewModel";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -170,11 +171,20 @@ export default function PBV2ProductBuilderSectionV2({
     if (!hasLocalChanges) {
       if (import.meta.env.DEV) {
         const nodeCount = draft.treeJson ? Object.keys((draft.treeJson as any)?.nodes || {}).length : 0;
-        console.log('[PBV2ProductBuilderSectionV2] Initializing from draft:', {
+        const groupCount = draft.treeJson ? Object.values((draft.treeJson as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
+        const rootCount = Array.isArray((draft.treeJson as any)?.rootNodeIds) ? (draft.treeJson as any).rootNodeIds.length : 0;
+        console.log('[PBV2ProductBuilderSectionV2] Initializing from draft (HYDRATION):', {
           draftId: draft.id,
           nodeCount,
+          groupCount,
+          rootCount,
           schemaVersion: (draft.treeJson as any)?.schemaVersion,
+          rootNodeIds: (draft.treeJson as any)?.rootNodeIds,
+          hasRootNodeIds: rootCount > 0,
         });
+        if (nodeCount > 0 && rootCount === 0) {
+          console.error('[PBV2ProductBuilderSectionV2] ⚠️ HYDRATION ISSUE: Tree has nodes but rootNodeIds is empty!');
+        }
       }
       setLocalTreeJson(draft.treeJson);
     }
@@ -222,17 +232,25 @@ export default function PBV2ProductBuilderSectionV2({
   // Notify parent of PBV2 state changes
   useEffect(() => {
     if (onPbv2StateChange) {
-      const nodeCount = localTreeJson ? Object.keys((localTreeJson as any)?.nodes || {}).length : 0;
+      // CRITICAL: Ensure rootNodeIds is set before sending to parent
+      const ensuredTree = localTreeJson ? ensureRootNodeIds(localTreeJson) : null;
+      const nodeCount = ensuredTree ? Object.keys((ensuredTree as any)?.nodes || {}).length : 0;
+      const rootCount = Array.isArray((ensuredTree as any)?.rootNodeIds) ? (ensuredTree as any).rootNodeIds.length : 0;
+      
       if (import.meta.env.DEV) {
+        const groupCount = ensuredTree ? Object.values((ensuredTree as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
         console.log('[PBV2ProductBuilderSectionV2] Calling onPbv2StateChange:', {
           nodeCount,
+          groupCount,
+          rootCount,
           hasChanges: hasLocalChanges,
           draftId: draft?.id ?? null,
-          hasTreeJson: !!localTreeJson,
+          hasTreeJson: !!ensuredTree,
+          rootNodeIds: (ensuredTree as any)?.rootNodeIds,
         });
       }
       onPbv2StateChange({
-        treeJson: localTreeJson,
+        treeJson: ensuredTree,
         hasChanges: hasLocalChanges,
         draftId: draft?.id ?? null,
       });
