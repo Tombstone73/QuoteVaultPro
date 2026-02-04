@@ -170,8 +170,10 @@ function makeId(prefix: string, taken: Set<string>): string {
 
 export default function PBV2ProductBuilderSection({ 
   productId,
+  onPbv2StateChange,
 }: { 
   productId: string;
+  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
@@ -373,6 +375,22 @@ export default function PBV2ProductBuilderSection({
       setDraftText("{}");
     }
   }, [draft?.id]);
+
+  // Notify parent of PBV2 state changes
+  useEffect(() => {
+    if (onPbv2StateChange && draftText) {
+      try {
+        const treeJson = JSON.parse(draftText);
+        onPbv2StateChange({
+          treeJson,
+          hasChanges: true, // This component always assumes changes when text exists
+          draftId: draft?.id ?? null,
+        });
+      } catch {
+        // Invalid JSON, don't notify
+      }
+    }
+  }, [draftText, draft?.id, onPbv2StateChange]);
 
   const counts = useMemo(() => {
     const errors = findings.filter((f) => f.severity === "ERROR").length;
