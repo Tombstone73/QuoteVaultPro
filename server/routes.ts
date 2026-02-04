@@ -1864,7 +1864,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(desc(pbv2TreeVersions.updatedAt))
         .limit(1);
 
-      // DEV-ONLY: Log what we're returning
+      // LOG: What we found
+      console.log('[PBV2_TREE_GET] rows found', { 
+        orgId: organizationId,
+        productId,
+        draftFound: !!draft,
+        draftId: draft?.id || null
+      });
+
+      // DEV-ONLY: Log details
       if (process.env.NODE_ENV !== 'production') {
         if (draft) {
           const nodeCount = typeof draft.treeJson === 'object' && draft.treeJson ? Object.keys((draft.treeJson as any).nodes || {}).length : 0;
@@ -1890,13 +1898,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put("/api/products/:productId/pbv2/draft", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      const { productId } = req.params;
+      
+      // LOG 1: Handler hit
+      console.log('[PBV2_DRAFT_PUT] hit', { 
+        productId, 
+        orgId: organizationId, 
+        userId,
+        timestamp: new Date().toISOString()
+      });
+      
       if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
 
-      const { productId } = req.params;
-      const userId = getUserId(req.user);
       const treeJson = (req.body as any)?.treeJson;
 
       if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) {
+        console.log('[PBV2_DRAFT_PUT] validation failed: treeJson invalid');
         return res.status(400).json({ success: false, message: "treeJson must be an object" });
       }
 
@@ -1906,7 +1924,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
         .limit(1);
 
-      if (!product) return res.status(404).json({ success: false, message: "Product not found" });
+      if (!product) {
+        console.log('[PBV2_DRAFT_PUT] product not found');
+        return res.status(404).json({ success: false, message: "Product not found" });
+      }
 
       // Repair rootNodeIds if empty
       const nodes = (treeJson as any).nodes || {};
@@ -1925,6 +1946,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...treeJson,
         schemaVersion: 2,
       };
+      
+      // LOG 2: Tree stats
+      const nodeCount = Object.keys(nodes).length;
+      const edgeCount = Array.isArray((treeJson as any).edges) ? (treeJson as any).edges.length : 0;
+      const rootCount = ((normalizedTreeJson as any).rootNodeIds || []).length;
+      console.log('[PBV2_DRAFT_PUT] incoming tree stats', { 
+        schemaVersion: normalizedTreeJson.schemaVersion,
+        nodeCount,
+        edgeCount,
+        rootCount,
+        rootNodeIds: (normalizedTreeJson as any).rootNodeIds
+      });
 
       // Upsert: update if exists, insert if not
       const [existingDraft] = await db
@@ -1939,48 +1972,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
         )
         .limit(1);
 
+      console.log('[PBV2_DRAFT_PUT] existing draft check', { 
+        existingDraftId: existingDraft?.id || null,
+        action: existingDraft ? 'UPDATE' : 'INSERT'
+      });
+
       let draft;
-      if (existingDraft) {
-        [draft] = await db
-          .update(pbv2TreeVersions)
-          .set({
-            treeJson: normalizedTreeJson,
-            schemaVersion: 2,
-            updatedByUserId: userId ?? null,
-            updatedAt: new Date(),
-          })
-          .where(eq(pbv2TreeVersions.id, existingDraft.id))
-          .returning();
-      } else {
-        [draft] = await db
-          .insert(pbv2TreeVersions)
-          .values({
-            organizationId,
-            productId,
-            status: "DRAFT",
-            schemaVersion: 2,
-            treeJson: normalizedTreeJson,
-            createdByUserId: userId ?? null,
-            updatedByUserId: userId ?? null,
-          })
-          .returning();
+      try {
+        if (existingDraft) {
+          [draft] = await db
+            .update(pbv2TreeVersions)
+            .set({
+              treeJson: normalizedTreeJson,
+              schemaVersion: 2,
+              updatedByUserId: userId ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(pbv2TreeVersions.id, existingDraft.id))
+            .returning();
+          console.log('[PBV2_DRAFT_PUT] UPDATE succeeded', { draftId: draft.id });
+        } else {
+          [draft] = await db
+            .insert(pbv2TreeVersions)
+            .values({
+              organizationId,
+              productId,
+              status: "DRAFT",
+              schemaVersion: 2,
+              treeJson: normalizedTreeJson,
+              createdByUserId: userId ?? null,
+              updatedByUserId: userId ?? null,
+            })
+            .returning();
+          console.log('[PBV2_DRAFT_PUT] INSERT succeeded', { draftId: draft.id });
+        }
+      } catch (dbError: any) {
+        console.error('[PBV2_DRAFT_PUT] DB write failed:', dbError);
+        console.error('[PBV2_DRAFT_PUT] DB error stack:', dbError.stack);
+        throw dbError;
       }
 
-      if (process.env.NODE_ENV !== 'production') {
-        const nodeCount = Object.keys(nodes).length;
-        const rootCount = ((treeJson as any).rootNodeIds || []).length;
-        console.log(`[PUT /api/products/${productId}/pbv2/draft] Saved DRAFT:`, {
-          draftId: draft.id,
-          nodeCount,
-          rootCount,
-          action: existingDraft ? 'UPDATE' : 'INSERT',
-        });
-      }
+      // LOG 3: Verify row exists with SELECT COUNT
+      const [countResult] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(pbv2TreeVersions)
+        .where(
+          and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.productId, productId),
+            eq(pbv2TreeVersions.status, "DRAFT")
+          )
+        );
+      
+      console.log('[PBV2_DRAFT_PUT] after write count', { 
+        count: countResult.count,
+        draftId: draft.id,
+        productId,
+        orgId: organizationId
+      });
 
       return res.json({ success: true, data: draft });
     } catch (error: any) {
-      console.error("Error upserting PBV2 draft:", error);
-      return res.status(500).json({ success: false, message: "Failed to upsert PBV2 draft" });
+      console.error('[PBV2_DRAFT_PUT] FATAL ERROR:', error);
+      console.error('[PBV2_DRAFT_PUT] error stack:', error.stack);
+      return res.status(500).json({ success: false, message: "Failed to upsert PBV2 draft", error: error.message });
     }
   });
 
