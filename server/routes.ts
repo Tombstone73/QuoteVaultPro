@@ -1929,34 +1929,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ success: false, message: "Product not found" });
       }
 
-      // Repair rootNodeIds if empty
+      // LOG 2: Tree stats (persist exactly what is received, no mutations)
       const nodes = (treeJson as any).nodes || {};
-      const rootNodeIds = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds : [];
-      const groupNodeIds: string[] = [];
-      for (const [nodeId, node] of Object.entries(nodes)) {
-        if (typeof node === 'object' && node && (node as any).type?.toUpperCase() === 'GROUP' && (node as any).status === 'ENABLED') {
-          groupNodeIds.push(nodeId);
-        }
-      }
-      if (rootNodeIds.length === 0 && groupNodeIds.length > 0) {
-        (treeJson as any).rootNodeIds = groupNodeIds;
-      }
-
-      const normalizedTreeJson = {
-        ...treeJson,
-        schemaVersion: 2,
-      };
-      
-      // LOG 2: Tree stats
       const nodeCount = Object.keys(nodes).length;
       const edgeCount = Array.isArray((treeJson as any).edges) ? (treeJson as any).edges.length : 0;
-      const rootCount = ((normalizedTreeJson as any).rootNodeIds || []).length;
+      const rootCount = Array.isArray((treeJson as any).rootNodeIds) ? (treeJson as any).rootNodeIds.length : 0;
+      const schemaVersion = (treeJson as any).schemaVersion ?? 2;
       console.log('[PBV2_DRAFT_PUT] incoming tree stats', { 
-        schemaVersion: normalizedTreeJson.schemaVersion,
+        schemaVersion,
         nodeCount,
         edgeCount,
         rootCount,
-        rootNodeIds: (normalizedTreeJson as any).rootNodeIds
+        rootNodeIds: (treeJson as any).rootNodeIds
       });
 
       // Upsert: update if exists, insert if not
@@ -1979,12 +1963,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       let draft;
       try {
+        const schemaVersion = (treeJson as any).schemaVersion ?? 2;
         if (existingDraft) {
           [draft] = await db
             .update(pbv2TreeVersions)
             .set({
-              treeJson: normalizedTreeJson,
-              schemaVersion: 2,
+              treeJson: treeJson,
+              schemaVersion: schemaVersion,
               updatedByUserId: userId ?? null,
               updatedAt: new Date(),
             })
@@ -1998,8 +1983,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
               organizationId,
               productId,
               status: "DRAFT",
-              schemaVersion: 2,
-              treeJson: normalizedTreeJson,
+              schemaVersion: schemaVersion,
+              treeJson: treeJson,
               createdByUserId: userId ?? null,
               updatedByUserId: userId ?? null,
             })
@@ -2033,12 +2018,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // HARD FAIL: If no row exists after write, return 500
       if (countResult.count < 1) {
-        console.error('[PBV2_DRAFT_PUT] HARD FAIL: no row after write');
+        console.error('[PBV2_DRAFT_PUT] HARD FAIL: no row after write', {
+          orgId: organizationId,
+          productId,
+          attemptedDraftId: draft?.id || 'null'
+        });
         return res.status(500).json({ 
           success: false, 
           message: "PBV2 draft write failed: no row after write" 
         });
       }
+
+      // Additional verification: SELECT the actual row
+      const [verifiedDraft] = await db
+        .select({ id: pbv2TreeVersions.id })
+        .from(pbv2TreeVersions)
+        .where(
+          and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.productId, productId),
+            eq(pbv2TreeVersions.status, "DRAFT")
+          )
+        )
+        .orderBy(desc(pbv2TreeVersions.updatedAt))
+        .limit(1);
+
+      if (!verifiedDraft) {
+        console.error('[PBV2_DRAFT_PUT] HARD FAIL: verification SELECT returned no row', {
+          orgId: organizationId,
+          productId,
+          attemptedDraftId: draft?.id || 'null'
+        });
+        return res.status(500).json({ 
+          success: false, 
+          message: "PBV2 draft write failed: verification SELECT returned no row" 
+        });
+      }
+
+      console.log('[PBV2_DRAFT_PUT] verification SELECT succeeded', { verifiedId: verifiedDraft.id });
 
       return res.json({ success: true, data: draft });
     } catch (error: any) {
