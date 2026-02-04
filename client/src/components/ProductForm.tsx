@@ -129,7 +129,16 @@ export const ProductForm = ({
   }, [determineInitialMode, optionsMode, productId]);
 
   React.useEffect(() => {
-    // Auto-migrate on mount: coerce to valid PBV2 regardless of input state
+    // SKIP auto-migration for existing products with PBV2
+    // PBV2ProductBuilderSectionV2 manages its own state from pbv2_tree_versions table
+    if (productId) {
+      if (import.meta.env.DEV) {
+        console.log('[ProductForm] Skipping auto-migration for existing product - PBV2ProductBuilderSectionV2 manages tree independently');
+      }
+      return;
+    }
+    
+    // Auto-migrate on mount: coerce to valid PBV2 regardless of input state (NEW products only)
     const currentTree = form.getValues("optionTreeJson");
     const legacyOptions = form.getValues("optionsJson");
     

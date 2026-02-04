@@ -167,8 +167,9 @@ const ProductEditorPage = () => {
         ...data,
         optionsJson: data.optionsJson && data.optionsJson.length > 0 ? data.optionsJson : null,
         primaryMaterialId: data.primaryMaterialId || null,
-        // Preserve optionTreeJson as-is - don't nullify valid trees
-        optionTreeJson: (data as any).optionTreeJson !== undefined ? (data as any).optionTreeJson : null,
+        // SHADOW COPY: Write pbv2State to products.optionTreeJson for legacy compatibility
+        // PBV2ProductBuilderSectionV2 reads from pbv2_tree_versions, not this field
+        optionTreeJson: pbv2State?.treeJson ?? ((data as any).optionTreeJson !== undefined ? (data as any).optionTreeJson : null),
       };
       
       // DEV-ONLY: Verify optionTreeJson is in payload if form is dirty
@@ -176,15 +177,19 @@ const ProductEditorPage = () => {
         const isDirty = form.formState.dirtyFields.optionTreeJson;
         const hasField = 'optionTreeJson' in payload;
         const treeValue = payload.optionTreeJson;
+        const usedPbv2State = !!pbv2State?.treeJson;
+        const pbv2NodeCount = pbv2State?.treeJson ? Object.keys((pbv2State.treeJson as any)?.nodes || {}).length : 0;
         console.log("[ProductEditorPage] Save payload validation:", {
           isDirty,
           hasField,
+          usedPbv2State,
+          pbv2NodeCount,
           isNull: treeValue === null,
           isUndefined: treeValue === undefined,
           type: typeof treeValue,
-          hasNodes: treeValue?.nodes ? Object.keys(treeValue.nodes).length : 0,
+          payloadNodeCount: treeValue?.nodes ? Object.keys(treeValue.nodes).length : 0,
           schemaVersion: treeValue?.schemaVersion,
-          keys: Object.keys(payload).filter(k => k.includes('option') || k.includes('tree')),
+          source: usedPbv2State ? 'pbv2State.treeJson (FROM PBV2ProductBuilderSectionV2)' : 'form data (stale)',
         });
         
         if (isDirty && !hasField) {
@@ -192,8 +197,8 @@ const ProductEditorPage = () => {
           console.error("[ProductEditorPage] Form data keys:", Object.keys(data));
         }
         
-        if (hasField && treeValue && treeValue.nodes && Object.keys(treeValue.nodes).length > 0) {
-          console.log("[ProductEditorPage] PBV2 tree has", Object.keys(treeValue.nodes).length, "nodes - will be saved");
+        if (usedPbv2State) {
+          console.log("[ProductEditorPage] ✅ Using fresh PBV2 tree from PBV2ProductBuilderSectionV2 with", pbv2NodeCount, "nodes");
         }
       }
       

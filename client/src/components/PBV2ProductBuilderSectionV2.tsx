@@ -130,10 +130,23 @@ export default function PBV2ProductBuilderSectionV2({
   const treeQuery = useQuery<TreeResponse>({
     queryKey: ["/api/products", productId, "pbv2", "tree"],
     queryFn: async () => {
+      if (import.meta.env.DEV) {
+        console.log('[PBV2ProductBuilderSectionV2] Fetching tree from GET /api/products/:id/pbv2/tree');
+      }
       const res = await fetch(`/api/products/${productId}/pbv2/tree`, { credentials: "include" });
       const json = (await readJsonSafe(res)) as any;
       if (!res.ok) {
         return { success: false, message: envelopeMessage(res.status, json, "Failed to load PBV2") } as TreeResponse;
+      }
+      if (import.meta.env.DEV) {
+        const draft = json?.data?.draft;
+        const nodeCount = draft?.treeJson ? Object.keys((draft.treeJson as any)?.nodes || {}).length : 0;
+        console.log('[PBV2ProductBuilderSectionV2] Fetched tree response:', {
+          hasDraft: !!draft,
+          draftId: draft?.id || null,
+          nodeCount,
+          schemaVersion: (draft?.treeJson as any)?.schemaVersion,
+        });
       }
       return json as TreeResponse;
     },
@@ -145,6 +158,9 @@ export default function PBV2ProductBuilderSectionV2({
   // Initialize local tree from draft
   useEffect(() => {
     if (!draft) {
+      if (import.meta.env.DEV) {
+        console.log('[PBV2ProductBuilderSectionV2] No draft from API - setting localTreeJson to null (empty state)');
+      }
       setLocalTreeJson(null);
       setHasLocalChanges(false);
       return;
@@ -152,6 +168,14 @@ export default function PBV2ProductBuilderSectionV2({
 
     // Only initialize if we don't have local changes
     if (!hasLocalChanges) {
+      if (import.meta.env.DEV) {
+        const nodeCount = draft.treeJson ? Object.keys((draft.treeJson as any)?.nodes || {}).length : 0;
+        console.log('[PBV2ProductBuilderSectionV2] Initializing from draft:', {
+          draftId: draft.id,
+          nodeCount,
+          schemaVersion: (draft.treeJson as any)?.schemaVersion,
+        });
+      }
       setLocalTreeJson(draft.treeJson);
     }
   }, [draft?.id, draft?.treeJson]);
@@ -198,6 +222,15 @@ export default function PBV2ProductBuilderSectionV2({
   // Notify parent of PBV2 state changes
   useEffect(() => {
     if (onPbv2StateChange) {
+      const nodeCount = localTreeJson ? Object.keys((localTreeJson as any)?.nodes || {}).length : 0;
+      if (import.meta.env.DEV) {
+        console.log('[PBV2ProductBuilderSectionV2] Calling onPbv2StateChange:', {
+          nodeCount,
+          hasChanges: hasLocalChanges,
+          draftId: draft?.id ?? null,
+          hasTreeJson: !!localTreeJson,
+        });
+      }
       onPbv2StateChange({
         treeJson: localTreeJson,
         hasChanges: hasLocalChanges,
