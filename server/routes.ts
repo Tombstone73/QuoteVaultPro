@@ -2031,6 +2031,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         orgId: organizationId
       });
 
+      // HARD FAIL: If no row exists after write, return 500
+      if (countResult.count < 1) {
+        console.error('[PBV2_DRAFT_PUT] HARD FAIL: no row after write');
+        return res.status(500).json({ 
+          success: false, 
+          message: "PBV2 draft write failed: no row after write" 
+        });
+      }
+
       return res.json({ success: true, data: draft });
     } catch (error: any) {
       console.error('[PBV2_DRAFT_PUT] FATAL ERROR:', error);
