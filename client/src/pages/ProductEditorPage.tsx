@@ -163,43 +163,24 @@ const ProductEditorPage = () => {
 
   const saveMutation = useMutation({
     mutationFn: async (data: InsertProduct | UpdateProduct) => {
+      // NO SHADOW COPY: PBV2ProductBuilderSectionV2 uses pbv2_tree_versions as ONLY source of truth
+      // DO NOT send optionTreeJson in PATCH - it should not be used going forward
+      const { optionTreeJson: _unused, ...cleanData } = data as any;
       const payload = {
-        ...data,
+        ...cleanData,
         optionsJson: data.optionsJson && data.optionsJson.length > 0 ? data.optionsJson : null,
         primaryMaterialId: data.primaryMaterialId || null,
-        // SHADOW COPY: Write pbv2State to products.optionTreeJson for legacy compatibility
-        // PBV2ProductBuilderSectionV2 reads from pbv2_tree_versions, not this field
-        optionTreeJson: pbv2State?.treeJson ?? ((data as any).optionTreeJson !== undefined ? (data as any).optionTreeJson : null),
       };
       
-      // DEV-ONLY: Verify optionTreeJson is in payload if form is dirty
+      // DEV-ONLY: Log PBV2 state (no longer in PATCH payload)
       if (import.meta.env.DEV) {
-        const isDirty = form.formState.dirtyFields.optionTreeJson;
-        const hasField = 'optionTreeJson' in payload;
-        const treeValue = payload.optionTreeJson;
-        const usedPbv2State = !!pbv2State?.treeJson;
         const pbv2NodeCount = pbv2State?.treeJson ? Object.keys((pbv2State.treeJson as any)?.nodes || {}).length : 0;
-        console.log("[ProductEditorPage] Save payload validation:", {
-          isDirty,
-          hasField,
-          usedPbv2State,
+        console.log("[ProductEditorPage] PATCH payload - optionTreeJson excluded:", {
           pbv2NodeCount,
-          isNull: treeValue === null,
-          isUndefined: treeValue === undefined,
-          type: typeof treeValue,
-          payloadNodeCount: treeValue?.nodes ? Object.keys(treeValue.nodes).length : 0,
-          schemaVersion: treeValue?.schemaVersion,
-          source: usedPbv2State ? 'pbv2State.treeJson (FROM PBV2ProductBuilderSectionV2)' : 'form data (stale)',
+          hasPbv2State: !!pbv2State,
+          pbv2WillBeSavedViaPUT: !!pbv2State?.hasChanges && pbv2NodeCount > 0,
+          message: 'PBV2 data saved to pbv2_tree_versions ONLY, NOT products.optionTreeJson',
         });
-        
-        if (isDirty && !hasField) {
-          console.error("[ProductEditorPage] CRITICAL: optionTreeJson marked dirty but missing from payload!");
-          console.error("[ProductEditorPage] Form data keys:", Object.keys(data));
-        }
-        
-        if (usedPbv2State) {
-          console.log("[ProductEditorPage] ✅ Using fresh PBV2 tree from PBV2ProductBuilderSectionV2 with", pbv2NodeCount, "nodes");
-        }
       }
       
       if (isNewProduct) {

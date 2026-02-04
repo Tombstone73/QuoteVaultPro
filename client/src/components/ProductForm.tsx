@@ -128,59 +128,8 @@ export const ProductForm = ({
     }
   }, [determineInitialMode, optionsMode, productId]);
 
-  React.useEffect(() => {
-    // SKIP auto-migration for existing products with PBV2
-    // PBV2ProductBuilderSectionV2 manages its own state from pbv2_tree_versions table
-    if (productId) {
-      if (import.meta.env.DEV) {
-        console.log('[ProductForm] Skipping auto-migration for existing product - PBV2ProductBuilderSectionV2 manages tree independently');
-      }
-      return;
-    }
-    
-    // Auto-migrate on mount: coerce to valid PBV2 regardless of input state (NEW products only)
-    const currentTree = form.getValues("optionTreeJson");
-    const legacyOptions = form.getValues("optionsJson");
-    
-    // DEV-ONLY: Log what we're about to coerce
-    if (import.meta.env.DEV) {
-      const inputNodeCount = typeof currentTree === 'object' && currentTree && !Array.isArray(currentTree)
-        ? Object.keys((currentTree as any).nodes || {}).length
-        : 0;
-      console.log('[ProductForm] Auto-migration on mount INPUT:', {
-        inputType: typeof currentTree,
-        inputNodeCount,
-        inputSchemaVersion: (currentTree as any)?.schemaVersion,
-        productId,
-      });
-    }
-    
-    const migratedTree = coerceOrMigrateToPBV2(currentTree, legacyOptions);
-    
-    // DEV-ONLY: Check if we're about to wipe data
-    if (import.meta.env.DEV) {
-      const inputNodeCount = typeof currentTree === 'object' && currentTree && !Array.isArray(currentTree)
-        ? Object.keys((currentTree as any).nodes || {}).length
-        : 0;
-      const outputNodeCount = Object.keys(migratedTree.nodes || {}).length;
-      
-      if (inputNodeCount > 0 && outputNodeCount === 0) {
-        console.error('[ProductForm] CRITICAL: Auto-migration on mount would WIPE', inputNodeCount, 'nodes!');
-        console.error('[ProductForm] BLOCKING auto-migration to prevent data loss');
-        console.error('[ProductForm] Keeping current tree as-is');
-        // Don't migrate - keep the current tree even if structure is slightly off
-        setOptionTreeText(JSON.stringify(currentTree, null, 2));
-        return;
-      }
-    }
-    
-    // If migration changed the tree, update the form
-    if (currentTree !== migratedTree) {
-      form.setValue("optionTreeJson", migratedTree, { shouldDirty: false });
-      setOptionTreeText(JSON.stringify(migratedTree, null, 2));
-      console.log('[ProductForm] Auto-migrated tree on mount');
-    }
-  }, [productId, form]); // Run once on mount or when productId changes
+  // NO AUTO-MIGRATION: PBV2ProductBuilderSectionV2 manages tree via pbv2_tree_versions table
+  // ProductForm does not touch optionTreeJson
 
   React.useEffect(() => {
     if (optionsMode !== "treeV2") return;
