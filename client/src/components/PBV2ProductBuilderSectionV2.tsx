@@ -102,7 +102,13 @@ function envelopeMessage(status: number, json: any, fallback: string) {
   return `${fallback} (${status})`;
 }
 
-export default function PBV2ProductBuilderSectionV2({ productId }: { productId: string }) {
+export default function PBV2ProductBuilderSectionV2({ 
+  productId,
+  onPbv2StateChange 
+}: { 
+  productId: string;
+  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
+}) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
 
@@ -188,6 +194,17 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
   useEffect(() => {
     setFindings(validationResult.findings as any);
   }, [validationResult.findings]);
+
+  // Notify parent of PBV2 state changes
+  useEffect(() => {
+    if (onPbv2StateChange) {
+      onPbv2StateChange({
+        treeJson: localTreeJson,
+        hasChanges: hasLocalChanges,
+        draftId: draft?.id ?? null,
+      });
+    }
+  }, [localTreeJson, hasLocalChanges, draft?.id, onPbv2StateChange]);
 
   // Compute pricing preview
   const pricingPreview = useMemo(() => {
@@ -430,13 +447,13 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
   };
 
   const handleSave = async () => {
-    if (!draft || !localTreeJson) {
-      toast({ title: "No draft to save", variant: "destructive" });
+    if (!localTreeJson) {
+      toast({ title: "No tree data to save", variant: "destructive" });
       return;
     }
 
     try {
-      const result = await apiJson<Pbv2TreeVersion>("PATCH", `/api/pbv2/tree-versions/${draft.id}`, { treeJson: localTreeJson });
+      const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: localTreeJson });
 
       if (!result.ok || result.json.success !== true) {
         throw new Error(envelopeMessage(result.status, result.json, "Failed to save draft"));
@@ -445,6 +462,17 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
       toast({ title: "Draft saved" });
       setHasLocalChanges(false);
       await treeQuery.refetch();
+
+      // HARD FAIL CHECK: Verify draft exists after refetch
+      const refetchedData = treeQuery.data;
+      if (!refetchedData?.data?.draft) {
+        toast({ 
+          title: "PBV2 draft did not persist", 
+          description: "No DB row after save", 
+          variant: "destructive" 
+        });
+        setHasLocalChanges(true); // Keep unsaved state
+      }
     } catch (error: any) {
       toast({ title: "Draft save failed", description: error.message, variant: "destructive" });
     }
@@ -536,10 +564,39 @@ export default function PBV2ProductBuilderSectionV2({ productId }: { productId: 
   }
 
   if (!draft) {
+    const handleCreateDraft = async () => {
+      try {
+        // Create minimal valid empty draft
+        const minimalTreeJson = {
+          schemaVersion: 2,
+          status: "DRAFT",
+          rootNodeIds: [],
+          nodes: {},
+          edges: [],
+          productName: "",
+          category: "",
+          sku: "",
+          fulfillment: "fulfillment",
+          basePrice: 0,
+        };
+
+        const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: minimalTreeJson });
+
+        if (!result.ok || result.json.success !== true) {
+          throw new Error(envelopeMessage(result.status, result.json, "Failed to create draft"));
+        }
+
+        toast({ title: "Draft created" });
+        await treeQuery.refetch();
+      } catch (error: any) {
+        toast({ title: "Draft creation failed", description: error.message, variant: "destructive" });
+      }
+    };
+
     return (
       <div className="p-8 text-center">
         <div className="text-slate-400 mb-4">No draft exists for this product.</div>
-        <Button onClick={() => window.location.reload()}>Create Draft</Button>
+        <Button onClick={handleCreateDraft}>Create Draft</Button>
       </div>
     );
   }

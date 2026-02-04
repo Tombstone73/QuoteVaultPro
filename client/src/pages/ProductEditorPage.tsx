@@ -50,6 +50,9 @@ const ProductEditorPage = () => {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const lastLoadedRef = useRef<ProductFormData | null>(null);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
+  
+  // Track PBV2 state for persistence
+  const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
@@ -206,8 +209,90 @@ const ProductEditorPage = () => {
         return response;
       }
     },
-    onSuccess: async () => {
+    onSuccess: async (updatedProduct) => {
       setLastSavedAt(new Date());
+      
+      // Persist PBV2 draft to pbv2_tree_versions table
+      if (!isNewProduct) {
+        // HARD FAIL: Check if pbv2State exists
+        if (!pbv2State || !pbv2State.treeJson) {
+          if (pbv2State && pbv2State.hasChanges) {
+            toast({ 
+              title: "PBV2 Save Failed", 
+              description: "PBV2 editor did not provide treeJson to ProductEditorPage",
+              variant: "destructive" 
+            });
+            console.error('[ProductEditorPage] PBV2 state invalid:', pbv2State);
+            return; // Block navigate
+          }
+          // If no changes, proceed normally
+        } else {
+          const nodes = (pbv2State.treeJson as any)?.nodes || {};
+          const hasNodes = Object.keys(nodes).length > 0;
+          
+          // HARD FAIL: Check if treeJson has nodes when hasChanges is true
+          if (!hasNodes && pbv2State.hasChanges) {
+            toast({ 
+              title: "PBV2 Save Failed", 
+              description: "treeJson has no nodes",
+              variant: "destructive" 
+            });
+            console.error('[ProductEditorPage] PBV2 treeJson empty but hasChanges=true');
+            return; // Block navigate
+          }
+          
+          if (hasNodes) {
+            try {
+              const draftRes = await fetch(`/api/products/${productId}/pbv2/draft`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ treeJson: pbv2State.treeJson }),
+              });
+              
+              if (!draftRes.ok) {
+                const errData = await draftRes.json();
+                throw new Error(errData.message || 'Failed to persist PBV2 draft');
+              }
+              
+              if (import.meta.env.DEV) {
+                const draftData = await draftRes.json();
+                console.log('[ProductEditorPage] PBV2 draft persisted:', draftData.data?.id);
+              }
+
+              // HARD FAIL: Verify draft exists after save
+              const verifyRes = await fetch(`/api/products/${productId}/pbv2/tree`, {
+                method: 'GET',
+                credentials: 'include',
+              });
+              
+              if (verifyRes.ok) {
+                const verifyData = await verifyRes.json();
+                if (!verifyData.data?.draft) {
+                  toast({ 
+                    title: "PBV2 Save Failed", 
+                    description: "PBV2 draft did not persist (no DB row after save)",
+                    variant: "destructive" 
+                  });
+                  console.error('[ProductEditorPage] Verification failed: no draft in DB after save');
+                  return; // Block navigate
+                }
+                console.log('[ProductEditorPage] PBV2 draft verified in DB:', verifyData.data.draft.id);
+              } else {
+                console.warn('[ProductEditorPage] Could not verify draft (GET failed), but PUT succeeded');
+              }
+            } catch (pbv2Error: any) {
+              toast({ 
+                title: "PBV2 Save Failed", 
+                description: pbv2Error.message,
+                variant: "destructive" 
+              });
+              console.error('[ProductEditorPage] PBV2 persistence error:', pbv2Error);
+              return; // Stay on page if PBV2 save fails
+            }
+          }
+        }
+      }
       
       toast({
         title: isNewProduct ? "Product Created" : "Product Updated",
@@ -412,6 +497,7 @@ const ProductEditorPage = () => {
             {!isNewProduct && productId ? (
               <PBV2ProductBuilderSection 
                 productId={productId}
+                onPbv2StateChange={setPbv2State}
               />
             ) : null}
           </div>
