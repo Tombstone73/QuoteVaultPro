@@ -169,19 +169,21 @@ export function normalizeTreeJson(treeJson: any): any {
     if (fromType === 'GROUP' || toType === 'GROUP') {
       const normalized = { ...edge };
       normalized.status = 'DISABLED';
-      // Remove condition fields
-      delete normalized.condition;
-      delete normalized.conditionRule;
-      delete normalized.when;
+      // Validator requires ALL edges to have valid condition AST (even DISABLED)
+      // Set to TRUE_CONDITION to satisfy validator
+      if (!isValidConditionAst(edge.condition)) {
+        normalized.condition = TRUE_CONDITION;
+      }
       return normalized;
     }
 
-    // Rule B: For DISABLED edges, defensively remove condition fields
+    // Rule B: For DISABLED edges, ensure valid condition (validator checks all edges)
     if (status === 'DISABLED' || status === 'DELETED') {
       const normalized = { ...edge };
-      delete normalized.condition;
-      delete normalized.conditionRule;
-      delete normalized.when;
+      // Validator requires condition AST even for DISABLED edges
+      if (!isValidConditionAst(edge.condition)) {
+        normalized.condition = TRUE_CONDITION;
+      }
       return normalized;
     }
 
@@ -195,8 +197,12 @@ export function normalizeTreeJson(treeJson: any): any {
       return normalized;
     }
 
-    // Unknown status - keep as-is
-    return edge;
+    // Unknown status - ensure valid condition
+    const normalized = { ...edge };
+    if (!isValidConditionAst(edge.condition)) {
+      normalized.condition = TRUE_CONDITION;
+    }
+    return normalized;
   });
 
   // Normalize nodes: ensure OPTION nodes have required fields
@@ -945,12 +951,13 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
 
   // Create structural edge from GROUP to new option
   // Mark as DISABLED to indicate this is a containment edge, not a runtime conditional edge
+  // Validator requires ALL edges to have valid condition AST (even DISABLED)
   const newEdge: PBV2Edge = {
     id: newEdgeId,
     fromNodeId: groupId,
     toNodeId: newOptionId,
     status: 'DISABLED', // Structural edge - not a runtime conditional
-    condition: undefined,
+    condition: TRUE_CONDITION, // Validator requires valid condition AST for all edges
     priority: nodes.filter(n => n.id === groupId).length > 0 ? edges.filter(e => e.fromNodeId === groupId).length : 0,
   };
 
