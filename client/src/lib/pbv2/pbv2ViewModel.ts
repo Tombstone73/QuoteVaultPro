@@ -386,11 +386,9 @@ function arraysToRecords(nodes: PBV2Node[], edges: PBV2Edge[]): { nodes: Record<
 export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
-  // Identify group nodes (GROUP type or nodes with children)
-  const groupNodes = nodes.filter(n => 
-    n.type?.toUpperCase() === 'GROUP' || 
-    n.type?.toUpperCase() === 'INPUT' && edges.some(e => e.fromNodeId === n.id)
-  );
+  // Identify group nodes: ALL nodes with type=GROUP (structural layer)
+  // Do NOT filter by rootNodeIds or edges - groups are structural metadata
+  const groupNodes = nodes.filter(n => n.type?.toUpperCase() === 'GROUP');
 
   // Build groups
   const groups: EditorOptionGroup[] = groupNodes.map((node, index) => {
