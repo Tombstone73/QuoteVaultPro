@@ -239,7 +239,10 @@ const ProductEditorPage = () => {
         
         if (!freshTreeJson) {
           if (import.meta.env.DEV) {
-            console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=no-tree');
+            console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=no-tree', {
+              hasProvider: !!pbv2TreeProviderRef.current,
+              providerHasMethod: !!pbv2TreeProviderRef.current?.getCurrentTree,
+            });
           }
           // No tree to save, but product saved successfully
           toast({
@@ -395,6 +398,14 @@ const ProductEditorPage = () => {
   });
 
   const handleSave = (data: ProductFormData) => {
+    if (import.meta.env.DEV) {
+      console.log('[SAVE_PIPELINE] handleSave called', {
+        productId: productId || 'new',
+        hasProvider: !!pbv2TreeProviderRef.current,
+        dataKeys: Object.keys(data),
+      });
+    }
+    
     // Additional guard at handler level
     if (saveInFlightRef.current) {
       if (import.meta.env.DEV) {
@@ -524,7 +535,18 @@ const ProductEditorPage = () => {
           </Button>
           <Button
             type="button"
-            onClick={() => form.handleSubmit(handleSave)()}
+            onClick={() => {
+              if (import.meta.env.DEV) {
+                console.log('[SAVE_CLICK]', {
+                  route: isNewProduct ? 'new' : 'edit',
+                  productId: productId || 'new',
+                  ts: Date.now(),
+                  hasProvider: !!pbv2TreeProviderRef.current,
+                  isDirty: form.formState.isDirty,
+                });
+              }
+              form.handleSubmit(handleSave)();
+            }}
             disabled={saveMutation.isPending || hasInvalidChoiceValues || hasInvalidOptionTreeJson}
           >
             <Save className="h-4 w-4 mr-2" />

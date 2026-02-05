@@ -292,6 +292,23 @@ export default function PBV2ProductBuilderSectionV2({
   const draft = treeQuery.data?.data?.draft ?? null;
   const active = treeQuery.data?.data?.active ?? null;
 
+  // Expose method to get current tree for external persistence (product creation)
+  const getCurrentPBV2Tree = () => {
+    if (!localTreeJson) return null;
+    return normalizeTreeJson(localTreeJson);
+  };
+
+  // Register tree provider with parent on mount
+  useEffect(() => {
+    if (onTreeProviderReady) {
+      onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree });
+      if (import.meta.env.DEV) {
+        console.log('[PBV2] Tree provider registered with parent');
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run once on mount
+
   // Diagnostic logging on key state changes
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -764,12 +781,6 @@ export default function PBV2ProductBuilderSectionV2({
     if (updates.fulfillment !== undefined) tree.fulfillment = updates.fulfillment;
     if (updates.basePrice !== undefined) tree.basePrice = updates.basePrice;
     applyTreeUpdate(tree, 'handleUpdateProduct', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
-  };
-
-  // Expose method to get current tree for external persistence (product creation)
-  const getCurrentPBV2Tree = () => {
-    if (!localTreeJson) return null;
-    return normalizeTreeJson(localTreeJson);
   };
 
   const handleSave = async () => {
