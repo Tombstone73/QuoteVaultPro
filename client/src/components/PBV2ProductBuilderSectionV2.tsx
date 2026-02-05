@@ -399,7 +399,25 @@ export default function PBV2ProductBuilderSectionV2({
       };
     }
 
-    return pbv2TreeToEditorModel(localTreeJson);
+    const model = pbv2TreeToEditorModel(localTreeJson);
+    
+    if (import.meta.env.DEV) {
+      const treeNodes = (localTreeJson as any)?.nodes || {};
+      const groupNodesInTree = Object.entries(treeNodes)
+        .filter(([_, n]: [string, any]) => n.type?.toUpperCase() === 'GROUP')
+        .map(([id, n]: [string, any]) => ({ id, label: n.label || n.key || id }));
+      
+      console.log('[PBV2_DEBUG_EDITOR_MODEL]', {
+        treeNodeCount: Object.keys(treeNodes).length,
+        groupNodesInTree,
+        groupNodesInTreeCount: groupNodesInTree.length,
+        editorModelGroupsCount: model.groups.length,
+        editorModelGroups: model.groups.map(g => ({ id: g.id, name: g.name })),
+        mismatch: groupNodesInTree.length !== model.groups.length,
+      });
+    }
+    
+    return model;
   }, [localTreeJson]);
 
   // Validate current tree (edit-time validation, not publish-time)
@@ -506,12 +524,33 @@ export default function PBV2ProductBuilderSectionV2({
   // Handlers
   const handleAddGroup = () => {
     if (!localTreeJson) return;
+    
+    const oldTreeRef = localTreeJson;
     const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     
     if (import.meta.env.DEV) {
       const groupCount = Object.values((updatedTree as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
       console.log('[PBV2_ADD_GROUP] groupId:', newGroupId, 'totalGroups:', groupCount);
+      
+      // CRITICAL DEBUG: Prove group was actually added
+      const oldNodes = (oldTreeRef as any)?.nodes || {};
+      const newNodes = (updatedTree as any)?.nodes || {};
+      const oldNodeCount = Object.keys(oldNodes).length;
+      const newNodeCount = Object.keys(newNodes).length;
+      const groupNodesInNew = Object.entries(newNodes)
+        .filter(([_, n]: [string, any]) => n.type?.toUpperCase() === 'GROUP')
+        .map(([id, n]: [string, any]) => ({ id, label: n.label || n.key || id, type: n.type }));
+      
+      console.log('[PBV2_DEBUG_AFTER_ADD_GROUP]', {
+        oldTreeRef_equals_newTreeRef: oldTreeRef === updatedTree,
+        oldNodeCount,
+        newNodeCount,
+        nodeCountIncreased: newNodeCount > oldNodeCount,
+        groupNodesInNew,
+        newGroupIdExists: !!newNodes[newGroupId],
+        newGroupNode: newNodes[newGroupId],
+      });
     }
     
     applyTreeUpdate(updatedTree, 'handleAddGroup', setLocalTreeJson, setHasLocalChanges);
