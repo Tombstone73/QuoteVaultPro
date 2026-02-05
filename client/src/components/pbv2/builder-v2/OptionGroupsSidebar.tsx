@@ -42,11 +42,10 @@ export function OptionGroupsSidebar({
 }: OptionGroupsSidebarProps) {
   // CRITICAL DEBUG: Prove what render sees
   if (import.meta.env.DEV) {
-    console.log('[PBV2_DEBUG_RENDER_GROUPS]', {
+    console.log('[PBV2_RENDER_GROUPS_DEBUG]', {
       optionGroupsCount: optionGroups.length,
+      firstGroupId: optionGroups[0]?.id,
       optionGroupIds: optionGroups.map(g => g.id),
-      optionGroupNames: optionGroups.map(g => g.name),
-      optionGroupsArray: optionGroups,
     });
   }
   
