@@ -508,6 +508,12 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
+    
+    if (import.meta.env.DEV) {
+      const groupCount = Object.values((updatedTree as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
+      console.log('[PBV2_ADD_GROUP] groupId:', newGroupId, 'totalGroups:', groupCount);
+    }
+    
     applyTreeUpdate(updatedTree, 'handleAddGroup', setLocalTreeJson, setHasLocalChanges);
     setSelectedGroupId(newGroupId);
     toast({ title: "Group added" });

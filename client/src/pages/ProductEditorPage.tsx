@@ -230,7 +230,12 @@ const ProductEditorPage = () => {
       // For new products, use the returned product ID
       const targetProductId = isNewProduct ? updatedProduct.id : productId;
       
-      if (pbv2State && pbv2State.treeJson) {
+      if (!targetProductId) {
+        if (import.meta.env.DEV) {
+          console.log('[ProductEditorPage] PBV2 draft save SKIPPED: no productId available');
+        }
+        // Don't fail - just skip PBV2 draft persistence
+      } else if (pbv2State && pbv2State.treeJson) {
         // Normalize + ensure rootNodeIds before server persistence
         const normalizedTree = normalizeTreeJson(pbv2State.treeJson);
         const nodes = (normalizedTree as any)?.nodes || {};
@@ -257,11 +262,13 @@ const ProductEditorPage = () => {
           // DEV-ONLY: Log PUT attempt
           if (import.meta.env.DEV) {
             const groupCount = Object.values(nodes).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
-            console.log('[ProductEditorPage] Attempting PUT to /api/products/:id/pbv2/draft:', {
+            const edgeCount = Array.isArray((normalizedTree as any)?.edges) ? (normalizedTree as any).edges.length : 0;
+            console.log('[PBV2_DRAFT_FLUSH] Auto-persisting draft after product create:', {
               productId: targetProductId,
               isNewProduct,
               nodeCount,
               groupCount,
+              edgeCount,
               rootCount,
               draftId: pbv2State.draftId,
               rootNodeIds: (normalizedTree as any)?.rootNodeIds,
@@ -277,17 +284,23 @@ const ProductEditorPage = () => {
             });
             
             if (!draftRes.ok) {
-              const errData = await draftRes.json();
-              throw new Error(errData.message || 'Failed to persist PBV2 draft');
-            }
+              const errData = await draftRes.json().catch(() => ({ message: 'Unknown error' }));
+              console.error('[ProductEditorPage] PBV2 draft save failed:', errData);
+              toast({ 
+                title: "PBV2 draft save failed", 
+                description: errData.message || 'Failed to persist PBV2 draft',
+                variant: "destructive" 
+              });
+              // Don't throw - allow product save to complete
+            } else {
             
-            if (import.meta.env.DEV) {
-              const draftData = await draftRes.json();
-              console.log('[ProductEditorPage] PBV2 draft persisted:', draftData.data?.id);
-            }
+              if (import.meta.env.DEV) {
+                const draftData = await draftRes.json();
+                console.log('[ProductEditorPage] PBV2 draft persisted:', draftData.data?.id);
+              }
 
-            // HARD FAIL: Verify draft exists after save
-            const verifyRes = await fetch(`/api/products/${targetProductId}/pbv2/tree`, {
+              // Verify draft exists after save
+              const verifyRes = await fetch(`/api/products/${targetProductId}/pbv2/tree`, {
               method: 'GET',
               credentials: 'include',
             });
@@ -318,14 +331,15 @@ const ProductEditorPage = () => {
             } else {
               console.warn('[ProductEditorPage] Could not verify draft (GET failed), but PUT succeeded');
             }
+            }
           } catch (pbv2Error: any) {
             toast({ 
-              title: "PBV2 Save Failed", 
+              title: "PBV2 draft save failed", 
               description: pbv2Error.message,
               variant: "destructive" 
             });
             console.error('[ProductEditorPage] PBV2 persistence error:', pbv2Error);
-            return; // Stay on page if PBV2 save fails
+            // Don't block navigate - PBV2 is supplementary
           }
         }
       } else if (!isNewProduct) {
