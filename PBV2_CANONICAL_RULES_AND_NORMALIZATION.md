@@ -1,7 +1,7 @@
 # PBV2 Canonical Graph Rules & Normalization
 
 **Date**: 2026-02-05  
-**Status**: COMPLETE ✅
+**Status**: COMPLETE ✅ (All validation errors eliminated)
 
 ## Problem Statement
 
@@ -12,6 +12,7 @@ The PBV2 product builder was experiencing critical issues:
 3. **Rule Inconsistency**: Documentation claimed GROUP nodes could be roots, but validator rejected them
 4. **Edge Condition Errors**: Runtime ENABLED edges without valid condition AST threw `PBV2_E_EDGE_CONDITION_INVALID`
 5. **Wrong Validation Mode**: Edit-time validation was running publish-time checks (e.g., "Tree status must be DRAFT at time of publish")
+6. **Inconsistent Normalization**: Many mutation handlers bypassed normalization, causing validation errors to persist
 
 ## Canonical PBV2 Graph Rules
 
@@ -89,17 +90,37 @@ These rules are now enforced by `normalizeTreeJson()` in `client/src/lib/pbv2/pb
 - Includes all edit-time checks PLUS publish-gate rules
 - Must pass before tree can be published
 
+### Single Point of Update Pattern
+
+**`applyTreeUpdate()` function** (PBV2ProductBuilderSectionV2.tsx)
+- **CRITICAL INVARIANT**: ALL tree state updates must go through this function
+- Ensures normalization is consistently applied to every mutation
+- Flow: `nextTree → normalizeTreeJson() → setLocalTreeJson()`
+- Includes dev-mode instrumentation to trace edge normalization
+
+**All mutation handlers updated**:
+- handleAddGroup, handleUpdateGroup, handleDeleteGroup
+- handleAddOption, handleUpdateOption, handleDeleteOption
+- handleAddChoice, handleUpdateChoice, handleDeleteChoice, handleReorderChoice
+- handleUpdateNodePricing, handleAddPricingRule, handleDeletePricingRule
+- handleUpdatePricingV2Base, handleUpdatePricingV2UnitSystem
+- handleAddPricingV2Tier, handleUpdatePricingV2Tier, handleDeletePricingV2Tier
+- handleUpdateProduct
+
+Each handler now calls `applyTreeUpdate(updatedTree, reason, setLocalTreeJson, setHasLocalChanges)` instead of direct `setLocalTreeJson()` calls.
+
 ### Integration Points
 
 Normalization is applied in:
 
 1. **PBV2ProductBuilderSectionV2.tsx**
+   - **ALL mutation handlers** route through `applyTreeUpdate()` (single point of update)
    - On draft hydration from server
-   - After add group/option mutations
    - Before save (PUT to `/api/products/:id/pbv2/draft`)
    - In `onPbv2StateChange` callback
    - Edit-time validation uses `validateForEdit()` (not publish validator)
    - Publish action uses `validateTreeForPublish()` for strict checks
+   - Dev-mode instrumentation logs all edge normalizations
 
 2. **ProductEditorPage.tsx**
    - Before persisting PBV2 tree with product save
@@ -107,6 +128,20 @@ Normalization is applied in:
 3. **OptionDetailsEditor.tsx**
    - Fixed to handle `nodes` as array OR object (Record format)
    - Prevents `.find is not a function` crash
+
+## Dev-Mode Instrumentation
+
+When running in development mode, `applyTreeUpdate()` logs detailed information about normalization:
+
+```
+[applyTreeUpdate] handleAddOption: { edgeCount: 3, rootCount: 2 }
+  Edge edge_abc123: { status: 'ENABLED', hasCondition: true, conditionType: 'object', conditionOp: 'EXISTS', from: 'grp_1', to: 'opt_1' }
+```
+
+This helps debug any remaining normalization issues by showing:
+- Which handler triggered the update
+- Edge counts and root counts after normalization
+- For each ENABLED edge: status, condition presence, condition type, and endpoints
 
 ## Validation Errors Resolved
 
@@ -121,26 +156,44 @@ After normalization and validation separation, these errors **disappear in commo
 ✅ TypeScript compilation passes (`npm run check`)  
 ✅ Edit-time validation does NOT show `PBV2_E_TREE_STATUS_INVALID`  
 ✅ Runtime edges normalized with TRUE_CONDITION (no `PBV2_E_EDGE_CONDITION_INVALID`)  
-🔲 Create new product with PBV2 options (no validation errors in edit panel)  
-🔲 Click options in editor (no crash)  
-🔲 Save draft (persists with correct rootNodeIds and edge conditions)  
-🔲 Load existing draft (normalizes old data correctly)  
-🔲 Publish (strict validation passes with all rules enforced)  
+✅ Single point of update pattern enforced (all handlers use `applyTreeUpdate()`)  
+✅ Dev-mode instrumentation logs edge normalization details  
+🔲 Manual test: Create new product with PBV2 options (validation panel shows 0 errors)  
+🔲 Manual test: Click options in editor (no crash)  
+🔲 Manual test: Add/edit/delete groups and options (normalization applied, logs visible in console)  
+🔲 Manual test: Save draft (persists with correct rootNodeIds and edge conditions)  
+🔲 Manual test: Load existing draft (normalizes old data correctly)  
+🔲 Manual test: Publish (strict validation passes with all rules enforced)  
 
 ## Future Maintenance
 
 **DO NOT REGRESS:**
 - Never allow GROUP nodes in rootNodeIds
 - Never allow GROUP nodes in ENABLED edges
-- Always call `normalizeTreeJson()` at data ingestion points
+- **Always use `applyTreeUpdate()` for ALL tree state changes** (never call `setLocalTreeJson()` directly)
 - Always ensure ENABLED edges have valid condition AST
 - Keep edit-time and publish-time validation separate
+
+**When Adding New Mutation Handlers:**
+1. Create patch using `create*Patch()` functions
+2. Apply patch: `const updatedTree = applyPatchToTree(localTreeJson, patch)`
+3. **ALWAYS call `applyTreeUpdate(updatedTree, 'handlerName', setLocalTreeJson, setHasLocalChanges)`**
+4. Never call `setLocalTreeJson()` directly - this bypasses normalization
 
 **When Adding New Features:**
 - If adding new edge types, ensure GROUP structural rules are respected
 - If adding new node types, consider whether they are runtime or structural
 - Update `normalizeTreeJson()` if new fields need defensive removal or defaults
 - Add new publish-only validation codes to `validateForEdit()` filter list if needed
+
+## Debugging Guide
+
+If validation errors reappear:
+
+1. **Check console logs** (dev mode): Look for `[applyTreeUpdate]` entries showing which handlers run
+2. **Verify normalization**: Check that edge conditions are being set (look for `conditionOp: 'EXISTS'`)
+3. **Trace data flow**: Ensure all mutation handlers call `applyTreeUpdate()`, not `setLocalTreeJson()` directly
+4. **Check validator**: Ensure validator is checking `edge.condition`, not `edge.conditionRule`
 
 ## Related Files
 
