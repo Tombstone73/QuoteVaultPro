@@ -746,7 +746,7 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
 
   const newOptionId = makeId('opt_', existingIds);
   const newEdgeId = makeId('edge_', existingIds);
-  const selectionKey = `option_${Date.now()}`;
+  const selectionKey = `opt_${newOptionId}`;
 
   const newNode: PBV2Node = {
     id: newOptionId,
@@ -759,6 +759,7 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
     input: {
       type: 'select',
       required: false,
+      selectionKey: selectionKey, // REQUIRED: Set selectionKey to avoid validation error
     } as any,
     pricingImpact: [],
     weightImpact: [],
@@ -767,13 +768,14 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
   // Set valueType separately to avoid TypeScript error
   (newNode.input as any).valueType = 'TEXT';
 
-  // Create edge from GROUP to new option so it appears in UI
+  // Create structural edge from GROUP to new option
+  // Mark as DISABLED to indicate this is a containment edge, not a runtime conditional edge
   const newEdge: PBV2Edge = {
     id: newEdgeId,
     fromNodeId: groupId,
     toNodeId: newOptionId,
-    status: 'ENABLED',
-    condition: undefined, // No condition - always show
+    status: 'DISABLED', // Structural edge - not a runtime conditional
+    condition: undefined,
     priority: nodes.filter(n => n.id === groupId).length > 0 ? edges.filter(e => e.fromNodeId === groupId).length : 0,
   };
 

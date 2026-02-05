@@ -5,16 +5,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Controller } from "react-hook-form";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
-import ProductOptionsEditor from "@/features/products/editor/ProductOptionsEditor";
-import { Plus } from "lucide-react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
-import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
-import { buildOptionTreeV2FromLegacyOptions, createEmptyPBV2Tree, coerceOrMigrateToPBV2 } from "@shared/optionTreeV2Initializer";
-import ProductOptionsPanelV2_Mvp from "@/components/ProductOptionsPanelV2_Mvp";
 import { useToast } from "@/hooks/use-toast";
 
 // Required field indicator component
@@ -51,208 +45,12 @@ export const ProductForm = ({
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
-  const [addGroupSignal, setAddGroupSignal] = React.useState<number | null>(null);
-  
-  const optionTreeJson = form.watch("optionTreeJson");
-  const productId = form.watch("id");
-  
-  // DEV-ONLY: Log what optionTreeJson the form is rendering
-  React.useEffect(() => {
-    if (import.meta.env.DEV) {
-      const nodeCount = typeof optionTreeJson === 'object' && optionTreeJson ? Object.keys((optionTreeJson as any).nodes || {}).length : 0;
-      const rootCount = Array.isArray((optionTreeJson as any)?.rootNodeIds) ? (optionTreeJson as any).rootNodeIds.length : 0;
-      console.log('[ProductForm] Rendering with optionTreeJson:', {
-        hasValue: !!optionTreeJson,
-        type: typeof optionTreeJson,
-        nodeCount,
-        rootCount,
-        schemaVersion: (optionTreeJson as any)?.schemaVersion,
-      });
-    }
-  }, [optionTreeJson]);
-  
-  // Determine optionsMode based on actual data presence, then fall back to localStorage
-  // Decision order:
-  // 1. If optionTreeJson has schemaVersion=2 => Tree v2 mode
-  // 2. Else if legacy data (array/graph without schemaVersion) => check localStorage preference
-  // 3. For new products (no id, no data) => Tree v2 mode by default
-  const determineInitialMode = React.useCallback((): "legacy" | "treeV2" => {
-    // If we have PBV2 data, always use Tree v2
-    if (optionTreeJson && (optionTreeJson as any)?.schemaVersion === 2) {
-      return "treeV2";
-    }
-    
-    // For new products, default to Tree v2
-    if (!productId) {
-      return "treeV2";
-    }
-    
-    // For existing products with legacy data, check localStorage preference
-    const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
-    try {
-      const stored = localStorage.getItem(storageKey);
-      return stored === 'treeV2' ? 'treeV2' : 'legacy';
-    } catch {
-      return 'legacy';
-    }
-  }, [optionTreeJson, productId]);
-  
-  const [optionsMode, setOptionsMode] = React.useState<"legacy" | "treeV2">(determineInitialMode);
 
-  const [optionTreeText, setOptionTreeText] = React.useState<string>("");
-  const [optionTreeErrors, setOptionTreeErrors] = React.useState<string[]>([]);
+  // Options are now managed by PBV2ProductBuilderSectionV2, not ProductForm
 
-  // Wrapper to persist optionsMode changes to localStorage (per-product)
-  const setAndPersistOptionsMode = React.useCallback((mode: "legacy" | "treeV2") => {
-    setOptionsMode(mode);
-    const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
-    try {
-      localStorage.setItem(storageKey, mode);
-    } catch (e) {
-      console.warn('Failed to persist optionsMode:', e);
-    }
-  }, []);
-
-  // Re-evaluate mode when optionTreeJson or productId changes
-  React.useEffect(() => {
-    const correctMode = determineInitialMode();
-    if (correctMode !== optionsMode) {
-      setOptionsMode(correctMode);
-      // Also persist the auto-determined mode
-      const storageKey = productId ? `productEditor:optionsMode:${productId}` : 'productEditor:optionsMode';
-      try {
-        localStorage.setItem(storageKey, correctMode);
-      } catch (e) {
-        console.warn('Failed to persist optionsMode:', e);
-      }
-    }
-  }, [determineInitialMode, optionsMode, productId]);
-
-  // NO AUTO-MIGRATION: PBV2ProductBuilderSectionV2 manages tree via pbv2_tree_versions table
-  // ProductForm does not touch optionTreeJson
-
-  React.useEffect(() => {
-    if (optionsMode !== "treeV2") return;
-    if (optionTreeJson == null) {
-      setOptionTreeText("");
-      setOptionTreeErrors([]);
-      return;
-    }
-    try {
-      setOptionTreeText(JSON.stringify(optionTreeJson, null, 2));
-      setOptionTreeErrors([]);
-    } catch {
-      setOptionTreeText("");
-      setOptionTreeErrors(["optionTreeJson is not serializable"]);
-    }
-  }, [optionsMode]);
-
-  const setTreeTextAndValidate = (nextText: string) => {
-    setOptionTreeText(nextText);
-
-    const trimmed = nextText.trim();
-    if (trimmed.length === 0) {
-      form.setValue("optionTreeJson", null, { shouldDirty: true });
-      form.clearErrors("optionTreeJson");
-      setOptionTreeErrors([]);
-      return;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(nextText);
-    } catch (e) {
-      form.setError("optionTreeJson", {
-        type: "manual",
-        message: e instanceof Error ? e.message : "Invalid JSON",
-      });
-      setOptionTreeErrors(["Invalid JSON"]);
-      return;
-    }
-
-    // DEV-ONLY: Log parsed input before coercion
-    if (import.meta.env.DEV) {
-      const inputNodeCount = typeof parsed === 'object' && parsed && !Array.isArray(parsed) 
-        ? Object.keys((parsed as any).nodes || {}).length 
-        : 0;
-      console.log('[ProductForm] setTreeTextAndValidate BEFORE coerce:', { 
-        inputType: typeof parsed, 
-        inputNodeCount,
-        inputSchemaVersion: (parsed as any)?.schemaVersion 
-      });
-    }
-
-    // Auto-coerce to valid PBV2 (handles array/null/legacy/invalid)
-    const legacyOptions = form.getValues("optionsJson");
-    const coerced = coerceOrMigrateToPBV2(parsed, legacyOptions);
-
-    // Always use the coerced tree - no manual init required
-    form.clearErrors("optionTreeJson");
-    setOptionTreeErrors([]);
-    
-    // CRITICAL: Check if we're about to wipe user data
-    const inputNodeCount = typeof parsed === 'object' && parsed && !Array.isArray(parsed) 
-      ? Object.keys((parsed as any).nodes || {}).length 
-      : 0;
-    const outputNodeCount = Object.keys(coerced.nodes || {}).length;
-    
-    if (import.meta.env.DEV && inputNodeCount > 0 && outputNodeCount === 0) {
-      console.error('[ProductForm] DATA LOSS PREVENTED: coercion would wipe', inputNodeCount, 'nodes!');
-      console.error('[ProductForm] Keeping original parsed value to prevent data loss');
-      // Use parsed value as-is instead of empty coerced result
-      form.setValue("optionTreeJson", parsed, { shouldDirty: false });
-      setOptionTreeErrors(['Warning: Tree structure may be invalid but data preserved']);
-      return;
-    }
-    
-    form.setValue("optionTreeJson", coerced, { shouldDirty: true, shouldTouch: true });
-    
-    // DEV-ONLY: Verify setValue worked
-    if (import.meta.env.DEV) {
-      const actualValue = form.getValues("optionTreeJson");
-      console.log("[ProductForm] setValue result:", {
-        setValueCalled: true,
-        valueMatches: actualValue === coerced,
-        hasNodes: coerced?.nodes ? Object.keys(coerced.nodes).length : 0,
-        isDirty: form.formState.dirtyFields.optionTreeJson,
-      });
-    }
-  };
-
-  // Defensive wrapper around onSave to ensure tree is never an array
   const handleSave = React.useCallback((data: any) => {
-    // CRITICAL: Explicitly include optionTreeJson from form state
-    // Controller might not include it in handleSubmit data, so we force it
-    const optionTreeJsonValue = form.getValues("optionTreeJson");
-    const mergedData = {
-      ...data,
-      optionTreeJson: optionTreeJsonValue,
-    };
-    
-    // DEV-ONLY: Log form state before save
-    if (import.meta.env.DEV) {
-      console.log('[ProductForm] handleSave data keys:', Object.keys(mergedData));
-      console.log('[ProductForm] handleSave optionTreeJson:', {
-        hasField: 'optionTreeJson' in mergedData,
-        type: typeof mergedData.optionTreeJson,
-        isNull: mergedData.optionTreeJson === null,
-        isUndefined: mergedData.optionTreeJson === undefined,
-        length: mergedData.optionTreeJson ? JSON.stringify(mergedData.optionTreeJson).length : 0,
-        fromFormState: optionTreeJsonValue === mergedData.optionTreeJson,
-      });
-    }
-    
-    // Final defensive check before saving
-    const tree = mergedData.optionTreeJson;
-    if (Array.isArray(tree)) {
-      console.warn('[ProductForm] Blocking save: optionTreeJson is array, coercing to empty tree');
-      mergedData.optionTreeJson = coerceOrMigrateToPBV2(null);
-    } else if (tree && typeof tree === 'object' && tree.schemaVersion !== 2) {
-      console.log('[ProductForm] Coercing tree to PBV2 before save');
-      mergedData.optionTreeJson = coerceOrMigrateToPBV2(tree, mergedData.optionsJson);
-    }
-    return onSave(mergedData);
-  }, [form, onSave]);
+    return onSave(data);
+  }, [onSave]);
 
   return (
     <form
@@ -260,13 +58,6 @@ export const ProductForm = ({
       id={formId}
       className="space-y-6"
     >
-      {/* Register optionTreeJson with RHF so it's included in form submissions */}
-      <Controller
-        control={form.control}
-        name="optionTreeJson"
-        render={() => <></>}
-      />
-      
       {/* #basics */}
       <Card>
         <CardHeader>
@@ -529,88 +320,7 @@ export const ProductForm = ({
         </CardContent>
       </Card>
 
-      {/* #options */}
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div className="space-y-1">
-            <CardTitle className="text-base">Options & Add-ons</CardTitle>
-            <CardDescription>Configure selectable add-ons and finishing.</CardDescription>
-          </div>
-          <div className="flex items-center gap-3">
-            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30 px-3 py-1.5">
-              PBV2 Enabled
-            </Badge>
-
-            {optionsMode === "legacy" && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setAddGroupSignal(Date.now())}
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Add Option Group
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          {optionsMode === "legacy" ? (
-            <div className="p-6">
-              <ProductOptionsEditor form={form} fieldName="optionsJson" addGroupSignal={addGroupSignal} />
-            </div>
-          ) : (
-            <div className="h-[600px]">
-              <ProductOptionsPanelV2_Mvp
-                productId={String(form.getValues("id") ?? "new")}
-                optionTreeJson={optionTreeText}
-                onChangeOptionTreeJson={setTreeTextAndValidate}
-                onPbv2StateChange={onPbv2StateChange}
-              />
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {optionsMode === "treeV2" && (() => {
-        // Only show red error box if we have PBV2 data with validation errors
-        // Do NOT show for legacy format (that's handled by yellow banner in PBV2 panel)
-        const trimmed = optionTreeText.trim();
-        if (!trimmed) return null;
-        
-        try {
-          const parsed = JSON.parse(trimmed);
-          const isLegacy = Array.isArray(parsed) || 
-                           (parsed && typeof parsed === 'object' && !('schemaVersion' in parsed));
-          
-          // Only render error box if NOT legacy and we have errors
-          if (isLegacy || optionTreeErrors.length === 0) return null;
-          
-          return (
-            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-              <div className="font-medium">Option Tree v2 errors</div>
-              <ul className="mt-1 list-disc pl-4">
-                {optionTreeErrors.map((err) => (
-                  <li key={err}>{err}</li>
-                ))}
-              </ul>
-            </div>
-          );
-        } catch {
-          // JSON parse error - show errors if any
-          if (optionTreeErrors.length === 0) return null;
-          return (
-            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-              <div className="font-medium">Option Tree v2 errors</div>
-              <ul className="mt-1 list-disc pl-4">
-                {optionTreeErrors.map((err) => (
-                  <li key={err}>{err}</li>
-                ))}
-              </ul>
-            </div>
-          );
-        }
-      })()}
+      {/* Options are managed by PBV2ProductBuilderSectionV2 outside ProductForm */}
 
       {/* #advanced */}
       <Card>

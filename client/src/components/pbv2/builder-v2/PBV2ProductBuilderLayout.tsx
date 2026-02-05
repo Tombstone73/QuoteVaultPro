@@ -4,6 +4,7 @@ import { OptionGroupsSidebar } from './OptionGroupsSidebar';
 import { OptionEditor } from './OptionEditor';
 import { PricingValidationPanel } from './PricingValidationPanel';
 import { BasePricingEditor } from './BasePricingEditor';
+import { PBV2EditorErrorBoundary } from './PBV2EditorErrorBoundary';
 import type { EditorModel } from '@/lib/pbv2/pbv2ViewModel';
 import type { Finding } from '@shared/pbv2/findings';
 
@@ -150,24 +151,26 @@ export function PBV2ProductBuilderLayout({
         
         {/* Middle Editor: Flex grow with min-w-0 for proper content overflow handling */}
         <div className="flex-1 min-w-0 overflow-hidden">
-          <OptionEditor
-            selectedGroup={selectedGroup}
-            options={editorModel.options}
-            selectedOptionId={selectedOptionId}
-            onSelectOption={onSelectOption}
-            onAddOption={onAddOption}
-            onDeleteOption={onDeleteOption}
-            onUpdateGroup={onUpdateGroup}
-            treeJson={treeJson}
-            onUpdateOption={onUpdateOption}
-            onAddChoice={onAddChoice}
-            onUpdateChoice={onUpdateChoice}
-            onDeleteChoice={onDeleteChoice}
-            onReorderChoice={onReorderChoice}
-            onUpdateNodePricing={onUpdateNodePricing}
-            onAddPricingRule={onAddPricingRule}
-            onDeletePricingRule={onDeletePricingRule}
-          />
+          <PBV2EditorErrorBoundary>
+            <OptionEditor
+              selectedGroup={selectedGroup}
+              options={editorModel.options}
+              selectedOptionId={selectedOptionId}
+              onSelectOption={onSelectOption}
+              onAddOption={onAddOption}
+              onDeleteOption={onDeleteOption}
+              onUpdateGroup={onUpdateGroup}
+              treeJson={treeJson}
+              onUpdateOption={onUpdateOption}
+              onAddChoice={onAddChoice}
+              onUpdateChoice={onUpdateChoice}
+              onDeleteChoice={onDeleteChoice}
+              onReorderChoice={onReorderChoice}
+              onUpdateNodePricing={onUpdateNodePricing}
+              onAddPricingRule={onAddPricingRule}
+              onDeletePricingRule={onDeletePricingRule}
+            />
+          </PBV2EditorErrorBoundary>
         </div>
         
         {/* Right Panel: Fixed width (384px), shrink-0 prevents it from shrinking */}
