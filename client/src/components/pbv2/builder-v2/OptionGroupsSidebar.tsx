@@ -40,14 +40,12 @@ export function OptionGroupsSidebar({
   onAddGroup,
   onDeleteGroup
 }: OptionGroupsSidebarProps) {
-  // CRITICAL DEBUG: Prove what render sees
-  if (import.meta.env.DEV) {
-    console.log('[PBV2_RENDER_GROUPS_DEBUG]', {
-      optionGroupsCount: optionGroups.length,
-      firstGroupId: optionGroups[0]?.id,
-      optionGroupIds: optionGroups.map(g => g.id),
-    });
-  }
+  // UNGATED: Critical diagnostic logging
+  console.error('[PBV2_RENDER_GROUPS]', {
+    optionGroupsCount: optionGroups.length,
+    firstGroupId: optionGroups[0]?.id,
+    optionGroupIds: optionGroups.map(g => g.id),
+  });
   
   return (
     <aside className="h-full w-full border-r border-[#334155] bg-[#0f172a] flex flex-col overflow-hidden">
@@ -61,8 +59,12 @@ export function OptionGroupsSidebar({
             {optionGroups.length}
           </Badge>
         </div>
+        <div className="text-xs text-slate-400 mb-2">Groups: {optionGroups.length}</div>
         <Button
-          onClick={onAddGroup}
+          onClick={() => {
+            console.error('[PBV2_ADD_GROUP_CLICK] fired', { time: Date.now() });
+            onAddGroup();
+          }}
           className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm"
           size="sm"
         >

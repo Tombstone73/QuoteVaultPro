@@ -80,22 +80,20 @@ function applyTreeUpdate(
   // Always normalize before setting state
   const normalizedTree = normalizeTreeJson(nextTree);
   
-  // DEV-ONLY: Instrument normalization for debugging
-  if (import.meta.env.DEV) {
-    const nodes = normalizedTree?.nodes || {};
-    const nodeValues = Array.isArray(nodes) ? nodes : Object.values(nodes);
-    const groupNodes = nodeValues.filter((n: any) => n?.type?.toUpperCase() === 'GROUP');
-    const edges = Array.isArray(normalizedTree?.edges) ? normalizedTree.edges : [];
-    
-    console.log(`[PBV2_APPLY_TREE_UPDATE_DEBUG] ${reason}:`, {
-      nodeCount: nodeValues.length,
-      groupCount: groupNodes.length,
-      groupIds: groupNodes.map((n: any) => n.id),
-      edgeCount: edges.length,
-      rootCount: Array.isArray(normalizedTree?.rootNodeIds) ? normalizedTree.rootNodeIds.length : 0,
-      nodesIsArray: Array.isArray(nodes),
-    });
-  }
+  // UNGATED: Critical diagnostic logging
+  const nodes = normalizedTree?.nodes || {};
+  const nodeValues = Array.isArray(nodes) ? nodes : Object.values(nodes);
+  const groupNodes = nodeValues.filter((n: any) => n?.type?.toUpperCase() === 'GROUP');
+  const edges = Array.isArray(normalizedTree?.edges) ? normalizedTree.edges : [];
+  
+  console.error(`[PBV2_APPLY_TREE_UPDATE] ${reason}:`, {
+    nodeCount: nodeValues.length,
+    groupCount: groupNodes.length,
+    groupIds: groupNodes.map((n: any) => n.id),
+    edgeCount: edges.length,
+    rootCount: Array.isArray(normalizedTree?.rootNodeIds) ? normalizedTree.rootNodeIds.length : 0,
+    nodesIsArray: Array.isArray(nodes),
+  });
   
   setLocalTreeJson(normalizedTree);
   setHasLocalChanges(true);
@@ -519,39 +517,53 @@ export default function PBV2ProductBuilderSectionV2({
 
   // Handlers
   const handleAddGroup = () => {
-    if (!localTreeJson) return;
+    console.error('[PBV2_ADD_GROUP_HANDLER] called', { hasTree: !!localTreeJson, time: Date.now() });
     
-    const oldTreeRef = localTreeJson;
-    const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
-    const updatedTree = applyPatchToTree(localTreeJson, patch);
-    
-    if (import.meta.env.DEV) {
-      const groupCount = Object.values((updatedTree as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
-      console.log('[PBV2_ADD_GROUP] groupId:', newGroupId, 'totalGroups:', groupCount);
-      
-      // CRITICAL DEBUG: Prove group was actually added
-      const oldNodes = (oldTreeRef as any)?.nodes || {};
-      const newNodes = (updatedTree as any)?.nodes || {};
-      const oldNodeCount = Object.keys(oldNodes).length;
-      const newNodeCount = Object.keys(newNodes).length;
-      const groupNodesInNew = Object.entries(newNodes)
-        .filter(([_, n]: [string, any]) => n.type?.toUpperCase() === 'GROUP')
-        .map(([id, n]: [string, any]) => ({ id, label: n.label || n.key || id, type: n.type }));
-      
-      console.log('[PBV2_DEBUG_AFTER_ADD_GROUP]', {
-        oldTreeRef_equals_newTreeRef: oldTreeRef === updatedTree,
-        oldNodeCount,
-        newNodeCount,
-        nodeCountIncreased: newNodeCount > oldNodeCount,
-        groupNodesInNew,
-        newGroupIdExists: !!newNodes[newGroupId],
-        newGroupNode: newNodes[newGroupId],
-      });
+    if (!localTreeJson) {
+      console.error('[PBV2_ADD_GROUP_ERROR] No tree available');
+      toast({ title: "Add Group failed", description: "No tree available. See console.", variant: "destructive" });
+      return;
     }
     
-    applyTreeUpdate(updatedTree, 'handleAddGroup', setLocalTreeJson, setHasLocalChanges);
-    setSelectedGroupId(newGroupId);
-    toast({ title: "Group added" });
+    try {
+      const oldTreeRef = localTreeJson;
+      
+      // Count groups before
+      const oldNodes = (oldTreeRef as any)?.nodes || {};
+      const beforeGroups = Object.values(oldNodes).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
+      
+      console.error('[PBV2_ADD_GROUP_BEFORE]', { beforeGroups, totalNodes: Object.keys(oldNodes).length });
+      
+      const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
+      const updatedTree = applyPatchToTree(localTreeJson, patch);
+      
+      // Count groups after patch
+      const newNodes = (updatedTree as any)?.nodes || {};
+      const afterGroups = Object.values(newNodes).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
+      
+      console.error('[PBV2_ADD_GROUP_AFTER_PATCH]', {
+        afterGroups,
+        totalNodes: Object.keys(newNodes).length,
+        groupAdded: afterGroups > beforeGroups,
+        newGroupId,
+        newGroupExists: !!newNodes[newGroupId],
+        newGroupNode: newNodes[newGroupId]
+      });
+      
+      if (afterGroups <= beforeGroups) {
+        console.error('[PBV2_ADD_GROUP_ERROR] Group count did not increase', { beforeGroups, afterGroups });
+        toast({ title: "Add Group failed", description: `Groups: ${beforeGroups} → ${afterGroups}. See console.`, variant: "destructive" });
+        return;
+      }
+      
+      applyTreeUpdate(updatedTree, 'handleAddGroup', setLocalTreeJson, setHasLocalChanges);
+      setSelectedGroupId(newGroupId);
+      toast({ title: "Group added" });
+      
+    } catch (err) {
+      console.error('[PBV2_ADD_GROUP_ERROR]', err);
+      toast({ title: "Add Group failed", description: "Exception thrown. See console.", variant: "destructive" });
+    }
   };
 
   const handleUpdateGroup = (groupId: string, updates: Partial<EditorOptionGroup>) => {
