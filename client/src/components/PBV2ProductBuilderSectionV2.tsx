@@ -202,7 +202,7 @@ export default function PBV2ProductBuilderSectionV2({
   
   // Dirty lock: Prevent server sync from overwriting local edits
   const [isLocalDirty, setIsLocalDirty] = useState(false);
-  const lastLoadedProductIdRef = useRef<string | null>(null);
+  const lastLoadedProductIdRef = useRef<string | null | undefined>(null);
   
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
@@ -266,7 +266,7 @@ export default function PBV2ProductBuilderSectionV2({
         oldProductId: lastLoadedProductIdRef.current,
         newProductId: productId,
       });
-      lastLoadedProductIdRef.current = productId;
+      lastLoadedProductIdRef.current = productId ?? null;
       setIsLocalDirty(false);
     }
     
@@ -650,6 +650,22 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newOptionId } = createAddOptionPatch(localTreeJson, groupId);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
+    
+    // DEV: Diagnostic logging for edge condition after patch
+    if (import.meta.env.DEV) {
+      const edges = Array.isArray((updatedTree as any)?.edges) ? (updatedTree as any).edges : [];
+      const newEdges = edges.filter((e: any) => e.toNodeId === newOptionId);
+      newEdges.forEach((e: any) => {
+        console.log('[PBV2_EDGE_CONDITION_AFTER_ADD_OPTION]', {
+          edgeId: e.id,
+          status: e.status,
+          conditionType: typeof e.condition,
+          conditionOp: e.condition?.op,
+          condition: e.condition,
+        });
+      });
+    }
+    
     applyTreeUpdate(updatedTree, 'handleAddOption', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
     toast({ title: "Option added" });
   };
