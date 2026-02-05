@@ -40,6 +40,27 @@ import type { OptionNodeV2 } from '@shared/optionTreeV2';
  */
 
 /**
+ * TRUE condition AST - always evaluates to true.
+ * Used as default for ENABLED edges that don't have a condition.
+ * Follows PBV2 ConditionRule schema from shared/pbv2/expressionSpec.ts
+ */
+const TRUE_CONDITION = { op: "EXISTS", value: { op: "literal", value: true } } as const;
+
+/**
+ * Check if a value is a valid condition AST object.
+ * Minimal validation - just checks if it has the expected shape.
+ */
+function isValidConditionAst(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as any;
+  // Must have an op field that's a string
+  if (typeof obj.op !== 'string') return false;
+  // Valid condition ops: AND, OR, NOT, EXISTS, EQ, NEQ, GT, GTE, LT, LTE, IN
+  const validOps = ['AND', 'OR', 'NOT', 'EXISTS', 'EQ', 'NEQ', 'GT', 'GTE', 'LT', 'LTE', 'IN'];
+  return validOps.includes(obj.op.toUpperCase());
+}
+
+/**
  * Ensure rootNodeIds is populated with RUNTIME roots only (ENABLED non-GROUP nodes with no incoming ENABLED edges).
  * This function enforces canonical rule C: rootNodeIds must be runtime roots, never GROUP.
  * 
@@ -141,6 +162,7 @@ export function normalizeTreeJson(treeJson: any): any {
 
     const fromType = edge.fromNodeId ? nodeTypeById.get(edge.fromNodeId) : null;
     const toType = edge.toNodeId ? nodeTypeById.get(edge.toNodeId) : null;
+    const status = (edge.status || 'ENABLED').toUpperCase();
 
     // Rule A: GROUP nodes are structural only
     // If edge connects FROM or TO a GROUP, force it to be structural (DISABLED, no condition)
@@ -155,7 +177,7 @@ export function normalizeTreeJson(treeJson: any): any {
     }
 
     // Rule B: For DISABLED edges, defensively remove condition fields
-    if ((edge.status || 'ENABLED').toUpperCase() === 'DISABLED') {
+    if (status === 'DISABLED' || status === 'DELETED') {
       const normalized = { ...edge };
       delete normalized.condition;
       delete normalized.conditionRule;
@@ -163,7 +185,17 @@ export function normalizeTreeJson(treeJson: any): any {
       return normalized;
     }
 
-    // Runtime edge - keep as-is
+    // Rule B: Runtime edges (ENABLED) must have valid condition
+    if (status === 'ENABLED') {
+      const normalized = { ...edge };
+      // If condition is missing or invalid, set to TRUE_CONDITION
+      if (!isValidConditionAst(edge.condition)) {
+        normalized.condition = TRUE_CONDITION;
+      }
+      return normalized;
+    }
+
+    // Unknown status - keep as-is
     return edge;
   });
 
