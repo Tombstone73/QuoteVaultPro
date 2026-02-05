@@ -542,12 +542,10 @@ const ProductEditorPage = () => {
               onPbv2StateChange={setPbv2State}
             />
 
-            {!isNewProduct && productId ? (
-              <PBV2ProductBuilderSectionV2 
-                productId={productId}
-                onPbv2StateChange={setPbv2State}
-              />
-            ) : null}
+            <PBV2ProductBuilderSectionV2 
+              productId={productId || null}
+              onPbv2StateChange={setPbv2State}
+            />
           </div>
         </Form>
       }
