@@ -19,6 +19,48 @@ import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
 import type { Finding } from "@shared/pbv2/findings";
+import type { ValidationResult } from "@shared/pbv2/validator/types";
+
+/**
+ * Edit-time validation - checks structure without publish-only rules.
+ * Does NOT enforce:
+ * - Tree status must be DRAFT (allows any status during editing)
+ * - Other publish-gate checks
+ */
+function validateForEdit(tree: any): ValidationResult {
+  if (!tree || typeof tree !== 'object') {
+    return {
+      ok: false,
+      findings: [{ severity: 'ERROR', code: 'INVALID_TREE', message: 'Tree is not an object', path: 'tree' }] as any,
+      errors: [{ severity: 'ERROR', code: 'INVALID_TREE', message: 'Tree is not an object', path: 'tree' }] as any,
+      warnings: [],
+      info: [],
+    };
+  }
+
+  // Use publish validator but filter out publish-only errors
+  const publishResult = validateTreeForPublish(tree, DEFAULT_VALIDATE_OPTS);
+  
+  // Filter out publish-only validation errors
+  const publishOnlyCodes = [
+    'PBV2_E_TREE_STATUS_INVALID', // Don't enforce DRAFT status during editing
+  ];
+  
+  const filteredFindings = publishResult.findings.filter(
+    (f: any) => !publishOnlyCodes.includes(f.code)
+  );
+  const filteredErrors = filteredFindings.filter((f: any) => f.severity === 'ERROR');
+  const filteredWarnings = filteredFindings.filter((f: any) => f.severity === 'WARNING');
+  const filteredInfo = filteredFindings.filter((f: any) => f.severity === 'INFO');
+  
+  return {
+    ok: filteredErrors.length === 0,
+    findings: filteredFindings,
+    errors: filteredErrors,
+    warnings: filteredWarnings,
+    info: filteredInfo,
+  };
+}
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
 import {
@@ -250,11 +292,11 @@ export default function PBV2ProductBuilderSectionV2({
     return pbv2TreeToEditorModel(localTreeJson);
   }, [localTreeJson]);
 
-  // Validate current tree
+  // Validate current tree (edit-time validation, not publish-time)
   const validationResult = useMemo(() => {
     if (!localTreeJson) return { errors: [], warnings: [], findings: [] };
     try {
-      return validateTreeForPublish(localTreeJson as any, DEFAULT_VALIDATE_OPTS);
+      return validateForEdit(localTreeJson as any);
     } catch (err) {
       return { errors: [{ severity: 'ERROR', message: String(err), code: 'VALIDATION_ERROR', path: 'tree' }], warnings: [], findings: [] };
     }
@@ -597,18 +639,21 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
+    // Run STRICT publish validation (not edit validation)
+    const publishValidation = validateTreeForPublish(localTreeJson as any, DEFAULT_VALIDATE_OPTS);
+
     // Check for errors
-    if (validationResult.errors.length > 0) {
+    if (publishValidation.errors.length > 0) {
       toast({ 
         title: "Cannot publish", 
-        description: `${validationResult.errors.length} error(s) must be fixed first.`,
+        description: `${publishValidation.errors.length} error(s) must be fixed first.`,
         variant: "destructive" 
       });
       return;
     }
 
     // If warnings exist, show confirmation
-    if (validationResult.warnings.length > 0) {
+    if (publishValidation.warnings.length > 0) {
       setConfirmOpen(true);
       return;
     }
