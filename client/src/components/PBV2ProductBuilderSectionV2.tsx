@@ -81,20 +81,42 @@ function applyTreeUpdate(
   // Always normalize before setting state
   const normalizedTree = normalizeTreeJson(nextTree);
   
-  // UNGATED: Critical diagnostic logging
-  const nodes = normalizedTree?.nodes || {};
-  const nodeValues = Array.isArray(nodes) ? nodes : Object.values(nodes);
-  const groupNodes = nodeValues.filter((n: any) => n?.type?.toUpperCase() === 'GROUP');
-  const edges = Array.isArray(normalizedTree?.edges) ? normalizedTree.edges : [];
-  
-  console.error(`[PBV2_APPLY_TREE_UPDATE] ${reason}:`, {
-    nodeCount: nodeValues.length,
-    groupCount: groupNodes.length,
-    groupIds: groupNodes.map((n: any) => n.id),
-    edgeCount: edges.length,
-    rootCount: Array.isArray(normalizedTree?.rootNodeIds) ? normalizedTree.rootNodeIds.length : 0,
-    nodesIsArray: Array.isArray(nodes),
-  });
+  // DEV: Critical diagnostic logging including edge conditions
+  if (import.meta.env.DEV) {
+    const nodes = normalizedTree?.nodes || {};
+    const nodeValues = Array.isArray(nodes) ? nodes : Object.values(nodes);
+    const groupNodes = nodeValues.filter((n: any) => n?.type?.toUpperCase() === 'GROUP');
+    const edges = Array.isArray(normalizedTree?.edges) ? normalizedTree.edges : [];
+    
+    // Check edge conditions for validation debugging
+    const invalidEdges = edges.filter((e: any) => {
+      if (!e.condition) return true;
+      if (typeof e.condition !== 'object') return true;
+      if (typeof e.condition.op !== 'string') return true;
+      return false;
+    });
+    
+    console.log(`[PBV2_APPLY_TREE_UPDATE] ${reason}:`, {
+      nodeCount: nodeValues.length,
+      groupCount: groupNodes.length,
+      edgeCount: edges.length,
+      invalidEdgeCount: invalidEdges.length,
+      invalidEdgeIds: invalidEdges.map((e: any) => e.id),
+      rootCount: Array.isArray(normalizedTree?.rootNodeIds) ? normalizedTree.rootNodeIds.length : 0,
+    });
+    
+    if (invalidEdges.length > 0) {
+      console.error('[PBV2_INVALID_EDGES_DETECTED]', invalidEdges.map((e: any) => ({
+        id: e.id,
+        status: e.status,
+        fromNodeId: e.fromNodeId,
+        toNodeId: e.toNodeId,
+        conditionType: typeof e.condition,
+        conditionOp: e.condition?.op,
+        condition: e.condition,
+      })));
+    }
+  }
   
   setLocalTreeJson(normalizedTree);
   setHasLocalChanges(true);
@@ -466,8 +488,12 @@ export default function PBV2ProductBuilderSectionV2({
   // Only run validation once tree is initialized
   const validationResult = useMemo(() => {
     if (!localTreeJson) return { ok: true, errors: [], warnings: [], findings: [] };
+    
+    // CRITICAL: Validate NORMALIZED tree to ensure edges have valid conditions
+    const normalizedTree = normalizeTreeJson(localTreeJson);
+    
     try {
-      return validateForEdit(localTreeJson as any);
+      return validateForEdit(normalizedTree as any);
     } catch (err) {
       return { ok: false, errors: [{ severity: 'ERROR', message: String(err), code: 'VALIDATION_ERROR', path: 'tree' }], warnings: [], findings: [] };
     }

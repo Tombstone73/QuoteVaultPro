@@ -36,9 +36,17 @@ These rules are now enforced by `normalizeTreeJson()` in `client/src/lib/pbv2/pb
 **Runtime Edges:**
 - Status: `ENABLED`
 - **MUST have valid `condition` AST object** (enforced by normalizeTreeJson)
+- **INVARIANT**: Any ENABLED edge must always have a valid condition AST at `edge.condition`
 - If missing or invalid, normalized to `TRUE_CONDITION` (always-true condition)
+- Default: `TRUE_CONDITION = { op: "EXISTS", value: { op: "literal", value: true } }`
 - Must NOT connect FROM or TO GROUP nodes
 - Determine which nodes are active during evaluation
+
+**Edge Condition Validation:**
+- Validator checks ALL edges (even DISABLED) for valid condition AST
+- Valid condition: object with string `op` field matching ConditionRule schema
+- Normalization ensures all edges have valid conditions before validation
+- Validation runs on NORMALIZED tree, not raw tree
 
 ### Rule C: Root Node IDs
 
