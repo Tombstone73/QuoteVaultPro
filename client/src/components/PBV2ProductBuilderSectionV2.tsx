@@ -257,23 +257,20 @@ export default function PBV2ProductBuilderSectionV2({
       }
       
       // CRITICAL: Seed tree must have at least one ENABLED runtime node for rootNodeIds
-      // We create a base PRICE node as the entry point for the evaluator
-      const baseNodeId = 'node_base_price_entry';
+      // We create a base computed node as the entry point for the evaluator
+      const baseNodeId = 'node_base_entry';
       const seedTree = {
         schemaVersion: 2,
         status: 'DRAFT',
         nodes: {
           [baseNodeId]: {
             id: baseNodeId,
-            kind: 'price',
-            type: 'PRICE',
+            kind: 'computed',
+            type: 'COMPUTE',
             status: 'ENABLED',
             key: 'base',
-            label: 'Base Price',
-            description: 'Base pricing node',
-            price: {
-              components: [],
-            },
+            label: 'Base Entry',
+            description: 'Base entry node',
           },
         },
         edges: [],
@@ -305,22 +302,19 @@ export default function PBV2ProductBuilderSectionV2({
       }
       
       // No draft exists yet - create seed tree with runtime node
-      const baseNodeId = 'node_base_price_entry';
+      const baseNodeId = 'node_base_entry';
       const seedTree = {
         schemaVersion: 2,
         status: 'DRAFT',
         nodes: {
           [baseNodeId]: {
             id: baseNodeId,
-            kind: 'price',
-            type: 'PRICE',
+            kind: 'computed',
+            type: 'COMPUTE',
             status: 'ENABLED',
             key: 'base',
-            label: 'Base Price',
-            description: 'Base pricing node',
-            price: {
-              components: [],
-            },
+            label: 'Base Entry',
+            description: 'Base entry node',
           },
         },
         edges: [],
