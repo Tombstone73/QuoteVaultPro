@@ -250,34 +250,97 @@ export default function PBV2ProductBuilderSectionV2({
 
   // Initialize local tree from draft OR create empty tree for new products
   useEffect(() => {
-    // New product mode: Initialize with empty tree
+    // New product mode: Initialize with seed tree containing runtime entry node
     if (!productId) {
       if (import.meta.env.DEV) {
-        console.log('[PBV2ProductBuilderSectionV2] New product mode - initializing empty tree');
+        console.log('[PBV2_INIT] start (mode: local-only, new product)');
       }
-      const emptyTree = {
+      
+      // CRITICAL: Seed tree must have at least one ENABLED runtime node for rootNodeIds
+      // We create a base PRICE node as the entry point for the evaluator
+      const baseNodeId = 'node_base_price_entry';
+      const seedTree = {
         schemaVersion: 2,
         status: 'DRAFT',
-        nodes: {},
+        nodes: {
+          [baseNodeId]: {
+            id: baseNodeId,
+            kind: 'price',
+            type: 'PRICE',
+            status: 'ENABLED',
+            key: 'base',
+            label: 'Base Price',
+            description: 'Base pricing node',
+            price: {
+              components: [],
+            },
+          },
+        },
         edges: [],
-        rootNodeIds: [],
+        rootNodeIds: [baseNodeId], // Runtime node as root
         productName: 'New Product',
         category: 'General',
         sku: '',
         basePrice: 0,
         fulfillment: 'pickup-only',
       };
-      setLocalTreeJson(emptyTree);
+      
+      const normalizedSeed = normalizeTreeJson(seedTree);
+      if (import.meta.env.DEV) {
+        const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
+        const rc = Array.isArray((normalizedSeed as any)?.rootNodeIds) ? (normalizedSeed as any).rootNodeIds.length : 0;
+        console.log('[PBV2_INIT] seedTree created:', { nodeCount: nc, rootCount: rc, rootNodeIds: (normalizedSeed as any)?.rootNodeIds });
+        console.log('[PBV2_INIT] READY (new product)');
+      }
+      
+      setLocalTreeJson(normalizedSeed);
       setHasLocalChanges(false);
       return;
     }
 
-    // Existing product mode: Load from server draft
+    // Existing product mode: Load from server draft or seed new tree
     if (!draft) {
       if (import.meta.env.DEV) {
-        console.log('[PBV2ProductBuilderSectionV2] No draft from API - setting localTreeJson to null (empty state)');
+        console.log('[PBV2_INIT] start (mode: server, no draft exists)');
       }
-      setLocalTreeJson(null);
+      
+      // No draft exists yet - create seed tree with runtime node
+      const baseNodeId = 'node_base_price_entry';
+      const seedTree = {
+        schemaVersion: 2,
+        status: 'DRAFT',
+        nodes: {
+          [baseNodeId]: {
+            id: baseNodeId,
+            kind: 'price',
+            type: 'PRICE',
+            status: 'ENABLED',
+            key: 'base',
+            label: 'Base Price',
+            description: 'Base pricing node',
+            price: {
+              components: [],
+            },
+          },
+        },
+        edges: [],
+        rootNodeIds: [baseNodeId],
+        productName: 'New Product',
+        category: 'General',
+        sku: '',
+        basePrice: 0,
+        fulfillment: 'pickup-only',
+      };
+      
+      const normalizedSeed = normalizeTreeJson(seedTree);
+      if (import.meta.env.DEV) {
+        const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
+        const rc = Array.isArray((normalizedSeed as any)?.rootNodeIds) ? (normalizedSeed as any).rootNodeIds.length : 0;
+        console.log('[PBV2_INIT] seedTree created:', { nodeCount: nc, rootCount: rc, rootNodeIds: (normalizedSeed as any)?.rootNodeIds });
+        console.log('[PBV2_INIT] READY (no draft, seeded)');
+      }
+      
+      setLocalTreeJson(normalizedSeed);
       setHasLocalChanges(false);
       return;
     }
@@ -285,6 +348,7 @@ export default function PBV2ProductBuilderSectionV2({
     // Only initialize if we don't have local changes
     if (!hasLocalChanges) {
       if (import.meta.env.DEV) {
+        console.log('[PBV2_INIT] start (mode: server, gotDraft: yes)');
         const nodeCount = draft.treeJson ? Object.keys((draft.treeJson as any)?.nodes || {}).length : 0;
         const groupCount = draft.treeJson ? Object.values((draft.treeJson as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
         const rootCount = Array.isArray((draft.treeJson as any)?.rootNodeIds) ? (draft.treeJson as any).rootNodeIds.length : 0;
@@ -307,6 +371,7 @@ export default function PBV2ProductBuilderSectionV2({
         const nc = Object.keys((normalizedDraft as any)?.nodes || {}).length;
         const rc = Array.isArray((normalizedDraft as any)?.rootNodeIds) ? (normalizedDraft as any).rootNodeIds.length : 0;
         console.log(`[PBV2ProductBuilderSectionV2] Normalized & hydrated: nodes=${nc}, roots=${rc}`);
+        console.log('[PBV2_INIT] READY (draft loaded)');
       }
       setLocalTreeJson(normalizedDraft);
     }
@@ -338,12 +403,13 @@ export default function PBV2ProductBuilderSectionV2({
   }, [localTreeJson]);
 
   // Validate current tree (edit-time validation, not publish-time)
+  // Only run validation once tree is initialized
   const validationResult = useMemo(() => {
-    if (!localTreeJson) return { errors: [], warnings: [], findings: [] };
+    if (!localTreeJson) return { ok: true, errors: [], warnings: [], findings: [] };
     try {
       return validateForEdit(localTreeJson as any);
     } catch (err) {
-      return { errors: [{ severity: 'ERROR', message: String(err), code: 'VALIDATION_ERROR', path: 'tree' }], warnings: [], findings: [] };
+      return { ok: false, errors: [{ severity: 'ERROR', message: String(err), code: 'VALIDATION_ERROR', path: 'tree' }], warnings: [], findings: [] };
     }
   }, [localTreeJson]);
 
@@ -746,11 +812,8 @@ export default function PBV2ProductBuilderSectionV2({
     return <div className="p-8 text-center text-slate-400">Loading PBV2 tree...</div>;
   }
 
-  // For new products (no productId), localTreeJson will be initialized in useEffect
-  // For existing products, wait for draft to be created (if needed)
-  if (productId && !draft && !localTreeJson && !treeQuery.isLoading) {
-    return <div className="p-8 text-center text-slate-400">Initializing PBV2 editor...</div>;
-  }
+  // Render UI once localTreeJson is initialized (seed tree or draft)
+  // Never get stuck in "Initializing" - the useEffect above seeds the tree
 
   const canPublish = validationResult.errors.length === 0 && hasLocalChanges === false;
 
