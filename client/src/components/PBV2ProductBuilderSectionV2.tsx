@@ -226,10 +226,12 @@ function envelopeMessage(status: number, json: any, fallback: string) {
 
 export default function PBV2ProductBuilderSectionV2({ 
   productId,
-  onPbv2StateChange 
+  onPbv2StateChange,
+  onTreeProviderReady
 }: { 
   productId?: string | null;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
+  onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null }) => void;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
@@ -333,9 +335,6 @@ export default function PBV2ProductBuilderSectionV2({
     
     // New product mode: Initialize with seed tree containing runtime entry node
     if (!productId) {
-      if (import.meta.env.DEV) {
-        console.log('[PBV2_INIT] start (mode: local-only, new product)');
-      }
       
       // CRITICAL: Seed tree must have at least one ENABLED runtime node for rootNodeIds
       // We create a base computed node as the entry point for the evaluator
@@ -370,9 +369,7 @@ export default function PBV2ProductBuilderSectionV2({
       const normalizedSeed = normalizeTreeJson(seedTree);
       if (import.meta.env.DEV) {
         const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
-        const rc = Array.isArray((normalizedSeed as any)?.rootNodeIds) ? (normalizedSeed as any).rootNodeIds.length : 0;
-        console.log('[PBV2_INIT] seedTree created:', { nodeCount: nc, rootCount: rc, rootNodeIds: (normalizedSeed as any)?.rootNodeIds });
-        console.log('[PBV2_INIT] READY (new product)');
+        console.log('[PBV2_SEED] New product initialized:', { mode: 'new', nodeCount: nc });
       }
       
       setLocalTreeJson(normalizedSeed);
@@ -382,10 +379,6 @@ export default function PBV2ProductBuilderSectionV2({
 
     // Existing product mode: Load from server draft or seed new tree
     if (!draft) {
-      if (import.meta.env.DEV) {
-        console.log('[PBV2_INIT] start (mode: server, no draft exists)');
-        console.log('[PBV2_DRAFT_GET] result: not found, creating seed tree');
-      }
       
       // No draft exists yet - create seed tree with runtime node
       const baseNodeId = 'node_base_entry';
@@ -419,9 +412,7 @@ export default function PBV2ProductBuilderSectionV2({
       const normalizedSeed = normalizeTreeJson(seedTree);
       if (import.meta.env.DEV) {
         const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
-        const rc = Array.isArray((normalizedSeed as any)?.rootNodeIds) ? (normalizedSeed as any).rootNodeIds.length : 0;
-        console.log('[PBV2_INIT] seedTree created:', { nodeCount: nc, rootCount: rc, rootNodeIds: (normalizedSeed as any)?.rootNodeIds });
-        console.log('[PBV2_INIT] READY (no draft, seeded)');
+        console.log('[PBV2_SEED] Existing product initialized:', { mode: 'no-draft', productId, nodeCount: nc });
       }
       
       setLocalTreeJson(normalizedSeed);
@@ -430,32 +421,11 @@ export default function PBV2ProductBuilderSectionV2({
     }
 
     // Draft exists - hydrate from server
-    if (import.meta.env.DEV) {
-      console.log('[PBV2_DRAFT_GET] result: found');
-      console.log('[PBV2_INIT] start (mode: server, gotDraft: yes)');
-      const nodeCount = draft.treeJson ? Object.keys((draft.treeJson as any)?.nodes || {}).length : 0;
-      const groupCount = draft.treeJson ? Object.values((draft.treeJson as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
-      const rootCount = Array.isArray((draft.treeJson as any)?.rootNodeIds) ? (draft.treeJson as any).rootNodeIds.length : 0;
-      console.log('[PBV2ProductBuilderSectionV2] Initializing from draft (HYDRATION):', {
-        draftId: draft.id,
-        nodeCount,
-        groupCount,
-        rootCount,
-        schemaVersion: (draft.treeJson as any)?.schemaVersion,
-        rootNodeIds: (draft.treeJson as any)?.rootNodeIds,
-        hasRootNodeIds: rootCount > 0,
-      });
-      if (nodeCount > 0 && rootCount === 0) {
-        console.error('[PBV2ProductBuilderSectionV2] ⚠️ HYDRATION ISSUE: Tree has nodes but rootNodeIds is empty!');
-      }
-    }
-    // Normalize + repair rootNodeIds on hydration (enforce canonical rules)
     const normalizedDraft = normalizeTreeJson(draft.treeJson);
     if (import.meta.env.DEV) {
       const nc = Object.keys((normalizedDraft as any)?.nodes || {}).length;
-      const rc = Array.isArray((normalizedDraft as any)?.rootNodeIds) ? (normalizedDraft as any).rootNodeIds.length : 0;
-      console.log(`[PBV2ProductBuilderSectionV2] Normalized & hydrated: nodes=${nc}, roots=${rc}`);
-      console.log('[PBV2_INIT] READY (draft loaded)');
+      const gc = Object.values((normalizedDraft as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
+      console.log('[PBV2_HYDRATE] Draft loaded:', { productId, draftId: draft.id, nodes: nc, groups: gc });
     }
     
     setLocalTreeJson(normalizedDraft);
@@ -483,25 +453,7 @@ export default function PBV2ProductBuilderSectionV2({
       };
     }
 
-    const model = pbv2TreeToEditorModel(localTreeJson);
-    
-    if (import.meta.env.DEV) {
-      const treeNodes = (localTreeJson as any)?.nodes || {};
-      const groupNodesInTree = Object.entries(treeNodes)
-        .filter(([_, n]: [string, any]) => n.type?.toUpperCase() === 'GROUP')
-        .map(([id, n]: [string, any]) => ({ id, label: n.label || n.key || id }));
-      
-      console.log('[PBV2_DEBUG_EDITOR_MODEL]', {
-        treeNodeCount: Object.keys(treeNodes).length,
-        groupNodesInTree,
-        groupNodesInTreeCount: groupNodesInTree.length,
-        editorModelGroupsCount: model.groups.length,
-        editorModelGroups: model.groups.map(g => ({ id: g.id, name: g.name })),
-        mismatch: groupNodesInTree.length !== model.groups.length,
-      });
-    }
-    
-    return model;
+    return pbv2TreeToEditorModel(localTreeJson);
   }, [localTreeJson]);
 
   // Validate current tree (edit-time validation, not publish-time)
@@ -528,21 +480,6 @@ export default function PBV2ProductBuilderSectionV2({
     if (onPbv2StateChange) {
       // CRITICAL: Normalize + ensure rootNodeIds before sending to parent
       const normalizedTree = localTreeJson ? normalizeTreeJson(localTreeJson) : null;
-      const nodeCount = normalizedTree ? Object.keys((normalizedTree as any)?.nodes || {}).length : 0;
-      const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
-      
-      if (import.meta.env.DEV) {
-        const groupCount = normalizedTree ? Object.values((normalizedTree as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
-        console.log('[PBV2ProductBuilderSectionV2] Calling onPbv2StateChange:', {
-          nodeCount,
-          groupCount,
-          rootCount,
-          hasChanges: hasLocalChanges,
-          draftId: draft?.id ?? null,
-          hasTreeJson: !!normalizedTree,
-          rootNodeIds: (normalizedTree as any)?.rootNodeIds,
-        });
-      }
       onPbv2StateChange({
         treeJson: normalizedTree,
         hasChanges: hasLocalChanges,
@@ -827,6 +764,12 @@ export default function PBV2ProductBuilderSectionV2({
     if (updates.fulfillment !== undefined) tree.fulfillment = updates.fulfillment;
     if (updates.basePrice !== undefined) tree.basePrice = updates.basePrice;
     applyTreeUpdate(tree, 'handleUpdateProduct', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
+  // Expose method to get current tree for external persistence (product creation)
+  const getCurrentPBV2Tree = () => {
+    if (!localTreeJson) return null;
+    return normalizeTreeJson(localTreeJson);
   };
 
   const handleSave = async () => {
