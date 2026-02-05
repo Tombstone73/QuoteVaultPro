@@ -61,6 +61,51 @@ function validateForEdit(tree: any): ValidationResult {
     info: filteredInfo,
   };
 }
+
+/**
+ * SINGLE POINT OF TREE UPDATE - ensures all mutations go through normalization.
+ * This function enforces the invariant that localTreeJson is always normalized.
+ * 
+ * @param nextTree - Raw tree after mutation
+ * @param reason - Description of why update is happening (for dev logging)
+ * @param setLocalTreeJson - State setter
+ * @param setHasLocalChanges - State setter
+ */
+function applyTreeUpdate(
+  nextTree: any,
+  reason: string,
+  setLocalTreeJson: (tree: any) => void,
+  setHasLocalChanges: (val: boolean) => void
+) {
+  // Always normalize before setting state
+  const normalizedTree = normalizeTreeJson(nextTree);
+  
+  // DEV-ONLY: Instrument edge normalization for debugging
+  if (import.meta.env.DEV) {
+    const edges = Array.isArray(normalizedTree?.edges) ? normalizedTree.edges : [];
+    console.log(`[applyTreeUpdate] ${reason}:`, {
+      edgeCount: edges.length,
+      rootCount: Array.isArray(normalizedTree?.rootNodeIds) ? normalizedTree.rootNodeIds.length : 0,
+    });
+    
+    // Log all ENABLED edges to track condition normalization
+    edges.forEach((edge: any) => {
+      if (edge && (edge.status || 'ENABLED').toUpperCase() === 'ENABLED') {
+        console.log(`  Edge ${edge.id}:`, {
+          status: edge.status,
+          hasCondition: !!edge.condition,
+          conditionType: typeof edge.condition,
+          conditionOp: edge.condition?.op,
+          from: edge.fromNodeId,
+          to: edge.toNodeId,
+        });
+      }
+    });
+  }
+  
+  setLocalTreeJson(normalizedTree);
+  setHasLocalChanges(true);
+}
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
 import {
@@ -397,9 +442,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    const normalizedTree = normalizeTreeJson(updatedTree);
-    setLocalTreeJson(normalizedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleAddGroup', setLocalTreeJson, setHasLocalChanges);
     setSelectedGroupId(newGroupId);
     toast({ title: "Group added" });
   };
@@ -408,8 +451,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch } = createUpdateGroupPatch(localTreeJson, groupId, updates);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleUpdateGroup', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleDeleteGroup = (groupId: string) => {
@@ -422,8 +464,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (!deleteGroupTarget || !localTreeJson) return;
     const { patch } = createDeleteGroupPatch(localTreeJson, deleteGroupTarget.id);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleConfirmDeleteGroup', setLocalTreeJson, setHasLocalChanges);
     if (selectedGroupId === deleteGroupTarget.id) {
       setSelectedGroupId(null);
     }
@@ -436,9 +477,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newOptionId } = createAddOptionPatch(localTreeJson, groupId);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    const normalizedTree = normalizeTreeJson(updatedTree);
-    setLocalTreeJson(normalizedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleAddOption', setLocalTreeJson, setHasLocalChanges);
     toast({ title: "Option added" });
   };
 
@@ -446,8 +485,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch } = createDeleteOptionPatch(localTreeJson, optionId);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleDeleteOption', setLocalTreeJson, setHasLocalChanges);
     if (selectedOptionId === optionId) {
       setSelectedOptionId(null);
     }
@@ -458,40 +496,35 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch } = createUpdateOptionPatch(localTreeJson, optionId, updates);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleUpdateOption', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleAddChoice = (optionId: string) => {
     if (!localTreeJson) return;
     const { patch } = createAddChoicePatch(localTreeJson, optionId);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleAddChoice', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleUpdateChoice = (optionId: string, choiceValue: string, updates: any) => {
     if (!localTreeJson) return;
     const { patch } = createUpdateChoicePatch(localTreeJson, optionId, choiceValue, updates);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleUpdateChoice', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleDeleteChoice = (optionId: string, choiceValue: string) => {
     if (!localTreeJson) return;
     const { patch } = createDeleteChoicePatch(localTreeJson, optionId, choiceValue);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleDeleteChoice', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleReorderChoice = (optionId: string, fromIndex: number, toIndex: number) => {
     if (!localTreeJson) return;
     const { patch } = createReorderChoicePatch(localTreeJson, optionId, fromIndex, toIndex);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleReorderChoice', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleUpdateNodePricing = (
@@ -501,8 +534,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch } = createUpdateNodePricingPatch(localTreeJson, optionId, pricingImpact);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleUpdateNodePricing', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleAddPricingRule = (
@@ -512,56 +544,49 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch } = createAddPricingRulePatch(localTreeJson, optionId, rule);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleAddPricingRule', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleDeletePricingRule = (optionId: string, ruleIndex: number) => {
     if (!localTreeJson) return;
     const { patch } = createDeletePricingRulePatch(localTreeJson, optionId, ruleIndex);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleDeletePricingRule', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleUpdatePricingV2Base = (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => {
     if (!localTreeJson) return;
     const { patch } = createUpdatePricingV2BasePatch(localTreeJson, base);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleUpdatePricingV2Base', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleUpdatePricingV2UnitSystem = (unitSystem: 'imperial' | 'metric') => {
     if (!localTreeJson) return;
     const { patch } = createUpdatePricingV2UnitSystemPatch(localTreeJson, unitSystem);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleUpdatePricingV2UnitSystem', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleAddPricingV2Tier = (kind: 'qty' | 'sqft') => {
     if (!localTreeJson) return;
     const { patch } = createAddPricingV2TierPatch(localTreeJson, kind);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleAddPricingV2Tier', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleUpdatePricingV2Tier = (kind: 'qty' | 'sqft', index: number, tier: any) => {
     if (!localTreeJson) return;
     const { patch } = createUpdatePricingV2TierPatch(localTreeJson, kind, index, tier);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleUpdatePricingV2Tier', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleDeletePricingV2Tier = (kind: 'qty' | 'sqft', index: number) => {
     if (!localTreeJson) return;
     const { patch } = createDeletePricingV2TierPatch(localTreeJson, kind, index);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(updatedTree, 'handleDeletePricingV2Tier', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleUpdateProduct = (updates: any) => {
@@ -572,8 +597,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (updates.sku !== undefined) tree.sku = updates.sku;
     if (updates.fulfillment !== undefined) tree.fulfillment = updates.fulfillment;
     if (updates.basePrice !== undefined) tree.basePrice = updates.basePrice;
-    setLocalTreeJson(tree);
-    setHasLocalChanges(true);
+    applyTreeUpdate(tree, 'handleUpdateProduct', setLocalTreeJson, setHasLocalChanges);
   };
 
   const handleSave = async () => {
