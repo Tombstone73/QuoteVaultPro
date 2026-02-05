@@ -96,6 +96,23 @@ function applyTreeUpdate(
       return false;
     });
     
+    // RUNTIME ASSERTION: All ENABLED edges must have valid condition after normalization
+    const enabledEdgesWithInvalidCondition = edges.filter((e: any) => {
+      const status = (e.status || 'ENABLED').toUpperCase();
+      if (status !== 'ENABLED') return false;
+      if (!e.condition || typeof e.condition !== 'object') return true;
+      if (typeof e.condition.op !== 'string') return true;
+      return false;
+    });
+    
+    if (enabledEdgesWithInvalidCondition.length > 0) {
+      console.error('[PBV2_EDGE_CONDITION_ERROR] ENABLED edges with invalid condition after normalization:', {
+        reason,
+        invalidCount: enabledEdgesWithInvalidCondition.length,
+        edges: enabledEdgesWithInvalidCondition,
+      });
+    }
+    
     console.log(`[PBV2_APPLY_TREE_UPDATE] ${reason}:`, {
       nodeCount: nodeValues.length,
       groupCount: groupNodes.length,
@@ -225,6 +242,9 @@ export default function PBV2ProductBuilderSectionV2({
   // Dirty lock: Prevent server sync from overwriting local edits
   const [isLocalDirty, setIsLocalDirty] = useState(false);
   const lastLoadedProductIdRef = useRef<string | null | undefined>(null);
+  
+  // Hydration guard: Prevent stale async responses from overwriting newer state
+  const hydrateRequestIdRef = useRef<number>(0);
   
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
@@ -848,9 +868,9 @@ export default function PBV2ProductBuilderSectionV2({
       }
 
       if (import.meta.env.DEV) {
-        console.log('[PBV2_DRAFT_PUT] success');
+        console.log('[PBV2_DRAFT_PUT] success:', { productId, nodeCount, edgeCount, rootCount });
       }
-
+      
       toast({ title: "Draft saved" });
       setHasLocalChanges(false);
       setIsLocalDirty(false); // Clear dirty flag on successful save
