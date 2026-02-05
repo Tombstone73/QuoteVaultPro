@@ -43,6 +43,7 @@ import {
   createDeletePricingV2TierPatch,
   applyPatchToTree,
   ensureRootNodeIds,
+  normalizeTreeJson,
 } from "@/lib/pbv2/pbv2ViewModel";
 import type { EditorOptionGroup } from "@/lib/pbv2/pbv2ViewModel";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -213,14 +214,14 @@ export default function PBV2ProductBuilderSectionV2({
           console.error('[PBV2ProductBuilderSectionV2] ⚠️ HYDRATION ISSUE: Tree has nodes but rootNodeIds is empty!');
         }
       }
-      // Repair rootNodeIds on hydration (server returns tree by ref with no mutations)
-      const repairedDraft = ensureRootNodeIds(draft.treeJson);
+      // Normalize + repair rootNodeIds on hydration (enforce canonical rules)
+      const normalizedDraft = normalizeTreeJson(draft.treeJson);
       if (import.meta.env.DEV) {
-        const nc = Object.keys((repairedDraft as any)?.nodes || {}).length;
-        const rc = Array.isArray((repairedDraft as any)?.rootNodeIds) ? (repairedDraft as any).rootNodeIds.length : 0;
-        console.log(`[PBV2ProductBuilderSectionV2] Hydrated: nodes=${nc}, roots=${rc}`);
+        const nc = Object.keys((normalizedDraft as any)?.nodes || {}).length;
+        const rc = Array.isArray((normalizedDraft as any)?.rootNodeIds) ? (normalizedDraft as any).rootNodeIds.length : 0;
+        console.log(`[PBV2ProductBuilderSectionV2] Normalized & hydrated: nodes=${nc}, roots=${rc}`);
       }
-      setLocalTreeJson(repairedDraft);
+      setLocalTreeJson(normalizedDraft);
     }
   }, [productId, draft?.id, draft?.treeJson, hasLocalChanges]);
 
@@ -266,25 +267,25 @@ export default function PBV2ProductBuilderSectionV2({
   // Notify parent of PBV2 state changes
   useEffect(() => {
     if (onPbv2StateChange) {
-      // CRITICAL: Ensure rootNodeIds is set before sending to parent
-      const ensuredTree = localTreeJson ? ensureRootNodeIds(localTreeJson) : null;
-      const nodeCount = ensuredTree ? Object.keys((ensuredTree as any)?.nodes || {}).length : 0;
-      const rootCount = Array.isArray((ensuredTree as any)?.rootNodeIds) ? (ensuredTree as any).rootNodeIds.length : 0;
+      // CRITICAL: Normalize + ensure rootNodeIds before sending to parent
+      const normalizedTree = localTreeJson ? normalizeTreeJson(localTreeJson) : null;
+      const nodeCount = normalizedTree ? Object.keys((normalizedTree as any)?.nodes || {}).length : 0;
+      const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
       
       if (import.meta.env.DEV) {
-        const groupCount = ensuredTree ? Object.values((ensuredTree as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
+        const groupCount = normalizedTree ? Object.values((normalizedTree as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
         console.log('[PBV2ProductBuilderSectionV2] Calling onPbv2StateChange:', {
           nodeCount,
           groupCount,
           rootCount,
           hasChanges: hasLocalChanges,
           draftId: draft?.id ?? null,
-          hasTreeJson: !!ensuredTree,
-          rootNodeIds: (ensuredTree as any)?.rootNodeIds,
+          hasTreeJson: !!normalizedTree,
+          rootNodeIds: (normalizedTree as any)?.rootNodeIds,
         });
       }
       onPbv2StateChange({
-        treeJson: ensuredTree,
+        treeJson: normalizedTree,
         hasChanges: hasLocalChanges,
         draftId: draft?.id ?? null,
       });
@@ -354,8 +355,8 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    const repairedTree = ensureRootNodeIds(updatedTree);
-    setLocalTreeJson(repairedTree);
+    const normalizedTree = normalizeTreeJson(updatedTree);
+    setLocalTreeJson(normalizedTree);
     setHasLocalChanges(true);
     setSelectedGroupId(newGroupId);
     toast({ title: "Group added" });
@@ -393,8 +394,8 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newOptionId } = createAddOptionPatch(localTreeJson, groupId);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    const repairedTree = ensureRootNodeIds(updatedTree);
-    setLocalTreeJson(repairedTree);
+    const normalizedTree = normalizeTreeJson(updatedTree);
+    setLocalTreeJson(normalizedTree);
     setHasLocalChanges(true);
     toast({ title: "Option added" });
   };
@@ -548,24 +549,24 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
-    // Ensure rootNodeIds before PUT (client has authority over this field)
-    const ensuredTree = ensureRootNodeIds(localTreeJson);
-    const nodes = (ensuredTree as any)?.nodes || {};
-    const edges = Array.isArray((ensuredTree as any)?.edges) ? (ensuredTree as any).edges : [];
+    // Normalize + ensure rootNodeIds before PUT (client has authority over this field)
+    const normalizedTree = normalizeTreeJson(localTreeJson);
+    const nodes = (normalizedTree as any)?.nodes || {};
+    const edges = Array.isArray((normalizedTree as any)?.edges) ? (normalizedTree as any).edges : [];
     const nodeCount = Object.keys(nodes).length;
     const edgeCount = edges.length;
-    const rootCount = Array.isArray((ensuredTree as any)?.rootNodeIds) ? (ensuredTree as any).rootNodeIds.length : 0;
+    const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
 
     // DEV-ONLY: Log PUT details before sending
     if (import.meta.env.DEV) {
       console.log('[PBV2 PUT] nodeCount', nodeCount, 'edgeCount', edgeCount, 'rootCount', rootCount);
-      console.log('[PBV2 PUT] computedRootNodeIds', (ensuredTree as any)?.rootNodeIds);
-      console.log('[PBV2 PUT] sendingRootNodeIds', (ensuredTree as any)?.rootNodeIds);
-      console.log('[PBV2 PUT] body', { treeJson: ensuredTree });
+      console.log('[PBV2 PUT] computedRootNodeIds', (normalizedTree as any)?.rootNodeIds);
+      console.log('[PBV2 PUT] sendingRootNodeIds', (normalizedTree as any)?.rootNodeIds);
+      console.log('[PBV2 PUT] body', { treeJson: normalizedTree });
     }
 
     try {
-      const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: ensuredTree });
+      const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: normalizedTree });
 
       if (!result.ok || result.json.success !== true) {
         throw new Error(envelopeMessage(result.status, result.json, "Failed to save draft"));

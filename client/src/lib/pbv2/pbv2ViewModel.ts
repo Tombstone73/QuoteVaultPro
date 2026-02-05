@@ -15,9 +15,33 @@
 import type { OptionNodeV2 } from '@shared/optionTreeV2';
 
 /**
- * Ensure rootNodeIds is populated with root nodes (nodes not pointed to by edges).
- * Prioritizes GROUP nodes if present.
- * This is critical for tree rehydration - without rootNodeIds, the UI appears empty.
+ * CANONICAL PBV2 GRAPH RULES (enforced by normalizeTreeJson):
+ * 
+ * A) GROUP nodes are structural only:
+ *    - They may have structural containment edges (GROUP -> OPTION/INPUT).
+ *    - GROUP nodes may NEVER be runtime roots.
+ *    - GROUP nodes may NEVER participate in ENABLED runtime edges.
+ * 
+ * B) Edges:
+ *    - Structural containment edges:
+ *      - Must be status DISABLED.
+ *      - Must NOT have conditionRule AST.
+ *      - If present, their condition/conditionRule fields are removed on normalize.
+ *    - Runtime edges:
+ *      - status ENABLED
+ *      - Must have a valid condition AST object if schema requires it.
+ *      - Must NOT connect FROM or TO GROUP nodes.
+ * 
+ * C) rootNodeIds:
+ *    - Must include at least one ENABLED runtime node.
+ *    - Must NOT include GROUP nodes.
+ *    - Derived from runtime graph roots: ENABLED nodes with no incoming ENABLED edges.
+ *    - Structural edges do not affect runtime roots.
+ */
+
+/**
+ * Ensure rootNodeIds is populated with RUNTIME roots only (ENABLED non-GROUP nodes with no incoming ENABLED edges).
+ * This function enforces canonical rule C: rootNodeIds must be runtime roots, never GROUP.
  * 
  * @param treeJson - PBV2 tree object
  * @returns Updated tree with rootNodeIds set (immutable)
@@ -25,39 +49,165 @@ import type { OptionNodeV2 } from '@shared/optionTreeV2';
 export function ensureRootNodeIds(treeJson: any): any {
   if (!treeJson || typeof treeJson !== 'object') return treeJson;
   
-  const nodes = treeJson.nodes || {};
-  const nodeIds = Object.keys(nodes);
+  const nodesRaw = treeJson.nodes || {};
+  const nodes = Array.isArray(nodesRaw) ? nodesRaw : Object.values(nodesRaw);
+  const nodeIds = nodes.map((n: any) => n?.id).filter(Boolean);
   
   // If no nodes, return as-is
   if (nodeIds.length === 0) return treeJson;
   
-  // If rootNodeIds already populated, return as-is
-  if (Array.isArray(treeJson.rootNodeIds) && treeJson.rootNodeIds.length > 0) {
-    return treeJson;
+  // Build runtime graph: ENABLED edges only
+  const edges = Array.isArray(treeJson.edges) ? treeJson.edges : [];
+  const runtimeEdges = edges.filter((e: any) => 
+    e && (e.status || 'ENABLED').toUpperCase() === 'ENABLED'
+  );
+  
+  // Nodes pointed to by ENABLED edges
+  const runtimeToIds = new Set(
+    runtimeEdges.map((e: any) => e?.toNodeId).filter(Boolean)
+  );
+  
+  // Runtime roots: ENABLED non-GROUP nodes with no incoming ENABLED edges
+  const runtimeRoots = nodes
+    .filter((n: any) => {
+      if (!n || !n.id) return false;
+      const status = (n.status || 'ENABLED').toUpperCase();
+      if (status !== 'ENABLED') return false;
+      const type = (n.type || '').toUpperCase();
+      if (type === 'GROUP') return false; // NEVER include GROUP in roots
+      return !runtimeToIds.has(n.id);
+    })
+    .map((n: any) => n.id);
+  
+  // If no runtime roots found, fall back to any ENABLED non-GROUP node
+  let finalRoots = runtimeRoots;
+  if (finalRoots.length === 0) {
+    finalRoots = nodes
+      .filter((n: any) => {
+        if (!n || !n.id) return false;
+        const status = (n.status || 'ENABLED').toUpperCase();
+        if (status !== 'ENABLED') return false;
+        const type = (n.type || '').toUpperCase();
+        return type !== 'GROUP';
+      })
+      .map((n: any) => n.id);
   }
-  
-  // Compute roots from edges: nodes not pointed to by any edge
-  const edges = treeJson.edges || [];
-  const toIds = new Set(edges.map((e: any) => e?.toNodeId).filter(Boolean));
-  const roots = nodeIds.filter(id => !toIds.has(id));
-  
-  // Prioritize GROUP nodes if present
-  const groupRoots = roots.filter(id => {
-    const node = nodes[id];
-    if (!node) return false;
-    const isGroup = (node.type || '').toUpperCase() === 'GROUP';
-    const isEnabled = (node.status || 'ENABLED').toUpperCase() === 'ENABLED';
-    return isGroup && isEnabled;
-  });
-  
-  // Use groups if found, otherwise all roots
-  const finalRoots = groupRoots.length > 0 ? groupRoots : roots;
   
   // Return updated tree with rootNodeIds set (immutable)
   return {
     ...treeJson,
     rootNodeIds: finalRoots,
   };
+}
+
+/**
+ * Normalize PBV2 tree JSON to enforce canonical graph rules.
+ * This function repairs tree data loaded from server/storage/mutations.
+ * 
+ * CANONICAL RULES ENFORCED:
+ * A) GROUP nodes are structural only - no runtime participation
+ * B) Structural edges (GROUP-involved) must be DISABLED, no conditionRule
+ * C) Runtime edges must be ENABLED and may have conditionRule
+ * D) rootNodeIds must be runtime roots only (ENABLED non-GROUP nodes)
+ * 
+ * WHEN TO CALL:
+ * - After loading tree from server GET /pbv2/tree
+ * - After local initialization
+ * - After any mutation patch is applied
+ * - Before validation/save
+ * 
+ * @param treeJson - Raw tree JSON (may have old/incorrect structure)
+ * @returns Normalized tree with canonical rules enforced
+ */
+export function normalizeTreeJson(treeJson: any): any {
+  if (!treeJson || typeof treeJson !== 'object') return treeJson;
+
+  const nodesRaw = treeJson.nodes || {};
+  const nodes = Array.isArray(nodesRaw) ? nodesRaw : Object.values(nodesRaw);
+  const edgesRaw = treeJson.edges || [];
+  const edges = Array.isArray(edgesRaw) ? edgesRaw : [];
+
+  // Build node type map
+  const nodeTypeById = new Map<string, string>();
+  nodes.forEach((n: any) => {
+    if (n && n.id) {
+      nodeTypeById.set(n.id, (n.type || '').toUpperCase());
+    }
+  });
+
+  // Normalize edges according to rules A/B
+  const normalizedEdges = edges.map((edge: any) => {
+    if (!edge || !edge.id) return edge;
+
+    const fromType = edge.fromNodeId ? nodeTypeById.get(edge.fromNodeId) : null;
+    const toType = edge.toNodeId ? nodeTypeById.get(edge.toNodeId) : null;
+
+    // Rule A: GROUP nodes are structural only
+    // If edge connects FROM or TO a GROUP, force it to be structural (DISABLED, no condition)
+    if (fromType === 'GROUP' || toType === 'GROUP') {
+      const normalized = { ...edge };
+      normalized.status = 'DISABLED';
+      // Remove condition fields
+      delete normalized.condition;
+      delete normalized.conditionRule;
+      delete normalized.when;
+      return normalized;
+    }
+
+    // Rule B: For DISABLED edges, defensively remove condition fields
+    if ((edge.status || 'ENABLED').toUpperCase() === 'DISABLED') {
+      const normalized = { ...edge };
+      delete normalized.condition;
+      delete normalized.conditionRule;
+      delete normalized.when;
+      return normalized;
+    }
+
+    // Runtime edge - keep as-is
+    return edge;
+  });
+
+  // Normalize nodes: ensure OPTION nodes have required fields
+  const normalizedNodes = nodes.map((node: any) => {
+    if (!node || !node.id) return node;
+
+    const type = (node.type || '').toUpperCase();
+    if (type === 'OPTION' || (node.kind || '').toUpperCase() === 'QUESTION') {
+      // Ensure input.selectionKey exists
+      const normalized = { ...node };
+      normalized.input = normalized.input || {};
+      if (!normalized.input.selectionKey || typeof normalized.input.selectionKey !== 'string') {
+        normalized.input.selectionKey = `opt_${node.id}`;
+      }
+      return normalized;
+    }
+
+    return node;
+  });
+
+  // Reconstruct tree with normalized data
+  let normalizedTree: any;
+  if (Array.isArray(nodesRaw)) {
+    normalizedTree = {
+      ...treeJson,
+      nodes: normalizedNodes,
+      edges: normalizedEdges,
+    };
+  } else {
+    // Convert back to Record format
+    const nodesRecord: Record<string, any> = {};
+    normalizedNodes.forEach((n: any) => {
+      if (n && n.id) nodesRecord[n.id] = n;
+    });
+    normalizedTree = {
+      ...treeJson,
+      nodes: nodesRecord,
+      edges: normalizedEdges,
+    };
+  }
+
+  // Rule C: Recompute rootNodeIds using runtime-only logic
+  return ensureRootNodeIds(normalizedTree);
 }
 
 export type EditorOptionGroup = {
