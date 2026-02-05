@@ -523,8 +523,8 @@ const ProductEditorPage = () => {
             Discard
           </Button>
           <Button
-            type="submit"
-            form="product-editor-form"
+            type="button"
+            onClick={() => form.handleSubmit(handleSave)()}
             disabled={saveMutation.isPending || hasInvalidChoiceValues || hasInvalidOptionTreeJson}
           >
             <Save className="h-4 w-4 mr-2" />
