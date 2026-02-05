@@ -516,18 +516,13 @@ export function createAddGroupPatch(treeJson: unknown): { patch: any; newGroupId
     },
   };
 
-  // Add new group to rootNodeIds so it appears in the UI
-  const existingRoots = Array.isArray((tree as any).rootNodeIds) ? (tree as any).rootNodeIds : [];
-  const updatedRoots = [...existingRoots];
-  if (!updatedRoots.includes(newGroupId)) {
-    updatedRoots.push(newGroupId);
-  }
+  // Do NOT add GROUP to rootNodeIds - groups are structural only
+  // normalizeTreeJson will compute runtime roots correctly
 
   const patchedTree = {
     ...tree,
     nodes: [...nodes, newNode],
     edges,
-    rootNodeIds: updatedRoots,
   };
 
   const repairedTree = ensureTreeInvariants(patchedTree);
