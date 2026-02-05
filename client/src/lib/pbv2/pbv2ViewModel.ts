@@ -44,7 +44,7 @@ import type { OptionNodeV2 } from '@shared/optionTreeV2';
  * Used as default for ENABLED edges that don't have a condition.
  * Follows PBV2 ConditionRule schema from shared/pbv2/expressionSpec.ts
  */
-const TRUE_CONDITION = { op: "EXISTS", value: { op: "literal", value: true } } as const;
+export const TRUE_CONDITION = { op: "EXISTS", value: { op: "literal", value: true } } as const;
 
 /**
  * Check if a value is a valid condition AST object.
