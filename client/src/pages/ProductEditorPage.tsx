@@ -52,6 +52,11 @@ const ProductEditorPage = () => {
   const lastLoadedRef = useRef<ProductFormData | null>(null);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
   
+  // Single-flight guard: Prevent duplicate product creation from rapid clicks
+  const saveInFlightRef = useRef<boolean>(false);
+  // Idempotency: Once product is created, store ID to prevent duplicate creates
+  const createdProductIdRef = useRef<string | null>(null);
+  
   // Track PBV2 state for persistence
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null } | null>(null);
@@ -152,99 +157,139 @@ const ProductEditorPage = () => {
 
   const saveMutation = useMutation({
     mutationFn: async (data: InsertProduct | UpdateProduct) => {
-      // NO SHADOW COPY: PBV2ProductBuilderSectionV2 uses pbv2_tree_versions as ONLY source of truth
-      // DO NOT send optionTreeJson in PATCH - it should not be used going forward
-      const { optionTreeJson: _unused, ...cleanData } = data as any;
-      const payload = {
-        ...cleanData,
-        optionsJson: data.optionsJson && data.optionsJson.length > 0 ? data.optionsJson : null,
-        primaryMaterialId: data.primaryMaterialId || null,
-      };
-      
-      // DEV-ONLY: Log PBV2 state (no longer in PATCH payload)
-      if (import.meta.env.DEV) {
-        const pbv2NodeCount = pbv2State?.treeJson ? Object.keys((pbv2State.treeJson as any)?.nodes || {}).length : 0;
-        console.log("[ProductEditorPage] PATCH payload - optionTreeJson excluded:", {
-          pbv2NodeCount,
-          hasPbv2State: !!pbv2State,
-          pbv2WillBeSavedViaPUT: !!pbv2State?.hasChanges && pbv2NodeCount > 0,
-          message: 'PBV2 data saved to pbv2_tree_versions ONLY, NOT products.optionTreeJson',
-        });
+      // SINGLE-FLIGHT GUARD: Prevent duplicate requests
+      if (saveInFlightRef.current) {
+        if (import.meta.env.DEV) {
+          console.log('[SAVE_PIPELINE] BLOCKED: save already in flight');
+        }
+        throw new Error('Save already in progress');
       }
       
-      if (isNewProduct) {
-        return await apiRequest("POST", "/api/products", payload);
-      } else {
-        const response = await apiRequest("PATCH", `/api/products/${productId}`, payload);
+      saveInFlightRef.current = true;
+      
+      try {
+        // IDEMPOTENCY: If we already created a product, this should be an UPDATE
+        const effectiveIsNewProduct = isNewProduct && !createdProductIdRef.current;
+        const effectiveProductId = createdProductIdRef.current || productId;
         
-        // DEV-ONLY: Log what server returned
-        if (import.meta.env.DEV && response) {
-          const responseData = await response.json();
-          const returnedTree = (responseData as any)?.optionTreeJson;
-          if (returnedTree) {
-            const returnedNodeCount = typeof returnedTree === 'object' 
-              ? Object.keys(returnedTree.nodes || {}).length 
-              : 0;
-            console.log("[ProductEditorPage] PATCH response optionTreeJson:", {
-              type: typeof returnedTree,
-              nodeCount: returnedNodeCount,
-              isString: typeof returnedTree === 'string',
-            });
-          }
-          return { json: () => Promise.resolve(responseData) } as any;
+        if (import.meta.env.DEV) {
+          console.log('[SAVE_PIPELINE] phase=start', {
+            mode: effectiveIsNewProduct ? 'create' : 'update',
+            productId: effectiveProductId,
+            hasCreatedId: !!createdProductIdRef.current,
+          });
         }
         
-        return response;
+        // NO SHADOW COPY: PBV2ProductBuilderSectionV2 uses pbv2_tree_versions as ONLY source of truth
+        const { optionTreeJson: _unused, ...cleanData } = data as any;
+        const payload = {
+          ...cleanData,
+          optionsJson: data.optionsJson && data.optionsJson.length > 0 ? data.optionsJson : null,
+          primaryMaterialId: data.primaryMaterialId || null,
+        };
+        
+        let response;
+        if (effectiveIsNewProduct) {
+          response = await apiRequest("POST", "/api/products", payload);
+          if (import.meta.env.DEV) {
+            console.log('[SAVE_PIPELINE] phase=create-ok');
+          }
+        } else {
+          response = await apiRequest("PATCH", `/api/products/${effectiveProductId}`, payload);
+          if (import.meta.env.DEV) {
+            console.log('[SAVE_PIPELINE] phase=update-ok');
+          }
+        }
+        
+        // Extract product data from response
+        const productData = await response.json();
+        return productData;
+      } catch (error) {
+        // Release guard on error so retry is possible
+        saveInFlightRef.current = false;
+        throw error;
       }
     },
     onSuccess: async (updatedProduct) => {
-      setLastSavedAt(new Date());
-      
       try {
-        // Persist PBV2 draft to pbv2_tree_versions table
-        // For new products, use the returned product ID
+        setLastSavedAt(new Date());
+        
+        // IDEMPOTENCY: Store created product ID to prevent duplicate creates
         const targetProductId = isNewProduct ? updatedProduct.id : productId;
+        if (isNewProduct && updatedProduct.id) {
+          createdProductIdRef.current = updatedProduct.id;
+        }
         
         if (!targetProductId) {
           if (import.meta.env.DEV) {
-            console.log('[PBV2_DRAFT_FLUSH] SKIP: no productId');
+            console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=no-productId');
           }
-          return; // Skip PBV2 persistence
+          // No productId means we can't persist PBV2, but product saved
+          toast({
+            title: isNewProduct ? "Product Created" : "Product Updated",
+            description: "Product saved successfully.",
+          });
+          queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+          navigate("/products");
+          return;
         }
         
-        // CRITICAL FIX: Get FRESH tree snapshot at save time, not stale state
+        // Get FRESH tree snapshot at save time
         const freshTreeJson = pbv2TreeProviderRef.current?.getCurrentTree();
         
         if (!freshTreeJson) {
           if (import.meta.env.DEV) {
-            console.log('[PBV2_DRAFT_FLUSH] SKIP: no tree available');
+            console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=no-tree');
           }
-          return; // No tree to save
+          // No tree to save, but product saved successfully
+          toast({
+            title: isNewProduct ? "Product Created" : "Product Updated",
+            description: "Product saved successfully.",
+          });
+          queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+          if (productId) {
+            queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
+          }
+          navigate("/products");
+          return;
         }
         
         // Tree is already normalized by getCurrentTree
         const normalizedTree = freshTreeJson;
         const nodes = (normalizedTree as any)?.nodes || {};
+        const edges = (normalizedTree as any)?.edges || [];
         const nodeCount = Object.keys(nodes).length;
+        const groupCount = Object.values(nodes).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
+        const optionCount = Object.values(nodes).filter((n: any) => {
+          const type = (n.type || '').toUpperCase();
+          return type === 'INPUT' || type === 'OPTION';
+        }).length;
         const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
         
         // Validate tree structure
         if (nodeCount > 0 && rootCount === 0) {
           toast({
             title: "PBV2 Save Failed",
-            description: "Invalid tree: missing root nodes. Save blocked.",
+            description: "Invalid tree: missing root nodes. Product saved but options not persisted.",
             variant: "destructive"
           });
           if (import.meta.env.DEV) {
-            console.error('[PBV2_DRAFT_FLUSH] Invalid tree: no roots');
+            console.error('[SAVE_PIPELINE] phase=pbv2-invalid reason=no-roots');
           }
-          return; // Block navigation
+          // Don't navigate - let user fix tree
+          return;
         }
         
+        // Only persist if there are actual nodes (not just empty seed)
         if (nodeCount > 0) {
           if (import.meta.env.DEV) {
-            const groupCount = Object.values(nodes).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
-            console.log('[PBV2_DRAFT_FLUSH] Persisting:', { productId: targetProductId, nodes: nodeCount, groups: groupCount });
+            console.log('[SAVE_PIPELINE] phase=pbv2-flush-start', {
+              productId: targetProductId,
+              nodeCount,
+              groupCount,
+              optionCount,
+              edgeCount: edges.length,
+            });
           }
           
           const draftRes = await fetch(`/api/products/${targetProductId}/pbv2/draft`, {
@@ -258,42 +303,71 @@ const ProductEditorPage = () => {
             const errData = await draftRes.json().catch(() => ({ message: 'Unknown error' }));
             toast({ 
               title: "PBV2 draft save failed", 
-              description: errData.message || 'Failed to persist options',
+              description: `Product saved but options not persisted: ${errData.message || 'Unknown error'}`,
               variant: "destructive" 
             });
             if (import.meta.env.DEV) {
-              console.error('[PBV2_DRAFT_FLUSH] FAILED:', errData);
+              console.error('[SAVE_PIPELINE] phase=pbv2-flush-failed', errData);
             }
-            return; // Block navigation on failure
+            // Don't navigate - let user retry
+            return;
           }
           
           if (import.meta.env.DEV) {
             const draftData = await draftRes.json();
-            console.log('[PBV2_DRAFT_FLUSH] SUCCESS:', { draftId: draftData.data?.id });
+            console.log('[SAVE_PIPELINE] phase=pbv2-flush-ok', { draftId: draftData.data?.id });
+          }
+        } else {
+          if (import.meta.env.DEV) {
+            console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=empty-tree');
           }
         }
+        
+        // SUCCESS: Both product and PBV2 saved (or PBV2 skipped because empty)
+        toast({
+          title: isNewProduct ? "Product Created" : "Product Updated",
+          description: isNewProduct
+            ? "The product has been created successfully."
+            : "The product has been updated successfully."
+        });
+        
+        // Invalidate caches
+        queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+        if (productId) {
+          queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
+        }
+        
+        if (import.meta.env.DEV) {
+          console.log('[SAVE_PIPELINE] phase=nav');
+        }
+        
+        // Navigate away on full success
+        navigate("/products");
+        
+      } catch (error: any) {
+        // Catch any unexpected errors in onSuccess
+        toast({ 
+          title: "Save Error", 
+          description: error.message || 'An unexpected error occurred',
+          variant: "destructive" 
+        });
+        if (import.meta.env.DEV) {
+          console.error('[SAVE_PIPELINE] phase=error', error);
+        }
       } finally {
-        // Always proceed with navigation and cleanup after try block completes
+        // ALWAYS release single-flight guard so retry is possible
+        saveInFlightRef.current = false;
+        if (import.meta.env.DEV) {
+          console.log('[SAVE_PIPELINE] phase=complete guard-released');
+        }
       }
-      
-      toast({
-        title: isNewProduct ? "Product Created" : "Product Updated",
-        description: isNewProduct
-          ? "The product has been created successfully."
-          : "The product has been updated successfully."
-      });
-      
-      // Invalidate both product list and individual product cache
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      
-      // Invalidate PBV2 tree cache for this product
-      if (productId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
-      }
-      
-      navigate("/products");
     },
     onError: (error: Error) => {
+      // Release single-flight guard on mutation error
+      saveInFlightRef.current = false;
+      if (import.meta.env.DEV) {
+        console.error('[SAVE_PIPELINE] phase=mutation-error guard-released', error.message);
+      }
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
@@ -321,6 +395,13 @@ const ProductEditorPage = () => {
   });
 
   const handleSave = (data: ProductFormData) => {
+    // Additional guard at handler level
+    if (saveInFlightRef.current) {
+      if (import.meta.env.DEV) {
+        console.log('[SAVE_PIPELINE] handleSave blocked: already in flight');
+      }
+      return;
+    }
     saveMutation.mutate(data as InsertProduct);
   };
 
@@ -335,7 +416,7 @@ const ProductEditorPage = () => {
   };
 
   const saveLabel = useMemo(() => {
-    if (saveMutation.isPending) return "Saving…";
+    if (saveMutation.isPending || saveInFlightRef.current) return "Saving…";
     if (!form.formState.isDirty) return "Save Changes";
     return "Save Changes";
   }, [form.formState.isDirty, saveMutation.isPending]);

@@ -1,6 +1,41 @@
 # PBV2 Persistence and Edge Condition Fix
 
-## LATEST UPDATE (Feb 5, 2026): New Product Draft Flush Fix
+## LATEST UPDATE (Feb 5, 2026): Single-Flight Guard & Idempotency
+
+### Issue
+Regression after tree provider pattern: Clicking Save multiple times quickly creates duplicate products and/or causes stuck navigation (UI blocked).
+
+### Root Causes
+1. **No Single-Flight Guard**: Save button could be clicked multiple times before first save completed, sending duplicate POST requests
+2. **No Idempotency**: Once a product was created, the second click would still send POST (not PATCH), creating a duplicate
+3. **Incorrect Finally Block**: Navigation was in finally block, so even if PBV2 flush failed, it would navigate away
+4. **Guard Not Released on Error**: If save failed, `saveInFlightRef` was never reset, permanently blocking future saves
+
+### Fix
+1. **Single-Flight Guard**: Added `saveInFlightRef` that prevents duplicate requests during save
+2. **Idempotency**: Added `createdProductIdRef` that stores product ID after creation, converting subsequent saves to UPDATE
+3. **Proper Error Handling**: Early returns on PBV2 flush failure (no navigation), with descriptive error messages
+4. **Guard Cleanup**: `try/finally` in mutationFn releases guard on error, `finally` in onSuccess releases guard after completion
+5. **Pipeline Logging**: Added `[SAVE_PIPELINE]` logs for key phases: start, create-ok, pbv2-flush-start, pbv2-flush-ok, nav, error
+
+### Changes
+- **ProductEditorPage.tsx**: 
+  - Added `saveInFlightRef` and `createdProductIdRef` 
+  - Guard check in `mutationFn` and `handleSave`
+  - Proper try/finally in both `mutationFn` and `onSuccess`
+  - Early returns on error (no navigation unless full success)
+  - Pipeline logging at key transitions
+
+### Testing
+✅ Double-click Save rapidly → Only one product created (guard blocks second click)  
+✅ PBV2 flush fails → Error shown, no navigation, Save can be retried  
+✅ Product create succeeds, PBV2 flush succeeds → Navigate to products list  
+✅ No permanently stuck state (guard always released)  
+✅ TypeScript compiles without errors
+
+---
+
+## UPDATE (Feb 5, 2026): New Product Draft Flush Fix
 
 ### Issue
 When creating a new product with PBV2 groups/options, clicking Save would persist the product but lose the PBV2 edits. After reopening the product in Edit mode, groups/options were missing.
