@@ -107,7 +107,7 @@ export default function PBV2ProductBuilderSectionV2({
   productId,
   onPbv2StateChange 
 }: { 
-  productId: string;
+  productId?: string | null;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
 }) {
   const { toast } = useToast();
@@ -127,10 +127,14 @@ export default function PBV2ProductBuilderSectionV2({
   const [jsonImportOpen, setJsonImportOpen] = useState(false);
   const [jsonImportText, setJsonImportText] = useState("");
 
-  // Fetch draft/active tree
+  // Fetch draft/active tree (skip for new products without productId)
   const treeQuery = useQuery<TreeResponse>({
     queryKey: ["/api/products", productId, "pbv2", "tree"],
+    enabled: !!productId,
     queryFn: async () => {
+      if (!productId) {
+        return { success: false, message: "No productId" } as TreeResponse;
+      }
       if (import.meta.env.DEV) {
         console.log('[PBV2ProductBuilderSectionV2] Fetching tree from GET /api/products/:id/pbv2/tree');
       }
@@ -156,8 +160,31 @@ export default function PBV2ProductBuilderSectionV2({
   const draft = treeQuery.data?.data?.draft ?? null;
   const active = treeQuery.data?.data?.active ?? null;
 
-  // Initialize local tree from draft
+  // Initialize local tree from draft OR create empty tree for new products
   useEffect(() => {
+    // New product mode: Initialize with empty tree
+    if (!productId) {
+      if (import.meta.env.DEV) {
+        console.log('[PBV2ProductBuilderSectionV2] New product mode - initializing empty tree');
+      }
+      const emptyTree = {
+        schemaVersion: 2,
+        status: 'DRAFT',
+        nodes: {},
+        edges: [],
+        rootNodeIds: [],
+        productName: 'New Product',
+        category: 'General',
+        sku: '',
+        basePrice: 0,
+        fulfillment: 'pickup-only',
+      };
+      setLocalTreeJson(emptyTree);
+      setHasLocalChanges(false);
+      return;
+    }
+
+    // Existing product mode: Load from server draft
     if (!draft) {
       if (import.meta.env.DEV) {
         console.log('[PBV2ProductBuilderSectionV2] No draft from API - setting localTreeJson to null (empty state)');
@@ -195,7 +222,7 @@ export default function PBV2ProductBuilderSectionV2({
       }
       setLocalTreeJson(repairedDraft);
     }
-  }, [draft?.id, draft?.treeJson]);
+  }, [productId, draft?.id, draft?.treeJson, hasLocalChanges]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {
@@ -327,7 +354,8 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newGroupId } = createAddGroupPatch(localTreeJson);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
+    const repairedTree = ensureRootNodeIds(updatedTree);
+    setLocalTreeJson(repairedTree);
     setHasLocalChanges(true);
     setSelectedGroupId(newGroupId);
     toast({ title: "Group added" });
@@ -365,7 +393,8 @@ export default function PBV2ProductBuilderSectionV2({
     if (!localTreeJson) return;
     const { patch, newOptionId } = createAddOptionPatch(localTreeJson, groupId);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
-    setLocalTreeJson(updatedTree);
+    const repairedTree = ensureRootNodeIds(updatedTree);
+    setLocalTreeJson(repairedTree);
     setHasLocalChanges(true);
     toast({ title: "Option added" });
   };
@@ -510,6 +539,15 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
+    // Local-only mode: No productId yet (new product not saved)
+    if (!productId) {
+      toast({ 
+        title: "Saved locally", 
+        description: "Options will be persisted when you save the product.",
+      });
+      return;
+    }
+
     // Ensure rootNodeIds before PUT (client has authority over this field)
     const ensuredTree = ensureRootNodeIds(localTreeJson);
     const nodes = (ensuredTree as any)?.nodes || {};
@@ -633,46 +671,15 @@ export default function PBV2ProductBuilderSectionV2({
     }
   };
 
-  if (treeQuery.isLoading) {
+  // Loading state for existing products only
+  if (productId && treeQuery.isLoading) {
     return <div className="p-8 text-center text-slate-400">Loading PBV2 tree...</div>;
   }
 
-  if (!draft) {
-    const handleCreateDraft = async () => {
-      try {
-        // Create minimal valid empty draft
-        const minimalTreeJson = {
-          schemaVersion: 2,
-          status: "DRAFT",
-          rootNodeIds: [],
-          nodes: {},
-          edges: [],
-          productName: "",
-          category: "",
-          sku: "",
-          fulfillment: "fulfillment",
-          basePrice: 0,
-        };
-
-        const result = await apiJson<Pbv2TreeVersion>("PUT", `/api/products/${productId}/pbv2/draft`, { treeJson: minimalTreeJson });
-
-        if (!result.ok || result.json.success !== true) {
-          throw new Error(envelopeMessage(result.status, result.json, "Failed to create draft"));
-        }
-
-        toast({ title: "Draft created" });
-        await treeQuery.refetch();
-      } catch (error: any) {
-        toast({ title: "Draft creation failed", description: error.message, variant: "destructive" });
-      }
-    };
-
-    return (
-      <div className="p-8 text-center">
-        <div className="text-slate-400 mb-4">No draft exists for this product.</div>
-        <Button onClick={handleCreateDraft}>Create Draft</Button>
-      </div>
-    );
+  // For new products (no productId), localTreeJson will be initialized in useEffect
+  // For existing products, wait for draft to be created (if needed)
+  if (productId && !draft && !localTreeJson && !treeQuery.isLoading) {
+    return <div className="p-8 text-center text-slate-400">Initializing PBV2 editor...</div>;
   }
 
   const canPublish = validationResult.errors.length === 0 && hasLocalChanges === false;
