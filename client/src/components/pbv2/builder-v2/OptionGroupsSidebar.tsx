@@ -40,6 +40,16 @@ export function OptionGroupsSidebar({
   onAddGroup,
   onDeleteGroup
 }: OptionGroupsSidebarProps) {
+  // CRITICAL DEBUG: Prove what render sees
+  if (import.meta.env.DEV) {
+    console.log('[PBV2_DEBUG_RENDER_GROUPS]', {
+      optionGroupsCount: optionGroups.length,
+      optionGroupIds: optionGroups.map(g => g.id),
+      optionGroupNames: optionGroups.map(g => g.name),
+      optionGroupsArray: optionGroups,
+    });
+  }
+  
   return (
     <aside className="h-full w-full border-r border-[#334155] bg-[#0f172a] flex flex-col overflow-hidden">
       <div className="border-b border-[#334155] p-4">
