@@ -80,26 +80,20 @@ function applyTreeUpdate(
   // Always normalize before setting state
   const normalizedTree = normalizeTreeJson(nextTree);
   
-  // DEV-ONLY: Instrument edge normalization for debugging
+  // DEV-ONLY: Instrument normalization for debugging
   if (import.meta.env.DEV) {
+    const nodes = normalizedTree?.nodes || {};
+    const nodeValues = Array.isArray(nodes) ? nodes : Object.values(nodes);
+    const groupNodes = nodeValues.filter((n: any) => n?.type?.toUpperCase() === 'GROUP');
     const edges = Array.isArray(normalizedTree?.edges) ? normalizedTree.edges : [];
-    console.log(`[applyTreeUpdate] ${reason}:`, {
+    
+    console.log(`[PBV2_APPLY_TREE_UPDATE_DEBUG] ${reason}:`, {
+      nodeCount: nodeValues.length,
+      groupCount: groupNodes.length,
+      groupIds: groupNodes.map((n: any) => n.id),
       edgeCount: edges.length,
       rootCount: Array.isArray(normalizedTree?.rootNodeIds) ? normalizedTree.rootNodeIds.length : 0,
-    });
-    
-    // Log all ENABLED edges to track condition normalization
-    edges.forEach((edge: any) => {
-      if (edge && (edge.status || 'ENABLED').toUpperCase() === 'ENABLED') {
-        console.log(`  Edge ${edge.id}:`, {
-          status: edge.status,
-          hasCondition: !!edge.condition,
-          conditionType: typeof edge.condition,
-          conditionOp: edge.condition?.op,
-          from: edge.fromNodeId,
-          to: edge.toNodeId,
-        });
-      }
+      nodesIsArray: Array.isArray(nodes),
     });
   }
   
