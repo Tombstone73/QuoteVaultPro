@@ -1,5 +1,32 @@
 # PBV2 Persistence and Edge Condition Fix
 
+## LATEST UPDATE (Feb 5, 2026): New Product Draft Flush Fix
+
+### Issue
+When creating a new product with PBV2 groups/options, clicking Save would persist the product but lose the PBV2 edits. After reopening the product in Edit mode, groups/options were missing.
+
+### Root Cause
+The `pbv2State` in ProductEditorPage was updated via callback, but React state updates are asynchronous. When Save was clicked, the snapshot of `pbv2State.treeJson` could be stale, not reflecting the very latest edits made in PBV2ProductBuilderSectionV2.
+
+### Fix
+1. **Tree Provider Pattern**: Added `onTreeProviderReady` callback that exposes a `getCurrentTree()` method from PBV2ProductBuilderSectionV2
+2. **Fresh Snapshot**: ProductEditorPage now calls `pbv2TreeProviderRef.current.getCurrentTree()` at save time to get the CURRENT normalized tree, not stale state
+3. **Simplified Flow**: Removed verification GET and redundant checks - just PUT and proceed
+4. **Render Spam Cleanup**: Removed render-time console logs that were spamming on every render
+
+### Changes
+- **PBV2ProductBuilderSectionV2.tsx**: Added `getCurrentPBV2Tree()` method and `onTreeProviderReady` callback
+- **ProductEditorPage.tsx**: Captures tree provider via ref, uses `getCurrentTree()` for fresh snapshot at save time
+- **OptionGroupsSidebar.tsx**: Removed `[PBV2_RENDER_GROUPS]` spam log
+
+### Testing
+✅ New product → Add group + option → Save → Reopen → Groups/options present  
+✅ Existing product → Add option → Save → Reload → Option persists  
+✅ No console spam during idle editing  
+✅ TypeScript compiles without errors
+
+---
+
 ## Root Cause Analysis
 
 ### Issue 1: Groups/Options Disappear After Save
