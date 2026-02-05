@@ -271,6 +271,10 @@ export default function PBV2ProductBuilderSectionV2({
             key: 'base',
             label: 'Base Entry',
             description: 'Base entry node',
+            compute: {
+              expression: { op: 'literal', value: 0 },
+              outputs: { value: { type: 'number' } },
+            },
           },
         },
         edges: [],
@@ -315,6 +319,10 @@ export default function PBV2ProductBuilderSectionV2({
             key: 'base',
             label: 'Base Entry',
             description: 'Base entry node',
+            compute: {
+              expression: { op: 'literal', value: 0 },
+              outputs: { value: { type: 'number' } },
+            },
           },
         },
         edges: [],
