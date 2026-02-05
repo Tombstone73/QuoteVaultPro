@@ -40,8 +40,17 @@ export function OptionDetailsEditor({
 }: OptionDetailsEditorProps) {
   // Get actual node data from tree
   const nodeData = React.useMemo(() => {
-    const nodes = treeJson?.nodes || [];
-    return nodes.find((n: any) => n.id === option.id);
+    const nodesRaw = treeJson?.nodes;
+    if (!nodesRaw) return undefined;
+    
+    // Handle both array and object (Record) format
+    if (Array.isArray(nodesRaw)) {
+      return nodesRaw.find((n: any) => n?.id === option.id);
+    } else if (typeof nodesRaw === 'object') {
+      return nodesRaw[option.id];
+    }
+    
+    return undefined;
   }, [treeJson, option.id]);
 
   const choices = nodeData?.choices || [];

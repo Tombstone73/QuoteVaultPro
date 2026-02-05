@@ -33,7 +33,7 @@ import {
 import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
-import { ensureRootNodeIds } from "@/lib/pbv2/pbv2ViewModel";
+import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -231,11 +231,11 @@ const ProductEditorPage = () => {
       const targetProductId = isNewProduct ? updatedProduct.id : productId;
       
       if (pbv2State && pbv2State.treeJson) {
-        // Server persists treeJson exactly as received; client must ensure rootNodeIds.
-        const repairedTree = ensureRootNodeIds(pbv2State.treeJson);
-        const nodes = (repairedTree as any)?.nodes || {};
+        // Normalize + ensure rootNodeIds before server persistence
+        const normalizedTree = normalizeTreeJson(pbv2State.treeJson);
+        const nodes = (normalizedTree as any)?.nodes || {};
         const nodeCount = Object.keys(nodes).length;
-        const rootCount = Array.isArray((repairedTree as any)?.rootNodeIds) ? (repairedTree as any).rootNodeIds.length : 0;
+        const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
         
         // HARD FAIL: Block save if tree has nodes but no rootNodeIds after repair
         if (nodeCount > 0 && rootCount === 0) {
@@ -248,7 +248,7 @@ const ProductEditorPage = () => {
             productId: targetProductId,
             nodeCount,
             rootCount,
-            treeJson: repairedTree,
+            treeJson: normalizedTree,
           });
           return; // Block navigation
         }
@@ -264,7 +264,7 @@ const ProductEditorPage = () => {
               groupCount,
               rootCount,
               draftId: pbv2State.draftId,
-              rootNodeIds: (repairedTree as any)?.rootNodeIds,
+              rootNodeIds: (normalizedTree as any)?.rootNodeIds,
             });
           }
           
@@ -273,7 +273,7 @@ const ProductEditorPage = () => {
               method: 'PUT',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ treeJson: repairedTree }),
+              body: JSON.stringify({ treeJson: normalizedTree }),
             });
             
             if (!draftRes.ok) {
