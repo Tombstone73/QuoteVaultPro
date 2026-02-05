@@ -248,24 +248,43 @@ export default function PBV2ProductBuilderSectionV2({
   const draft = treeQuery.data?.data?.draft ?? null;
   const active = treeQuery.data?.data?.active ?? null;
 
+  // Diagnostic logging on key state changes
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      console.log('[PBV2_INIT_STATE]', {
+        productId,
+        hasDraft: !!draft,
+        hasLocal: !!localTreeJson,
+        isLocalDirty,
+        lastLoadedProductId: lastLoadedProductIdRef.current,
+      });
+    }
+  }, [productId, draft, localTreeJson, isLocalDirty]);
+
   // Initialize local tree from draft OR create empty tree for new products
   useEffect(() => {
-    // DIRTY LOCK: If user has made local edits and productId hasn't changed, do NOT overwrite
-    if (isLocalDirty && lastLoadedProductIdRef.current === productId) {
-      console.error('[PBV2_SYNC_BLOCKED]', {
-        reason: 'Local edits in progress, blocking server sync',
-        productId,
-        isLocalDirty,
-      });
+    // DIRTY LOCK: Only block sync if localTreeJson is already populated AND productId hasn't changed
+    // CRITICAL: Allow hydration when localTreeJson is null, even if isLocalDirty is true
+    if (isLocalDirty && localTreeJson && lastLoadedProductIdRef.current === productId) {
+      if (import.meta.env.DEV) {
+        console.log('[PBV2_SYNC_BLOCKED]', {
+          reason: 'Local edits in progress, blocking server sync',
+          productId,
+          isLocalDirty,
+          hasLocalTree: !!localTreeJson,
+        });
+      }
       return;
     }
     
     // Product changed - reset dirty flag and allow hydration
-    if (lastLoadedProductIdRef.current !== productId) {
-      console.error('[PBV2_PRODUCT_CHANGED]', {
-        oldProductId: lastLoadedProductIdRef.current,
-        newProductId: productId,
-      });
+    if (lastLoadedProductIdRef.current !== productId && productId) {
+      if (import.meta.env.DEV) {
+        console.log('[PBV2_PRODUCT_CHANGED]', {
+          oldProductId: lastLoadedProductIdRef.current,
+          newProductId: productId,
+        });
+      }
       lastLoadedProductIdRef.current = productId ?? null;
       setIsLocalDirty(false);
     }
@@ -314,14 +333,6 @@ export default function PBV2ProductBuilderSectionV2({
         console.log('[PBV2_INIT] READY (new product)');
       }
       
-      const groupCount = Object.values((normalizedSeed as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
-      console.error('[PBV2_SYNC_OVERWRITE]', {
-        reason: 'Initial seed for new product',
-        time: Date.now(),
-        incomingGroupCount: groupCount,
-        currentGroupCount: localTreeJson ? Object.values((localTreeJson as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length : 0,
-      });
-      
       setLocalTreeJson(normalizedSeed);
       setHasLocalChanges(false);
       return;
@@ -331,6 +342,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (!draft) {
       if (import.meta.env.DEV) {
         console.log('[PBV2_INIT] start (mode: server, no draft exists)');
+        console.log('[PBV2_DRAFT_GET] result: not found, creating seed tree');
       }
       
       // No draft exists yet - create seed tree with runtime node
@@ -370,60 +382,42 @@ export default function PBV2ProductBuilderSectionV2({
         console.log('[PBV2_INIT] READY (no draft, seeded)');
       }
       
-      const groupCount = Object.values((normalizedSeed as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
-      console.error('[PBV2_SYNC_OVERWRITE]', {
-        reason: 'Seed for existing product (no draft)',
-        time: Date.now(),
-        incomingGroupCount: groupCount,
-        currentGroupCount: localTreeJson ? Object.values((localTreeJson as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length : 0,
-      });
-      
       setLocalTreeJson(normalizedSeed);
       setHasLocalChanges(false);
       return;
     }
 
-    // Only initialize if we don't have local changes
-    if (!hasLocalChanges) {
-      if (import.meta.env.DEV) {
-        console.log('[PBV2_INIT] start (mode: server, gotDraft: yes)');
-        const nodeCount = draft.treeJson ? Object.keys((draft.treeJson as any)?.nodes || {}).length : 0;
-        const groupCount = draft.treeJson ? Object.values((draft.treeJson as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
-        const rootCount = Array.isArray((draft.treeJson as any)?.rootNodeIds) ? (draft.treeJson as any).rootNodeIds.length : 0;
-        console.log('[PBV2ProductBuilderSectionV2] Initializing from draft (HYDRATION):', {
-          draftId: draft.id,
-          nodeCount,
-          groupCount,
-          rootCount,
-          schemaVersion: (draft.treeJson as any)?.schemaVersion,
-          rootNodeIds: (draft.treeJson as any)?.rootNodeIds,
-          hasRootNodeIds: rootCount > 0,
-        });
-        if (nodeCount > 0 && rootCount === 0) {
-          console.error('[PBV2ProductBuilderSectionV2] ⚠️ HYDRATION ISSUE: Tree has nodes but rootNodeIds is empty!');
-        }
-      }
-      // Normalize + repair rootNodeIds on hydration (enforce canonical rules)
-      const normalizedDraft = normalizeTreeJson(draft.treeJson);
-      if (import.meta.env.DEV) {
-        const nc = Object.keys((normalizedDraft as any)?.nodes || {}).length;
-        const rc = Array.isArray((normalizedDraft as any)?.rootNodeIds) ? (normalizedDraft as any).rootNodeIds.length : 0;
-        console.log(`[PBV2ProductBuilderSectionV2] Normalized & hydrated: nodes=${nc}, roots=${rc}`);
-        console.log('[PBV2_INIT] READY (draft loaded)');
-      }
-      
-      const groupCount = Object.values((normalizedDraft as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length;
-      console.error('[PBV2_SYNC_OVERWRITE]', {
-        reason: 'Hydration from server draft',
-        time: Date.now(),
-        incomingGroupCount: groupCount,
-        currentGroupCount: localTreeJson ? Object.values((localTreeJson as any)?.nodes || {}).filter((n: any) => n.type?.toUpperCase() === 'GROUP').length : 0,
+    // Draft exists - hydrate from server
+    if (import.meta.env.DEV) {
+      console.log('[PBV2_DRAFT_GET] result: found');
+      console.log('[PBV2_INIT] start (mode: server, gotDraft: yes)');
+      const nodeCount = draft.treeJson ? Object.keys((draft.treeJson as any)?.nodes || {}).length : 0;
+      const groupCount = draft.treeJson ? Object.values((draft.treeJson as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length : 0;
+      const rootCount = Array.isArray((draft.treeJson as any)?.rootNodeIds) ? (draft.treeJson as any).rootNodeIds.length : 0;
+      console.log('[PBV2ProductBuilderSectionV2] Initializing from draft (HYDRATION):', {
         draftId: draft.id,
+        nodeCount,
+        groupCount,
+        rootCount,
+        schemaVersion: (draft.treeJson as any)?.schemaVersion,
+        rootNodeIds: (draft.treeJson as any)?.rootNodeIds,
+        hasRootNodeIds: rootCount > 0,
       });
-      
-      setLocalTreeJson(normalizedDraft);
+      if (nodeCount > 0 && rootCount === 0) {
+        console.error('[PBV2ProductBuilderSectionV2] ⚠️ HYDRATION ISSUE: Tree has nodes but rootNodeIds is empty!');
+      }
     }
-  }, [productId, draft?.id, draft?.treeJson, hasLocalChanges, isLocalDirty]);
+    // Normalize + repair rootNodeIds on hydration (enforce canonical rules)
+    const normalizedDraft = normalizeTreeJson(draft.treeJson);
+    if (import.meta.env.DEV) {
+      const nc = Object.keys((normalizedDraft as any)?.nodes || {}).length;
+      const rc = Array.isArray((normalizedDraft as any)?.rootNodeIds) ? (normalizedDraft as any).rootNodeIds.length : 0;
+      console.log(`[PBV2ProductBuilderSectionV2] Normalized & hydrated: nodes=${nc}, roots=${rc}`);
+      console.log('[PBV2_INIT] READY (draft loaded)');
+    }
+    
+    setLocalTreeJson(normalizedDraft);
+  }, [productId, draft?.id, draft?.treeJson, isLocalDirty, localTreeJson]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {
@@ -827,6 +821,10 @@ export default function PBV2ProductBuilderSectionV2({
         throw new Error(envelopeMessage(result.status, result.json, "Failed to save draft"));
       }
 
+      if (import.meta.env.DEV) {
+        console.log('[PBV2_DRAFT_PUT] success');
+      }
+
       toast({ title: "Draft saved" });
       setHasLocalChanges(false);
       setIsLocalDirty(false); // Clear dirty flag on successful save
@@ -854,6 +852,9 @@ export default function PBV2ProductBuilderSectionV2({
       // HARD FAIL CHECK: Verify draft exists after refetch
       const refetchedData = treeQuery.data;
       if (!refetchedData?.data?.draft) {
+        if (import.meta.env.DEV) {
+          console.error('[PBV2_DRAFT_PUT] failed: draft row not found after save');
+        }
         toast({ 
           title: "PBV2 draft did not persist", 
           description: "No DB row after save", 
@@ -862,6 +863,9 @@ export default function PBV2ProductBuilderSectionV2({
         setHasLocalChanges(true); // Keep unsaved state
       }
     } catch (error: any) {
+      if (import.meta.env.DEV) {
+        console.error('[PBV2_DRAFT_PUT] failed:', error.message);
+      }
       toast({ title: "Draft save failed", description: error.message, variant: "destructive" });
     }
   };
