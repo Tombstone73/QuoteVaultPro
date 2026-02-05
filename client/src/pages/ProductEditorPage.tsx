@@ -577,7 +577,6 @@ const ProductEditorPage = () => {
               productTypes={productTypes}
               onSave={handleSave}
               formId="product-editor-form"
-              onPbv2StateChange={setPbv2State}
             />
 
             <PBV2ProductBuilderSectionV2 

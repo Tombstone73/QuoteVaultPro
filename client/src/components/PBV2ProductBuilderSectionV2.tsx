@@ -298,16 +298,16 @@ export default function PBV2ProductBuilderSectionV2({
     return normalizeTreeJson(localTreeJson);
   };
 
-  // Register tree provider with parent on mount
-  useEffect(() => {
-    if (onTreeProviderReady) {
-      onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree });
-      if (import.meta.env.DEV) {
-        console.log('[PBV2] Tree provider registered with parent');
-      }
+  // Register tree provider IMMEDIATELY (synchronous) to prevent race condition
+  // This ensures the provider is available when parent calls getCurrentTree during save
+  const providerRegistered = useRef(false);
+  if (!providerRegistered.current && onTreeProviderReady) {
+    onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree });
+    providerRegistered.current = true;
+    if (import.meta.env.DEV) {
+      console.log('[PBV2] Tree provider registered (sync)');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run once on mount
+  }
 
   // Diagnostic logging on key state changes
   useEffect(() => {
