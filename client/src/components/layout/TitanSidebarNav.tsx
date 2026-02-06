@@ -233,6 +233,10 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
 
   // Use button instead of NavLink to have full control over navigation
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (import.meta.env.DEV) {
+      console.log('[NAV_GUARD] sidebar click', { to: item.path, name: item.name });
+    }
+    
     // Ctrl/Cmd+click should open in new tab (simulate with window.open)
     if (e.ctrlKey || e.metaKey) {
       window.open(item.path, '_blank');

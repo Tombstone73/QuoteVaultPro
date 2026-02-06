@@ -41,6 +41,10 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const guardedNavigate = useCallback((to: string) => {
     const guard = guardRef.current;
     
+    if (import.meta.env.DEV) {
+      console.log('[GUARD] guardedNavigate called', { to, hasGuard: !!guard });
+    }
+    
     // No guard registered, allow navigation
     if (!guard) {
       if (import.meta.env.DEV) {
@@ -51,6 +55,10 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     }
 
     const result = guard(to);
+    
+    if (import.meta.env.DEV) {
+      console.log('[GUARD] guard returned', { to, result, resultType: typeof result });
+    }
     
     // Guard returned false/null/undefined, allow navigation
     if (!result) {

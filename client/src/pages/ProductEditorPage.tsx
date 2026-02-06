@@ -162,6 +162,12 @@ const ProductEditorPage = () => {
 
   // Derived dirty state: combine RHF form dirty + PBV2 dirty
   const hasUnsavedChanges = form.formState.isDirty || (pbv2State?.hasChanges ?? false);
+  
+  // Use ref to prevent stale closure in guard function
+  const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
+  useEffect(() => {
+    hasUnsavedChangesRef.current = hasUnsavedChanges;
+  }, [hasUnsavedChanges]);
 
   // Browser-level protection: warn on tab close/refresh if unsaved changes
   // TODO: When migrating to Data Router (RouterProvider + createBrowserRouter),
@@ -182,12 +188,36 @@ const ProductEditorPage = () => {
   // In-app navigation guard: register with NavigationGuardContext
   const { registerGuard } = useNavigationGuard();
   useEffect(() => {
-    const unregister = registerGuard(() => {
-      if (!hasUnsavedChanges) return false; // Allow navigation
+    const unregister = registerGuard((targetPath) => {
+      // Read from ref to avoid stale closure
+      const dirty = hasUnsavedChangesRef.current;
+      
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] ProductEditor guard called', { targetPath, dirty });
+      }
+      if (!dirty) {
+        if (import.meta.env.DEV) {
+          console.log('[GUARD] ProductEditor guard: allow (no changes)');
+        }
+        return false; // Allow navigation
+      }
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] ProductEditor guard: prompt (has changes)');
+      }
       return 'You have unsaved changes. Are you sure you want to leave without saving?';
     });
-    return unregister;
-  }, [hasUnsavedChanges, registerGuard]);
+    
+    if (import.meta.env.DEV) {
+      console.log('[GUARD] ProductEditor guard registered', { hasUnsavedChanges });
+    }
+    
+    return () => {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] ProductEditor guard unregistered');
+      }
+      unregister();
+    };
+  }, [registerGuard]); // Remove hasUnsavedChanges from deps since we use ref
 
   const { data: materials } = useMaterials();
   const { data: pricingFormulas } = usePricingFormulas();
