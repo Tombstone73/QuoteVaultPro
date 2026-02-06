@@ -241,6 +241,9 @@ export default function PBV2ProductBuilderSectionV2({
   const [localTreeJson, setLocalTreeJson] = useState<unknown>(null);
   const [hasLocalChanges, setHasLocalChanges] = useState(false);
   
+  // Ref mirror for localTreeJson to avoid stale closure in getCurrentPBV2Tree
+  const localTreeJsonRef = useRef<unknown>(null);
+  
   // Dirty lock: Prevent server sync from overwriting local edits
   const [isLocalDirty, setIsLocalDirty] = useState(false);
   const lastLoadedProductIdRef = useRef<string | null | undefined>(null);
@@ -293,21 +296,27 @@ export default function PBV2ProductBuilderSectionV2({
   const active = treeQuery.data?.data?.active ?? null;
 
   // Expose method to get current tree for external persistence (product creation)
+  // CRITICAL: Reads from ref, not state, to avoid stale closure
   const getCurrentPBV2Tree = () => {
-    if (!localTreeJson) return null;
-    return normalizeTreeJson(localTreeJson);
+    if (!localTreeJsonRef.current) return null;
+    return normalizeTreeJson(localTreeJsonRef.current);
   };
 
-  // Register tree provider with parent on mount
+  // Keep ref in sync with state
   useEffect(() => {
-    if (onTreeProviderReady) {
-      onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree });
-      if (import.meta.env.DEV) {
-        console.log('[PBV2] Tree provider registered with parent');
-      }
+    localTreeJsonRef.current = localTreeJson;
+  }, [localTreeJson]);
+
+  // Register tree provider IMMEDIATELY (synchronous) to prevent race condition
+  // This ensures the provider is available when parent calls getCurrentTree during save
+  const providerRegistered = useRef(false);
+  if (!providerRegistered.current && onTreeProviderReady) {
+    onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree });
+    providerRegistered.current = true;
+    if (import.meta.env.DEV) {
+      console.log('[PBV2] Tree provider registered (sync)');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run once on mount
+  }
 
   // Diagnostic logging on key state changes
   useEffect(() => {

@@ -190,11 +190,17 @@ const ProductEditorPage = () => {
         
         let response;
         if (effectiveIsNewProduct) {
+          if (import.meta.env.DEV) {
+            console.log('[SAVE_PRODUCT]', { productId: 'new', mode: 'create' });
+          }
           response = await apiRequest("POST", "/api/products", payload);
           if (import.meta.env.DEV) {
             console.log('[SAVE_PIPELINE] phase=create-ok');
           }
         } else {
+          if (import.meta.env.DEV) {
+            console.log('[SAVE_PRODUCT]', { productId: effectiveProductId, mode: 'update' });
+          }
           response = await apiRequest("PATCH", `/api/products/${effectiveProductId}`, payload);
           if (import.meta.env.DEV) {
             console.log('[SAVE_PIPELINE] phase=update-ok');
@@ -237,23 +243,29 @@ const ProductEditorPage = () => {
         // Get FRESH tree snapshot at save time
         const freshTreeJson = pbv2TreeProviderRef.current?.getCurrentTree();
         
+        if (import.meta.env.DEV) {
+          console.log('[PBV2_DRAFT_CHECK]', {
+            hasProvider: !!pbv2TreeProviderRef.current,
+            hasGetCurrentTree: !!pbv2TreeProviderRef.current?.getCurrentTree,
+            hasFreshTree: !!freshTreeJson,
+            freshTreeType: typeof freshTreeJson,
+          });
+        }
+        
         if (!freshTreeJson) {
           if (import.meta.env.DEV) {
-            console.log('[SAVE_PIPELINE] phase=pbv2-skip reason=no-tree', {
+            console.error('[SAVE_PIPELINE] phase=pbv2-error reason=no-tree', {
               hasProvider: !!pbv2TreeProviderRef.current,
               providerHasMethod: !!pbv2TreeProviderRef.current?.getCurrentTree,
             });
           }
-          // No tree to save, but product saved successfully
+          // ERROR: PBV2 options not ready - this should not happen after stale closure fix
           toast({
-            title: isNewProduct ? "Product Created" : "Product Updated",
-            description: "Product saved successfully.",
+            title: "PBV2 Options Not Saved",
+            description: "Product saved but PBV2 options could not be persisted. Please try saving again.",
+            variant: "destructive",
           });
-          queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-          if (productId) {
-            queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
-          }
-          navigate("/products");
+          // Do NOT navigate - let user retry
           return;
         }
         
@@ -286,12 +298,9 @@ const ProductEditorPage = () => {
         // Only persist if there are actual nodes (not just empty seed)
         if (nodeCount > 0) {
           if (import.meta.env.DEV) {
-            console.log('[SAVE_PIPELINE] phase=pbv2-flush-start', {
+            console.log('[PBV2_DRAFT_PUT] start', {
               productId: targetProductId,
-              nodeCount,
-              groupCount,
-              optionCount,
-              edgeCount: edges.length,
+              counts: { nodeCount, groupCount, optionCount, edgeCount: edges.length },
             });
           }
           
@@ -310,7 +319,7 @@ const ProductEditorPage = () => {
               variant: "destructive" 
             });
             if (import.meta.env.DEV) {
-              console.error('[SAVE_PIPELINE] phase=pbv2-flush-failed', errData);
+              console.error('[PBV2_DRAFT_PUT] fail', { message: errData.message || 'Unknown error' });
             }
             // Don't navigate - let user retry
             return;
@@ -318,7 +327,7 @@ const ProductEditorPage = () => {
           
           if (import.meta.env.DEV) {
             const draftData = await draftRes.json();
-            console.log('[SAVE_PIPELINE] phase=pbv2-flush-ok', { draftId: draftData.data?.id });
+            console.log('[PBV2_DRAFT_PUT] ok', { draftId: draftData.data?.id });
           }
         } else {
           if (import.meta.env.DEV) {
@@ -577,7 +586,6 @@ const ProductEditorPage = () => {
               productTypes={productTypes}
               onSave={handleSave}
               formId="product-editor-form"
-              onPbv2StateChange={setPbv2State}
             />
 
             <PBV2ProductBuilderSectionV2 
