@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useState, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import {
   Home,
   Users,
@@ -219,8 +219,11 @@ interface NavItemProps {
 
 function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
   const location = useLocation();
-  const { guardedNavigate } = useNavigationGuard();
+  const { guardedNavigate, isGuardActive } = useNavigationGuard();
   const Icon = item.icon;
+  
+  // Check if guard is currently active (has unsaved changes)
+  const shouldIntercept = isGuardActive();
 
   // Check if this item is active (exact match or starts with for nested routes)
   // Special case: /production should ONLY match exact /production, not /production/flatbed etc.
@@ -231,36 +234,17 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
     return item.path !== "/" && pathname.startsWith(item.path + "/");
   })();
 
-  // Use button instead of NavLink to have full control over navigation
-  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (import.meta.env.DEV) {
-      console.log('[NAV_GUARD] sidebar click', { to: item.path, name: item.name });
-    }
-    
-    // Ctrl/Cmd+click should open in new tab (simulate with window.open)
-    if (e.ctrlKey || e.metaKey) {
-      window.open(item.path, '_blank');
-      return;
-    }
-    
-    // Use guarded navigate (handles guard check + confirm internally)
-    guardedNavigate(item.path);
-  };
+  const itemClasses = cn(
+    "w-full flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
+    "hover:bg-titan-bg-card-elevated hover:text-titan-text-primary",
+    isActive
+      ? "bg-titan-accent/10 text-titan-accent border-l-2 border-titan-accent"
+      : "text-titan-text-secondary",
+    isCollapsed && "justify-center px-2"
+  );
 
-  return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className={cn(
-        "w-full flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
-        "hover:bg-titan-bg-card-elevated hover:text-titan-text-primary",
-        isActive
-          ? "bg-titan-accent/10 text-titan-accent border-l-2 border-titan-accent"
-          : "text-titan-text-secondary",
-        isCollapsed && "justify-center px-2"
-      )}
-      title={isCollapsed ? item.name : undefined}
-    >
+  const itemContent = (
+    <>
       <Icon className="h-4 w-4 shrink-0" />
       {!isCollapsed && (
         <>
@@ -272,6 +256,51 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
           )}
         </>
       )}
+    </>
+  );
+
+  // When guard is NOT active (no unsaved changes), use NavLink for normal navigation
+  if (!shouldIntercept) {
+    return (
+      <NavLink
+        to={item.path}
+        className={itemClasses}
+        title={isCollapsed ? item.name : undefined}
+        onClick={() => {
+          if (import.meta.env.DEV) {
+            console.log('[NAV_GUARD] click', { to: item.path, dirty: false, prevented: false });
+          }
+        }}
+      >
+        {itemContent}
+      </NavLink>
+    );
+  }
+
+  // When guard IS active (has unsaved changes), use button with guarded navigation
+  const handleGuardedClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // Ctrl/Cmd+click should open in new tab
+    if (e.ctrlKey || e.metaKey) {
+      window.open(item.path, '_blank');
+      return;
+    }
+    
+    if (import.meta.env.DEV) {
+      console.log('[NAV_GUARD] click', { to: item.path, dirty: true, prevented: true });
+    }
+    
+    // Use guarded navigate (will show confirm and navigate on OK)
+    guardedNavigate(item.path);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleGuardedClick}
+      className={itemClasses}
+      title={isCollapsed ? item.name : undefined}
+    >
+      {itemContent}
     </button>
   );
 }

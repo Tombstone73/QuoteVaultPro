@@ -5,9 +5,9 @@ import { useNavigate, useLocation } from 'react-router-dom';
  * NavigationGuardContext
  * 
  * Enterprise-safe navigation guard system for BrowserRouter apps.
- * Handles both PUSH (sidebar clicks) and POP (browser back/forward) navigation.
+ * Provides guard state and functions for conditional navigation interception.
  * 
- * Critical: Never allows URL to change without route committing.
+ * Critical: Only intercepts when guard is active (dirty=true).
  * 
  * TODO: When migrating to Data Router (RouterProvider + createBrowserRouter),
  * replace this with official useBlocker hook and errorElement boundaries.
@@ -19,6 +19,7 @@ type NavigationGuardFn = (targetPath: string) => string | boolean;
 interface NavigationGuardContextValue {
   registerGuard: (guard: NavigationGuardFn) => () => void;
   guardedNavigate: (to: string) => void;
+  isGuardActive: () => boolean; // Check if guard would block
 }
 
 const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);
@@ -35,6 +36,16 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     return () => {
       guardRef.current = null;
     };
+  }, []);
+
+  // Check if guard would currently block navigation
+  const isGuardActive = useCallback(() => {
+    const guard = guardRef.current;
+    if (!guard) return false;
+    
+    // Call guard with empty string to check if it would block any navigation
+    const result = guard('');
+    return !!result; // Returns true if guard would block (truthy result)
   }, []);
 
   // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
@@ -92,6 +103,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   }, [navigate]);
 
   // Handle browser back/forward (POP navigation)
+  // Only intercepts when guard is active (dirty=true)
   useEffect(() => {
     const currentPath = location.pathname + location.search;
     
@@ -116,16 +128,16 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     if (currentPath !== lastStablePath) {
       const result = guard(currentPath);
       
-      // Guard allows navigation (false/null/undefined)
+      // Guard allows navigation (false/null/undefined) - NOT DIRTY
       if (!result) {
         if (import.meta.env.DEV) {
-          console.log('[GUARD] allow action=POP from:', lastStablePath, 'to:', currentPath);
+          console.log('[GUARD] allow action=POP (not dirty) from:', lastStablePath, 'to:', currentPath);
         }
         lastStableLocationRef.current = currentPath;
         return;
       }
 
-      // Guard wants to block - show confirm
+      // Guard wants to block (dirty=true) - show confirm
       const message = result === true ? 'You have unsaved changes. Are you sure you want to leave?' : result;
       const confirmed = window.confirm(message);
 
@@ -147,7 +159,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   }, [location, navigate]);
 
   return (
-    <NavigationGuardContext.Provider value={{ registerGuard, guardedNavigate }}>
+    <NavigationGuardContext.Provider value={{ registerGuard, guardedNavigate, isGuardActive }}>
       {children}
     </NavigationGuardContext.Provider>
   );
