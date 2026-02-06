@@ -94,16 +94,26 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     const currentPath = location.pathname + location.search;
     
     // CRITICAL: Only run guard logic for POP navigation (browser back/forward)
-    // NavLink clicks are PUSH navigation and should not be intercepted here
+    // NavLink clicks are PUSH navigation and should NEVER be intercepted here
     if (navigationType !== 'POP') {
       lastStableLocationRef.current = currentPath;
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] Allowing PUSH/REPLACE navigation, type:', navigationType, 'to:', currentPath);
+      }
       return;
+    }
+    
+    if (import.meta.env.DEV) {
+      console.log('[GUARD] POP navigation detected from:', lastStableLocationRef.current, 'to:', currentPath);
     }
     
     // Skip guard logic if we're currently reverting a POP to avoid recursion
     if (isRevertingRef.current) {
       isRevertingRef.current = false;
       lastStableLocationRef.current = currentPath;
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] Skipping guard logic (currently reverting)');
+      }
       return;
     }
 
@@ -114,6 +124,9 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     // If no shouldBlock function OR it returns false, allow POP navigation immediately
     if (!shouldBlock || !shouldBlock()) {
       lastStableLocationRef.current = currentPath;
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] Allowing POP (not dirty or no shouldBlock)');
+      }
       return;
     }
     
@@ -121,6 +134,9 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     if (!guard) {
       // No guard function but shouldBlock is true - allow navigation anyway
       lastStableLocationRef.current = currentPath;
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] Allowing POP (no guard function)');
+      }
       return;
     }
 
@@ -156,6 +172,10 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         }
         isRevertingRef.current = true;
         navigate(lastStablePath, { replace: true });
+      }
+    } else {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] POP navigation but path unchanged, ignoring');
       }
     }
   }, [location, navigate, navigationType]);
