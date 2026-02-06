@@ -60,6 +60,7 @@ const ProductEditorPage = () => {
   // Track PBV2 state for persistence
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null } | null>(null);
+  const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
@@ -343,6 +344,15 @@ const ProductEditorPage = () => {
             : "The product has been updated successfully."
         });
         
+        // CRITICAL: Reset form dirty state to unblock navigation
+        // This must happen BEFORE navigate() to prevent navigation hold
+        const currentValues = form.getValues();
+        form.reset(currentValues, { keepValues: true });
+        
+        if (import.meta.env.DEV) {
+          console.log('[SAVE_PIPELINE] phase=form-reset isDirty=', form.formState.isDirty);
+        }
+        
         // Invalidate caches
         queryClient.invalidateQueries({ queryKey: ["/api/products"] });
         if (productId) {
@@ -593,6 +603,9 @@ const ProductEditorPage = () => {
               onPbv2StateChange={setPbv2State}
               onTreeProviderReady={(provider) => {
                 pbv2TreeProviderRef.current = provider;
+              }}
+              onClearDirtyReady={(clearDirty) => {
+                pbv2ClearDirtyRef.current = clearDirty;
               }}
             />
           </div>
