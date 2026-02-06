@@ -268,7 +268,12 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
         title={isCollapsed ? item.name : undefined}
         onClick={() => {
           if (import.meta.env.DEV) {
-            console.log('[NAV_GUARD] click', { to: item.path, dirty: false, prevented: false });
+            console.log('[NAV_GUARD] attempt', { 
+              to: item.path, 
+              hasUnsavedChanges: false, 
+              decision: 'allow',
+              method: 'NavLink'
+            });
           }
         }}
       >
@@ -286,7 +291,12 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
     }
     
     if (import.meta.env.DEV) {
-      console.log('[NAV_GUARD] click', { to: item.path, dirty: true, prevented: true });
+      console.log('[NAV_GUARD] attempt', { 
+        to: item.path, 
+        hasUnsavedChanges: true, 
+        decision: 'confirm',
+        method: 'guardedNavigate'
+      });
     }
     
     // Use guarded navigate (will show confirm and navigate on OK)
