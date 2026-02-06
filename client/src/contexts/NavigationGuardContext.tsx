@@ -1,14 +1,13 @@
-import React, { createContext, useContext, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useCallback, useRef, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 
 /**
  * NavigationGuardContext
  * 
  * Enterprise-safe navigation guard system for BrowserRouter apps.
- * Pages can register a guard function to intercept navigation attempts.
+ * Handles both PUSH (sidebar clicks) and POP (browser back/forward) navigation.
  * 
- * Usage:
- * - ProductEditorPage: registerGuard(() => { if (dirty) return "Unsaved changes!"; })
- * - Sidebar/Nav: Before navigate(), check guard and show confirm if needed
+ * Critical: Never allows URL to change without route committing.
  * 
  * TODO: When migrating to Data Router (RouterProvider + createBrowserRouter),
  * replace this with official useBlocker hook and errorElement boundaries.
@@ -18,29 +17,18 @@ import React, { createContext, useContext, useCallback, useRef } from 'react';
 type NavigationGuardFn = (targetPath: string) => string | boolean;
 
 interface NavigationGuardContextValue {
-  /**
-   * Register a navigation guard function.
-   * Returns a cleanup function to unregister.
-   * 
-   * @param guard - Function that returns:
-   *   - false/undefined/null: Allow navigation
-   *   - true: Block navigation silently (not recommended)
-   *   - string: Block with this message (will show confirm dialog)
-   */
   registerGuard: (guard: NavigationGuardFn) => () => void;
-  
-  /**
-   * Check if navigation to targetPath is allowed.
-   * Returns true if allowed, false if blocked.
-   * Handles confirm dialog automatically if guard returns a message.
-   */
-  checkNavigation: (targetPath: string) => boolean;
+  guardedNavigate: (to: string) => void;
 }
 
 const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);
 
 export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const guardRef = useRef<NavigationGuardFn | null>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const lastStableLocationRef = useRef<string>(location.pathname + location.search);
+  const isRevertingRef = useRef<boolean>(false);
 
   const registerGuard = useCallback((guard: NavigationGuardFn) => {
     guardRef.current = guard;
@@ -49,21 +37,109 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     };
   }, []);
 
-  const checkNavigation = useCallback((targetPath: string): boolean => {
+  // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
+  const guardedNavigate = useCallback((to: string) => {
     const guard = guardRef.current;
-    if (!guard) return true; // No guard registered, allow
+    
+    // No guard registered, allow navigation
+    if (!guard) {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] allow (no guard) action=PUSH to:', to);
+      }
+      navigate(to);
+      return;
+    }
 
-    const result = guard(targetPath);
+    const result = guard(to);
     
-    if (!result) return true; // Guard returned false/null/undefined, allow
-    if (result === true) return false; // Guard returned true, block silently
-    
+    // Guard returned false/null/undefined, allow navigation
+    if (!result) {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] allow (guard returned false) action=PUSH to:', to);
+      }
+      navigate(to);
+      return;
+    }
+
+    // Guard returned true, block silently
+    if (result === true) {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] deny (silent) action=PUSH to:', to);
+      }
+      return;
+    }
+
     // Guard returned string message, show confirm
-    return window.confirm(result);
-  }, []);
+    const confirmed = window.confirm(result);
+    if (confirmed) {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] allow (user confirmed) action=PUSH to:', to);
+      }
+      navigate(to);
+    } else {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] deny (user cancelled) action=PUSH to:', to);
+      }
+    }
+  }, [navigate]);
+
+  // Handle browser back/forward (POP navigation)
+  useEffect(() => {
+    const currentPath = location.pathname + location.search;
+    
+    // Skip guard logic if we're currently reverting a POP to avoid recursion
+    if (isRevertingRef.current) {
+      isRevertingRef.current = false;
+      lastStableLocationRef.current = currentPath;
+      return;
+    }
+
+    const guard = guardRef.current;
+    
+    // No guard registered, track stable location and allow
+    if (!guard) {
+      lastStableLocationRef.current = currentPath;
+      return;
+    }
+
+    const lastStablePath = lastStableLocationRef.current;
+    
+    // If location changed, this is a POP navigation attempt
+    if (currentPath !== lastStablePath) {
+      const result = guard(currentPath);
+      
+      // Guard allows navigation (false/null/undefined)
+      if (!result) {
+        if (import.meta.env.DEV) {
+          console.log('[GUARD] allow action=POP from:', lastStablePath, 'to:', currentPath);
+        }
+        lastStableLocationRef.current = currentPath;
+        return;
+      }
+
+      // Guard wants to block - show confirm
+      const message = result === true ? 'You have unsaved changes. Are you sure you want to leave?' : result;
+      const confirmed = window.confirm(message);
+
+      if (confirmed) {
+        // User confirmed, allow the POP navigation
+        if (import.meta.env.DEV) {
+          console.log('[GUARD] allow (user confirmed) action=POP from:', lastStablePath, 'to:', currentPath);
+        }
+        lastStableLocationRef.current = currentPath;
+      } else {
+        // User cancelled, revert URL to match UI
+        if (import.meta.env.DEV) {
+          console.log('[GUARD] deny (user cancelled) action=POP, reverting to:', lastStablePath);
+        }
+        isRevertingRef.current = true;
+        navigate(lastStablePath, { replace: true });
+      }
+    }
+  }, [location, navigate]);
 
   return (
-    <NavigationGuardContext.Provider value={{ registerGuard, checkNavigation }}>
+    <NavigationGuardContext.Provider value={{ registerGuard, guardedNavigate }}>
       {children}
     </NavigationGuardContext.Provider>
   );
