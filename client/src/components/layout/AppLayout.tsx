@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { TitanSidebarNav } from "./TitanSidebarNav";
 import { TitanTopBar } from "./TitanTopBar";
 import { Menu, X } from "lucide-react";
@@ -8,8 +8,14 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 export function AppLayout() {
+  const location = useLocation();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  
+  // DIAGNOSTIC: Track layout renders
+  if (import.meta.env.DEV) {
+    console.log('[LAYOUT_RENDER] AppLayout', location.pathname);
+  }
 
   const orderRightCol = isSidebarCollapsed
     ? "clamp(340px, 24vw, 460px)"
