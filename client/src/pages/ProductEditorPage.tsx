@@ -200,32 +200,35 @@ const ProductEditorPage = () => {
   // In-app navigation guard: register with NavigationGuardContext
   const { registerGuard } = useNavigationGuard();
   useEffect(() => {
-    const unregister = registerGuard((targetPath) => {
-      // Read from ref to avoid stale closure
-      const dirty = hasUnsavedChangesRef.current;
-      
-      if (import.meta.env.DEV) {
-        const decision = dirty ? 'confirm' : 'allow';
-        console.log('[NAV_GUARD] ProductEditor guard called', { 
-          targetPath, 
-          dirty, 
-          decision,
-          rhfDirty: form.formState.isDirty,
-          pbv2Dirty: pbv2State?.hasChanges ?? false
-        });
-      }
-      
-      if (!dirty) {
+    const unregister = registerGuard(
+      (targetPath) => {
+        // Read from ref to avoid stale closure
+        const dirty = hasUnsavedChangesRef.current;
+        
         if (import.meta.env.DEV) {
-          console.log('[GUARD] ProductEditor guard: allow (no changes)');
+          const decision = dirty ? 'confirm' : 'allow';
+          console.log('[NAV_GUARD] ProductEditor guard called', { 
+            targetPath, 
+            dirty, 
+            decision,
+            rhfDirty: form.formState.isDirty,
+            pbv2Dirty: pbv2State?.hasChanges ?? false
+          });
         }
-        return false; // Allow navigation
-      }
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] ProductEditor guard: prompt (has changes)');
-      }
-      return 'You have unsaved changes. Are you sure you want to leave without saving?';
-    });
+        
+        if (!dirty) {
+          if (import.meta.env.DEV) {
+            console.log('[GUARD] ProductEditor guard: allow (no changes)');
+          }
+          return false; // Allow navigation
+        }
+        if (import.meta.env.DEV) {
+          console.log('[GUARD] ProductEditor guard: prompt (has changes)');
+        }
+        return 'You have unsaved changes. Are you sure you want to leave without saving?';
+      },
+      () => hasUnsavedChangesRef.current // shouldBlock function
+    );
     
     if (import.meta.env.DEV) {
       console.log('[GUARD] ProductEditor guard registered', { 
