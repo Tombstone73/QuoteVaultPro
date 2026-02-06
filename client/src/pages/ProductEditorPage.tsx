@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useBlocker } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -51,6 +51,8 @@ const ProductEditorPage = () => {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const lastLoadedRef = useRef<ProductFormData | null>(null);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [blockerOpen, setBlockerOpen] = useState(false);
+  const blockerProceedRef = useRef<(() => void) | null>(null);
   
   // Single-flight guard: Prevent duplicate product creation from rapid clicks
   const saveInFlightRef = useRef<boolean>(false);
@@ -140,6 +142,14 @@ const ProductEditorPage = () => {
       };
       lastLoadedRef.current = nextValues;
       form.reset(nextValues);
+      
+      // DEV: Verify form is not dirty after reset
+      if (import.meta.env.DEV) {
+        // Check dirty state on next tick (after reset completes)
+        setTimeout(() => {
+          console.log('[ProductEditorPage] After load reset: isDirty=', form.formState.isDirty);
+        }, 0);
+      }
     }
   }, [product, isNewProduct, form]);
 
@@ -150,6 +160,34 @@ const ProductEditorPage = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNewProduct]);
+
+  // Derived dirty state: combine RHF form dirty + PBV2 dirty
+  const hasUnsavedChanges = form.formState.isDirty || (pbv2State?.hasChanges ?? false);
+
+  // Navigation guard: block only when there are real unsaved changes
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    // Don't block if no unsaved changes
+    if (!hasUnsavedChanges) return false;
+    
+    // Don't block if navigating to same path
+    if (currentLocation.pathname === nextLocation.pathname) return false;
+    
+    // Block and show confirm dialog
+    return true;
+  });
+
+  // Handle blocker state changes
+  useEffect(() => {
+    if (blocker.state === 'blocked') {
+      setBlockerOpen(true);
+      blockerProceedRef.current = () => {
+        blocker.proceed?.();
+      };
+    } else {
+      setBlockerOpen(false);
+      blockerProceedRef.current = null;
+    }
+  }, [blocker.state, blocker]);
 
   const { data: materials } = useMaterials();
   const { data: pricingFormulas } = usePricingFormulas();
@@ -583,38 +621,71 @@ const ProductEditorPage = () => {
   );
 
   return (
-    <SplitWorkspace
-      left={
-        <Form {...form}>
-          <div className="pb-6">
-            {header}
+    <>
+      <SplitWorkspace
+        left={
+          <Form {...form}>
+            <div className="pb-6">
+              {header}
 
-            <ProductForm
-              form={form}
-              materials={materials}
-              pricingFormulas={pricingFormulas}
-              productTypes={productTypes}
-              onSave={handleSave}
-              formId="product-editor-form"
-            />
+              <ProductForm
+                form={form}
+                materials={materials}
+                pricingFormulas={pricingFormulas}
+                productTypes={productTypes}
+                onSave={handleSave}
+                formId="product-editor-form"
+              />
 
-            <PBV2ProductBuilderSectionV2 
-              productId={productId || null}
-              onPbv2StateChange={setPbv2State}
-              onTreeProviderReady={(provider) => {
-                pbv2TreeProviderRef.current = provider;
-              }}
-              onClearDirtyReady={(clearDirty) => {
-                pbv2ClearDirtyRef.current = clearDirty;
-              }}
-            />
-          </div>
-        </Form>
+              <PBV2ProductBuilderSectionV2 
+                productId={productId || null}
+                onPbv2StateChange={setPbv2State}
+                onTreeProviderReady={(provider) => {
+                  pbv2TreeProviderRef.current = provider;
+                }}
+                onClearDirtyReady={(clearDirty) => {
+                  pbv2ClearDirtyRef.current = clearDirty;
+                }}
+              />
+            </div>
+          </Form>
+        }
+        right={<ProductSimulator draft={draft} isDirty={form.formState.isDirty} />}
+        rightTitle="Live Simulator"
+        storageKey="productEditor.simOpen"
+      />
+
+      {/* Navigation Guard Dialog */}
+      <AlertDialog open={blockerOpen} onOpenChange={(open) => {
+      if (!open && blocker.state === 'blocked') {
+        blocker.reset?.();
+        setBlockerOpen(false);
       }
-      right={<ProductSimulator draft={draft} isDirty={form.formState.isDirty} />}
-      rightTitle="Live Simulator"
-      storageKey="productEditor.simOpen"
-    />
+    }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
+          <AlertDialogDescription>
+            You have unsaved changes. Are you sure you want to leave without saving?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => {
+            blocker.reset?.();
+            setBlockerOpen(false);
+          }}>
+            Stay
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={() => {
+            blockerProceedRef.current?.();
+            setBlockerOpen(false);
+          }}>
+            Leave Without Saving
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 };
 
