@@ -227,11 +227,13 @@ function envelopeMessage(status: number, json: any, fallback: string) {
 export default function PBV2ProductBuilderSectionV2({ 
   productId,
   onPbv2StateChange,
-  onTreeProviderReady
+  onTreeProviderReady,
+  onClearDirtyReady
 }: { 
   productId?: string | null;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
   onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null }) => void;
+  onClearDirtyReady?: (clearDirty: () => void) => void;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
@@ -315,6 +317,23 @@ export default function PBV2ProductBuilderSectionV2({
     providerRegistered.current = true;
     if (import.meta.env.DEV) {
       console.log('[PBV2] Tree provider registered (sync)');
+    }
+  }
+
+  // Register clearDirty callback IMMEDIATELY (synchronous)
+  // This ensures parent can clear dirty state after successful save
+  const clearDirtyRegistered = useRef(false);
+  if (!clearDirtyRegistered.current && onClearDirtyReady) {
+    onClearDirtyReady(() => {
+      setHasLocalChanges(false);
+      setIsLocalDirty(false);
+      if (import.meta.env.DEV) {
+        console.log('[PBV2_CLEAR_DIRTY] hasLocalChanges=false, isLocalDirty=false');
+      }
+    });
+    clearDirtyRegistered.current = true;
+    if (import.meta.env.DEV) {
+      console.log('[PBV2] clearDirty callback registered (sync)');
     }
   }
 
