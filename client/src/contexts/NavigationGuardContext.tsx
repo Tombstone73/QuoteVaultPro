@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useCallback, useRef, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useNavigationType } from 'react-router-dom';
 
 /**
  * NavigationGuardContext
@@ -29,6 +29,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const shouldBlockRef = useRef<(() => boolean) | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const navigationType = useNavigationType();
   const lastStableLocationRef = useRef<string>(location.pathname + location.search);
   const isRevertingRef = useRef<boolean>(false);
 
@@ -107,6 +108,13 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   useEffect(() => {
     const currentPath = location.pathname + location.search;
     
+    // CRITICAL: Only run guard logic for POP navigation (browser back/forward)
+    // NavLink clicks are PUSH navigation and should not be intercepted here
+    if (navigationType !== 'POP') {
+      lastStableLocationRef.current = currentPath;
+      return;
+    }
+    
     // Skip guard logic if we're currently reverting a POP to avoid recursion
     if (isRevertingRef.current) {
       isRevertingRef.current = false;
@@ -124,7 +132,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
 
     const lastStablePath = lastStableLocationRef.current;
     
-    // If location changed, this is a POP navigation attempt
+    // If location changed via POP, check guard
     if (currentPath !== lastStablePath) {
       const result = guard(currentPath);
       
@@ -156,7 +164,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         navigate(lastStablePath, { replace: true });
       }
     }
-  }, [location, navigate]);
+  }, [location, navigate, navigationType]);
 
   return (
     <NavigationGuardContext.Provider value={{ registerGuard, guardedNavigate, isGuardActive }}>
