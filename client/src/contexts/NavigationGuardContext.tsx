@@ -17,7 +17,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 type NavigationGuardFn = (targetPath: string) => string | boolean;
 
 interface NavigationGuardContextValue {
-  registerGuard: (guard: NavigationGuardFn) => () => void;
+  registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean) => () => void;
   guardedNavigate: (to: string) => void;
   isGuardActive: () => boolean; // Check if guard would block
 }
@@ -26,26 +26,26 @@ const NavigationGuardContext = createContext<NavigationGuardContextValue | null>
 
 export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const guardRef = useRef<NavigationGuardFn | null>(null);
+  const shouldBlockRef = useRef<(() => boolean) | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const lastStableLocationRef = useRef<string>(location.pathname + location.search);
   const isRevertingRef = useRef<boolean>(false);
 
-  const registerGuard = useCallback((guard: NavigationGuardFn) => {
+  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean) => {
     guardRef.current = guard;
+    shouldBlockRef.current = shouldBlock;
     return () => {
       guardRef.current = null;
+      shouldBlockRef.current = null;
     };
   }, []);
 
   // Check if guard would currently block navigation
   const isGuardActive = useCallback(() => {
-    const guard = guardRef.current;
-    if (!guard) return false;
-    
-    // Call guard with empty string to check if it would block any navigation
-    const result = guard('');
-    return !!result; // Returns true if guard would block (truthy result)
+    const shouldBlock = shouldBlockRef.current;
+    if (!shouldBlock) return false;
+    return shouldBlock();
   }, []);
 
   // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
