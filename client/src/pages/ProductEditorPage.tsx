@@ -1,7 +1,8 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate, useBlocker } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertProductSchema, type Product, type InsertProduct, type UpdateProduct, type ProductOptionItem } from "@shared/schema";
@@ -161,64 +162,32 @@ const ProductEditorPage = () => {
 
   // Derived dirty state: combine RHF form dirty + PBV2 dirty
   const hasUnsavedChanges = form.formState.isDirty || (pbv2State?.hasChanges ?? false);
-  
-  // Ref mirror for hasUnsavedChanges to avoid stale closures in blocker
-  const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
+
+  // Browser-level protection: warn on tab close/refresh if unsaved changes
+  // TODO: When migrating to Data Router (RouterProvider + createBrowserRouter),
+  // replace this with official useBlocker hook and errorElement boundaries.
+  // See: https://reactrouter.com/en/main/hooks/use-blocker
   useEffect(() => {
-    hasUnsavedChangesRef.current = hasUnsavedChanges;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = ''; // Chrome requires returnValue to be set
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
-  // Track if initial load is complete to avoid blocking during mount/hydration
-  const initialLoadCompleteRef = useRef(false);
+  // In-app navigation guard: register with NavigationGuardContext
+  const { registerGuard } = useNavigationGuard();
   useEffect(() => {
-    // Mark initial load as complete after form is hydrated
-    if (!isNewProduct && product && !initialLoadCompleteRef.current) {
-      // Wait for form to settle after reset
-      const timer = setTimeout(() => {
-        initialLoadCompleteRef.current = true;
-        if (import.meta.env.DEV) {
-          console.log('[ProductEditorPage] Initial load complete, blocker active');
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    } else if (isNewProduct && !initialLoadCompleteRef.current) {
-      // New products are ready immediately
-      initialLoadCompleteRef.current = true;
-    }
-  }, [isNewProduct, product]);
-
-  // Safe navigation guard: only blocks after initial load, uses window.confirm
-  useBlocker(({ currentLocation, nextLocation }) => {
-    // NEVER block during initial load/hydration
-    if (!initialLoadCompleteRef.current) {
-      if (import.meta.env.DEV) {
-        console.log('[ProductEditorPage] Blocker skipped: initial load not complete');
-      }
-      return false;
-    }
-    
-    // Don't block if no unsaved changes (read from ref to avoid stale closure)
-    if (!hasUnsavedChangesRef.current) {
-      return false;
-    }
-    
-    // Don't block if navigating to same path
-    if (currentLocation.pathname === nextLocation.pathname) {
-      return false;
-    }
-    
-    // Show confirm dialog - if user confirms, allow navigation
-    const confirmed = window.confirm(
-      'You have unsaved changes. Are you sure you want to leave without saving?'
-    );
-    
-    if (import.meta.env.DEV) {
-      console.log('[ProductEditorPage] Navigation blocked, user confirmed:', confirmed);
-    }
-    
-    // Return false to allow navigation if confirmed, true to block if cancelled
-    return !confirmed;
-  });
+    const unregister = registerGuard(() => {
+      if (!hasUnsavedChanges) return false; // Allow navigation
+      return 'You have unsaved changes. Are you sure you want to leave without saving?';
+    });
+    return unregister;
+  }, [hasUnsavedChanges, registerGuard]);
 
   const { data: materials } = useMaterials();
   const { data: pricingFormulas } = usePricingFormulas();
@@ -414,12 +383,19 @@ const ProductEditorPage = () => {
         });
         
         // CRITICAL: Reset form dirty state to unblock navigation
-        // This must happen BEFORE navigate() to prevent navigation hold
         const currentValues = form.getValues();
         form.reset(currentValues, { keepValues: true });
         
+        // Clear PBV2 dirty state
+        if (pbv2ClearDirtyRef.current) {
+          pbv2ClearDirtyRef.current();
+          if (import.meta.env.DEV) {
+            console.log('[PBV2_CLEAR_DIRTY] after save success');
+          }
+        }
+        
         if (import.meta.env.DEV) {
-          console.log('[SAVE_PIPELINE] phase=form-reset isDirty=', form.formState.isDirty);
+          console.log('[SAVE_PIPELINE] phase=cleanup isDirty=', form.formState.isDirty);
         }
         
         // Invalidate caches
