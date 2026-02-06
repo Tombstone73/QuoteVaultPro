@@ -21,6 +21,12 @@ import { Page, PageHeader, ContentLayout, DataCard } from "@/components/titan";
 import { cn } from "@/lib/utils";
 
 export default function Home() {
+  console.log('[PAGE_MOUNT] Home');
+  
+  useEffect(() => {
+    return () => console.log('[PAGE_UNMOUNT] Home');
+  }, []);
+  
   const { user, isLoading, isAuthenticated, isAdmin } = useAuth();
   const { preferences } = useOrgPreferences();
   const { toast } = useToast();

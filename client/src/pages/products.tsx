@@ -74,12 +74,18 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
 }
 
 export default function ProductsPage() {
+  console.log('[PAGE_MOUNT] ProductsPage');
+  
   const { toast } = useToast();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<Product | null>(null);
+  
+  useEffect(() => {
+    return () => console.log('[PAGE_UNMOUNT] ProductsPage');
+  }, []);
 
   // Refs for scrolling to first error
   const addFormRef = useRef<HTMLFormElement>(null);
