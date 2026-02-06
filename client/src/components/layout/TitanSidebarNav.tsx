@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useState, useEffect } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import {
   Home,
   Users,
@@ -219,8 +219,7 @@ interface NavItemProps {
 
 function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
   const location = useLocation();
-  const navigate = useNavigate();
-  const { checkNavigation } = useNavigationGuard();
+  const { guardedNavigate } = useNavigationGuard();
   const Icon = item.icon;
 
   // Check if this item is active (exact match or starts with for nested routes)
@@ -232,24 +231,24 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
     return item.path !== "/" && pathname.startsWith(item.path + "/");
   })();
 
-  // Intercept navigation to check guard
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    // Don't interfere with ctrl/cmd+click (open in new tab)
-    if (e.ctrlKey || e.metaKey) return;
-    
-    // Check navigation guard
-    if (!checkNavigation(item.path)) {
-      e.preventDefault(); // Block navigation if guard denies
+  // Use button instead of NavLink to have full control over navigation
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // Ctrl/Cmd+click should open in new tab (simulate with window.open)
+    if (e.ctrlKey || e.metaKey) {
+      window.open(item.path, '_blank');
+      return;
     }
-    // If guard allows, let NavLink handle navigation normally
+    
+    // Use guarded navigate (handles guard check + confirm internally)
+    guardedNavigate(item.path);
   };
 
   return (
-    <NavLink
-      to={item.path}
+    <button
+      type="button"
       onClick={handleClick}
       className={cn(
-        "flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
+        "w-full flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
         "hover:bg-titan-bg-card-elevated hover:text-titan-text-primary",
         isActive
           ? "bg-titan-accent/10 text-titan-accent border-l-2 border-titan-accent"
@@ -269,7 +268,7 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
           )}
         </>
       )}
-    </NavLink>
+    </button>
   );
 }
 
@@ -337,9 +336,8 @@ interface TitanSidebarNavProps {
 export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: TitanSidebarNavProps) {
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
-  const navigate = useNavigate();
   const location = useLocation();
-  const { checkNavigation } = useNavigationGuard();
+  const { guardedNavigate } = useNavigationGuard();
   const role = user?.role ?? null;
   const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences);
 
@@ -467,11 +465,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       {/* New Order Button */}
       <div className={cn("px-3 py-2", isCollapsed && "px-2")}>
         <Button
-          onClick={() => {
-            if (checkNavigation(ROUTES.orders.new)) {
-              navigate(ROUTES.orders.new);
-            }
-          }}
+          onClick={() => guardedNavigate(ROUTES.orders.new)}
           className={cn(
             "w-full bg-titan-accent hover:bg-titan-accent/90 text-white font-medium shadow-titan-sm",
             "flex items-center justify-center gap-2",
