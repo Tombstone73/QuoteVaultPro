@@ -8,22 +8,27 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 export function AppLayout() {
-  // FEATURE FLAGS: Enable diagnostic tracing in production
-  const ROUTE_TRACE = import.meta.env.VITE_ROUTE_TRACE === 'true';
-  const CLICK_TRACE = import.meta.env.VITE_CLICK_TRACE === 'true';
-  
   const location = useLocation();
   const navigationType = useNavigationType();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const prevPathRef = useRef<string>(location.pathname + location.search);
+  const currentPathRef = useRef<string>(location.pathname); // For stale closure fix in click handler
   
-  // DIAGNOSTIC: Track all route changes globally (when flag enabled)
+  // DIAGNOSTIC: Enable via URL query param ?traceNav=1 (production-safe)
+  const traceEnabled = new URLSearchParams(location.search).get('traceNav') === '1';
+  
+  // Update current path ref on location changes
+  useEffect(() => {
+    currentPathRef.current = location.pathname;
+  }, [location.pathname]);
+  
+  // DIAGNOSTIC: Track all route changes globally (when ?traceNav=1)
   useEffect(() => {
     const to = location.pathname + location.search;
     const from = prevPathRef.current;
     
-    if (ROUTE_TRACE) {
+    if (traceEnabled) {
       console.log('[ROUTE]', navigationType, from, '->', to);
       
       // Stack trace when navigating from/to product editor
@@ -34,11 +39,11 @@ export function AppLayout() {
     }
     
     prevPathRef.current = to;
-  }, [location, navigationType, ROUTE_TRACE]);
+  }, [location, navigationType, traceEnabled]);
   
-  // DIAGNOSTIC: Track all clicks globally at document level (when flag enabled)
+  // DIAGNOSTIC: Track all clicks globally at document level (when ?traceNav=1)
   useEffect(() => {
-    if (!CLICK_TRACE) return;
+    if (!traceEnabled) return;
     
     const handleDocumentClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -46,7 +51,7 @@ export function AppLayout() {
         tag: target.tagName,
         id: target.id || '(none)',
         class: target.className || '(none)',
-        path: location.pathname
+        path: currentPathRef.current // Use ref to avoid stale closure
       });
     };
     
@@ -56,7 +61,7 @@ export function AppLayout() {
     return () => {
       document.removeEventListener('click', handleDocumentClick, { capture: true });
     };
-  }, [CLICK_TRACE, location.pathname]);
+  }, [traceEnabled]); // Only depend on traceEnabled, not location
 
   const orderRightCol = isSidebarCollapsed
     ? "clamp(340px, 24vw, 460px)"
