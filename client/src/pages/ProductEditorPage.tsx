@@ -163,6 +163,18 @@ const ProductEditorPage = () => {
   // Derived dirty state: combine RHF form dirty + PBV2 dirty
   const hasUnsavedChanges = form.formState.isDirty || (pbv2State?.hasChanges ?? false);
   
+  // DEV: Log dirty state changes
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      console.log('[ProductEditor] Dirty state update:', {
+        hasUnsavedChanges,
+        rhfDirty: form.formState.isDirty,
+        pbv2Dirty: pbv2State?.hasChanges ?? false,
+        location: location.pathname
+      });
+    }
+  }, [hasUnsavedChanges, form.formState.isDirty, pbv2State?.hasChanges, location.pathname]);
+  
   // Use ref to prevent stale closure in guard function
   const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
   useEffect(() => {
@@ -193,8 +205,16 @@ const ProductEditorPage = () => {
       const dirty = hasUnsavedChangesRef.current;
       
       if (import.meta.env.DEV) {
-        console.log('[GUARD] ProductEditor guard called', { targetPath, dirty });
+        const decision = dirty ? 'confirm' : 'allow';
+        console.log('[NAV_GUARD] ProductEditor guard called', { 
+          targetPath, 
+          dirty, 
+          decision,
+          rhfDirty: form.formState.isDirty,
+          pbv2Dirty: pbv2State?.hasChanges ?? false
+        });
       }
+      
       if (!dirty) {
         if (import.meta.env.DEV) {
           console.log('[GUARD] ProductEditor guard: allow (no changes)');
@@ -208,7 +228,10 @@ const ProductEditorPage = () => {
     });
     
     if (import.meta.env.DEV) {
-      console.log('[GUARD] ProductEditor guard registered', { hasUnsavedChanges });
+      console.log('[GUARD] ProductEditor guard registered', { 
+        hasUnsavedChanges,
+        willBlock: hasUnsavedChanges
+      });
     }
     
     return () => {

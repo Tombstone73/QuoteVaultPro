@@ -474,6 +474,12 @@ export default function PBV2ProductBuilderSectionV2({
     }
     
     setLocalTreeJson(normalizedDraft);
+    // CRITICAL: Clear dirty flag after hydration - user hasn't made changes yet
+    setHasLocalChanges(false);
+    
+    if (import.meta.env.DEV) {
+      console.log('[PBV2_HYDRATE] Dirty flag cleared after draft load');
+    }
   }, [productId, draft?.id, draft?.treeJson, isLocalDirty, localTreeJson]);
 
   // Build editor model from local tree
