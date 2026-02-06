@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useParams, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SettingsLayout, CompanySettings, PreferencesSettings, UsersSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
 import EmailSettings from "@/pages/settings/email";
@@ -57,13 +57,7 @@ import ProductBuilderV2Page from "@/pages/product-builder-v2";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 
 function Router() {
-  const location = useLocation();
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
-  
-  // DIAGNOSTIC: Track router renders
-  if (import.meta.env.DEV) {
-    console.log('[ROUTER_RENDER]', location.pathname);
-  }
 
   // While loading auth status, show nothing (or a loading spinner)
   if (isLoading) {

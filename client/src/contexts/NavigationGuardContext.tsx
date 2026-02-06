@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useCallback, useRef, useEffect } from 'react';
+import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation, useNavigationType } from 'react-router-dom';
 
 /**
@@ -160,8 +160,14 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     }
   }, [location, navigate, navigationType]);
 
+  const contextValue = useMemo(() => ({
+    registerGuard,
+    guardedNavigate,
+    isGuardActive,
+  }), [registerGuard, guardedNavigate, isGuardActive]);
+
   return (
-    <NavigationGuardContext.Provider value={{ registerGuard, guardedNavigate, isGuardActive }}>
+    <NavigationGuardContext.Provider value={contextValue}>
       {children}
     </NavigationGuardContext.Provider>
   );
