@@ -258,8 +258,9 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
 
   // Always use guarded navigation - it handles both clean and dirty states
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    // DIAGNOSTIC: Probe Orders item clicks
-    if (import.meta.env.DEV && item.name === 'Orders') {
+    // DIAGNOSTIC: Probe Orders item clicks (production-safe with flag)
+    const CLICK_TRACE = import.meta.env.VITE_CLICK_TRACE === 'true';
+    if (CLICK_TRACE && item.name === 'Orders') {
       console.log('[SIDEBAR_CLICK] Orders');
     }
     

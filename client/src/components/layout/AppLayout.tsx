@@ -8,23 +8,22 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 export function AppLayout() {
+  // FEATURE FLAGS: Enable diagnostic tracing in production
+  const ROUTE_TRACE = import.meta.env.VITE_ROUTE_TRACE === 'true';
+  const CLICK_TRACE = import.meta.env.VITE_CLICK_TRACE === 'true';
+  
   const location = useLocation();
   const navigationType = useNavigationType();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const prevPathRef = useRef<string>(location.pathname + location.search);
   
-  // DIAGNOSTIC: Track layout renders
-  if (import.meta.env.DEV) {
-    console.log('[LAYOUT_RENDER] AppLayout', location.pathname);
-  }
-  
-  // DIAGNOSTIC: Track all route changes globally
+  // DIAGNOSTIC: Track all route changes globally (when flag enabled)
   useEffect(() => {
     const to = location.pathname + location.search;
     const from = prevPathRef.current;
     
-    if (import.meta.env.DEV) {
+    if (ROUTE_TRACE) {
       console.log('[ROUTE]', navigationType, from, '->', to);
       
       // Stack trace when navigating from/to product editor
@@ -35,7 +34,29 @@ export function AppLayout() {
     }
     
     prevPathRef.current = to;
-  }, [location, navigationType]);
+  }, [location, navigationType, ROUTE_TRACE]);
+  
+  // DIAGNOSTIC: Track all clicks globally at document level (when flag enabled)
+  useEffect(() => {
+    if (!CLICK_TRACE) return;
+    
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      console.log('[DOC_CLICK_CAPTURE]', {
+        tag: target.tagName,
+        id: target.id || '(none)',
+        class: target.className || '(none)',
+        path: location.pathname
+      });
+    };
+    
+    // Use capture phase to log even if event bubbling is stopped
+    document.addEventListener('click', handleDocumentClick, { capture: true });
+    
+    return () => {
+      document.removeEventListener('click', handleDocumentClick, { capture: true });
+    };
+  }, [CLICK_TRACE, location.pathname]);
 
   const orderRightCol = isSidebarCollapsed
     ? "clamp(340px, 24vw, 460px)"
