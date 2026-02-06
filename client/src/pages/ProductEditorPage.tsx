@@ -62,6 +62,14 @@ const ProductEditorPage = () => {
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
+  
+  // DIAGNOSTIC: Track component lifecycle
+  useEffect(() => {
+    console.log('[EDITOR_MOUNT] ProductEditorPage mounted', { productId, isNewProduct });
+    return () => {
+      console.log('[EDITOR_UNMOUNT] ProductEditorPage unmounting', { productId, isNewProduct });
+    };
+  }, [productId, isNewProduct]);
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
