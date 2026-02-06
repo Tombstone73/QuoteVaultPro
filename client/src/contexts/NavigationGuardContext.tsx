@@ -51,26 +51,30 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
 
   // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
   const guardedNavigate = useCallback((to: string) => {
+    const shouldBlock = shouldBlockRef.current;
     const guard = guardRef.current;
     
-    if (import.meta.env.DEV) {
-      console.log('[GUARD] guardedNavigate called', { to, hasGuard: !!guard });
+    // CRITICAL: Check shouldBlock() FIRST before calling guard
+    // If no shouldBlock function OR it returns false, navigate immediately
+    if (!shouldBlock || !shouldBlock()) {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] allow (clean state) action=PUSH to:', to);
+      }
+      navigate(to);
+      return;
     }
     
-    // No guard registered, allow navigation
+    // shouldBlock returned true - dirty state, check guard
     if (!guard) {
+      // No guard function but shouldBlock is true - allow navigation anyway
       if (import.meta.env.DEV) {
-        console.log('[GUARD] allow (no guard) action=PUSH to:', to);
+        console.log('[GUARD] allow (no guard function) action=PUSH to:', to);
       }
       navigate(to);
       return;
     }
 
     const result = guard(to);
-    
-    if (import.meta.env.DEV) {
-      console.log('[GUARD] guard returned', { to, result, resultType: typeof result });
-    }
     
     // Guard returned false/null/undefined, allow navigation
     if (!result) {
@@ -122,10 +126,19 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       return;
     }
 
+    const shouldBlock = shouldBlockRef.current;
     const guard = guardRef.current;
     
-    // No guard registered, track stable location and allow
+    // CRITICAL: Check shouldBlock() FIRST before running guard logic
+    // If no shouldBlock function OR it returns false, allow POP navigation immediately
+    if (!shouldBlock || !shouldBlock()) {
+      lastStableLocationRef.current = currentPath;
+      return;
+    }
+    
+    // shouldBlock returned true - dirty state, check guard
     if (!guard) {
+      // No guard function but shouldBlock is true - allow navigation anyway
       lastStableLocationRef.current = currentPath;
       return;
     }
