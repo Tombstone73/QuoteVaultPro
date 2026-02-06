@@ -1,11 +1,43 @@
 import * as React from "react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Component, ErrorInfo } from "react";
 import { Outlet, useLocation, useNavigationType } from "react-router-dom";
 import { TitanSidebarNav } from "./TitanSidebarNav";
 import { TitanTopBar } from "./TitanTopBar";
 import { Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+
+// DIAGNOSTIC: Error boundary to catch route render errors
+class RouteErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('[ROUTE_RENDER_ERROR]', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      // Log but still render the error (don't swallow it)
+      return (
+        <div className="p-4 text-red-600">
+          <h2>Route Render Error</h2>
+          <pre>{this.state.error?.message}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export function AppLayout() {
   const location = useLocation();
@@ -14,6 +46,14 @@ export function AppLayout() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const prevPathRef = useRef<string>(location.pathname + location.search);
   const currentPathRef = useRef<string>(location.pathname); // For stale closure fix in click handler
+  
+  // DIAGNOSTIC: Track layout lifecycle
+  console.log('[LAYOUT_RENDER]', { pathname: location.pathname });
+  
+  useEffect(() => {
+    console.log('[LAYOUT_MOUNT]');
+    return () => console.log('[LAYOUT_UNMOUNT]');
+  }, []);
   
   // DIAGNOSTIC: Enable via URL query param ?traceNav=1 (production-safe)
   const traceEnabled = new URLSearchParams(location.search).get('traceNav') === '1';
@@ -125,7 +165,9 @@ export function AppLayout() {
           }}
         >
           <div className="w-full">
-            <Outlet />
+            <RouteErrorBoundary>
+              <Outlet />
+            </RouteErrorBoundary>
           </div>
         </main>
       </div>
