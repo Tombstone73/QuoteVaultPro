@@ -583,45 +583,118 @@ export function createUpdateGroupPatch(
 }
 
 /**
- * Create patch to delete a group (marks nodes and edges as DELETED)
+ * Hard delete nodes from tree with cascade logic.
+ * Physically removes nodes + all related edges + root references.
+ * No more status:"DELETED" zombies.
+ * 
+ * CASCADE RULES:
+ * - Deleting a GROUP: delete group + all child OPTIONs + all child CHOICEs
+ * - Deleting an OPTION: delete option + all child CHOICEs (via edges)
+ * - Deleting a CHOICE: delete only that choice (handled separately in node.choices array)
+ * 
+ * @param treeJson - Current tree
+ * @param nodeIdsToDelete - IDs of nodes to delete (non-cascaded set)
+ * @returns Patch with nodes/edges physically removed
  */
-export function createDeleteGroupPatch(treeJson: unknown, groupId: string): { patch: any } {
+export function createHardDeletePatch(
+  treeJson: unknown,
+  nodeIdsToDelete: string[]
+): { patch: any } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
 
-  // Find all child option IDs
-  const childEdges = edges.filter(e => e.fromNodeId === groupId);
-  const childOptionIds = new Set(childEdges.map(e => e.toNodeId));
+  // Step 1: Collect all node IDs to delete (with cascade)
+  const toDelete = new Set<string>(nodeIdsToDelete);
+  const nodesById = new Map(nodes.map(n => [n.id, n]));
 
-  // Mark group node and child nodes as DELETED
-  const updatedNodes = nodes.map(n => {
-    if (n.id === groupId || childOptionIds.has(n.id)) {
-      return { ...n, status: 'DELETED' };
+  // Build edge lookup: parent -> children
+  const childrenMap = new Map<string, Set<string>>();
+  edges.forEach(edge => {
+    if (!edge.fromNodeId || !edge.toNodeId) return;
+    if (!childrenMap.has(edge.fromNodeId)) {
+      childrenMap.set(edge.fromNodeId, new Set());
     }
-    return n;
+    childrenMap.get(edge.fromNodeId)!.add(edge.toNodeId);
   });
 
-  // Mark edges from group as DELETED
-  const updatedEdges = edges.map(e => {
-    if (e.fromNodeId === groupId || childOptionIds.has(e.fromNodeId)) {
-      return { ...e, status: 'DELETED' };
-    }
-    return e;
-  });
+  // Cascade: for each node to delete, collect descendants
+  const collectDescendants = (nodeId: string) => {
+    const node = nodesById.get(nodeId);
+    if (!node) return;
 
-  const patchedTree = {
-    ...tree,
-    nodes: updatedNodes,
-    edges: updatedEdges,
+    const nodeType = (node.type || '').toUpperCase();
+    
+    // If deleting a GROUP, cascade to all child nodes (OPTIONs/INPUTs)
+    if (nodeType === 'GROUP') {
+      const children = childrenMap.get(nodeId) || new Set();
+      children.forEach(childId => {
+        if (!toDelete.has(childId)) {
+          toDelete.add(childId);
+          collectDescendants(childId); // Recursively cascade
+        }
+      });
+    }
+    // If deleting an OPTION/INPUT, cascade to all children
+    else if (nodeType === 'OPTION' || nodeType === 'INPUT') {
+      const children = childrenMap.get(nodeId) || new Set();
+      children.forEach(childId => {
+        if (!toDelete.has(childId)) {
+          toDelete.add(childId);
+          collectDescendants(childId);
+        }
+      });
+    }
   };
 
-  const repairedTree = ensureTreeInvariants(patchedTree);
+  // Apply cascade for all initial delete targets
+  nodeIdsToDelete.forEach(id => collectDescendants(id));
+
+  // Step 2: Remove nodes (hard delete)
+  const remainingNodes = nodes.filter(n => !toDelete.has(n.id));
+
+  // Step 3: Remove edges where FROM or TO is deleted
+  const remainingEdges = edges.filter(e => 
+    !toDelete.has(e.fromNodeId || '') && !toDelete.has(e.toNodeId || '')
+  );
+
+  // Step 4: Remove deleted IDs from rootNodeIds
+  const oldRoots = Array.isArray(tree.rootNodeIds) ? tree.rootNodeIds : [];
+  const cleanedRoots = oldRoots.filter((id: string) => !toDelete.has(id));
+
+  // Step 5: Build updated tree
+  const updatedTree = {
+    ...tree,
+    nodes: remainingNodes,
+    edges: remainingEdges,
+    rootNodeIds: cleanedRoots,
+  };
+
+  // Step 6: Normalize (repairs roots if needed, enforces canonical rules)
+  const normalizedTree = normalizeTreeJson(updatedTree);
+
+  // Step 7: Convert to Record format for patch
+  const finalNodes = Array.isArray(normalizedTree.nodes) 
+    ? normalizedTree.nodes 
+    : Object.values(normalizedTree.nodes || {});
+  const finalEdges = Array.isArray(normalizedTree.edges) 
+    ? normalizedTree.edges 
+    : [];
+
+  const { nodes: nodesRecord, edges: edgesArray } = arraysToRecords(finalNodes, finalEdges);
 
   return {
     patch: {
-      nodes: repairedTree.nodes,
-      edges: repairedTree.edges,
+      nodes: Object.values(nodesRecord),
+      edges: edgesArray,
     },
   };
+}
+
+/**
+ * Create patch to delete a group (hard delete: physically removes nodes)
+ */
+export function createDeleteGroupPatch(treeJson: unknown, groupId: string): { patch: any } {
+  // Hard delete: physically remove group + all child options/choices + all edges
+  return createHardDeletePatch(treeJson, [groupId]);
 }
 
 /**
@@ -979,39 +1052,11 @@ export function createAddOptionPatch(treeJson: unknown, groupId: string): { patc
 }
 
 /**
- * Create patch to delete an option (marks node and edges as DELETED)
+ * Create patch to delete an option (hard delete: physically removes nodes)
  */
 export function createDeleteOptionPatch(treeJson: unknown, optionId: string): { patch: any } {
-  const { tree, nodes, edges } = normalizeArrays(treeJson);
-
-  const updatedNodes = nodes.map(n => {
-    if (n.id === optionId) {
-      return { ...n, status: 'DELETED' };
-    }
-    return n;
-  });
-
-  const updatedEdges = edges.map(e => {
-    if (e.toNodeId === optionId || e.fromNodeId === optionId) {
-      return { ...e, status: 'DELETED' };
-    }
-    return e;
-  });
-
-  const patchedTree = {
-    ...tree,
-    nodes: updatedNodes,
-    edges: updatedEdges,
-  };
-
-  const repairedTree = ensureTreeInvariants(patchedTree);
-
-  return {
-    patch: {
-      nodes: repairedTree.nodes,
-      edges: repairedTree.edges,
-    },
-  };
+  // Hard delete: physically remove option + all child nodes + all edges
+  return createHardDeletePatch(treeJson, [optionId]);
 }
 
 /**

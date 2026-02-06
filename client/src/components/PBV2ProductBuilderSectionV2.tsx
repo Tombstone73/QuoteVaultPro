@@ -641,9 +641,19 @@ export default function PBV2ProductBuilderSectionV2({
     const { patch } = createDeleteGroupPatch(localTreeJson, deleteGroupTarget.id);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     applyTreeUpdate(updatedTree, 'handleConfirmDeleteGroup', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+    
+    // Clear selection if deleted group was selected
     if (selectedGroupId === deleteGroupTarget.id) {
       setSelectedGroupId(null);
     }
+    // Check if selected option was in deleted group (cascade cleanup)
+    if (selectedOptionId) {
+      const deletedGroup = editorModel.groups.find(g => g.id === deleteGroupTarget.id);
+      if (deletedGroup?.optionIds.includes(selectedOptionId)) {
+        setSelectedOptionId(null);
+      }
+    }
+    
     toast({ title: "Group deleted" });
     setDeleteGroupConfirmOpen(false);
     setDeleteGroupTarget(null);
@@ -678,9 +688,12 @@ export default function PBV2ProductBuilderSectionV2({
     const { patch } = createDeleteOptionPatch(localTreeJson, optionId);
     const updatedTree = applyPatchToTree(localTreeJson, patch);
     applyTreeUpdate(updatedTree, 'handleDeleteOption', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+    
+    // Clear selection if deleted option was selected
     if (selectedOptionId === optionId) {
       setSelectedOptionId(null);
     }
+    
     toast({ title: "Option deleted" });
   };
 
