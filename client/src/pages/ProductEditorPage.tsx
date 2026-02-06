@@ -198,7 +198,7 @@ const ProductEditorPage = () => {
   }, [hasUnsavedChanges]);
 
   // In-app navigation guard: register with NavigationGuardContext
-  const { registerGuard } = useNavigationGuard();
+  const { registerGuard, guardedNavigate } = useNavigationGuard();
   useEffect(() => {
     const unregister = registerGuard(
       (targetPath) => {
@@ -331,7 +331,7 @@ const ProductEditorPage = () => {
             description: "Product saved successfully.",
           });
           queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-          navigate("/products");
+          guardedNavigate("/products");
           return;
         }
         
@@ -465,7 +465,7 @@ const ProductEditorPage = () => {
         }
         
         // Navigate away on full success
-        navigate("/products");
+        guardedNavigate("/products");
         
       } catch (error: any) {
         // Catch any unexpected errors in onSuccess
@@ -567,7 +567,7 @@ const ProductEditorPage = () => {
             <button
               type="button"
               className="hover:text-foreground transition-colors"
-              onClick={() => navigate("/products")}
+              onClick={() => guardedNavigate("/products")}
             >
               Products
             </button>
@@ -609,7 +609,7 @@ const ProductEditorPage = () => {
           <Button
             type="button"
             variant="outline"
-            onClick={() => navigate("/products")}
+            onClick={() => guardedNavigate("/products")}
             disabled={saveMutation.isPending}
           >
             Cancel
