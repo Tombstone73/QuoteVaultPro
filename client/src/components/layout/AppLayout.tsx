@@ -1,6 +1,6 @@
 import * as React from "react";
-import { useState } from "react";
-import { Outlet, useLocation } from "react-router-dom";
+import { useState, useRef, useEffect } from "react";
+import { Outlet, useLocation, useNavigationType } from "react-router-dom";
 import { TitanSidebarNav } from "./TitanSidebarNav";
 import { TitanTopBar } from "./TitanTopBar";
 import { Menu, X } from "lucide-react";
@@ -9,13 +9,33 @@ import { Button } from "@/components/ui/button";
 
 export function AppLayout() {
   const location = useLocation();
+  const navigationType = useNavigationType();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const prevPathRef = useRef<string>(location.pathname + location.search);
   
   // DIAGNOSTIC: Track layout renders
   if (import.meta.env.DEV) {
     console.log('[LAYOUT_RENDER] AppLayout', location.pathname);
   }
+  
+  // DIAGNOSTIC: Track all route changes globally
+  useEffect(() => {
+    const to = location.pathname + location.search;
+    const from = prevPathRef.current;
+    
+    if (import.meta.env.DEV) {
+      console.log('[ROUTE]', navigationType, from, '->', to);
+      
+      // Stack trace when navigating from/to product editor
+      const isProductEditor = (path: string) => path.includes('/products/') && path.includes('/edit');
+      if (isProductEditor(from) || isProductEditor(to)) {
+        console.trace('[ROUTE_TRACE] navigation while in product editor');
+      }
+    }
+    
+    prevPathRef.current = to;
+  }, [location, navigationType]);
 
   const orderRightCol = isSidebarCollapsed
     ? "clamp(340px, 24vw, 460px)"
