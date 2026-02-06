@@ -130,17 +130,11 @@ function NewQuoteButton() {
 }
 
 export default function InternalQuotes() {
-  console.log('[PAGE_MOUNT] InternalQuotes');
-  
   const { toast } = useToast();
   const { user } = useAuth();
   const { preferences, isLoading: prefsLoading } = useOrgPreferences();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  
-  useEffect(() => {
-    return () => console.log('[PAGE_UNMOUNT] InternalQuotes');
-  }, []);
 
   const { data: organization } = useQuery<Organization>({
     queryKey: ["/api/organization/current"],

@@ -1,6 +1,6 @@
 import * as React from "react";
-import { useState, useRef, useEffect, Component, ErrorInfo } from "react";
-import { Outlet, useLocation, useNavigationType } from "react-router-dom";
+import { useState, useEffect, Component, ErrorInfo } from "react";
+import { Outlet, useLocation } from "react-router-dom";
 import { TitanSidebarNav } from "./TitanSidebarNav";
 import { TitanTopBar } from "./TitanTopBar";
 import { Menu, X } from "lucide-react";
@@ -41,67 +41,15 @@ class RouteErrorBoundary extends Component<
 
 export function AppLayout() {
   const location = useLocation();
-  const navigationType = useNavigationType();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const prevPathRef = useRef<string>(location.pathname + location.search);
-  const currentPathRef = useRef<string>(location.pathname); // For stale closure fix in click handler
   
-  // DIAGNOSTIC: Track layout lifecycle
-  console.log('[LAYOUT_RENDER]', { pathname: location.pathname });
-  
+  // DEV-ONLY: Log route changes to verify navigation is working
   useEffect(() => {
-    console.log('[LAYOUT_MOUNT]');
-    return () => console.log('[LAYOUT_UNMOUNT]');
-  }, []);
-  
-  // DIAGNOSTIC: Enable via URL query param ?traceNav=1 (production-safe)
-  const traceEnabled = new URLSearchParams(location.search).get('traceNav') === '1';
-  
-  // Update current path ref on location changes
-  useEffect(() => {
-    currentPathRef.current = location.pathname;
-  }, [location.pathname]);
-  
-  // DIAGNOSTIC: Track all route changes globally (when ?traceNav=1)
-  useEffect(() => {
-    const to = location.pathname + location.search;
-    const from = prevPathRef.current;
-    
-    if (traceEnabled) {
-      console.log('[ROUTE]', navigationType, from, '->', to);
-      
-      // Stack trace when navigating from/to product editor
-      const isProductEditor = (path: string) => path.includes('/products/') && path.includes('/edit');
-      if (isProductEditor(from) || isProductEditor(to)) {
-        console.trace('[ROUTE_TRACE] navigation while in product editor');
-      }
+    if (import.meta.env.DEV) {
+      console.log('[ROUTE_CHANGE]', location.pathname);
     }
-    
-    prevPathRef.current = to;
-  }, [location, navigationType, traceEnabled]);
-  
-  // DIAGNOSTIC: Track all clicks globally at document level (when ?traceNav=1)
-  useEffect(() => {
-    if (!traceEnabled) return;
-    
-    const handleDocumentClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      console.log('[DOC_CLICK_CAPTURE]', {
-        tag: target.tagName,
-        id: target.id || '(none)',
-        class: target.className || '(none)',
-        path: currentPathRef.current // Use ref to avoid stale closure
-      });
-    };
-    
-    // Use capture phase to log even if event bubbling is stopped
-    document.addEventListener('click', handleDocumentClick, { capture: true });
-    
-    return () => {
-      document.removeEventListener('click', handleDocumentClick, { capture: true });
-    };
-  }, [traceEnabled]); // Only depend on traceEnabled, not location
+  }, [location.pathname]);
 
   const orderRightCol = isSidebarCollapsed
     ? "clamp(340px, 24vw, 460px)"
