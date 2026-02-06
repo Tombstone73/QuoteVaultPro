@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useState, useEffect } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   Home,
   Users,
@@ -33,7 +33,6 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ROUTES } from "@/config/routes";
-import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 
 // ============================================================
 // NAV CONFIG - AUTHORITATIVE TITANOS NAVIGATION
@@ -218,30 +217,35 @@ interface NavItemProps {
 }
 
 function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
-  const location = useLocation();
-  const { guardedNavigate } = useNavigationGuard();
   const Icon = item.icon;
 
-  // Check if this item is active (exact match or starts with for nested routes)
-  // Special case: /production should ONLY match exact /production, not /production/flatbed etc.
-  const isActive = (() => {
-    const { pathname } = location;
+  // Active state: exact match or nested route prefix
+  // Special case: /production should ONLY match exact /production, not /production/flatbed
+  const isActiveCheck = (pathname: string) => {
     if (pathname === item.path) return true;
     if (item.path === "/production") return false; // Exact match only for Overview
     return item.path !== "/" && pathname.startsWith(item.path + "/");
-  })();
+  };
 
-  const itemClasses = cn(
-    "w-full flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
-    "hover:bg-titan-bg-card-elevated hover:text-titan-text-primary",
-    isActive
-      ? "bg-titan-accent/10 text-titan-accent border-l-2 border-titan-accent"
-      : "text-titan-text-secondary",
-    isCollapsed && "justify-center px-2"
-  );
-
-  const itemContent = (
-    <>
+  return (
+    <NavLink
+      to={item.path}
+      title={isCollapsed ? item.name : undefined}
+      className={({ isActive }) => {
+        // NavLink's built-in isActive uses exact/prefix matching.
+        // We override with our own logic for special cases.
+        const location = window.location;
+        const active = isActiveCheck(location.pathname) || isActive;
+        return cn(
+          "w-full flex items-center gap-3 rounded-titan-md px-3 py-1.5 text-sm font-medium transition-colors",
+          "hover:bg-titan-bg-card-elevated hover:text-titan-text-primary",
+          active
+            ? "bg-titan-accent/10 text-titan-accent border-l-2 border-titan-accent"
+            : "text-titan-text-secondary",
+          isCollapsed && "justify-center px-2"
+        );
+      }}
+    >
       <Icon className="h-4 w-4 shrink-0" />
       {!isCollapsed && (
         <>
@@ -253,30 +257,7 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
           )}
         </>
       )}
-    </>
-  );
-
-  // Always use guarded navigation - it handles both clean and dirty states
-  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    // Ctrl/Cmd+click should open in new tab
-    if (e.ctrlKey || e.metaKey) {
-      window.open(item.path, '_blank');
-      return;
-    }
-    
-    // Use guarded navigate (will check guard and navigate appropriately)
-    guardedNavigate(item.path);
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className={itemClasses}
-      title={isCollapsed ? item.name : undefined}
-    >
-      {itemContent}
-    </button>
+    </NavLink>
   );
 }
 
@@ -345,7 +326,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
   const location = useLocation();
-  const { guardedNavigate } = useNavigationGuard();
+  const navigate = useNavigate();
   const role = user?.role ?? null;
   const filteredSections = filterNavByRole(NAV_CONFIG, role, preferences);
 
@@ -473,7 +454,7 @@ export function TitanSidebarNav({ isCollapsed = false, onToggleCollapse }: Titan
       {/* New Order Button */}
       <div className={cn("px-3 py-2", isCollapsed && "px-2")}>
         <Button
-          onClick={() => guardedNavigate(ROUTES.orders.new)}
+          onClick={() => navigate(ROUTES.orders.new)}
           className={cn(
             "w-full bg-titan-accent hover:bg-titan-accent/90 text-white font-medium shadow-titan-sm",
             "flex items-center justify-center gap-2",

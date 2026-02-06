@@ -113,7 +113,7 @@ export function AppLayout() {
           }}
         >
           <div className="w-full">
-            <RouteErrorBoundary>
+            <RouteErrorBoundary key={location.pathname}>
               <Outlet />
             </RouteErrorBoundary>
           </div>
