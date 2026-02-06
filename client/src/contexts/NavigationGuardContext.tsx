@@ -25,9 +25,6 @@ interface NavigationGuardContextValue {
 const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);
 
 export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // DIAGNOSTIC KILL-SWITCH: Set VITE_DISABLE_NAV_GUARD=true in .env to bypass all guard logic
-  const DISABLE_NAV_GUARD = (import.meta.env.VITE_DISABLE_NAV_GUARD === 'true');
-  
   const guardRef = useRef<NavigationGuardFn | null>(null);
   const shouldBlockRef = useRef<(() => boolean) | null>(null);
   const navigate = useNavigate();
@@ -47,32 +44,19 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
 
   // Check if guard would currently block navigation
   const isGuardActive = useCallback(() => {
-    if (DISABLE_NAV_GUARD) return false; // Kill-switch: never block
     const shouldBlock = shouldBlockRef.current;
     if (!shouldBlock) return false;
     return shouldBlock();
-  }, [DISABLE_NAV_GUARD]);
+  }, []);
 
   // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
   const guardedNavigate = useCallback((to: string) => {
-    // Kill-switch: bypass all guard logic
-    if (DISABLE_NAV_GUARD) {
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] DISABLED - navigating immediately to:', to);
-      }
-      navigate(to);
-      return;
-    }
-    
     const shouldBlock = shouldBlockRef.current;
     const guard = guardRef.current;
     
     // CRITICAL: Check shouldBlock() FIRST before calling guard
     // If no shouldBlock function OR it returns false, navigate immediately
     if (!shouldBlock || !shouldBlock()) {
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] allow (clean state) action=PUSH to:', to);
-      }
       navigate(to);
       return;
     }
@@ -80,9 +64,6 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     // shouldBlock returned true - dirty state, check guard
     if (!guard) {
       // No guard function but shouldBlock is true - allow navigation anyway
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] allow (no guard function) action=PUSH to:', to);
-      }
       navigate(to);
       return;
     }
@@ -91,34 +72,21 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     
     // Guard returned false/null/undefined, allow navigation
     if (!result) {
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] allow (guard returned false) action=PUSH to:', to);
-      }
       navigate(to);
       return;
     }
 
     // Guard returned true, block silently
     if (result === true) {
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] deny (silent) action=PUSH to:', to);
-      }
       return;
     }
 
     // Guard returned string message, show confirm
     const confirmed = window.confirm(result);
     if (confirmed) {
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] allow (user confirmed) action=PUSH to:', to);
-      }
       navigate(to);
-    } else {
-      if (import.meta.env.DEV) {
-        console.log('[GUARD] deny (user cancelled) action=PUSH to:', to);
-      }
     }
-  }, [navigate, DISABLE_NAV_GUARD]);
+  }, [navigate]);
 
   // Handle browser back/forward (POP navigation)
   // Only intercepts when guard is active (dirty=true)
@@ -190,7 +158,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         navigate(lastStablePath, { replace: true });
       }
     }
-  }, [location, navigate, navigationType, DISABLE_NAV_GUARD]);
+  }, [location, navigate, navigationType]);
 
   return (
     <NavigationGuardContext.Provider value={{ registerGuard, guardedNavigate, isGuardActive }}>

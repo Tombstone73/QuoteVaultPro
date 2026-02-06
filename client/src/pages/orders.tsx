@@ -119,16 +119,10 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
 ];
 
 export default function Orders() {
-  console.log('[PAGE_MOUNT] Orders');
-  
   const { user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  
-  useEffect(() => {
-    return () => console.log('[PAGE_UNMOUNT] Orders');
-  }, []);
   
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState<OrderState | "all">("open"); // TitanOS: Default to open (WIP)
