@@ -54,6 +54,7 @@ import ProductsPage from "@/pages/products";
 import ProductEditorPage from "@/pages/ProductEditorPage";
 import PrepressPage from "@/pages/prepress";
 import ProductBuilderV2Page from "@/pages/product-builder-v2";
+import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 
 function Router() {
   const { user, isAuthenticated, isLoading, mustChangePassword } = useAuth();
@@ -221,8 +222,10 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <TooltipProvider>
-          <Toaster />
-          <Router />
+          <NavigationGuardProvider>
+            <Toaster />
+            <Router />
+          </NavigationGuardProvider>
         </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>
