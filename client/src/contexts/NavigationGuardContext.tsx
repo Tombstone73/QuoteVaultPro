@@ -25,6 +25,9 @@ interface NavigationGuardContextValue {
 const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);
 
 export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // DIAGNOSTIC KILL-SWITCH: Set VITE_DISABLE_NAV_GUARD=true in .env to bypass all guard logic
+  const DISABLE_NAV_GUARD = (import.meta.env.VITE_DISABLE_NAV_GUARD === 'true');
+  
   const guardRef = useRef<NavigationGuardFn | null>(null);
   const shouldBlockRef = useRef<(() => boolean) | null>(null);
   const navigate = useNavigate();
@@ -44,13 +47,23 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
 
   // Check if guard would currently block navigation
   const isGuardActive = useCallback(() => {
+    if (DISABLE_NAV_GUARD) return false; // Kill-switch: never block
     const shouldBlock = shouldBlockRef.current;
     if (!shouldBlock) return false;
     return shouldBlock();
-  }, []);
+  }, [DISABLE_NAV_GUARD]);
 
   // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
   const guardedNavigate = useCallback((to: string) => {
+    // Kill-switch: bypass all guard logic
+    if (DISABLE_NAV_GUARD) {
+      if (import.meta.env.DEV) {
+        console.log('[GUARD] DISABLED - navigating immediately to:', to);
+      }
+      navigate(to);
+      return;
+    }
+    
     const shouldBlock = shouldBlockRef.current;
     const guard = guardRef.current;
     
@@ -105,7 +118,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         console.log('[GUARD] deny (user cancelled) action=PUSH to:', to);
       }
     }
-  }, [navigate]);
+  }, [navigate, DISABLE_NAV_GUARD]);
 
   // Handle browser back/forward (POP navigation)
   // Only intercepts when guard is active (dirty=true)
@@ -177,7 +190,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         navigate(lastStablePath, { replace: true });
       }
     }
-  }, [location, navigate, navigationType]);
+  }, [location, navigate, navigationType, DISABLE_NAV_GUARD]);
 
   return (
     <NavigationGuardContext.Provider value={{ registerGuard, guardedNavigate, isGuardActive }}>
