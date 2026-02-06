@@ -151,7 +151,10 @@ export function PBV2ProductBuilderLayout({
         
         {/* Middle Editor: Flex grow with min-w-0 for proper content overflow handling */}
         <div className="flex-1 min-w-0 overflow-hidden">
-          <PBV2EditorErrorBoundary>
+          <PBV2EditorErrorBoundary
+            key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
+            onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
+          >
             <OptionEditor
               selectedGroup={selectedGroup}
               options={editorModel.options}

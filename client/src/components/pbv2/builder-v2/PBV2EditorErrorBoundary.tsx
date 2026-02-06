@@ -5,6 +5,7 @@ import { AlertTriangle } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
+  onReset?: () => void;
 }
 
 interface State {
@@ -15,6 +16,8 @@ interface State {
 /**
  * Simple Error Boundary to prevent PBV2 option detail panel crashes from blanking the entire screen.
  * Catches errors in child components and displays a fallback UI with reset button.
+ * Pass key={selectedGroupId + selectedOptionId} to auto-reset when selection changes.
+ * Pass onReset to clear stale selection that may have caused the crash.
  */
 export class PBV2EditorErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
@@ -28,9 +31,12 @@ export class PBV2EditorErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('[PBV2EditorErrorBoundary] Caught error:', error, errorInfo);
+    // Notify parent to clear stale selection that likely caused the crash
+    this.props.onReset?.();
   }
 
   handleReset = () => {
+    this.props.onReset?.();
     this.setState({ hasError: false, error: null });
   };
 

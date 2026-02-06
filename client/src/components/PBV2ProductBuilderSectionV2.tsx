@@ -507,6 +507,43 @@ export default function PBV2ProductBuilderSectionV2({
     return pbv2TreeToEditorModel(localTreeJson);
   }, [localTreeJson]);
 
+  // SELECTION INVARIANT GUARD: Clear stale selection after any tree mutation
+  // This prevents crashes when hard-deleted nodes leave behind stale selectedGroupId/selectedOptionId.
+  // Runs after editorModel recomputes (which depends on localTreeJson).
+  useEffect(() => {
+    const groupIds = new Set(editorModel.groups.map(g => g.id));
+    const optionIds = new Set(Object.keys(editorModel.options));
+
+    if (selectedGroupId && !groupIds.has(selectedGroupId)) {
+      if (import.meta.env.DEV) {
+        console.warn('[PBV2_SELECTION_GUARD] Clearing stale selectedGroupId:', selectedGroupId);
+      }
+      setSelectedGroupId(null);
+      // Also clear option since its parent group is gone
+      if (selectedOptionId) setSelectedOptionId(null);
+      return;
+    }
+
+    if (selectedOptionId && !optionIds.has(selectedOptionId)) {
+      if (import.meta.env.DEV) {
+        console.warn('[PBV2_SELECTION_GUARD] Clearing stale selectedOptionId:', selectedOptionId);
+      }
+      setSelectedOptionId(null);
+      return;
+    }
+
+    // Validate option belongs to selected group (edge integrity)
+    if (selectedGroupId && selectedOptionId) {
+      const group = editorModel.groups.find(g => g.id === selectedGroupId);
+      if (group && !group.optionIds.includes(selectedOptionId)) {
+        if (import.meta.env.DEV) {
+          console.warn('[PBV2_SELECTION_GUARD] Option not in selected group, clearing:', selectedOptionId);
+        }
+        setSelectedOptionId(null);
+      }
+    }
+  }, [editorModel, selectedGroupId, selectedOptionId]);
+
   // Validate current tree (edit-time validation, not publish-time)
   // Only run validation once tree is initialized
   const validationResult = useMemo(() => {

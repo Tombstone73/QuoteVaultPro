@@ -156,8 +156,22 @@ export function normalizeTreeJson(treeJson: any): any {
     }
   });
 
+  // Build set of all valid node IDs for dangling reference cleanup
+  const validNodeIds = new Set<string>();
+  nodes.forEach((n: any) => {
+    if (n && n.id) validNodeIds.add(n.id);
+  });
+
+  // Remove dangling edges (edges referencing nodes that no longer exist)
+  const liveEdges = edges.filter((edge: any) => {
+    if (!edge) return false;
+    const fromOk = !edge.fromNodeId || validNodeIds.has(edge.fromNodeId);
+    const toOk = !edge.toNodeId || validNodeIds.has(edge.toNodeId);
+    return fromOk && toOk;
+  });
+
   // Normalize edges according to rules A/B
-  const normalizedEdges = edges.map((edge: any) => {
+  const normalizedEdges = liveEdges.map((edge: any) => {
     if (!edge || !edge.id) return edge;
 
     const fromType = edge.fromNodeId ? nodeTypeById.get(edge.fromNodeId) : null;
@@ -241,6 +255,14 @@ export function normalizeTreeJson(treeJson: any): any {
       ...treeJson,
       nodes: nodesRecord,
       edges: normalizedEdges,
+    };
+  }
+
+  // Clean dangling rootNodeIds before recomputing
+  if (Array.isArray(normalizedTree.rootNodeIds)) {
+    normalizedTree = {
+      ...normalizedTree,
+      rootNodeIds: normalizedTree.rootNodeIds.filter((id: string) => validNodeIds.has(id)),
     };
   }
 
