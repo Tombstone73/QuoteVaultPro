@@ -258,6 +258,11 @@ function NavItem({ item, isCollapsed, badgeCount }: NavItemProps) {
 
   // Always use guarded navigation - it handles both clean and dirty states
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // DIAGNOSTIC: Probe Orders item clicks
+    if (import.meta.env.DEV && item.name === 'Orders') {
+      console.log('[SIDEBAR_CLICK] Orders');
+    }
+    
     // Ctrl/Cmd+click should open in new tab
     if (e.ctrlKey || e.metaKey) {
       window.open(item.path, '_blank');
