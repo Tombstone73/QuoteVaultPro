@@ -109,81 +109,54 @@ export function PBV2ProductBuilderLayout({
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
 
   return (
-    <div className="w-full h-full flex flex-col bg-[#0a0e1a]">
-      {/* Fixed header */}
-      <ProductHeader
-        productName={editorModel.productMeta.name}
-        productStatus={editorModel.productMeta.status}
-        hasUnsavedChanges={hasUnsavedChanges}
-        canPublish={canPublish}
-        onSave={onSave}
-        onPublish={onPublish}
-        onExportJson={onExportJson}
-        onImportJson={onImportJson}
-        onUpdateProductName={(name) => onUpdateProduct({ name })}
-      />
-      
-      {/* Base Pricing Model section */}
-      <div className="px-4 py-3 border-b border-slate-700">
-        <BasePricingEditor
-          pricingV2={(treeJson as any)?.meta?.pricingV2 || null}
-          onUpdateBase={onUpdatePricingV2Base}
-          onUpdateUnitSystem={onUpdatePricingV2UnitSystem}
-          onAddTier={onAddPricingV2Tier}
-          onUpdateTier={onUpdatePricingV2Tier}
-          onDeleteTier={onDeletePricingV2Tier}
+    <div className="w-full h-full flex overflow-hidden bg-[#0a0e1a]">
+      {/* 3-column layout: full height with independent scroll areas */}
+      {/* Left Sidebar: Fixed width 288px (w-72), independent scroll */}
+      <div className="w-72 shrink-0 border-r border-[#334155]">
+        <OptionGroupsSidebar
+          optionGroups={editorModel.groups}
+          options={editorModel.options}
+          selectedGroupId={selectedGroupId}
+          onSelectGroup={onSelectGroup}
+          onAddGroup={onAddGroup}
+          onDeleteGroup={onDeleteGroup}
         />
       </div>
       
-      {/* 3-column layout: flex-1 fills remaining space, overflow-hidden prevents scroll leaks */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar: Fixed width (288px), shrink-0 prevents it from shrinking */}
-        <div className="w-72 shrink-0 overflow-hidden">
-          <OptionGroupsSidebar
-            optionGroups={editorModel.groups}
+      {/* Middle Editor: Flex grow with min-w-0 for proper overflow, independent scroll */}
+      <div className="flex-1 min-w-0">
+        <PBV2EditorErrorBoundary
+          key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
+          onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
+        >
+          <OptionEditor
+            selectedGroup={selectedGroup}
             options={editorModel.options}
-            selectedGroupId={selectedGroupId}
-            onSelectGroup={onSelectGroup}
-            onAddGroup={onAddGroup}
-            onDeleteGroup={onDeleteGroup}
+            selectedOptionId={selectedOptionId}
+            onSelectOption={onSelectOption}
+            onAddOption={onAddOption}
+            onDeleteOption={onDeleteOption}
+            onUpdateGroup={onUpdateGroup}
+            treeJson={treeJson}
+            onUpdateOption={onUpdateOption}
+            onAddChoice={onAddChoice}
+            onUpdateChoice={onUpdateChoice}
+            onDeleteChoice={onDeleteChoice}
+            onReorderChoice={onReorderChoice}
+            onUpdateNodePricing={onUpdateNodePricing}
+            onAddPricingRule={onAddPricingRule}
+            onDeletePricingRule={onDeletePricingRule}
           />
-        </div>
-        
-        {/* Middle Editor: Flex grow with min-w-0 for proper content overflow handling */}
-        <div className="flex-1 min-w-0 overflow-hidden">
-          <PBV2EditorErrorBoundary
-            key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
-            onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
-          >
-            <OptionEditor
-              selectedGroup={selectedGroup}
-              options={editorModel.options}
-              selectedOptionId={selectedOptionId}
-              onSelectOption={onSelectOption}
-              onAddOption={onAddOption}
-              onDeleteOption={onDeleteOption}
-              onUpdateGroup={onUpdateGroup}
-              treeJson={treeJson}
-              onUpdateOption={onUpdateOption}
-              onAddChoice={onAddChoice}
-              onUpdateChoice={onUpdateChoice}
-              onDeleteChoice={onDeleteChoice}
-              onReorderChoice={onReorderChoice}
-              onUpdateNodePricing={onUpdateNodePricing}
-              onAddPricingRule={onAddPricingRule}
-              onDeletePricingRule={onDeletePricingRule}
-            />
-          </PBV2EditorErrorBoundary>
-        </div>
-        
-        {/* Right Panel: Fixed width (384px), shrink-0 prevents it from shrinking */}
-        <div className="w-96 shrink-0 overflow-hidden">
-          <PricingValidationPanel
-            findings={findings}
-            pricingPreview={pricingPreview}
-            weightPreview={weightPreview}
-          />
-        </div>
+        </PBV2EditorErrorBoundary>
+      </div>
+      
+      {/* Right Panel: Fixed width 384px (w-96), independent scroll */}
+      <div className="w-96 shrink-0 border-l border-[#334155]">
+        <PricingValidationPanel
+          findings={findings}
+          pricingPreview={pricingPreview}
+          weightPreview={weightPreview}
+        />
       </div>
     </div>
   );
