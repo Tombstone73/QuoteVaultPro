@@ -71,7 +71,10 @@ export function OptionGroupsSidebar({
             const hasConditionals = groupOptions.some(opt => opt?.hasConditionals);
 
             return (
-              <div key={group.id} className="mb-2">
+              <div key={group.id}>
+                {index > 0 && (
+                  <div className="h-px bg-slate-700/50 my-2 mx-3" />
+                )}
                 <div
                   className={`
                     rounded-md transition-all relative
