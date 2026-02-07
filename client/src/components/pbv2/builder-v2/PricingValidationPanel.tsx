@@ -164,7 +164,7 @@ export function PricingValidationPanel({
                     {errors.map((finding, i) => (
                       <div
                         key={`err-${i}`}
-                        className="p-3 bg-red-500/15 border-2 border-red-500/50 rounded-lg"
+                        className="p-3 bg-red-500/10 border-2 border-red-500 rounded-md"
                       >
                         <div className="flex items-start gap-2">
                           <AlertCircleIcon className="h-4 w-4 text-red-300 mt-0.5 flex-shrink-0" />
@@ -196,7 +196,7 @@ export function PricingValidationPanel({
                     {warnings.map((finding, i) => (
                       <div
                         key={`warn-${i}`}
-                        className="p-3 bg-amber-500/15 border border-amber-500/40 rounded-lg"
+                        className="p-3 bg-amber-500/10 border-2 border-amber-500/40 rounded-md"
                       >
                         <div className="flex items-start gap-2">
                           <AlertTriangle className="h-4 w-4 text-amber-300 mt-0.5 flex-shrink-0" />
