@@ -151,7 +151,7 @@ export function OptionEditor({
               return (
                 <div
                   key={option.id}
-                  className="bg-[#1e293b] border border-[#334155] rounded-lg overflow-hidden"
+                  className="bg-[#1e293b] border border-slate-700 rounded-md overflow-hidden"
                 >
                   <div className="flex items-center p-4 hover:bg-slate-800/30 transition-colors">
                     <GripVertical className="h-4 w-4 text-slate-500 mr-2 flex-shrink-0" />
@@ -182,36 +182,36 @@ export function OptionEditor({
                           </div>
                         )}
                         <div className="flex items-center gap-2 mt-2 flex-wrap">
-                          <Badge variant="outline" className="text-xs bg-slate-700/50 text-slate-300 border-slate-600">
+                          <Badge variant="outline" className="text-xs bg-slate-800 text-slate-300 border-slate-600 px-1.5 py-0">
                             {option.type}
                           </Badge>
                           {option.isDefault && (
-                            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/40 px-1.5 py-0">
                               Default
                             </Badge>
                           )}
                           {option.isRequired && (
-                            <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">
+                            <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/40 px-1.5 py-0">
                               Required
                             </Badge>
                           )}
                           {hasPricing && (
-                            <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                            <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/40 px-1.5 py-0">
                               Pricing
                             </Badge>
                           )}
                           {hasFlags && (
-                            <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                            <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-400 border-cyan-500/40 px-1.5 py-0">
                               Production
                             </Badge>
                           )}
                           {hasConditions && (
-                            <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
+                            <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/40 px-1.5 py-0">
                               Conditional
                             </Badge>
                           )}
                           {hasWeight && (
-                            <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                            <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/40 px-1.5 py-0">
                               Weight
                             </Badge>
                           )}
