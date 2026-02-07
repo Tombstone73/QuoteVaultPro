@@ -38,16 +38,16 @@ export function PricingValidationPanel({
   };
 
   return (
-    <aside className="h-full w-full bg-[#0f172a] border-l border-[#334155] flex flex-col overflow-hidden">
+    <aside className="h-full w-full bg-[#0f172a] flex flex-col overflow-hidden">
       <div className="border-b border-[#334155] p-4">
-        <div className="flex items-center gap-2 mb-4">
+        <div className="flex items-center gap-2 mb-3">
           <DollarSign className="h-4 w-4 text-blue-400" />
-          <h2 className="font-semibold text-slate-200">Pricing Preview</h2>
+          <h2 className="text-sm font-semibold text-slate-200">Pricing Preview</h2>
         </div>
 
         {pricingPreview ? (
           <div className="space-y-3">
-            <div className="bg-[#1e293b] border border-[#334155] rounded-lg p-4">
+            <div className="bg-[#1e293b] border border-[#334155] rounded-md p-4">
               <div className="flex items-baseline justify-between mb-1">
                 <span className="text-sm text-slate-400">Add-on Total</span>
                 <div className="flex items-baseline gap-1">
@@ -90,13 +90,13 @@ export function PricingValidationPanel({
 
       {weightPreview && (
         <div className="border-b border-[#334155] p-4">
-          <div className="flex items-center gap-2 mb-4">
+          <div className="flex items-center gap-2 mb-3">
             <Weight className="h-4 w-4 text-purple-400" />
-            <h2 className="font-semibold text-slate-200">Weight Preview</h2>
+            <h2 className="text-sm font-semibold text-slate-200">Weight Preview</h2>
           </div>
 
           <div className="space-y-3">
-            <div className="bg-[#1e293b] border border-[#334155] rounded-lg p-4">
+            <div className="bg-[#1e293b] border border-[#334155] rounded-md p-4">
               <div className="flex items-baseline justify-between mb-1">
                 <span className="text-sm text-slate-400">Total Weight</span>
                 <div className="flex items-baseline gap-1">
@@ -140,11 +140,11 @@ export function PricingValidationPanel({
           <div>
             <div className="flex items-center gap-2 mb-3">
               <AlertTriangle className="h-4 w-4 text-amber-400" />
-              <h3 className="font-semibold text-slate-200">Validation</h3>
+              <h3 className="text-sm font-semibold text-slate-200">Validation</h3>
             </div>
 
             {findings.length === 0 ? (
-              <div className="flex items-start gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+              <div className="flex items-start gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md">
                 <CheckCircle className="h-4 w-4 text-emerald-400 mt-0.5 flex-shrink-0" />
                 <div className="text-emerald-300">
                   <div className="font-medium mb-1">All checks passed</div>
