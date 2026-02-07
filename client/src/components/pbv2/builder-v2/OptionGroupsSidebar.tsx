@@ -41,8 +41,8 @@ export function OptionGroupsSidebar({
   onDeleteGroup
 }: OptionGroupsSidebarProps) {
   return (
-    <aside className="h-full w-full border-r border-[#334155] bg-[#0f172a] flex flex-col overflow-hidden">
-      <div className="border-b border-[#334155] p-4">
+    <aside className="h-full w-full flex flex-col overflow-hidden bg-[#0f172a]">
+      <div className="border-b border-[#334155] p-4 space-y-3">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-slate-400" />
@@ -78,10 +78,10 @@ export function OptionGroupsSidebar({
                 )}
                 <div
                   className={`
-                    rounded-md transition-colors relative
+                    rounded-md transition-all relative
                     ${selectedGroupId === group.id
-                      ? 'bg-blue-500/10 border border-blue-500/30'
-                      : 'hover:bg-slate-800/50 border border-transparent'
+                      ? 'bg-blue-500/10 border border-blue-500/40 shadow-sm'
+                      : 'hover:bg-slate-800/40 border border-slate-700/50'
                     }
                   `}
                 >
@@ -111,12 +111,12 @@ export function OptionGroupsSidebar({
 
                     <div className="flex items-center gap-1.5 flex-wrap ml-6">
                       {group.isRequired && (
-                        <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">
+                        <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/40 px-1.5 py-0">
                           Required
                         </Badge>
                       )}
                       {group.isMultiSelect && (
-                        <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                        <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/40 px-1.5 py-0">
                           Multi
                         </Badge>
                       )}
