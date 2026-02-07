@@ -42,20 +42,19 @@ export function OptionGroupsSidebar({
 }: OptionGroupsSidebarProps) {
   return (
     <aside className="h-full w-full flex flex-col overflow-hidden bg-[#0f172a]">
-      <div className="border-b border-[#334155] p-4 space-y-3">
+      <div className="border-b border-[#334155] p-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-slate-400" />
-            <h2 className="font-semibold text-slate-200">Option Groups</h2>
+            <h2 className="text-sm font-semibold text-slate-200">Option Groups</h2>
           </div>
           <Badge variant="outline" className="text-xs bg-slate-800 text-slate-300 border-slate-600">
             {optionGroups.length}
           </Badge>
         </div>
-        <div className="text-xs text-slate-400 mb-2">Groups: {optionGroups.length}</div>
         <Button
           onClick={onAddGroup}
-          className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm"
+          className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white"
           size="sm"
         >
           <Plus className="h-4 w-4" />
@@ -64,7 +63,7 @@ export function OptionGroupsSidebar({
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="p-2">
+        <div className="p-3">
           {optionGroups.map((group, index) => {
             const groupOptions = group.optionIds.map(id => options[id]).filter(Boolean);
             const hasPricing = groupOptions.some(opt => opt?.hasPricing);
@@ -72,10 +71,7 @@ export function OptionGroupsSidebar({
             const hasConditionals = groupOptions.some(opt => opt?.hasConditionals);
 
             return (
-              <div key={group.id}>
-                {index > 0 && (
-                  <div className="h-px bg-slate-700/50 my-2 mx-3" />
-                )}
+              <div key={group.id} className="mb-2">
                 <div
                   className={`
                     rounded-md transition-all relative

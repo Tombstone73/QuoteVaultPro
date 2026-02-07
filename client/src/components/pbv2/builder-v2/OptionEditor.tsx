@@ -79,13 +79,13 @@ export function OptionEditor({
 
   return (
     <div className="h-full w-full flex flex-col bg-[#0a0e1a] overflow-hidden">
-      <div className="border-b border-[#334155] bg-[#1e293b] p-5">
+      <div className="border-b border-[#334155] bg-[#1e293b] p-4">
         <div className="flex items-start justify-between mb-3">
           <div className="flex-1">
             <Input
               value={selectedGroup.name}
               onChange={(e) => onUpdateGroup(selectedGroup.id, { name: e.target.value })}
-              className="text-lg font-semibold mb-2 border-transparent hover:border-slate-600 focus:border-blue-500 px-2 -ml-2 bg-transparent text-slate-100"
+              className="text-base font-semibold mb-2 border-transparent hover:border-slate-600 focus:border-blue-500 px-2 -ml-2 bg-transparent text-slate-100"
             />
             <Textarea
               value={selectedGroup.description}
@@ -96,7 +96,7 @@ export function OptionEditor({
           </div>
         </div>
 
-        <div className="flex items-center gap-6 ml-2">
+        <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
             <Switch
               id="required"
@@ -125,9 +125,9 @@ export function OptionEditor({
       </div>
 
       <ScrollArea className="flex-1 bg-[#0a0e1a]">
-        <div className="p-6">
+        <div className="p-4">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-slate-200">Options</h3>
+            <h3 className="text-sm font-semibold text-slate-200">Options</h3>
             <Button
               onClick={() => onAddOption(selectedGroup.id)}
               size="sm"
@@ -138,7 +138,7 @@ export function OptionEditor({
             </Button>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             {groupOptions.map((option) => {
               if (!option) return null;
               
