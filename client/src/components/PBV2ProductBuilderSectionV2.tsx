@@ -480,7 +480,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after draft load');
     }
-  }, [productId, draft?.id, draft?.treeJson, isLocalDirty, localTreeJson]);
+  }, [productId, draft?.id, draft?.treeJson, isLocalDirty]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {
