@@ -53,10 +53,10 @@ export const ProductForm = ({
     <form
       onSubmit={form.handleSubmit(handleSave)}
       id={formId}
-      className="space-y-6"
+      className="space-y-0"
     >
       {/* #basics - Full width section */}
-      <div className="space-y-4">
+      <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Basic Information</h3>
           <p className="text-xs text-slate-400 mt-1">Description</p>
@@ -72,7 +72,7 @@ export const ProductForm = ({
                   placeholder="Product description"
                   {...field}
                   value={field.value || ""}
-                  className="min-h-[80px]"
+                  className="min-h-[80px] bg-[#0f172a] border-[#334155]"
                 />
               </FormControl>
               <FormMessage />
@@ -86,9 +86,14 @@ export const ProductForm = ({
             name="category"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Category</FormLabel>
+                <FormLabel className="text-slate-300">Category</FormLabel>
                 <FormControl>
-                  <Input placeholder="e.g., Signs, Banners" {...field} value={field.value || ""} />
+                  <Input
+                    placeholder="e.g., Signs, Banners"
+                    {...field}
+                    value={field.value || ""}
+                    className="bg-[#0f172a] border-[#334155]"
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -99,10 +104,10 @@ export const ProductForm = ({
             name="productTypeId"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Product Type</FormLabel>
+                <FormLabel className="text-slate-300">Product Type</FormLabel>
                 <Select onValueChange={field.onChange} value={field.value || ""}>
                   <FormControl>
-                    <SelectTrigger>
+                    <SelectTrigger className="bg-[#0f172a] border-[#334155]">
                       <SelectValue placeholder="Select type" />
                     </SelectTrigger>
                   </FormControl>
@@ -134,10 +139,13 @@ export const ProductForm = ({
         </div>
       </div>
 
+      {/* Divider */}
+      <div className="h-px bg-[#1e293b] my-6" />
+
       {/* 2-column layout for Pricing Engine and Material & Weight */}
       <div className="grid grid-cols-2 gap-6">
         {/* LEFT: Pricing Engine */}
-        <div className="space-y-4">
+        <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
           <div>
             <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Pricing Engine</h3>
             <p className="text-xs text-slate-400 mt-1">Formula Library</p>
@@ -151,7 +159,7 @@ export const ProductForm = ({
               const selectedFormula = pricingFormulas?.find((f: any) => f.id === field.value);
               return (
                 <FormItem>
-                  <FormLabel>Formula Library</FormLabel>
+                  <FormLabel className="text-slate-300">Formula Library</FormLabel>
                   <Select
                     onValueChange={(val) => {
                       field.onChange(val === "__none__" ? null : val);
@@ -168,7 +176,7 @@ export const ProductForm = ({
                     value={field.value || "__none__"}
                   >
                     <FormControl>
-                      <SelectTrigger>
+                      <SelectTrigger className="bg-[#0f172a] border-[#334155]">
                         <SelectValue placeholder="— No formula (configure manually) —" />
                       </SelectTrigger>
                     </FormControl>
@@ -192,8 +200,8 @@ export const ProductForm = ({
             }}
           />
 
-          <div>
-            <p className="text-xs text-slate-400 mt-4 mb-2">Pricing Profile</p>
+          <div className="pt-2">
+            <p className="text-xs text-slate-400 mb-2">Pricing Profile</p>
           </div>
 
           <FormField
@@ -201,7 +209,7 @@ export const ProductForm = ({
             name="pricingProfileKey"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Pricing Profile</FormLabel>
+                <FormLabel className="text-slate-300">Pricing Profile</FormLabel>
                 <Select
                   onValueChange={(val) => {
                     field.onChange(val);
@@ -222,7 +230,7 @@ export const ProductForm = ({
                   value={field.value || "default"}
                 >
                   <FormControl>
-                    <SelectTrigger>
+                    <SelectTrigger className="bg-[#0f172a] border-[#334155]">
                       <SelectValue placeholder="Select pricing profile" />
                     </SelectTrigger>
                   </FormControl>
@@ -243,8 +251,8 @@ export const ProductForm = ({
           {/* Formula field - shown for profiles that use formulas */}
           {getProfile(addPricingProfileKey).usesFormula && (
             <>
-              <div>
-                <p className="text-xs text-slate-400 mt-4 mb-2">Pricing Formula</p>
+              <div className="pt-2">
+                <p className="text-xs text-slate-400 mb-2">Pricing Formula</p>
               </div>
               <FormField
                 control={form.control}
@@ -256,6 +264,7 @@ export const ProductForm = ({
                         placeholder={getDefaultFormula(addPricingProfileKey)}
                         {...field}
                         value={field.value || ""}
+                        className="bg-[#0f172a] border-[#334155]"
                       />
                     </FormControl>
                     <FormDescription className="text-xs text-slate-400">
@@ -272,7 +281,7 @@ export const ProductForm = ({
         </div>
 
         {/* RIGHT: Material & Weight Configuration */}
-        <div className="space-y-4">
+        <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
           <div>
             <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Material & Weight Configuration</h3>
             <p className="text-xs text-slate-400 mt-1">Primary Material</p>
@@ -284,7 +293,7 @@ export const ProductForm = ({
             render={({ field }) => (
               <FormItem>
                 <div className="flex items-center justify-between gap-3">
-                  <FormLabel>Primary Material</FormLabel>
+                  <FormLabel className="text-slate-300">Primary Material</FormLabel>
                   <CreateMaterialDialog
                     onCreated={(material) => {
                       form.setValue("primaryMaterialId", material.id, { shouldDirty: true });
@@ -297,7 +306,7 @@ export const ProductForm = ({
                   value={field.value || "__none__"}
                 >
                   <FormControl>
-                    <SelectTrigger>
+                    <SelectTrigger className="bg-[#0f172a] border-[#334155]">
                       <SelectValue placeholder="Select primary material" />
                     </SelectTrigger>
                   </FormControl>
@@ -320,8 +329,11 @@ export const ProductForm = ({
         </div>
       </div>
 
+      {/* Divider */}
+      <div className="h-px bg-[#1e293b] my-6" />
+
       {/* Advanced Settings - Full width section */}
-      <div className="space-y-4">
+      <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Advanced Settings</h3>
         </div>
@@ -369,8 +381,11 @@ export const ProductForm = ({
         </div>
       </div>
 
+      {/* Divider */}
+      <div className="h-px bg-[#1e293b] my-6" />
+
       {/* Product Images - Full width section */}
-      <div className="space-y-4">
+      <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Product Images</h3>
           <p className="text-xs text-slate-400 mt-1">Customer-facing images displayed in quotes and proposals</p>
