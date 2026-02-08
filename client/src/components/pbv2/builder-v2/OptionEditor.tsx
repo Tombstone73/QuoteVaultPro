@@ -78,7 +78,7 @@ export function OptionEditor({
   const groupOptions = selectedGroup.optionIds.map(id => options[id]).filter(Boolean);
 
   return (
-    <div className="h-full w-full flex flex-col bg-[#0a0e1a] overflow-hidden">
+    <div className="w-full flex flex-col bg-[#0a0e1a]">
       <div className="border-b border-[#334155] bg-[#1e293b] p-4">
         <div className="flex items-start justify-between mb-3">
           <div className="flex-1">
@@ -124,21 +124,20 @@ export function OptionEditor({
         </div>
       </div>
 
-      <ScrollArea className="flex-1 bg-[#0a0e1a]">
-        <div className="p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-slate-200">Options</h3>
-            <Button
-              onClick={() => onAddOption(selectedGroup.id)}
-              size="sm"
-              className="gap-2 bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              <Plus className="h-4 w-4" />
-              Add Option
-            </Button>
-          </div>
+      <div className="bg-[#0a0e1a] p-4">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-slate-200">Options</h3>
+          <Button
+            onClick={() => onAddOption(selectedGroup.id)}
+            size="sm"
+            className="gap-2 bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            <Plus className="h-4 w-4" />
+            Add Option
+          </Button>
+        </div>
 
-          <div className="space-y-3">
+        <div className="space-y-3">
             {groupOptions.map((option) => {
               if (!option) return null;
               
@@ -254,9 +253,8 @@ export function OptionEditor({
                 </div>
               );
             })}
-          </div>
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }
