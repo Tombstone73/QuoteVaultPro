@@ -229,13 +229,11 @@ export default function PBV2ProductBuilderSectionV2({
   onPbv2StateChange,
   onTreeProviderReady,
   onClearDirtyReady,
-  middleColumnContent,
 }: { 
   productId?: string | null;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
   onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null }) => void;
   onClearDirtyReady?: (clearDirty: () => void) => void;
-  middleColumnContent?: React.ReactNode;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
@@ -1062,7 +1060,6 @@ export default function PBV2ProductBuilderSectionV2({
         findings={findings}
         pricingPreview={pricingPreview}
         weightPreview={weightPreview}
-        middleColumnContent={middleColumnContent}
         onSelectGroup={setSelectedGroupId}
         onSelectOption={setSelectedOptionId}
         onAddGroup={handleAddGroup}

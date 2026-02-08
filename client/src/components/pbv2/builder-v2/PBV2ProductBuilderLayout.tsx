@@ -32,9 +32,6 @@ export interface PBV2ProductBuilderLayoutProps {
     breakdown: Array<{ label: string; oz: number }>;
   } | null;
   
-  // Middle column content (product sections from ProductForm)
-  middleColumnContent?: React.ReactNode;
-  
   // Handlers
   onSelectGroup: (groupId: string) => void;
   onSelectOption: (optionId: string | null) => void;
@@ -83,7 +80,6 @@ export function PBV2ProductBuilderLayout({
   findings,
   pricingPreview,
   weightPreview,
-  middleColumnContent,
   onSelectGroup,
   onSelectOption,
   onAddGroup,
@@ -113,10 +109,18 @@ export function PBV2ProductBuilderLayout({
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
 
   return (
-    <div className="w-full h-full flex overflow-hidden bg-[#0a0e1a]">
-      {/* 3-column layout: full height with independent scroll areas */}
-      {/* Left Sidebar: Fixed width 288px (w-72), independent scroll */}
-      <div className="w-72 shrink-0 border-r border-[#334155]">
+    <div className="w-full">
+      {/* Options Builder Card with fixed height */}
+      <div className="bg-[#1e293b] border border-[#334155] rounded-lg overflow-hidden">
+        {/* Card Header */}
+        <div className="border-b border-[#334155] px-6 py-3.5">
+          <h2 className="text-lg font-medium text-slate-200">Options Builder</h2>
+        </div>
+
+        {/* 3-column layout: fixed 800px height with independent scroll areas */}
+        <div className="h-[800px] flex overflow-hidden bg-[#0a0e1a]">
+          {/* Left Sidebar: Fixed width 288px (w-72), independent scroll */}
+          <div className="w-72 shrink-0 border-r border-[#334155]">
         <OptionGroupsSidebar
           optionGroups={editorModel.groups}
           options={editorModel.options}
@@ -129,10 +133,7 @@ export function PBV2ProductBuilderLayout({
       
       {/* Middle Editor: Flex grow with min-w-0 for proper overflow, single unified scroll */}
       <div className="flex-1 min-w-0 overflow-y-auto bg-[#0a0e1a]">
-        <div className="p-6 space-y-6">
-          {/* Product sections (Basic Info, Pricing, Materials, etc.) */}
-          {middleColumnContent}
-          
+        <div className="px-6 py-4">
           {/* Selected group editor */}
           {selectedGroup && (
             <PBV2EditorErrorBoundary
@@ -157,18 +158,20 @@ export function PBV2ProductBuilderLayout({
                 onAddPricingRule={onAddPricingRule}
                 onDeletePricingRule={onDeletePricingRule}
               />
-            </PBV2EditorErrorBoundary>
-          )}
+              </PBV2EditorErrorBoundary>
+            )}
+          </div>
         </div>
-      </div>
       
-      {/* Right Panel: Fixed width 384px (w-96), independent scroll */}
-      <div className="w-96 shrink-0 border-l border-[#334155]">
-        <PricingValidationPanel
-          findings={findings}
-          pricingPreview={pricingPreview}
-          weightPreview={weightPreview}
-        />
+          {/* Right Panel: Fixed width 384px (w-96), independent scroll */}
+          <div className="w-96 shrink-0 border-l border-[#334155]">
+            <PricingValidationPanel
+              findings={findings}
+              pricingPreview={pricingPreview}
+              weightPreview={weightPreview}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );
