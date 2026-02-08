@@ -1,11 +1,8 @@
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Button } from "@/components/ui/button";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
@@ -56,92 +53,96 @@ export const ProductForm = ({
     <form
       onSubmit={form.handleSubmit(handleSave)}
       id={formId}
-      className="space-y-6"
+      className="space-y-4"
     >
-      {/* #basics */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Basic Information</CardTitle>
-          <CardDescription>Customer-facing metadata and categorization.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <FormField
-            control={form.control}
-            name="description"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Description</FormLabel>
-                <FormControl>
-                  <Textarea placeholder="Product description" {...field} value={field.value || ""} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <div className="grid grid-cols-2 gap-4">
-            <FormField
-              control={form.control}
-              name="category"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Category</FormLabel>
-                  <FormControl>
-                    <Input placeholder="e.g., Signs, Banners" {...field} value={field.value || ""} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="productTypeId"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Product Type</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value || ""}>
+      {/* 2-column grid layout matching Figma design */}
+      <div className="grid grid-cols-2 gap-4">
+        {/* LEFT COLUMN */}
+        <div className="space-y-4">
+          {/* #basics */}
+          <div className="border border-[#334155] rounded-lg overflow-hidden bg-[#0a0e1a]">
+            <div className="border-b border-[#334155] p-5 bg-[#0f172a]">
+              <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Basic Information</h3>
+              <p className="text-xs text-slate-400 mt-1">Customer-facing metadata and categorization</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <FormField
+                control={form.control}
+                name="description"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Description</FormLabel>
                     <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select type" />
-                      </SelectTrigger>
+                      <Textarea placeholder="Product description" {...field} value={field.value || ""} />
                     </FormControl>
-                    <SelectContent>
-                      {productTypes?.map((pt: any) => (
-                        <SelectItem key={pt.id} value={pt.id}>{pt.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="category"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Category</FormLabel>
+                      <FormControl>
+                        <Input placeholder="e.g., Signs, Banners" {...field} value={field.value || ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="productTypeId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Product Type</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value || ""}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select type" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {productTypes?.map((pt: any) => (
+                            <SelectItem key={pt.id} value={pt.id}>{pt.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <FormField
+                control={form.control}
+                name="isService"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border border-[#334155] p-3 bg-[#0f172a]/50">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-slate-200">Service / Fee</FormLabel>
+                      <FormDescription className="text-slate-400">This is a service or fee (design, rush, shipping) rather than a physical product</FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value || false} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </div>
           </div>
 
-          <FormField
-            control={form.control}
-            name="isService"
-            render={({ field }) => (
-              <FormItem className="flex items-center justify-between rounded-lg border p-3 bg-muted/30">
-                <div className="space-y-0.5">
-                  <FormLabel>Service / Fee</FormLabel>
-                  <FormDescription>This is a service or fee (design, rush, shipping) rather than a physical product</FormDescription>
-                </div>
-                <FormControl>
-                  <Switch checked={field.value || false} onCheckedChange={field.onChange} />
-                </FormControl>
-              </FormItem>
-            )}
-          />
-        </CardContent>
-      </Card>
-
-      {/* #pricing */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Pricing Engine</CardTitle>
-          <CardDescription>Choose how this product is priced and computed.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          {/* #pricing */}
+          <div className="border border-[#334155] rounded-lg overflow-hidden bg-[#0a0e1a]">
+        <div className="border-b border-[#334155] p-5 bg-[#0f172a]">
+          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Pricing Engine</h3>
+          <p className="text-xs text-slate-400 mt-1">Choose how this product is priced and computed</p>
+        </div>
+        <div className="p-6 space-y-4">
 
         {/* Pricing Formula Selector (Optional) */}
         <FormField
@@ -268,114 +269,117 @@ export const ProductForm = ({
             )}
           />
         )}
-        </CardContent>
-      </Card>
+            </div>
+          </div>
 
-      {/* #materials */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Materials Config</CardTitle>
-          <CardDescription>Primary material for cost and inventory.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <FormField
-            control={form.control}
-            name="primaryMaterialId"
-            render={({ field }) => (
-              <FormItem>
-                <div className="flex items-center justify-between gap-3">
-                  <FormLabel>Primary Material</FormLabel>
-                  <CreateMaterialDialog
-                    onCreated={(material) => {
-                      form.setValue("primaryMaterialId", material.id, { shouldDirty: true });
-                    }}
-                    triggerClassName="h-auto px-0"
-                  />
-                </div>
-                <Select
-                  onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
-                  value={field.value || "__none__"}
-                >
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select primary material" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    <SelectItem value="__none__">None</SelectItem>
-                    {materials?.map((mat: any) => (
-                      <SelectItem key={mat.id} value={mat.id}>
-                        {mat.name} {mat.sku ? `(${mat.sku})` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormDescription className="text-xs">
-                  Primary material is used for cost calculations and inventory; optional for service/fee products.
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        </CardContent>
-      </Card>
+          {/* #advanced */}
+          <div className="border border-[#334155] rounded-lg overflow-hidden bg-[#0a0e1a]">
+            <div className="border-b border-[#334155] p-5 bg-[#0f172a]">
+              <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Advanced Settings</h3>
+              <p className="text-xs text-slate-400 mt-1">Status and workflow flags</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <FormField
+                control={form.control}
+                name="isActive"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border border-[#334155] p-3 bg-[#0f172a]/50">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-slate-200">Active</FormLabel>
+                      <FormDescription className="text-slate-400">Product is available for use in quotes</FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="requiresProductionJob"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border border-[#334155] p-3 bg-[#0f172a]/50">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-slate-200">Requires Production Job</FormLabel>
+                      <FormDescription className="text-slate-400">Create a production job when this product is ordered</FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="isTaxable"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border border-[#334155] p-3 bg-[#0f172a]/50">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-slate-200">Taxable Item</FormLabel>
+                      <FormDescription className="text-slate-400">Apply sales tax to this product when sold</FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </div>
+          </div>
+        </div>
 
-      {/* Options are managed by PBV2ProductBuilderSectionV2 outside ProductForm */}
-
-      {/* #advanced */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Advanced</CardTitle>
-          <CardDescription>Status and workflow flags.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <FormField
-            control={form.control}
-            name="isActive"
-            render={({ field }) => (
-              <FormItem className="flex items-center justify-between rounded-lg border p-3">
-                <div className="space-y-0.5">
-                  <FormLabel>Active</FormLabel>
-                  <FormDescription>Product is available for use in quotes</FormDescription>
-                </div>
-                <FormControl>
-                  <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                </FormControl>
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="requiresProductionJob"
-            render={({ field }) => (
-              <FormItem className="flex items-center justify-between rounded-lg border p-3">
-                <div className="space-y-0.5">
-                  <FormLabel>Requires Production Job</FormLabel>
-                  <FormDescription>Create a production job when this product is ordered</FormDescription>
-                </div>
-                <FormControl>
-                  <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                </FormControl>
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="isTaxable"
-            render={({ field }) => (
-              <FormItem className="flex items-center justify-between rounded-lg border p-3">
-                <div className="space-y-0.5">
-                  <FormLabel>Taxable Item</FormLabel>
-                  <FormDescription>Apply sales tax to this product when sold</FormDescription>
-                </div>
-                <FormControl>
-                  <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                </FormControl>
-              </FormItem>
-            )}
-          />
-        </CardContent>
-      </Card>
+        {/* RIGHT COLUMN */}
+        <div className="space-y-4">
+          {/* #materials */}
+          <div className="border border-[#334155] rounded-lg overflow-hidden bg-[#0a0e1a]">
+            <div className="border-b border-[#334155] p-5 bg-[#0f172a]">
+              <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Material & Weight Configuration</h3>
+              <p className="text-xs text-slate-400 mt-1">Primary material for cost and inventory</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <FormField
+                control={form.control}
+                name="primaryMaterialId"
+                render={({ field }) => (
+                  <FormItem>
+                    <div className="flex items-center justify-between gap-3">
+                      <FormLabel>Primary Material</FormLabel>
+                      <CreateMaterialDialog
+                        onCreated={(material) => {
+                          form.setValue("primaryMaterialId", material.id, { shouldDirty: true });
+                        }}
+                        triggerClassName="h-auto px-0"
+                      />
+                    </div>
+                    <Select
+                      onValueChange={(val) => field.onChange(val === "__none__" ? null : val)}
+                      value={field.value || "__none__"}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select primary material" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {materials?.map((mat: any) => (
+                          <SelectItem key={mat.id} value={mat.id}>
+                            {mat.name} {mat.sku ? `(${mat.sku})` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormDescription className="text-xs text-slate-400">
+                      Primary material is used for cost calculations and inventory; optional for service/fee products.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
     </form>
   );
 };
