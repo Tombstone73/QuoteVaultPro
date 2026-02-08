@@ -39,7 +39,7 @@ export function PricingValidationPanel({
 
   return (
     <aside className="h-full w-full bg-[#0f172a] flex flex-col overflow-hidden">
-      <div className="border-b border-[#334155] p-4">
+      <div className="border-b border-[#334155] p-4 space-y-2">
         <div className="flex items-center gap-2 mb-3">
           <DollarSign className="h-4 w-4 text-blue-400" />
           <h2 className="text-sm font-semibold text-slate-200">Pricing Preview</h2>

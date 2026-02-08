@@ -42,7 +42,7 @@ export function OptionGroupsSidebar({
 }: OptionGroupsSidebarProps) {
   return (
     <aside className="h-full w-full flex flex-col overflow-hidden bg-[#0f172a]">
-      <div className="border-b border-[#334155] p-4">
+      <div className="border-b border-[#334155] p-4 space-y-2">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-slate-400" />
@@ -73,21 +73,21 @@ export function OptionGroupsSidebar({
             return (
               <div key={group.id}>
                 {index > 0 && (
-                  <div className="h-px bg-slate-700/50 my-2 mx-3" />
+                  <div className="h-px bg-slate-700/50 my-1" />
                 )}
                 <div
                   className={`
-                    rounded-md transition-all relative
+                    rounded-md transition-colors relative
                     ${selectedGroupId === group.id
-                      ? 'bg-blue-500/10 border border-blue-500/40 shadow-sm'
-                      : 'hover:bg-slate-800/40 border border-slate-700/50'
+                      ? 'bg-blue-500/10 border border-blue-500/40'
+                      : 'hover:bg-slate-800/40 border border-transparent'
                     }
                   `}
                 >
                   <button
                     type="button"
                     onClick={() => onSelectGroup(group.id)}
-                    className="w-full text-left p-3 pr-8"
+                    className="w-full text-left p-2.5 pr-8"
                   >
                     <div className="flex items-start justify-between mb-2">
                       <div className="flex items-start gap-2 flex-1 min-w-0">

@@ -709,7 +709,7 @@ const ProductEditorPage = () => {
         </div>
 
         {/* Main content scroll container with product sections */}
-        <div className="px-6 py-6 space-y-6">
+        <div className="p-6 space-y-4">
           {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
           <ProductForm
             form={form}
