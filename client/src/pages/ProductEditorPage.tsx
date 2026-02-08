@@ -17,6 +17,7 @@ import { useProductTypes } from '../hooks/useProductTypes';
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { Card } from "@/components/ui/card";
 import { type FlatGoodsConfig } from "@shared/pricingProfiles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -700,38 +701,40 @@ const ProductEditorPage = () => {
   }
 
   return (
-    <SplitWorkspace
-      left={
+    <div className="h-screen w-full flex flex-col overflow-hidden bg-background">
+      {/* Header bar: breadcrumbs, title, actions */}
+      <div className="shrink-0 border-b bg-card">
+        {header}
+      </div>
+
+      {/* 3-column PBV2 layout: full remaining height */}
+      <div className="flex-1 min-h-0">
         <Form {...form}>
-          <div className="pb-6">
-            {header}
-
-            <ProductForm
-              form={form}
-              materials={materials}
-              pricingFormulas={pricingFormulas}
-              productTypes={productTypes}
-              onSave={handleSave}
-              formId="product-editor-form"
-            />
-
-            <PBV2ProductBuilderSectionV2 
-              productId={productId || null}
-              onPbv2StateChange={setPbv2State}
-              onTreeProviderReady={(provider) => {
-                pbv2TreeProviderRef.current = provider;
-              }}
-              onClearDirtyReady={(clearDirty) => {
-                pbv2ClearDirtyRef.current = clearDirty;
-              }}
-            />
-          </div>
+          <PBV2ProductBuilderSectionV2 
+            productId={productId || null}
+            onPbv2StateChange={setPbv2State}
+            onTreeProviderReady={(provider) => {
+              pbv2TreeProviderRef.current = provider;
+            }}
+            onClearDirtyReady={(clearDirty) => {
+              pbv2ClearDirtyRef.current = clearDirty;
+            }}
+            middleColumnContent={
+              <div className="space-y-6">
+                <ProductForm
+                  form={form}
+                  materials={materials}
+                  pricingFormulas={pricingFormulas}
+                  productTypes={productTypes}
+                  onSave={handleSave}
+                  formId="product-editor-form"
+                />
+              </div>
+            }
+          />
         </Form>
-      }
-      right={<ProductSimulator draft={draft} isDirty={form.formState.isDirty} />}
-      rightTitle="Live Simulator"
-      storageKey="productEditor.simOpen"
-    />
+      </div>
+    </div>
   );
 };
 

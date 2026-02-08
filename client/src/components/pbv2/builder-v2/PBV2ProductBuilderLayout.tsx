@@ -32,6 +32,9 @@ export interface PBV2ProductBuilderLayoutProps {
     breakdown: Array<{ label: string; oz: number }>;
   } | null;
   
+  // Middle column content (product sections from ProductForm)
+  middleColumnContent?: React.ReactNode;
+  
   // Handlers
   onSelectGroup: (groupId: string) => void;
   onSelectOption: (optionId: string | null) => void;
@@ -80,6 +83,7 @@ export function PBV2ProductBuilderLayout({
   findings,
   pricingPreview,
   weightPreview,
+  middleColumnContent,
   onSelectGroup,
   onSelectOption,
   onAddGroup,
@@ -123,31 +127,39 @@ export function PBV2ProductBuilderLayout({
         />
       </div>
       
-      {/* Middle Editor: Flex grow with min-w-0 for proper overflow, independent scroll */}
-      <div className="flex-1 min-w-0">
-        <PBV2EditorErrorBoundary
-          key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
-          onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
-        >
-          <OptionEditor
-            selectedGroup={selectedGroup}
-            options={editorModel.options}
-            selectedOptionId={selectedOptionId}
-            onSelectOption={onSelectOption}
-            onAddOption={onAddOption}
-            onDeleteOption={onDeleteOption}
-            onUpdateGroup={onUpdateGroup}
-            treeJson={treeJson}
-            onUpdateOption={onUpdateOption}
-            onAddChoice={onAddChoice}
-            onUpdateChoice={onUpdateChoice}
-            onDeleteChoice={onDeleteChoice}
-            onReorderChoice={onReorderChoice}
-            onUpdateNodePricing={onUpdateNodePricing}
-            onAddPricingRule={onAddPricingRule}
-            onDeletePricingRule={onDeletePricingRule}
-          />
-        </PBV2EditorErrorBoundary>
+      {/* Middle Editor: Flex grow with min-w-0 for proper overflow, single unified scroll */}
+      <div className="flex-1 min-w-0 overflow-y-auto bg-[#0a0e1a]">
+        <div className="p-6 space-y-6">
+          {/* Product sections (Basic Info, Pricing, Materials, etc.) */}
+          {middleColumnContent}
+          
+          {/* Selected group editor */}
+          {selectedGroup && (
+            <PBV2EditorErrorBoundary
+              key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
+              onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
+            >
+              <OptionEditor
+                selectedGroup={selectedGroup}
+                options={editorModel.options}
+                selectedOptionId={selectedOptionId}
+                onSelectOption={onSelectOption}
+                onAddOption={onAddOption}
+                onDeleteOption={onDeleteOption}
+                onUpdateGroup={onUpdateGroup}
+                treeJson={treeJson}
+                onUpdateOption={onUpdateOption}
+                onAddChoice={onAddChoice}
+                onUpdateChoice={onUpdateChoice}
+                onDeleteChoice={onDeleteChoice}
+                onReorderChoice={onReorderChoice}
+                onUpdateNodePricing={onUpdateNodePricing}
+                onAddPricingRule={onAddPricingRule}
+                onDeletePricingRule={onDeletePricingRule}
+              />
+            </PBV2EditorErrorBoundary>
+          )}
+        </div>
       </div>
       
       {/* Right Panel: Fixed width 384px (w-96), independent scroll */}
