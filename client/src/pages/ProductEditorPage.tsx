@@ -36,6 +36,7 @@ import { ChevronRight, Copy, RotateCcw, Save } from "lucide-react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import PBV2ProductBuilderSectionV2 from "@/components/PBV2ProductBuilderSectionV2";
 import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
+import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   optionsJson: ProductOptionItem[] | null;
@@ -63,6 +64,17 @@ const ProductEditorPage = () => {
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
+
+  // Track PBV2 pricing/validation data for page-level pricing panel
+  const [pbv2PricingData, setPbv2PricingData] = useState<{
+    pricingPreview: { addOnCents: number; breakdown: Array<{ label: string; cents: number }> } | null;
+    weightPreview: { totalOz: number; breakdown: Array<{ label: string; oz: number }> } | null;
+    findings: any[];
+  }>({
+    pricingPreview: null,
+    weightPreview: null,
+    findings: []
+  });
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ["/api/products", productId],
@@ -702,37 +714,44 @@ const ProductEditorPage = () => {
 
   return (
     <Form {...form}>
-      <div className="min-h-screen w-full bg-background">
-        {/* Header bar: breadcrumbs, title, actions */}
-        <div className="sticky top-0 z-10 border-b bg-card">
-          {header}
-        </div>
+      <SplitWorkspace
+        header={header}
+        rightTitle="Pricing Preview"
+        storageKey="product-editor-pricing-preview-collapsed"
+        left={
+          <div className="space-y-4">
+            {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
+            <ProductForm
+              form={form}
+              materials={materials}
+              pricingFormulas={pricingFormulas}
+              productTypes={productTypes}
+              onSave={handleSave}
+              formId="product-editor-form"
+            />
 
-        {/* Main content scroll container with product sections */}
-        <div className="p-6 space-y-4">
-          {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
-          <ProductForm
-            form={form}
-            materials={materials}
-            pricingFormulas={pricingFormulas}
-            productTypes={productTypes}
-            onSave={handleSave}
-            formId="product-editor-form"
+            {/* Options Builder section with 2-column layout (pricing panel moved to page level) */}
+            <PBV2ProductBuilderSectionV2
+              productId={productId || null}
+              onPbv2StateChange={setPbv2State}
+              onPbv2PricingDataChange={setPbv2PricingData}
+              onTreeProviderReady={(provider) => {
+                pbv2TreeProviderRef.current = provider;
+              }}
+              onClearDirtyReady={(clearDirty) => {
+                pbv2ClearDirtyRef.current = clearDirty;
+              }}
+            />
+          </div>
+        }
+        right={
+          <PricingValidationPanel
+            pricingPreview={pbv2PricingData.pricingPreview}
+            weightPreview={pbv2PricingData.weightPreview}
+            findings={pbv2PricingData.findings}
           />
-
-          {/* Options Builder section with 3-column layout */}
-          <PBV2ProductBuilderSectionV2 
-            productId={productId || null}
-            onPbv2StateChange={setPbv2State}
-            onTreeProviderReady={(provider) => {
-              pbv2TreeProviderRef.current = provider;
-            }}
-            onClearDirtyReady={(clearDirty) => {
-              pbv2ClearDirtyRef.current = clearDirty;
-            }}
-          />
-        </div>
-      </div>
+        }
+      />
     </Form>
   );
 };
