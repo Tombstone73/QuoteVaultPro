@@ -3,36 +3,19 @@ import { Settings } from 'lucide-react';
 import { ProductHeader } from './ProductHeader';
 import { OptionGroupsSidebar } from './OptionGroupsSidebar';
 import { OptionEditor } from './OptionEditor';
-import { PricingValidationPanel } from './PricingValidationPanel';
 import { BasePricingEditor } from './BasePricingEditor';
 import { PBV2EditorErrorBoundary } from './PBV2EditorErrorBoundary';
 import type { EditorModel } from '@/lib/pbv2/pbv2ViewModel';
-import type { Finding } from '@shared/pbv2/findings';
 
 export interface PBV2ProductBuilderLayoutProps {
   // Editor model (derived from PBV2 tree)
   editorModel: EditorModel;
   treeJson: any; // Raw PBV2 tree for detailed editing
-  
+
   // Selection state
   selectedGroupId: string | null;
   selectedOptionId: string | null;
-  
-  // Header props
-  hasUnsavedChanges: boolean;
-  canPublish: boolean;
-  
-  // Validation/preview
-  findings: Finding[];
-  pricingPreview: {
-    addOnCents: number;
-    breakdown: Array<{ label: string; cents: number }>;
-  } | null;
-  weightPreview: {
-    totalOz: number;
-    breakdown: Array<{ label: string; oz: number }>;
-  } | null;
-  
+
   // Handlers
   onSelectGroup: (groupId: string) => void;
   onSelectOption: (optionId: string | null) => void;
@@ -62,25 +45,21 @@ export interface PBV2ProductBuilderLayoutProps {
 }
 
 /**
- * Presentational 3-column layout for PBV2 builder.
- * 
+ * Presentational 2-column layout for PBV2 builder.
+ *
  * Responsive flex layout:
  * - Left sidebar (fixed 288px): Option groups
  * - Middle editor (flex grow): Selected group editor with min-w-0 for proper overflow
- * - Right panel (fixed 384px): Pricing validation
- * 
+ *
  * The middle column uses flex-1 min-w-0 to allow proper text truncation and flexing.
+ *
+ * NOTE: Pricing validation panel has been moved to page level (ProductEditorPage)
  */
 export function PBV2ProductBuilderLayout({
   editorModel,
   treeJson,
   selectedGroupId,
   selectedOptionId,
-  hasUnsavedChanges,
-  canPublish,
-  findings,
-  pricingPreview,
-  weightPreview,
   onSelectGroup,
   onSelectOption,
   onAddGroup,
@@ -114,7 +93,7 @@ export function PBV2ProductBuilderLayout({
       {/* Options Builder section label */}
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide px-1">Options Builder</h3>
 
-      {/* 3-column layout: fixed 800px height per design system */}
+      {/* 2-column layout: fixed 800px height per design system */}
       <div className="h-[800px] flex border border-[#334155] rounded-lg overflow-hidden bg-[#0a0e1a]">
         {/* Left Sidebar: Fixed width 288px (w-72), independent scroll */}
         <div className="w-72 shrink-0 border-r border-[#334155] bg-[#0f172a]">
@@ -166,15 +145,6 @@ export function PBV2ProductBuilderLayout({
               </div>
             )}
           </div>
-        </div>
-
-        {/* Right Panel: Fixed width 384px (w-96), independent scroll */}
-        <div className="w-96 shrink-0 border-l border-[#334155] bg-[#0f172a]">
-          <PricingValidationPanel
-            findings={findings}
-            pricingPreview={pricingPreview}
-            weightPreview={weightPreview}
-          />
         </div>
       </div>
     </div>
