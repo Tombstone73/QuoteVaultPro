@@ -702,14 +702,25 @@ const ProductEditorPage = () => {
 
   return (
     <Form {...form}>
-      <div className="h-screen w-full flex flex-col overflow-hidden bg-background">
+      <div className="min-h-screen w-full bg-background">
         {/* Header bar: breadcrumbs, title, actions */}
-        <div className="shrink-0 border-b bg-card">
+        <div className="sticky top-0 z-10 border-b bg-card">
           {header}
         </div>
 
-        {/* 3-column PBV2 layout: full remaining height */}
-        <div className="flex-1 min-h-0">
+        {/* Main content scroll container with product sections */}
+        <div className="px-6 py-6 space-y-6">
+          {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
+          <ProductForm
+            form={form}
+            materials={materials}
+            pricingFormulas={pricingFormulas}
+            productTypes={productTypes}
+            onSave={handleSave}
+            formId="product-editor-form"
+          />
+
+          {/* Options Builder section with 3-column layout */}
           <PBV2ProductBuilderSectionV2 
             productId={productId || null}
             onPbv2StateChange={setPbv2State}
@@ -719,18 +730,6 @@ const ProductEditorPage = () => {
             onClearDirtyReady={(clearDirty) => {
               pbv2ClearDirtyRef.current = clearDirty;
             }}
-            middleColumnContent={
-              <div className="space-y-6">
-                <ProductForm
-                  form={form}
-                  materials={materials}
-                  pricingFormulas={pricingFormulas}
-                  productTypes={productTypes}
-                  onSave={handleSave}
-                  formId="product-editor-form"
-                />
-              </div>
-            }
           />
         </div>
       </div>
