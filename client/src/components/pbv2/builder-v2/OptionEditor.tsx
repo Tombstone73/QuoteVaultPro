@@ -78,8 +78,8 @@ export function OptionEditor({
   const groupOptions = selectedGroup.optionIds.map(id => options[id]).filter(Boolean);
 
   return (
-    <div className="w-full flex flex-col bg-[#0a0e1a]">
-      <div className="border-b border-[#334155] bg-[#1e293b] p-4">
+    <div className="w-full flex flex-col">
+      <div className="border-b border-[#334155] p-5">
         <div className="flex items-start justify-between mb-3">
           <div className="flex-1">
             <Input
@@ -124,7 +124,7 @@ export function OptionEditor({
         </div>
       </div>
 
-      <div className="bg-[#0a0e1a] p-4">
+      <div className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-slate-200">Options</h3>
           <Button
@@ -152,7 +152,7 @@ export function OptionEditor({
                   key={option.id}
                   className="bg-[#1e293b] border border-slate-700 rounded-md overflow-hidden"
                 >
-                  <div className="flex items-center p-4 hover:bg-slate-800/30 transition-colors">
+                  <div className="flex items-center p-3 hover:bg-slate-800/30 transition-colors">
                     <GripVertical className="h-4 w-4 text-slate-500 mr-2 flex-shrink-0" />
                     
                     <button
