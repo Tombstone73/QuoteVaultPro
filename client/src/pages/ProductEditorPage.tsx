@@ -714,11 +714,12 @@ const ProductEditorPage = () => {
 
   return (
     <Form {...form}>
-      <SplitWorkspace
-        header={header}
-        rightTitle="Pricing Preview"
-        storageKey="product-editor-pricing-preview-collapsed"
-        left={
+      <div className="min-h-screen h-screen w-full bg-background">
+        <SplitWorkspace
+          header={header}
+          rightTitle="Pricing Preview"
+          storageKey="product-editor-pricing-preview-collapsed"
+          left={
           <div className="space-y-4">
             {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
             <ProductForm
@@ -752,6 +753,7 @@ const ProductEditorPage = () => {
           />
         }
       />
+      </div>
     </Form>
   );
 };
