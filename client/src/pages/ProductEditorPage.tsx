@@ -701,15 +701,15 @@ const ProductEditorPage = () => {
   }
 
   return (
-    <div className="h-screen w-full flex flex-col overflow-hidden bg-background">
-      {/* Header bar: breadcrumbs, title, actions */}
-      <div className="shrink-0 border-b bg-card">
-        {header}
-      </div>
+    <Form {...form}>
+      <div className="h-screen w-full flex flex-col overflow-hidden bg-background">
+        {/* Header bar: breadcrumbs, title, actions */}
+        <div className="shrink-0 border-b bg-card">
+          {header}
+        </div>
 
-      {/* 3-column PBV2 layout: full remaining height */}
-      <div className="flex-1 min-h-0">
-        <Form {...form}>
+        {/* 3-column PBV2 layout: full remaining height */}
+        <div className="flex-1 min-h-0">
           <PBV2ProductBuilderSectionV2 
             productId={productId || null}
             onPbv2StateChange={setPbv2State}
@@ -732,9 +732,9 @@ const ProductEditorPage = () => {
               </div>
             }
           />
-        </Form>
+        </div>
       </div>
-    </div>
+    </Form>
   );
 };
 
