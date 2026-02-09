@@ -110,7 +110,7 @@ export const ProductForm = ({
       className="space-y-6"
     >
       {/* Section 1: Basic Information — 2-column grid */}
-      <div className="space-y-3">
+      <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4 space-y-3">
         <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Basic Information</h3>
 
         <div className="grid grid-cols-2 gap-6">
@@ -199,7 +199,8 @@ export const ProductForm = ({
       <Separator className="bg-slate-700/50" />
 
       {/* 2-column layout for Pricing Engine and Material & Weight */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4">
+        <div className="grid grid-cols-2 gap-6">
         {/* LEFT: Pricing Engine */}
         <PricingEngineRadioSection
           form={form}
@@ -331,12 +332,14 @@ export const ProductForm = ({
             </div>
           </div>
         </div>
+        </div>
       </div>
 
       <Separator className="bg-slate-700/50" />
 
       {/* Section 3: Base Pricing Model (left) + Advanced Settings (right) */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4">
+        <div className="grid grid-cols-2 gap-6">
         {/* LEFT: Base Pricing Model */}
         <div>
           <BasePricingEditor
@@ -400,6 +403,7 @@ export const ProductForm = ({
               )}
             />
           </div>
+        </div>
         </div>
       </div>
 
