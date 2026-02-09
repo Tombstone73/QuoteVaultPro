@@ -4,6 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Separator } from "@/components/ui/separator";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
 import React, { useState, useEffect } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
@@ -56,88 +57,94 @@ export const ProductForm = ({
       id={formId}
       className="space-y-6"
     >
-      {/* #basics - Full width section */}
+      {/* Section 1: Basic Information — 2-column grid */}
       <div className="space-y-3">
-        <div>
-          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Basic Information</h3>
-        </div>
+        <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Basic Information</h3>
 
-        <FormField
-          control={form.control}
-          name="description"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel className="text-xs text-slate-400">Description</FormLabel>
-              <FormControl>
-                <Textarea
-                  placeholder="Product description"
-                  {...field}
-                  value={field.value || ""}
-                  className="min-h-[80px]"
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 gap-6">
+          {/* LEFT: Description */}
           <FormField
             control={form.control}
-            name="category"
+            name="description"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-xs text-slate-400">Category</FormLabel>
+                <FormLabel className="text-xs text-slate-400">Description</FormLabel>
                 <FormControl>
-                  <Input
-                    placeholder="e.g., Signs, Banners"
+                  <Textarea
+                    placeholder="Product description"
                     {...field}
                     value={field.value || ""}
+                    className="min-h-[104px]"
                   />
                 </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
-          <FormField
-            control={form.control}
-            name="productTypeId"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel className="text-xs text-slate-400">Product Type</FormLabel>
-                <Select onValueChange={field.onChange} value={field.value || ""}>
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select type" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {productTypes?.map((pt: any) => (
-                      <SelectItem key={pt.id} value={pt.id}>{pt.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="isService"
-            render={({ field }) => (
-              <FormItem className="flex flex-col justify-end">
-                <div className="flex items-center gap-2 h-10">
-                  <FormControl>
-                    <Switch checked={field.value || false} onCheckedChange={field.onChange} />
-                  </FormControl>
-                  <FormLabel className="text-sm text-slate-300 !mt-0">Service / Fee</FormLabel>
-                </div>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+
+          {/* RIGHT: Category + Type row, then Service/Fee */}
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="category"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-xs text-slate-400">Category</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="e.g., Signs, Banners"
+                        {...field}
+                        value={field.value || ""}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="productTypeId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-xs text-slate-400">Product Type</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value || ""}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select type" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {productTypes?.map((pt: any) => (
+                          <SelectItem key={pt.id} value={pt.id}>{pt.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+            <FormField
+              control={form.control}
+              name="isService"
+              render={({ field }) => (
+                <FormItem>
+                  <div className="flex items-center gap-2 h-9">
+                    <FormControl>
+                      <Switch checked={field.value || false} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="text-sm text-slate-300 !mt-0">Service / Fee</FormLabel>
+                  </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
         </div>
       </div>
+
+      <Separator className="bg-slate-700/50" />
 
       {/* 2-column layout for Pricing Engine and Material & Weight */}
       <div className="grid grid-cols-2 gap-6">
@@ -150,9 +157,7 @@ export const ProductForm = ({
 
         {/* RIGHT: Material & Weight Configuration */}
         <div className="space-y-3">
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Material & Weight Configuration</h3>
-          </div>
+          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Material & Weight Configuration</h3>
 
           <FormField
             control={form.control}
@@ -186,9 +191,6 @@ export const ProductForm = ({
                     ))}
                   </SelectContent>
                 </Select>
-                <FormDescription className="text-xs text-slate-500">
-                  Primary material is used for cost calculations and inventory; optional for service/fee products.
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -196,61 +198,73 @@ export const ProductForm = ({
         </div>
       </div>
 
-      {/* Advanced Settings - Full width section */}
-      <div className="space-y-3">
-        <div>
-          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Advanced Settings</h3>
-        </div>
+      <Separator className="bg-slate-700/50" />
 
-        <div className="grid grid-cols-3 gap-6">
-          <FormField
-            control={form.control}
-            name="isActive"
-            render={({ field }) => (
-              <FormItem className="flex items-center gap-2">
-                <FormControl>
-                  <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                </FormControl>
-                <FormLabel className="text-sm text-slate-300 !mt-0">Active</FormLabel>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="requiresProductionJob"
-            render={({ field }) => (
-              <FormItem className="flex items-center gap-2">
-                <FormControl>
-                  <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                </FormControl>
-                <FormLabel className="text-sm text-slate-300 !mt-0">Requires Production Job</FormLabel>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="isTaxable"
-            render={({ field }) => (
-              <FormItem className="flex items-center gap-2">
-                <FormControl>
-                  <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
-                </FormControl>
-                <FormLabel className="text-sm text-slate-300 !mt-0">Taxable Item</FormLabel>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+      {/* Section 3: Advanced Settings — right column of 2-col grid */}
+      <div className="grid grid-cols-2 gap-6">
+        {/* LEFT: placeholder for future Base Pricing Model */}
+        <div />
+
+        {/* RIGHT: Advanced Settings — toggles stacked vertically */}
+        <div className="space-y-3">
+          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Advanced Settings</h3>
+
+          <div className="space-y-3">
+            <FormField
+              control={form.control}
+              name="isActive"
+              render={({ field }) => (
+                <FormItem>
+                  <div className="flex items-center gap-2">
+                    <FormControl>
+                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="text-sm text-slate-300 !mt-0">Active</FormLabel>
+                  </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="requiresProductionJob"
+              render={({ field }) => (
+                <FormItem>
+                  <div className="flex items-center gap-2">
+                    <FormControl>
+                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="text-sm text-slate-300 !mt-0">Requires Production Job</FormLabel>
+                  </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="isTaxable"
+              render={({ field }) => (
+                <FormItem>
+                  <div className="flex items-center gap-2">
+                    <FormControl>
+                      <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="text-sm text-slate-300 !mt-0">Taxable Item</FormLabel>
+                  </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Product Images - Full width section */}
+      <Separator className="bg-slate-700/50" />
+
+      {/* Section 4: Product Images — full width */}
       <div className="space-y-3">
-        <div>
-          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Product Images</h3>
-          <p className="text-xs text-slate-500">Customer-facing images displayed in quotes and proposals</p>
-        </div>
+        <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Product Images</h3>
+        <p className="text-xs text-slate-500">Customer-facing images displayed in portals and storefronts</p>
         <div className="text-sm text-slate-400">
           Image upload functionality coming soon...
         </div>
@@ -305,9 +319,7 @@ function PricingEngineRadioSection({
 
   return (
     <div className="space-y-3">
-      <div>
-        <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Pricing Engine</h3>
-      </div>
+      <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
 
       <RadioGroup
         value={pricingMode}
