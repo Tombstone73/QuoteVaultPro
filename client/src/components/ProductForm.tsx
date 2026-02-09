@@ -3,8 +3,9 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
 
@@ -141,130 +142,11 @@ export const ProductForm = ({
       {/* 2-column layout for Pricing Engine and Material & Weight */}
       <div className="grid grid-cols-2 gap-6">
         {/* LEFT: Pricing Engine */}
-        <div className="space-y-3">
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Pricing Engine</h3>
-          </div>
-
-          {/* Pricing Formula Selector (Optional) */}
-          <FormField
-            control={form.control}
-            name="pricingFormulaId"
-            render={({ field }) => {
-              const selectedFormula = pricingFormulas?.find((f: any) => f.id === field.value);
-              return (
-                <FormItem>
-                  <FormLabel className="text-xs text-slate-400">Formula Library</FormLabel>
-                  <Select
-                    onValueChange={(val) => {
-                      field.onChange(val === "__none__" ? null : val);
-                      if (val !== "__none__") {
-                        const formula = pricingFormulas?.find((f: any) => f.id === val);
-                        if (formula) {
-                          form.setValue("pricingProfileKey", formula.pricingProfileKey || "default");
-                          if (formula.config) {
-                            form.setValue("pricingProfileConfig", formula.config as unknown as FlatGoodsConfig);
-                          }
-                        }
-                      }
-                    }}
-                    value={field.value || "__none__"}
-                  >
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder="— No formula (configure manually) —" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      <SelectItem value="__none__">— No formula (configure manually) —</SelectItem>
-                      {pricingFormulas?.map((formula: any) => (
-                        <SelectItem key={formula.id} value={formula.id}>
-                          {formula.name} ({formula.code})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormDescription className="text-xs text-slate-500">
-                    {selectedFormula
-                      ? `Optional: choose a saved pricing formula as a starting point.`
-                      : "Optional: choose a saved pricing formula as a starting point."}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
-          />
-
-          <FormField
-            control={form.control}
-            name="pricingProfileKey"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel className="text-xs text-slate-400">Pricing Profile</FormLabel>
-                <Select
-                  onValueChange={(val) => {
-                    field.onChange(val);
-                    const profile = getProfile(val);
-                    if (profile.usesFormula && profile.defaultFormula) {
-                      form.setValue("pricingFormula", profile.defaultFormula);
-                    }
-                    if (val === "flat_goods" && !form.getValues("pricingProfileConfig")) {
-                      form.setValue("pricingProfileConfig", {
-                        sheetWidth: 48,
-                        sheetHeight: 96,
-                        allowRotation: true,
-                        materialType: "sheet",
-                        minPricePerItem: null,
-                      });
-                    }
-                  }}
-                  value={field.value || "default"}
-                >
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select pricing profile" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {Object.values(PRICING_PROFILES).map((profile) => (
-                      <SelectItem key={profile.key} value={profile.key}>{profile.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormDescription className="text-xs text-slate-500">
-                  {getProfile(field.value).description}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          {/* Formula field - shown for profiles that use formulas */}
-          {getProfile(addPricingProfileKey).usesFormula && (
-            <FormField
-              control={form.control}
-              name="pricingFormula"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-xs text-slate-400">Pricing Formula</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder={getDefaultFormula(addPricingProfileKey)}
-                      {...field}
-                      value={field.value || ""}
-                    />
-                  </FormControl>
-                  <FormDescription className="text-xs text-slate-500">
-                    {addPricingProfileKey === "default" && "Variables: width, height, sqft (width×height÷144), p (price per sqft), q (quantity)"}
-                    {addPricingProfileKey === "qty_only" && "Variables: q (quantity), unitPrice"}
-                    {addPricingProfileKey === "fee" && "Variables: flatFee (this price is used as-is)"}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          )}
-        </div>
+        <PricingEngineRadioSection
+          form={form}
+          pricingFormulas={pricingFormulas}
+          pricingProfileKey={addPricingProfileKey}
+        />
 
         {/* RIGHT: Material & Weight Configuration */}
         <div className="space-y-3">
@@ -376,3 +258,194 @@ export const ProductForm = ({
     </form>
   );
 };
+
+/**
+ * Pricing Engine section with radio-per-field layout.
+ * Each radio is inline with its field label. Selection determines the active engine.
+ */
+function PricingEngineRadioSection({
+  form,
+  pricingFormulas,
+  pricingProfileKey,
+}: {
+  form: any;
+  pricingFormulas: any;
+  pricingProfileKey: string;
+}) {
+  type PricingMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
+
+  // Derive initial mode from form state
+  const formulaId = form.watch("pricingFormulaId");
+  const [pricingMode, setPricingMode] = useState<PricingMode>(() => {
+    if (formulaId) return "formulaLibrary";
+    return "pricingProfile";
+  });
+
+  // Sync mode if formula is selected externally
+  useEffect(() => {
+    if (formulaId && pricingMode !== "formulaLibrary") {
+      setPricingMode("formulaLibrary");
+    }
+  }, [formulaId]);
+
+  const handleModeChange = (mode: PricingMode) => {
+    setPricingMode(mode);
+    // Clear other fields when switching modes
+    if (mode !== "formulaLibrary") {
+      form.setValue("pricingFormulaId", null);
+    }
+    if (mode === "pricingFormula") {
+      // Ensure formula field has a value
+      const currentFormula = form.getValues("pricingFormula");
+      if (!currentFormula) {
+        form.setValue("pricingFormula", getDefaultFormula(pricingProfileKey));
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Pricing Engine</h3>
+      </div>
+
+      <RadioGroup
+        value={pricingMode}
+        onValueChange={(v) => handleModeChange(v as PricingMode)}
+        className="space-y-0 gap-0"
+      >
+        {/* — Field 1: Formula Library — */}
+        <div className={`rounded-md px-3 py-2.5 transition-colors ${pricingMode === "formulaLibrary" ? "bg-slate-800/60" : "bg-transparent"}`}>
+          <div className="flex items-center gap-2 mb-1.5">
+            <RadioGroupItem value="formulaLibrary" id="pe-formula-lib" className="h-3.5 w-3.5" />
+            <label htmlFor="pe-formula-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
+              Formula Library
+            </label>
+          </div>
+          <div className={pricingMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
+            <FormField
+              control={form.control}
+              name="pricingFormulaId"
+              render={({ field }) => (
+                <FormItem className="space-y-0">
+                  <Select
+                    onValueChange={(val) => {
+                      field.onChange(val === "__none__" ? null : val);
+                      if (val !== "__none__") {
+                        const formula = pricingFormulas?.find((f: any) => f.id === val);
+                        if (formula) {
+                          form.setValue("pricingProfileKey", formula.pricingProfileKey || "default");
+                          if (formula.config) {
+                            form.setValue("pricingProfileConfig", formula.config as unknown as FlatGoodsConfig);
+                          }
+                        }
+                      }
+                    }}
+                    value={field.value || "__none__"}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="bg-slate-950/60 border-slate-700/50 h-8 text-sm">
+                        <SelectValue placeholder="Select a saved formula" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="__none__">— None —</SelectItem>
+                      {pricingFormulas?.map((formula: any) => (
+                        <SelectItem key={formula.id} value={formula.id}>
+                          {formula.name} ({formula.code})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+        </div>
+
+        {/* — Field 2: Pricing Profile — */}
+        <div className={`rounded-md px-3 py-2.5 transition-colors ${pricingMode === "pricingProfile" ? "bg-slate-800/60" : "bg-transparent"}`}>
+          <div className="flex items-center gap-2 mb-1.5">
+            <RadioGroupItem value="pricingProfile" id="pe-profile" className="h-3.5 w-3.5" />
+            <label htmlFor="pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
+              Pricing Profile
+            </label>
+          </div>
+          <div className={pricingMode !== "pricingProfile" ? "opacity-40 pointer-events-none" : ""}>
+            <FormField
+              control={form.control}
+              name="pricingProfileKey"
+              render={({ field }) => (
+                <FormItem className="space-y-0">
+                  <Select
+                    onValueChange={(val) => {
+                      field.onChange(val);
+                      const profile = getProfile(val);
+                      if (profile.usesFormula && profile.defaultFormula) {
+                        form.setValue("pricingFormula", profile.defaultFormula);
+                      }
+                      if (val === "flat_goods" && !form.getValues("pricingProfileConfig")) {
+                        form.setValue("pricingProfileConfig", {
+                          sheetWidth: 48,
+                          sheetHeight: 96,
+                          allowRotation: true,
+                          materialType: "sheet",
+                          minPricePerItem: null,
+                        });
+                      }
+                    }}
+                    value={field.value || "default"}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="bg-slate-950/60 border-slate-700/50 h-8 text-sm">
+                        <SelectValue placeholder="Select pricing profile" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {Object.values(PRICING_PROFILES).map((profile) => (
+                        <SelectItem key={profile.key} value={profile.key}>{profile.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+        </div>
+
+        {/* — Field 3: Pricing Formula — */}
+        {getProfile(pricingProfileKey).usesFormula && (
+          <div className={`rounded-md px-3 py-2.5 transition-colors ${pricingMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <RadioGroupItem value="pricingFormula" id="pe-formula" className="h-3.5 w-3.5" />
+              <label htmlFor="pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
+                Pricing Formula
+              </label>
+            </div>
+            <div className={pricingMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}>
+              <FormField
+                control={form.control}
+                name="pricingFormula"
+                render={({ field }) => (
+                  <FormItem className="space-y-0">
+                    <FormControl>
+                      <Input
+                        placeholder={getDefaultFormula(pricingProfileKey)}
+                        {...field}
+                        value={field.value || ""}
+                        className="bg-slate-950/60 border-slate-700/50 h-8 text-sm font-mono"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+          </div>
+        )}
+      </RadioGroup>
+    </div>
+  );
+}
