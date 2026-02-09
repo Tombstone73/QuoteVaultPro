@@ -107,7 +107,7 @@ export const ProductForm = ({
     <form
       onSubmit={form.handleSubmit(handleSave)}
       id={formId}
-      className="space-y-6"
+      className="space-y-0"
     >
       {/* Section 1: Basic Information — 2-column grid */}
       <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4 space-y-3">
@@ -196,7 +196,7 @@ export const ProductForm = ({
         </div>
       </div>
 
-      <Separator className="bg-slate-700/50" />
+      <Separator className="bg-slate-700/60 my-0" />
 
       {/* 2-column layout for Pricing Engine and Material & Weight */}
       <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4">
@@ -335,7 +335,7 @@ export const ProductForm = ({
         </div>
       </div>
 
-      <Separator className="bg-slate-700/50" />
+      <Separator className="bg-slate-700/60 my-0" />
 
       {/* Section 3: Base Pricing Model (left) + Advanced Settings (right) */}
       <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4">
@@ -407,7 +407,7 @@ export const ProductForm = ({
         </div>
       </div>
 
-      <Separator className="bg-slate-700/50" />
+      <Separator className="bg-slate-700/60 my-0" />
 
       {/* Section 4: Product Images — full width */}
       <div className="space-y-3">
