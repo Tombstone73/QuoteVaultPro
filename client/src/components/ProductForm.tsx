@@ -406,17 +406,6 @@ export const ProductForm = ({
         </div>
         </div>
       </div>
-
-      <Separator className="bg-slate-700/60 my-0" />
-
-      {/* Section 4: Product Images — full width */}
-      <div className="space-y-3">
-        <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Product Images</h3>
-        <p className="text-xs text-slate-500">Customer-facing images displayed in portals and storefronts</p>
-        <div className="text-sm text-slate-400">
-          Image upload functionality coming soon...
-        </div>
-      </div>
     </form>
   );
 };
