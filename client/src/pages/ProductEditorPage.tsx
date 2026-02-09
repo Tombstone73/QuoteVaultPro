@@ -723,7 +723,7 @@ const ProductEditorPage = () => {
           rightTitle="Pricing Preview"
           storageKey="product-editor-pricing-preview-collapsed"
           left={
-          <div className="space-y-2">
+          <div className="space-y-0">
             {/* Product sections: Basic Info, Pricing, Materials, Advanced, Images */}
             <ProductForm
               form={form}
