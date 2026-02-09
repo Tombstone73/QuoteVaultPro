@@ -339,16 +339,14 @@ export const ProductForm = ({
       <div className="grid grid-cols-2 gap-6">
         {/* LEFT: Base Pricing Model */}
         <div>
-          {pricingV2 !== undefined && (
-            <BasePricingEditor
-              pricingV2={pricingV2}
-              onUpdateBase={onUpdatePricingV2Base!}
-              onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
-              onAddTier={onAddPricingV2Tier!}
-              onUpdateTier={onUpdatePricingV2Tier!}
-              onDeleteTier={onDeletePricingV2Tier!}
-            />
-          )}
+          <BasePricingEditor
+            pricingV2={pricingV2 || null}
+            onUpdateBase={onUpdatePricingV2Base!}
+            onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
+            onAddTier={onAddPricingV2Tier!}
+            onUpdateTier={onUpdatePricingV2Tier!}
+            onDeleteTier={onDeletePricingV2Tier!}
+          />
         </div>
 
         {/* RIGHT: Advanced Settings — toggles stacked vertically */}
