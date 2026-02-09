@@ -224,14 +224,20 @@ function envelopeMessage(status: number, json: any, fallback: string) {
   return `${fallback} (${status})`;
 }
 
-export default function PBV2ProductBuilderSectionV2({ 
+export default function PBV2ProductBuilderSectionV2({
   productId,
   onPbv2StateChange,
+  onPbv2PricingDataChange,
   onTreeProviderReady,
-  onClearDirtyReady
-}: { 
+  onClearDirtyReady,
+}: {
   productId?: string | null;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
+  onPbv2PricingDataChange?: (data: {
+    pricingPreview: { addOnCents: number; breakdown: Array<{ label: string; cents: number }> } | null;
+    weightPreview: { totalOz: number; breakdown: Array<{ label: string; oz: number }> } | null;
+    findings: any[];
+  }) => void;
   onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null }) => void;
   onClearDirtyReady?: (clearDirty: () => void) => void;
 }) {
@@ -480,7 +486,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after draft load');
     }
-  }, [productId, draft?.id, draft?.treeJson, isLocalDirty, localTreeJson]);
+  }, [productId, draft?.id, draft?.treeJson, isLocalDirty]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {
@@ -633,6 +639,17 @@ export default function PBV2ProductBuilderSectionV2({
       return null;
     }
   }, [localTreeJson]);
+
+  // Notify parent of pricing/validation data changes for page-level pricing panel
+  useEffect(() => {
+    if (onPbv2PricingDataChange) {
+      onPbv2PricingDataChange({
+        pricingPreview,
+        weightPreview,
+        findings
+      });
+    }
+  }, [pricingPreview, weightPreview, findings, onPbv2PricingDataChange]);
 
   // Handlers
   const handleAddGroup = () => {
@@ -1055,11 +1072,6 @@ export default function PBV2ProductBuilderSectionV2({
         treeJson={localTreeJson}
         selectedGroupId={selectedGroupId}
         selectedOptionId={selectedOptionId}
-        hasUnsavedChanges={hasLocalChanges}
-        canPublish={canPublish}
-        findings={findings}
-        pricingPreview={pricingPreview}
-        weightPreview={weightPreview}
         onSelectGroup={setSelectedGroupId}
         onSelectOption={setSelectedOptionId}
         onAddGroup={handleAddGroup}
