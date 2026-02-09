@@ -91,6 +91,24 @@ export type OptionNodeV2 = {
   effects?: Effect[];
 };
 
+export type ShippingPolicy = "pickup_only" | "shippable_estimate" | "shippable_custom_quote";
+export type WeightUnit = "lb" | "oz" | "g" | "kg";
+export type WeightBasis = "per_item" | "per_sqft" | "per_order";
+
+export type ShippingConfig = {
+  shippingPolicy?: ShippingPolicy;
+  baseWeight?: number | null;
+  weightUnit?: WeightUnit;
+  weightBasis?: WeightBasis;
+};
+
+export type ProductImage = {
+  url: string;
+  fileName: string;
+  mediaAssetId?: string;
+  orderIndex: number;
+};
+
 export type OptionTreeV2 = {
   schemaVersion: 2;
   rootNodeIds: string[];
@@ -102,6 +120,8 @@ export type OptionTreeV2 = {
     notes?: string;
     baseWeightOz?: number;
     pricingV2?: PricingV2;
+    shippingConfig?: ShippingConfig;
+    productImages?: ProductImage[];
   };
 };
 
@@ -230,6 +250,24 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
   effects: z.array(effectSchema).optional(),
 });
 
+export const shippingPolicyEnum = z.enum(["pickup_only", "shippable_estimate", "shippable_custom_quote"]);
+export const weightUnitEnum = z.enum(["lb", "oz", "g", "kg"]);
+export const weightBasisEnum = z.enum(["per_item", "per_sqft", "per_order"]);
+
+export const shippingConfigSchema: z.ZodType<ShippingConfig> = z.object({
+  shippingPolicy: shippingPolicyEnum.optional(),
+  baseWeight: z.number().min(0).nullable().optional(),
+  weightUnit: weightUnitEnum.optional(),
+  weightBasis: weightBasisEnum.optional(),
+});
+
+export const productImageSchema: z.ZodType<ProductImage> = z.object({
+  url: z.string(),
+  fileName: z.string(),
+  mediaAssetId: z.string().optional(),
+  orderIndex: z.number().int().min(0),
+});
+
 export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
   schemaVersion: z.literal(2),
   rootNodeIds: z.array(z.string()),
@@ -242,6 +280,8 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       notes: z.string().optional(),
       baseWeightOz: z.number().optional(),
       pricingV2: pricingV2Schema.optional(),
+      shippingConfig: shippingConfigSchema.optional(),
+      productImages: z.array(productImageSchema).optional(),
     })
     .optional(),
 });

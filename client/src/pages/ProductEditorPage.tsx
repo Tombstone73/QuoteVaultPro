@@ -62,8 +62,11 @@ const ProductEditorPage = () => {
   
   // Track PBV2 state for persistence
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
-  const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null } | null>(null);
+  const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
+
+  // Track PBV2 tree meta (shippingConfig, productImages) for ProductForm
+  const [treeMeta, setTreeMeta] = useState<{ shippingConfig?: any; productImages?: any[] }>({});
 
   // Track PBV2 pricing/validation data for page-level pricing panel
   const [pbv2PricingData, setPbv2PricingData] = useState<{
@@ -729,6 +732,8 @@ const ProductEditorPage = () => {
               productTypes={productTypes}
               onSave={handleSave}
               formId="product-editor-form"
+              treeMeta={treeMeta}
+              onUpdateTreeMeta={(updates: Record<string, unknown>) => pbv2TreeProviderRef.current?.updateTreeMeta(updates)}
             />
 
             {/* Options Builder section with 2-column layout (pricing panel moved to page level) */}
@@ -742,6 +747,7 @@ const ProductEditorPage = () => {
               onClearDirtyReady={(clearDirty) => {
                 pbv2ClearDirtyRef.current = clearDirty;
               }}
+              onTreeMetaChange={setTreeMeta}
             />
           </div>
         }
