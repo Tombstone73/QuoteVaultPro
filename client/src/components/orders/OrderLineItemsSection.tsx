@@ -30,6 +30,9 @@ import { CSS } from "@dnd-kit/utilities";
 import type { OrderLineItem, Product, ProductOptionItem } from "@shared/schema";
 import type { OptionSelection } from "@/features/quotes/editor/types";
 import { ProductOptionsPanel } from "@/features/quotes/editor/components/ProductOptionsPanel";
+import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
+import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
 import { cn, isValidHttpUrl } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { getAttachmentDisplayName, getPdfPageCount, isPdfAttachment } from "@/lib/attachments";
@@ -578,6 +581,14 @@ export function OrderLineItemsSection({
     return injectDerivedMaterialOptionIntoProductOptions(expandedProduct, base);
   }, [expandedProduct]);
 
+  const expandedOptionTreeJson = useMemo(() => {
+    return (((expandedProduct as any)?.optionTreeJson ?? null) as OptionTreeV2 | null) ?? null;
+  }, [expandedProduct]);
+
+  const isExpandedTreeV2 = useMemo(() => {
+    return Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
+  }, [expandedOptionTreeJson]);
+
   const dimsRequired = requiresDimensions(expandedProduct);
 
   const [widthText, setWidthText] = useState("");
@@ -585,6 +596,8 @@ export function OrderLineItemsSection({
   const [qty, setQty] = useState<number>(1);
   const [notes, setNotes] = useState<string>("");
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
+  const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
+  const [optionsV2Valid, setOptionsV2Valid] = useState(true);
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [computedTotal, setComputedTotal] = useState<number | null>(null);
@@ -687,6 +700,13 @@ export function OrderLineItemsSection({
     }
     setOptionSelections(selections);
 
+    const rawV2 = (expandedItem as any)?.optionSelectionsJson;
+    if (rawV2 && typeof rawV2 === "object" && (rawV2 as any)?.schemaVersion === 2) {
+      setOptionSelectionsV2(rawV2 as LineItemOptionSelectionsV2);
+    } else {
+      setOptionSelectionsV2({ schemaVersion: 2, selected: {} });
+    }
+
     setCalcError(null);
 
     const currentTotal = Number.parseFloat(expandedItem.totalPrice || "0") || 0;
@@ -732,6 +752,11 @@ export function OrderLineItemsSection({
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
 
+      if (isExpandedTreeV2 && !optionsV2Valid) {
+        setCalcError(null);
+        return;
+      }
+
       setIsCalculating(true);
       setCalcError(null);
 
@@ -741,7 +766,9 @@ export function OrderLineItemsSection({
         width: widthNum,
         height: heightNum,
         quantity: qtyNum,
-        selectedOptions: optionSelections,
+        ...(isExpandedTreeV2
+          ? { optionSelectionsJson: optionSelectionsV2 }
+          : { selectedOptions: optionSelections }),
         customerId,
       })
         .then((r) => r.json())
@@ -762,6 +789,9 @@ export function OrderLineItemsSection({
       heightText,
       qtyNum,
       optionSelections,
+      optionSelectionsV2,
+      isExpandedTreeV2,
+      optionsV2Valid,
       expandedItem?.id,
       customerId,
     ],
@@ -786,6 +816,10 @@ export function OrderLineItemsSection({
         selectedOptions: selectedOptionsArray,
       };
 
+      const v2Patch = isExpandedTreeV2
+        ? { optionSelectionsJson: optionSelectionsV2 }
+        : {};
+
       await updateLineItem.mutateAsync({
         id: itemId,
         data: {
@@ -797,6 +831,7 @@ export function OrderLineItemsSection({
           totalPrice: totalPrice.toFixed(2),
           selectedOptions: selectedOptionsArray,
           specsJson: nextSpecsJson,
+          ...(v2Patch as any),
         },
       });
 
@@ -1658,12 +1693,21 @@ export function OrderLineItemsSection({
 
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
                             <div className="min-w-0">
-                              <ProductOptionsPanel
-                                product={expandedProduct}
-                                productOptions={expandedProductOptions}
-                                optionSelections={optionSelections as any}
-                                onOptionSelectionsChange={setOptionSelections as any}
-                              />
+                              {isExpandedTreeV2 && expandedOptionTreeJson ? (
+                                <ProductOptionsPanelV2
+                                  tree={expandedOptionTreeJson}
+                                  selections={optionSelectionsV2}
+                                  onSelectionsChange={setOptionSelectionsV2}
+                                  onValidityChange={setOptionsV2Valid}
+                                />
+                              ) : (
+                                <ProductOptionsPanel
+                                  product={expandedProduct}
+                                  productOptions={expandedProductOptions}
+                                  optionSelections={optionSelections as any}
+                                  onOptionSelectionsChange={setOptionSelections as any}
+                                />
+                              )}
 
                               {!readOnly && (
                                 <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
@@ -1675,7 +1719,7 @@ export function OrderLineItemsSection({
                                         size="sm"
                                         className="h-8"
                                         onClick={handleSaveItem}
-                                        disabled={savingItemId === item.id || isCalculating}
+                                        disabled={savingItemId === item.id || isCalculating || (isExpandedTreeV2 && !optionsV2Valid)}
                                       >
                                         {savingItemId === item.id ? (
                                           <>
