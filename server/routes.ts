@@ -3310,18 +3310,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const heightNum = Number(height) || 0;
       const quantityNum = Number(quantity);
 
-      // Detect PBV2-only products: products that use option tree pricing exclusively
-      // These products have optionTreeJson with schemaVersion 2 and no pricingFormula
+      // Detect PBV2 products: products with optionTreeJson schemaVersion 2
+      // PBV2 products use option tree pricing exclusively, NOT material pricing
       const optionTreeJson = (product as any)?.optionTreeJson;
-      const hasPbv2Tree = Boolean(
+      const isPbv2Product = Boolean(
         optionTreeJson && 
         typeof optionTreeJson === "object" && 
         (optionTreeJson as any)?.schemaVersion === 2
       );
-      const isPbv2OnlyProduct = hasPbv2Tree && !product.pricingFormula && !product.useNestingCalculator;
       
-      if (isPbv2OnlyProduct) {
-        console.log(`[PRICING DEBUG] PBV2-only product detected: ${product.name}. Using option tree pricing exclusively.`);
+      if (isPbv2Product) {
+        console.log(`[PRICING DEBUG] PBV2 product detected: ${product.name}. Using option tree pricing exclusively (no material pricing).`);
       }
 
       // If product has a pricing formula attached, use it to override profile/config
@@ -3369,17 +3368,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const basePricePerSqft = variant ? parseFloat(variant.basePricePerSqft) : 0;
 
       // Resolve p (price per sqft) from Primary Material when available; fall back to variant base price.
+      // PBV2 products skip material pricing entirely - they use option tree pricing
       let primaryMaterial: any = null;
-      if (product.primaryMaterialId) {
-        try {
-          primaryMaterial = await storage.getMaterialById(organizationId, product.primaryMaterialId);
-        } catch {
-          primaryMaterial = null;
+      let materialPricePerSqft: number | null = null;
+      let resolvedPricePerSqft: number | null = null;
+      
+      if (!isPbv2Product) {
+        if (product.primaryMaterialId) {
+          try {
+            primaryMaterial = await storage.getMaterialById(organizationId, product.primaryMaterialId);
+          } catch {
+            primaryMaterial = null;
+          }
         }
+        materialPricePerSqft = resolveMaterialPricePerSqft(primaryMaterial, effectiveTier);
+        resolvedPricePerSqft = materialPricePerSqft ?? (Number.isFinite(basePricePerSqft) && basePricePerSqft > 0 ? basePricePerSqft : null);
       }
-
-      const materialPricePerSqft = resolveMaterialPricePerSqft(primaryMaterial, effectiveTier);
-      const resolvedPricePerSqft = materialPricePerSqft ?? (Number.isFinite(basePricePerSqft) && basePricePerSqft > 0 ? basePricePerSqft : null);
 
       const formulaContext: Record<string, number> = {
         width: widthNum,
@@ -3613,10 +3617,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Use formula evaluation (default, qty_only, fee profiles)
         console.log(`[PRICING DEBUG] Using Formula Evaluation for product ${product.name}, profile: ${pricingProfile.key}`);
         if (!product.pricingFormula) {
-          // PBV2-only products: basePrice is 0, all pricing comes from option tree
-          if (isPbv2OnlyProduct) {
+          // PBV2 products: basePrice is 0, all pricing comes from option tree
+          if (isPbv2Product) {
             basePrice = 0;
-            console.log(`[PRICING DEBUG] PBV2-only product - basePrice set to 0, pricing from option tree`);
+            console.log(`[PRICING DEBUG] PBV2 product - basePrice set to 0, all pricing from option tree`);
           }
           // For fee/qty_only profiles, default formula can be "q * unitPrice" or just the base price
           else if (pricingProfile.key === "fee") {
@@ -3636,9 +3640,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log(`[PRICING DEBUG] Formula: ${formula}`);
 
             // Graceful failure: if formula references p but we cannot resolve it, return a clear error.
-            // Skip this check for PBV2-only products since they get pricing from option tree
+            // Skip this check for PBV2 products since they get pricing from option tree
             const needsP = /\b(p|pricePerSqft|unitPrice|price)\b/.test(formula);
-            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p") && !isPbv2OnlyProduct) {
+            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p") && !isPbv2Product) {
               return res
                 .status(400)
                 .send(
