@@ -89,27 +89,22 @@ export function PBV2ProductBuilderLayout({
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
 
   return (
-    <div className="space-y-3">
-      {/* Options Builder section label */}
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide px-1">Options Builder</h3>
+    <div className="min-h-[600px] flex overflow-hidden bg-[#0a0e1a]">
+      {/* Left Sidebar: Fixed width 288px (w-72), independent scroll */}
+      <div className="w-72 shrink-0 border-r border-[#334155] bg-[#0f172a]">
+        <OptionGroupsSidebar
+          optionGroups={editorModel.groups}
+          options={editorModel.options}
+          selectedGroupId={selectedGroupId}
+          onSelectGroup={onSelectGroup}
+          onAddGroup={onAddGroup}
+          onDeleteGroup={onDeleteGroup}
+        />
+      </div>
 
-      {/* 2-column layout: fixed 800px height per design system */}
-      <div className="h-[800px] flex border border-[#334155] rounded-lg overflow-hidden bg-[#0a0e1a]">
-        {/* Left Sidebar: Fixed width 288px (w-72), independent scroll */}
-        <div className="w-72 shrink-0 border-r border-[#334155] bg-[#0f172a]">
-          <OptionGroupsSidebar
-            optionGroups={editorModel.groups}
-            options={editorModel.options}
-            selectedGroupId={selectedGroupId}
-            onSelectGroup={onSelectGroup}
-            onAddGroup={onAddGroup}
-            onDeleteGroup={onDeleteGroup}
-          />
-        </div>
-
-        {/* Middle Editor: Flex grow with min-w-0 for proper overflow, single unified scroll */}
-        <div className="flex-1 min-w-0 overflow-y-auto bg-[#0a0e1a]">
-          <div className="p-6">
+      {/* Middle Editor: Flex grow with min-w-0 for proper overflow, single unified scroll */}
+      <div className="flex-1 min-w-0 overflow-y-auto bg-[#0a0e1a]">
+        <div className="p-4">
             {/* Selected group editor */}
             {selectedGroup && (
               <PBV2EditorErrorBoundary
@@ -144,7 +139,6 @@ export function PBV2ProductBuilderLayout({
                 </div>
               </div>
             )}
-          </div>
         </div>
       </div>
     </div>

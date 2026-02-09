@@ -79,7 +79,7 @@ export function OptionEditor({
 
   return (
     <div className="w-full flex flex-col">
-      <div className="border-b border-[#334155] p-6 bg-[#0a0e1a]">
+      <div className="border-b border-[#334155] p-4 bg-[#0a0e1a]">
         <div className="flex items-start justify-between mb-4">
           <div className="flex-1">
             <Input
@@ -124,8 +124,8 @@ export function OptionEditor({
         </div>
       </div>
 
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-4">
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Options</h3>
           <Button
             onClick={() => onAddOption(selectedGroup.id)}
