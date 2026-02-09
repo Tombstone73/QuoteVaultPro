@@ -3310,6 +3310,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const heightNum = Number(height) || 0;
       const quantityNum = Number(quantity);
 
+      // Detect PBV2-only products: products that use option tree pricing exclusively
+      // These products have optionTreeJson with schemaVersion 2 and no pricingFormula
+      const optionTreeJson = (product as any)?.optionTreeJson;
+      const hasPbv2Tree = Boolean(
+        optionTreeJson && 
+        typeof optionTreeJson === "object" && 
+        (optionTreeJson as any)?.schemaVersion === 2
+      );
+      const isPbv2OnlyProduct = hasPbv2Tree && !product.pricingFormula && !product.useNestingCalculator;
+      
+      if (isPbv2OnlyProduct) {
+        console.log(`[PRICING DEBUG] PBV2-only product detected: ${product.name}. Using option tree pricing exclusively.`);
+      }
+
       // If product has a pricing formula attached, use it to override profile/config
       let effectivePricingProfileKey = product.pricingProfileKey ?? "default";
       let effectivePricingProfileConfig = product.pricingProfileConfig;
@@ -3599,8 +3613,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Use formula evaluation (default, qty_only, fee profiles)
         console.log(`[PRICING DEBUG] Using Formula Evaluation for product ${product.name}, profile: ${pricingProfile.key}`);
         if (!product.pricingFormula) {
+          // PBV2-only products: basePrice is 0, all pricing comes from option tree
+          if (isPbv2OnlyProduct) {
+            basePrice = 0;
+            console.log(`[PRICING DEBUG] PBV2-only product - basePrice set to 0, pricing from option tree`);
+          }
           // For fee/qty_only profiles, default formula can be "q * unitPrice" or just the base price
-          if (pricingProfile.key === "fee") {
+          else if (pricingProfile.key === "fee") {
             // Fee profiles: use variant price directly
             basePrice = basePricePerSqft * quantityNum;
             console.log(`[PRICING DEBUG] Fee profile - using variant price: ${basePricePerSqft} × ${quantityNum} = ${basePrice}`);
@@ -3617,8 +3636,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log(`[PRICING DEBUG] Formula: ${formula}`);
 
             // Graceful failure: if formula references p but we cannot resolve it, return a clear error.
+            // Skip this check for PBV2-only products since they get pricing from option tree
             const needsP = /\b(p|pricePerSqft|unitPrice|price)\b/.test(formula);
-            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p")) {
+            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p") && !isPbv2OnlyProduct) {
               return res
                 .status(400)
                 .send(
