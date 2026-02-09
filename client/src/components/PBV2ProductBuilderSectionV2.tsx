@@ -140,7 +140,6 @@ function applyTreeUpdate(
   setIsLocalDirty(true); // Lock against server overwrites
 }
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
-import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
 import { ProductImagesSection } from "@/components/pbv2/builder-v2/ProductImagesSection";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
 import {
@@ -243,7 +242,7 @@ export default function PBV2ProductBuilderSectionV2({
   }) => void;
   onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void }) => void;
   onClearDirtyReady?: (clearDirty: () => void) => void;
-  onTreeMetaChange?: (meta: { shippingConfig?: any; productImages?: any[] }) => void;
+  onTreeMetaChange?: (meta: { shippingConfig?: any; productImages?: any[]; pricingV2?: any }) => void;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
@@ -600,13 +599,14 @@ export default function PBV2ProductBuilderSectionV2({
     }
   }, [localTreeJson, hasLocalChanges, draft?.id, onPbv2StateChange]);
 
-  // Notify parent of tree meta changes (shippingConfig, productImages)
+  // Notify parent of tree meta changes (shippingConfig, productImages, pricingV2)
   useEffect(() => {
     if (onTreeMetaChange && localTreeJson) {
       const meta = (localTreeJson as any)?.meta;
       onTreeMetaChange({
         shippingConfig: meta?.shippingConfig ?? undefined,
         productImages: meta?.productImages ?? undefined,
+        pricingV2: meta?.pricingV2 ?? undefined,
       });
     }
   }, [localTreeJson, onTreeMetaChange]);
@@ -1128,19 +1128,7 @@ export default function PBV2ProductBuilderSectionV2({
         onImportJson={handleImportJson}
       />
 
-      {/* Base Pricing Model — rendered below the options builder */}
-      <div className="mt-4">
-        <BasePricingEditor
-          pricingV2={(localTreeJson as any)?.meta?.pricingV2 ?? null}
-          onUpdateBase={handleUpdatePricingV2Base}
-          onUpdateUnitSystem={handleUpdatePricingV2UnitSystem}
-          onAddTier={handleAddPricingV2Tier}
-          onUpdateTier={handleUpdatePricingV2Tier}
-          onDeleteTier={handleDeletePricingV2Tier}
-        />
-      </div>
-
-      {/* Product Images — collapsible section below Base Pricing Model */}
+      {/* Product Images — collapsible section below options builder */}
       <div className="mt-4">
         <ProductImagesSection
           productImages={(localTreeJson as any)?.meta?.productImages ?? []}

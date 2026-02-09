@@ -11,6 +11,7 @@ import type { ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@s
 import React, { useState, useEffect, useCallback } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
+import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
 
 // Required field indicator component
 function RequiredIndicator() {
@@ -37,6 +38,12 @@ export const ProductForm = ({
   onPbv2StateChange,
   treeMeta,
   onUpdateTreeMeta,
+  pricingV2,
+  onUpdatePricingV2Base,
+  onUpdatePricingV2UnitSystem,
+  onAddPricingV2Tier,
+  onUpdatePricingV2Tier,
+  onDeletePricingV2Tier,
 }: {
   form: any;
   materials: any;
@@ -47,6 +54,12 @@ export const ProductForm = ({
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
   treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[] };
   onUpdateTreeMeta?: (updates: Record<string, unknown>) => void;
+  pricingV2?: any;
+  onUpdatePricingV2Base?: (base: { perSqftCents?: number; perPieceCents?: number; minimumChargeCents?: number }) => void;
+  onUpdatePricingV2UnitSystem?: (unitSystem: 'imperial' | 'metric') => void;
+  onAddPricingV2Tier?: (kind: 'qty' | 'sqft') => void;
+  onUpdatePricingV2Tier?: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
+  onDeletePricingV2Tier?: (kind: 'qty' | 'sqft', index: number) => void;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -322,10 +335,21 @@ export const ProductForm = ({
 
       <Separator className="bg-slate-700/50" />
 
-      {/* Section 3: Advanced Settings — right column of 2-col grid */}
+      {/* Section 3: Base Pricing Model (left) + Advanced Settings (right) */}
       <div className="grid grid-cols-2 gap-6">
-        {/* LEFT: placeholder for future Base Pricing Model */}
-        <div />
+        {/* LEFT: Base Pricing Model */}
+        <div>
+          {pricingV2 !== undefined && (
+            <BasePricingEditor
+              pricingV2={pricingV2}
+              onUpdateBase={onUpdatePricingV2Base!}
+              onUpdateUnitSystem={onUpdatePricingV2UnitSystem!}
+              onAddTier={onAddPricingV2Tier!}
+              onUpdateTier={onUpdatePricingV2Tier!}
+              onDeleteTier={onDeletePricingV2Tier!}
+            />
+          )}
+        </div>
 
         {/* RIGHT: Advanced Settings — toggles stacked vertically */}
         <div className="space-y-3">
