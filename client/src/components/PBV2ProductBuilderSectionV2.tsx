@@ -1096,6 +1096,14 @@ export default function PBV2ProductBuilderSectionV2({
 
   return (
     <>
+      {/* Product Images — full-width section above options builder */}
+      <div className="mb-4">
+        <ProductImagesSection
+          productImages={(localTreeJson as any)?.meta?.productImages ?? []}
+          onUpdateImages={(images) => updateTreeMeta({ productImages: images })}
+        />
+      </div>
+
       <PBV2ProductBuilderLayout
         editorModel={editorModel}
         treeJson={localTreeJson}
@@ -1127,14 +1135,6 @@ export default function PBV2ProductBuilderSectionV2({
         onExportJson={handleExportJson}
         onImportJson={handleImportJson}
       />
-
-      {/* Product Images — collapsible section below options builder */}
-      <div className="mt-4">
-        <ProductImagesSection
-          productImages={(localTreeJson as any)?.meta?.productImages ?? []}
-          onUpdateImages={(images) => updateTreeMeta({ productImages: images })}
-        />
-      </div>
 
       <ConfirmationModal
         open={deleteGroupConfirmOpen}
