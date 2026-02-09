@@ -140,6 +140,8 @@ function applyTreeUpdate(
   setIsLocalDirty(true); // Lock against server overwrites
 }
 import { PBV2ProductBuilderLayout } from "@/components/pbv2/builder-v2/PBV2ProductBuilderLayout";
+import { BasePricingEditor } from "@/components/pbv2/builder-v2/BasePricingEditor";
+import { ProductImagesSection } from "@/components/pbv2/builder-v2/ProductImagesSection";
 import { ConfirmationModal } from "@/components/pbv2/builder-v2/ConfirmationModal";
 import {
   pbv2TreeToEditorModel,
@@ -230,6 +232,7 @@ export default function PBV2ProductBuilderSectionV2({
   onPbv2PricingDataChange,
   onTreeProviderReady,
   onClearDirtyReady,
+  onTreeMetaChange,
 }: {
   productId?: string | null;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
@@ -238,8 +241,9 @@ export default function PBV2ProductBuilderSectionV2({
     weightPreview: { totalOz: number; breakdown: Array<{ label: string; oz: number }> } | null;
     findings: any[];
   }) => void;
-  onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null }) => void;
+  onTreeProviderReady?: (provider: { getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void }) => void;
   onClearDirtyReady?: (clearDirty: () => void) => void;
+  onTreeMetaChange?: (meta: { shippingConfig?: any; productImages?: any[] }) => void;
 }) {
   const { toast } = useToast();
   const { isAdmin: isAdminUser } = useAuth();
@@ -310,6 +314,20 @@ export default function PBV2ProductBuilderSectionV2({
     return normalizeTreeJson(localTreeJsonRef.current);
   };
 
+  // Update tree meta from external callers (e.g. ProductForm shipping config, product images)
+  const updateTreeMeta = (metaUpdates: Record<string, unknown>) => {
+    const current = localTreeJsonRef.current as any;
+    if (!current) return;
+    const updatedTree = {
+      ...current,
+      meta: {
+        ...(current.meta || {}),
+        ...metaUpdates,
+      },
+    };
+    applyTreeUpdate(updatedTree, 'updateTreeMeta', setLocalTreeJson, setHasLocalChanges, setIsLocalDirty);
+  };
+
   // Keep ref in sync with state
   useEffect(() => {
     localTreeJsonRef.current = localTreeJson;
@@ -319,7 +337,7 @@ export default function PBV2ProductBuilderSectionV2({
   // This ensures the provider is available when parent calls getCurrentTree during save
   const providerRegistered = useRef(false);
   if (!providerRegistered.current && onTreeProviderReady) {
-    onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree });
+    onTreeProviderReady({ getCurrentTree: getCurrentPBV2Tree, updateTreeMeta });
     providerRegistered.current = true;
     if (import.meta.env.DEV) {
       console.log('[PBV2] Tree provider registered (sync)');
@@ -581,6 +599,17 @@ export default function PBV2ProductBuilderSectionV2({
       });
     }
   }, [localTreeJson, hasLocalChanges, draft?.id, onPbv2StateChange]);
+
+  // Notify parent of tree meta changes (shippingConfig, productImages)
+  useEffect(() => {
+    if (onTreeMetaChange && localTreeJson) {
+      const meta = (localTreeJson as any)?.meta;
+      onTreeMetaChange({
+        shippingConfig: meta?.shippingConfig ?? undefined,
+        productImages: meta?.productImages ?? undefined,
+      });
+    }
+  }, [localTreeJson, onTreeMetaChange]);
 
   // Compute pricing preview
   const pricingPreview = useMemo(() => {
@@ -1098,6 +1127,26 @@ export default function PBV2ProductBuilderSectionV2({
         onExportJson={handleExportJson}
         onImportJson={handleImportJson}
       />
+
+      {/* Base Pricing Model — rendered below the options builder */}
+      <div className="mt-4">
+        <BasePricingEditor
+          pricingV2={(localTreeJson as any)?.meta?.pricingV2 ?? null}
+          onUpdateBase={handleUpdatePricingV2Base}
+          onUpdateUnitSystem={handleUpdatePricingV2UnitSystem}
+          onAddTier={handleAddPricingV2Tier}
+          onUpdateTier={handleUpdatePricingV2Tier}
+          onDeleteTier={handleDeletePricingV2Tier}
+        />
+      </div>
+
+      {/* Product Images — collapsible section below Base Pricing Model */}
+      <div className="mt-4">
+        <ProductImagesSection
+          productImages={(localTreeJson as any)?.meta?.productImages ?? []}
+          onUpdateImages={(images) => updateTreeMeta({ productImages: images })}
+        />
+      </div>
 
       <ConfirmationModal
         open={deleteGroupConfirmOpen}

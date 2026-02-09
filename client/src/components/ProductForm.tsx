@@ -5,8 +5,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
+import { Label } from "@/components/ui/label";
 import { PRICING_PROFILES, type FlatGoodsConfig, getProfile, getDefaultFormula } from "@shared/pricingProfiles";
-import React, { useState, useEffect } from "react";
+import type { ShippingPolicy, WeightUnit, WeightBasis, ShippingConfig } from "@shared/optionTreeV2";
+import React, { useState, useEffect, useCallback } from "react";
 import { CreateMaterialDialog } from "@/features/materials/CreateMaterialDialog";
 import { useToast } from "@/hooks/use-toast";
 
@@ -33,6 +35,8 @@ export const ProductForm = ({
   onSave,
   formId,
   onPbv2StateChange,
+  treeMeta,
+  onUpdateTreeMeta,
 }: {
   form: any;
   materials: any;
@@ -41,9 +45,44 @@ export const ProductForm = ({
   onSave: any;
   formId?: string;
   onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
+  treeMeta?: { shippingConfig?: ShippingConfig; productImages?: any[] };
+  onUpdateTreeMeta?: (updates: Record<string, unknown>) => void;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
+
+  // Shipping config local state — synced from treeMeta
+  const [shippingPolicy, setShippingPolicy] = useState<ShippingPolicy>(treeMeta?.shippingConfig?.shippingPolicy ?? "pickup_only");
+  const [baseWeight, setBaseWeight] = useState<string>(treeMeta?.shippingConfig?.baseWeight != null ? String(treeMeta.shippingConfig.baseWeight) : "");
+  const [weightUnit, setWeightUnit] = useState<WeightUnit>(treeMeta?.shippingConfig?.weightUnit ?? "oz");
+  const [weightBasis, setWeightBasis] = useState<WeightBasis>(treeMeta?.shippingConfig?.weightBasis ?? "per_item");
+
+  // Sync local state from treeMeta when it loads from server
+  useEffect(() => {
+    if (treeMeta?.shippingConfig) {
+      setShippingPolicy(treeMeta.shippingConfig.shippingPolicy ?? "pickup_only");
+      setBaseWeight(treeMeta.shippingConfig.baseWeight != null ? String(treeMeta.shippingConfig.baseWeight) : "");
+      setWeightUnit(treeMeta.shippingConfig.weightUnit ?? "oz");
+      setWeightBasis(treeMeta.shippingConfig.weightBasis ?? "per_item");
+    }
+  }, [treeMeta?.shippingConfig]);
+
+  const updateShippingConfig = useCallback((updates: Partial<ShippingConfig>) => {
+    const current: ShippingConfig = {
+      shippingPolicy,
+      baseWeight: baseWeight === "" ? null : parseFloat(baseWeight),
+      weightUnit,
+      weightBasis,
+      ...updates,
+    };
+    // Sanitize baseWeight: ensure no NaN
+    if (typeof current.baseWeight === 'number' && isNaN(current.baseWeight)) {
+      current.baseWeight = null;
+    }
+    onUpdateTreeMeta?.({ shippingConfig: current });
+  }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta]);
+
+  const isWeightDisabled = shippingPolicy === "pickup_only";
 
   // Options are now managed by PBV2ProductBuilderSectionV2, not ProductForm
 
@@ -195,6 +234,89 @@ export const ProductForm = ({
               </FormItem>
             )}
           />
+
+          {/* Shipping Policy */}
+          <div>
+            <Label className="text-xs text-slate-400 mb-1.5 block">Shipping Policy</Label>
+            <Select
+              value={shippingPolicy}
+              onValueChange={(val) => {
+                const policy = val as ShippingPolicy;
+                setShippingPolicy(policy);
+                updateShippingConfig({ shippingPolicy: policy });
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select shipping policy" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pickup_only">Pickup only</SelectItem>
+                <SelectItem value="shippable_estimate">Shippable (estimate)</SelectItem>
+                <SelectItem value="shippable_custom_quote">Shippable (custom quote)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Weight row: Base Weight, Unit, Weight Basis */}
+          <div className={`grid grid-cols-3 gap-3 ${isWeightDisabled ? "opacity-40 pointer-events-none" : ""}`}>
+            <div>
+              <Label className="text-xs text-slate-400 mb-1.5 block">Base weight</Label>
+              <Input
+                type="number"
+                min="0"
+                step="any"
+                placeholder="0"
+                value={baseWeight}
+                onChange={(e) => setBaseWeight(e.target.value)}
+                onBlur={() => {
+                  updateShippingConfig({
+                    baseWeight: baseWeight === "" ? null : Math.max(0, parseFloat(baseWeight) || 0),
+                  });
+                }}
+              />
+            </div>
+            <div>
+              <Label className="text-xs text-slate-400 mb-1.5 block">Unit</Label>
+              <Select
+                value={weightUnit}
+                onValueChange={(val) => {
+                  const unit = val as WeightUnit;
+                  setWeightUnit(unit);
+                  updateShippingConfig({ weightUnit: unit });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="oz">oz</SelectItem>
+                  <SelectItem value="lb">lb</SelectItem>
+                  <SelectItem value="g">g</SelectItem>
+                  <SelectItem value="kg">kg</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs text-slate-400 mb-1.5 block">Weight basis</Label>
+              <Select
+                value={weightBasis}
+                onValueChange={(val) => {
+                  const basis = val as WeightBasis;
+                  setWeightBasis(basis);
+                  updateShippingConfig({ weightBasis: basis });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="per_item">Per item</SelectItem>
+                  <SelectItem value="per_sqft">Per sq ft</SelectItem>
+                  <SelectItem value="per_order">Per order</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </div>
       </div>
 
