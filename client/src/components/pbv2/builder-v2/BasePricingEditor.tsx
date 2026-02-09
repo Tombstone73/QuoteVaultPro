@@ -60,6 +60,9 @@ export function BasePricingEditor({
   const qtyTiers = pricingV2?.qtyTiers || [];
   const sqftTiers = pricingV2?.sqftTiers || [];
 
+  // Track active tab for dynamic button
+  const [activeTab, setActiveTab] = React.useState<'qty' | 'sqft'>('qty');
+
   // Local state for input values
   const [basePerSqft, setBasePerSqft] = React.useState(centsTodollars(base.perSqftCents));
   const [basePerPiece, setBasePerPiece] = React.useState(centsToWire(base.perPieceCents));
@@ -82,26 +85,19 @@ export function BasePricingEditor({
 
   return (
     <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <DollarSign className="h-5 w-5 text-emerald-400" />
-          <h3 className="text-lg font-semibold text-slate-100">Base Pricing Model</h3>
-        </div>
-        <Select value={unitSystem} onValueChange={(v) => onUpdateUnitSystem(v as 'imperial' | 'metric')}>
-          <SelectTrigger className="w-32 bg-[#0f172a] border-slate-600 text-slate-100">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="imperial">Imperial</SelectItem>
-            <SelectItem value="metric">Metric</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      <Separator className="bg-slate-700" />
-
       <div className="space-y-3">
-        <h4 className="text-sm font-medium text-slate-300">Base Rates</h4>
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-slate-300">Base Pricing Model</h4>
+          <Select value={unitSystem} onValueChange={(v) => onUpdateUnitSystem(v as 'imperial' | 'metric')}>
+            <SelectTrigger className="w-32 bg-[#0f172a] border-slate-600 text-slate-100 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="imperial">Imperial</SelectItem>
+              <SelectItem value="metric">Metric</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         
         <div className="grid grid-cols-3 gap-3">
           <div>
@@ -151,38 +147,33 @@ export function BasePricingEditor({
             </div>
           </div>
         </div>
-
-        <p className="text-xs text-slate-400">
-          Base rates apply by default. Use tiers below to override rates at specific quantities or sizes.
-        </p>
       </div>
 
       <Separator className="bg-slate-700" />
 
-      <Tabs defaultValue="qty" className="w-full">
-        <TabsList className="bg-[#0f172a] border border-slate-700">
-          <TabsTrigger value="qty" className="data-[state=active]:bg-slate-700">
-            Quantity Tiers ({qtyTiers.length})
-          </TabsTrigger>
-          <TabsTrigger value="sqft" className="data-[state=active]:bg-slate-700">
-            Size Tiers ({sqftTiers.length})
-          </TabsTrigger>
-        </TabsList>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'qty' | 'sqft')} className="w-full">
+        <div className="flex items-center justify-between gap-3">
+          <TabsList className="bg-[#0f172a] border border-slate-700">
+            <TabsTrigger value="qty" className="data-[state=active]:bg-slate-700">
+              Quantity Tiers ({qtyTiers.length})
+            </TabsTrigger>
+            <TabsTrigger value="sqft" className="data-[state=active]:bg-slate-700">
+              Size Tiers ({sqftTiers.length})
+            </TabsTrigger>
+          </TabsList>
+          <Button
+            type="button"
+            onClick={() => onAddTier(activeTab)}
+            size="sm"
+            variant="outline"
+            className="gap-1.5 text-xs"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {activeTab === 'qty' ? 'Add Qty Tier' : 'Add Size Tier'}
+          </Button>
+        </div>
 
         <TabsContent value="qty" className="space-y-3 mt-4">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-slate-400">Override rates at specific quantities</p>
-            <Button
-              type="button"
-              onClick={() => onAddTier('qty')}
-              size="sm"
-              variant="outline"
-              className="gap-1.5 text-xs"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add Qty Tier
-            </Button>
-          </div>
 
           {qtyTiers.length > 0 && (
             <div className="space-y-2">
@@ -202,19 +193,6 @@ export function BasePricingEditor({
         </TabsContent>
 
         <TabsContent value="sqft" className="space-y-3 mt-4">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-slate-400">Override rates at specific sizes (sq ft)</p>
-            <Button
-              type="button"
-              onClick={() => onAddTier('sqft')}
-              size="sm"
-              variant="outline"
-              className="gap-1.5 text-xs"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add Size Tier
-            </Button>
-          </div>
 
           {sqftTiers.length > 0 && (
             <div className="space-y-2">
