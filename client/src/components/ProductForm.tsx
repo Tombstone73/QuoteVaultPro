@@ -53,13 +53,12 @@ export const ProductForm = ({
     <form
       onSubmit={form.handleSubmit(handleSave)}
       id={formId}
-      className="space-y-0"
+      className="space-y-6"
     >
       {/* #basics - Full width section */}
-      <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
+      <div className="space-y-3">
         <div>
-          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Basic Information</h3>
-          <p className="text-xs text-slate-400 mt-1">Description</p>
+          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Basic Information</h3>
         </div>
 
         <FormField
@@ -67,12 +66,13 @@ export const ProductForm = ({
           name="description"
           render={({ field }) => (
             <FormItem>
+              <FormLabel className="text-xs text-slate-400">Description</FormLabel>
               <FormControl>
                 <Textarea
                   placeholder="Product description"
                   {...field}
                   value={field.value || ""}
-                  className="min-h-[80px] bg-[#0f172a] border-[#334155]"
+                  className="min-h-[80px]"
                 />
               </FormControl>
               <FormMessage />
@@ -86,13 +86,12 @@ export const ProductForm = ({
             name="category"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-slate-300">Category</FormLabel>
+                <FormLabel className="text-xs text-slate-400">Category</FormLabel>
                 <FormControl>
                   <Input
                     placeholder="e.g., Signs, Banners"
                     {...field}
                     value={field.value || ""}
-                    className="bg-[#0f172a] border-[#334155]"
                   />
                 </FormControl>
                 <FormMessage />
@@ -104,10 +103,10 @@ export const ProductForm = ({
             name="productTypeId"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-slate-300">Product Type</FormLabel>
+                <FormLabel className="text-xs text-slate-400">Product Type</FormLabel>
                 <Select onValueChange={field.onChange} value={field.value || ""}>
                   <FormControl>
-                    <SelectTrigger className="bg-[#0f172a] border-[#334155]">
+                    <SelectTrigger>
                       <SelectValue placeholder="Select type" />
                     </SelectTrigger>
                   </FormControl>
@@ -130,7 +129,7 @@ export const ProductForm = ({
                   <FormControl>
                     <Switch checked={field.value || false} onCheckedChange={field.onChange} />
                   </FormControl>
-                  <FormLabel className="text-slate-200 !mt-0">Service / Fee</FormLabel>
+                  <FormLabel className="text-sm text-slate-300 !mt-0">Service / Fee</FormLabel>
                 </div>
                 <FormMessage />
               </FormItem>
@@ -139,16 +138,12 @@ export const ProductForm = ({
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="h-px bg-[#1e293b] my-6" />
-
       {/* 2-column layout for Pricing Engine and Material & Weight */}
       <div className="grid grid-cols-2 gap-6">
         {/* LEFT: Pricing Engine */}
-        <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
+        <div className="space-y-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Pricing Engine</h3>
-            <p className="text-xs text-slate-400 mt-1">Formula Library</p>
+            <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Pricing Engine</h3>
           </div>
 
           {/* Pricing Formula Selector (Optional) */}
@@ -159,7 +154,7 @@ export const ProductForm = ({
               const selectedFormula = pricingFormulas?.find((f: any) => f.id === field.value);
               return (
                 <FormItem>
-                  <FormLabel className="text-slate-300">Formula Library</FormLabel>
+                  <FormLabel className="text-xs text-slate-400">Formula Library</FormLabel>
                   <Select
                     onValueChange={(val) => {
                       field.onChange(val === "__none__" ? null : val);
@@ -176,7 +171,7 @@ export const ProductForm = ({
                     value={field.value || "__none__"}
                   >
                     <FormControl>
-                      <SelectTrigger className="bg-[#0f172a] border-[#334155]">
+                      <SelectTrigger>
                         <SelectValue placeholder="— No formula (configure manually) —" />
                       </SelectTrigger>
                     </FormControl>
@@ -189,7 +184,7 @@ export const ProductForm = ({
                       ))}
                     </SelectContent>
                   </Select>
-                  <FormDescription className="text-xs text-slate-400">
+                  <FormDescription className="text-xs text-slate-500">
                     {selectedFormula
                       ? `Optional: choose a saved pricing formula as a starting point.`
                       : "Optional: choose a saved pricing formula as a starting point."}
@@ -200,16 +195,12 @@ export const ProductForm = ({
             }}
           />
 
-          <div className="pt-2">
-            <p className="text-xs text-slate-400 mb-2">Pricing Profile</p>
-          </div>
-
           <FormField
             control={form.control}
             name="pricingProfileKey"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-slate-300">Pricing Profile</FormLabel>
+                <FormLabel className="text-xs text-slate-400">Pricing Profile</FormLabel>
                 <Select
                   onValueChange={(val) => {
                     field.onChange(val);
@@ -230,7 +221,7 @@ export const ProductForm = ({
                   value={field.value || "default"}
                 >
                   <FormControl>
-                    <SelectTrigger className="bg-[#0f172a] border-[#334155]">
+                    <SelectTrigger>
                       <SelectValue placeholder="Select pricing profile" />
                     </SelectTrigger>
                   </FormControl>
@@ -240,7 +231,7 @@ export const ProductForm = ({
                     ))}
                   </SelectContent>
                 </Select>
-                <FormDescription className="text-xs text-slate-400">
+                <FormDescription className="text-xs text-slate-500">
                   {getProfile(field.value).description}
                 </FormDescription>
                 <FormMessage />
@@ -250,41 +241,35 @@ export const ProductForm = ({
 
           {/* Formula field - shown for profiles that use formulas */}
           {getProfile(addPricingProfileKey).usesFormula && (
-            <>
-              <div className="pt-2">
-                <p className="text-xs text-slate-400 mb-2">Pricing Formula</p>
-              </div>
-              <FormField
-                control={form.control}
-                name="pricingFormula"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormControl>
-                      <Input
-                        placeholder={getDefaultFormula(addPricingProfileKey)}
-                        {...field}
-                        value={field.value || ""}
-                        className="bg-[#0f172a] border-[#334155]"
-                      />
-                    </FormControl>
-                    <FormDescription className="text-xs text-slate-400">
-                      {addPricingProfileKey === "default" && "Variables: width, height, sqft (width×height÷144), p (price per sqft), q (quantity)"}
-                      {addPricingProfileKey === "qty_only" && "Variables: q (quantity), unitPrice"}
-                      {addPricingProfileKey === "fee" && "Variables: flatFee (this price is used as-is)"}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </>
+            <FormField
+              control={form.control}
+              name="pricingFormula"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel className="text-xs text-slate-400">Pricing Formula</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder={getDefaultFormula(addPricingProfileKey)}
+                      {...field}
+                      value={field.value || ""}
+                    />
+                  </FormControl>
+                  <FormDescription className="text-xs text-slate-500">
+                    {addPricingProfileKey === "default" && "Variables: width, height, sqft (width×height÷144), p (price per sqft), q (quantity)"}
+                    {addPricingProfileKey === "qty_only" && "Variables: q (quantity), unitPrice"}
+                    {addPricingProfileKey === "fee" && "Variables: flatFee (this price is used as-is)"}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           )}
         </div>
 
         {/* RIGHT: Material & Weight Configuration */}
-        <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
+        <div className="space-y-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Material & Weight Configuration</h3>
-            <p className="text-xs text-slate-400 mt-1">Primary Material</p>
+            <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Material & Weight Configuration</h3>
           </div>
 
           <FormField
@@ -293,7 +278,7 @@ export const ProductForm = ({
             render={({ field }) => (
               <FormItem>
                 <div className="flex items-center justify-between gap-3">
-                  <FormLabel className="text-slate-300">Primary Material</FormLabel>
+                  <FormLabel className="text-xs text-slate-400">Primary Material</FormLabel>
                   <CreateMaterialDialog
                     onCreated={(material) => {
                       form.setValue("primaryMaterialId", material.id, { shouldDirty: true });
@@ -306,7 +291,7 @@ export const ProductForm = ({
                   value={field.value || "__none__"}
                 >
                   <FormControl>
-                    <SelectTrigger className="bg-[#0f172a] border-[#334155]">
+                    <SelectTrigger>
                       <SelectValue placeholder="Select primary material" />
                     </SelectTrigger>
                   </FormControl>
@@ -319,7 +304,7 @@ export const ProductForm = ({
                     ))}
                   </SelectContent>
                 </Select>
-                <FormDescription className="text-xs text-slate-400">
+                <FormDescription className="text-xs text-slate-500">
                   Primary material is used for cost calculations and inventory; optional for service/fee products.
                 </FormDescription>
                 <FormMessage />
@@ -329,16 +314,13 @@ export const ProductForm = ({
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="h-px bg-[#1e293b] my-6" />
-
       {/* Advanced Settings - Full width section */}
-      <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
+      <div className="space-y-3">
         <div>
-          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Advanced Settings</h3>
+          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Advanced Settings</h3>
         </div>
 
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-3 gap-6">
           <FormField
             control={form.control}
             name="isActive"
@@ -347,7 +329,7 @@ export const ProductForm = ({
                 <FormControl>
                   <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
                 </FormControl>
-                <FormLabel className="text-slate-200 !mt-0">Active</FormLabel>
+                <FormLabel className="text-sm text-slate-300 !mt-0">Active</FormLabel>
                 <FormMessage />
               </FormItem>
             )}
@@ -360,7 +342,7 @@ export const ProductForm = ({
                 <FormControl>
                   <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
                 </FormControl>
-                <FormLabel className="text-slate-200 !mt-0">Requires Production Job</FormLabel>
+                <FormLabel className="text-sm text-slate-300 !mt-0">Requires Production Job</FormLabel>
                 <FormMessage />
               </FormItem>
             )}
@@ -373,7 +355,7 @@ export const ProductForm = ({
                 <FormControl>
                   <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
                 </FormControl>
-                <FormLabel className="text-slate-200 !mt-0">Taxable Item</FormLabel>
+                <FormLabel className="text-sm text-slate-300 !mt-0">Taxable Item</FormLabel>
                 <FormMessage />
               </FormItem>
             )}
@@ -381,14 +363,11 @@ export const ProductForm = ({
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="h-px bg-[#1e293b] my-6" />
-
       {/* Product Images - Full width section */}
-      <div className="bg-[#0a1628] border border-[#1e293b] rounded-lg p-6 space-y-4">
+      <div className="space-y-3">
         <div>
-          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Product Images</h3>
-          <p className="text-xs text-slate-400 mt-1">Customer-facing images displayed in quotes and proposals</p>
+          <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">Product Images</h3>
+          <p className="text-xs text-slate-500">Customer-facing images displayed in quotes and proposals</p>
         </div>
         <div className="text-sm text-slate-400">
           Image upload functionality coming soon...
