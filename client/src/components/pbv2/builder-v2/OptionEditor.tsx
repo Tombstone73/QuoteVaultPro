@@ -78,9 +78,9 @@ export function OptionEditor({
   const groupOptions = selectedGroup.optionIds.map(id => options[id]).filter(Boolean);
 
   return (
-    <div className="h-full w-full flex flex-col bg-[#0a0e1a] overflow-hidden">
-      <div className="border-b border-[#334155] bg-[#1e293b] p-5">
-        <div className="flex items-start justify-between mb-3">
+    <div className="w-full flex flex-col">
+      <div className="border-b border-[#334155] p-4 bg-[#0a0e1a]">
+        <div className="flex items-start justify-between mb-4">
           <div className="flex-1">
             <Input
               value={selectedGroup.name}
@@ -91,54 +91,53 @@ export function OptionEditor({
               value={selectedGroup.description}
               onChange={(e) => onUpdateGroup(selectedGroup.id, { description: e.target.value })}
               placeholder="Group description..."
-              className="text-sm text-slate-300 min-h-[50px] border-transparent hover:border-slate-600 focus:border-blue-500 bg-transparent"
+              className="text-sm text-slate-300 min-h-[60px] border-transparent hover:border-slate-600 focus:border-blue-500 bg-transparent resize-none"
             />
           </div>
         </div>
 
-        <div className="flex items-center gap-6 ml-2">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-8">
+          <div className="flex items-center gap-2.5">
             <Switch
               id="required"
               checked={selectedGroup.isRequired}
-              onCheckedChange={(checked) => 
+              onCheckedChange={(checked) =>
                 onUpdateGroup(selectedGroup.id, { isRequired: checked })
               }
             />
-            <Label htmlFor="required" className="font-medium cursor-pointer text-slate-300">
+            <Label htmlFor="required" className="text-sm font-medium cursor-pointer text-slate-200">
               Required Group
             </Label>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <Switch
               id="multiselect"
               checked={selectedGroup.isMultiSelect}
-              onCheckedChange={(checked) => 
+              onCheckedChange={(checked) =>
                 onUpdateGroup(selectedGroup.id, { isMultiSelect: checked })
               }
             />
-            <Label htmlFor="multiselect" className="font-medium cursor-pointer text-slate-300">
+            <Label htmlFor="multiselect" className="text-sm font-medium cursor-pointer text-slate-200">
               Multi-select
             </Label>
           </div>
         </div>
       </div>
 
-      <ScrollArea className="flex-1 bg-[#0a0e1a]">
-        <div className="p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-slate-200">Options</h3>
-            <Button
-              onClick={() => onAddOption(selectedGroup.id)}
-              size="sm"
-              className="gap-2 bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              <Plus className="h-4 w-4" />
-              Add Option
-            </Button>
-          </div>
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wide">Options</h3>
+          <Button
+            onClick={() => onAddOption(selectedGroup.id)}
+            size="sm"
+            className="gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
+          >
+            <Plus className="h-4 w-4" />
+            Add Option
+          </Button>
+        </div>
 
-          <div className="space-y-2">
+        <div className="space-y-3">
             {groupOptions.map((option) => {
               if (!option) return null;
               
@@ -151,25 +150,29 @@ export function OptionEditor({
               return (
                 <div
                   key={option.id}
-                  className="bg-[#1e293b] border border-[#334155] rounded-lg overflow-hidden"
+                  className={`bg-[#1e293b] border rounded-lg overflow-hidden transition-all duration-150 ${
+                    isExpanded
+                      ? 'border-blue-500/50 shadow-sm'
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
                 >
-                  <div className="flex items-center p-4 hover:bg-slate-800/30 transition-colors">
-                    <GripVertical className="h-4 w-4 text-slate-500 mr-2 flex-shrink-0" />
-                    
+                  <div className="flex items-center p-3.5 hover:bg-slate-800/20 transition-colors">
+                    <GripVertical className="h-4 w-4 text-slate-500 mr-2.5 flex-shrink-0 opacity-60" />
+
                     <button
                       type="button"
                       onClick={() => toggleOption(option.id)}
                       className="flex items-center flex-1 gap-3 text-left"
                     >
                       {isExpanded ? (
-                        <ChevronDown className="h-4 w-4 text-slate-400 flex-shrink-0" />
+                        <ChevronDown className="h-4 w-4 text-blue-400 flex-shrink-0 transition-transform" />
                       ) : (
-                        <ChevronRight className="h-4 w-4 text-slate-400 flex-shrink-0" />
+                        <ChevronRight className="h-4 w-4 text-slate-400 flex-shrink-0 transition-transform" />
                       )}
-                      
+
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="font-medium text-slate-200">
+                          <span className="font-medium text-slate-100 text-sm">
                             {option.name}
                           </span>
                           {hasConditions && !isExpanded && (
@@ -181,37 +184,37 @@ export function OptionEditor({
                             {option.description}
                           </div>
                         )}
-                        <div className="flex items-center gap-2 mt-2 flex-wrap">
-                          <Badge variant="outline" className="text-xs bg-slate-700/50 text-slate-300 border-slate-600">
+                        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                          <Badge variant="outline" className="text-[10px] bg-slate-800/50 text-slate-300 border-slate-600 px-1.5 py-0 h-5">
                             {option.type}
                           </Badge>
                           {option.isDefault && (
-                            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                            <Badge variant="outline" className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/40 px-1.5 py-0 h-5">
                               Default
                             </Badge>
                           )}
                           {option.isRequired && (
-                            <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">
+                            <Badge variant="outline" className="text-[10px] bg-red-500/10 text-red-400 border-red-500/40 px-1.5 py-0 h-5">
                               Required
                             </Badge>
                           )}
                           {hasPricing && (
-                            <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                            <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/40 px-1.5 py-0 h-5">
                               Pricing
                             </Badge>
                           )}
                           {hasFlags && (
-                            <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                            <Badge variant="outline" className="text-[10px] bg-cyan-500/10 text-cyan-400 border-cyan-500/40 px-1.5 py-0 h-5">
                               Production
                             </Badge>
                           )}
                           {hasConditions && (
-                            <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
+                            <Badge variant="outline" className="text-[10px] bg-amber-500/10 text-amber-400 border-amber-500/40 px-1.5 py-0 h-5">
                               Conditional
                             </Badge>
                           )}
                           {hasWeight && (
-                            <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                            <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/40 px-1.5 py-0">
                               Weight
                             </Badge>
                           )}
@@ -254,9 +257,8 @@ export function OptionEditor({
                 </div>
               );
             })}
-          </div>
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }

@@ -41,21 +41,20 @@ export function OptionGroupsSidebar({
   onDeleteGroup
 }: OptionGroupsSidebarProps) {
   return (
-    <aside className="h-full w-full border-r border-[#334155] bg-[#0f172a] flex flex-col overflow-hidden">
-      <div className="border-b border-[#334155] p-4">
-        <div className="flex items-center justify-between mb-3">
+    <aside className="h-full w-full flex flex-col overflow-hidden bg-[#0f172a]">
+      <div className="border-b border-[#334155] p-4 space-y-3">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-slate-400" />
-            <h2 className="font-semibold text-slate-200">Option Groups</h2>
+            <h2 className="text-sm font-semibold text-slate-200">Option Groups</h2>
           </div>
-          <Badge variant="outline" className="text-xs bg-slate-800 text-slate-300 border-slate-600">
+          <Badge variant="outline" className="text-xs bg-slate-800/50 text-slate-300 border-slate-600 px-2 py-0.5">
             {optionGroups.length}
           </Badge>
         </div>
-        <div className="text-xs text-slate-400 mb-2">Groups: {optionGroups.length}</div>
         <Button
           onClick={onAddGroup}
-          className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm"
+          className="w-full gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
           size="sm"
         >
           <Plus className="h-4 w-4" />
@@ -64,7 +63,7 @@ export function OptionGroupsSidebar({
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="p-2">
+        <div className="p-2.5">
           {optionGroups.map((group, index) => {
             const groupOptions = group.optionIds.map(id => options[id]).filter(Boolean);
             const hasPricing = groupOptions.some(opt => opt?.hasPricing);
@@ -74,27 +73,27 @@ export function OptionGroupsSidebar({
             return (
               <div key={group.id}>
                 {index > 0 && (
-                  <div className="h-px bg-slate-700/50 my-2 mx-3" />
+                  <div className="h-px bg-slate-700/30 my-2" />
                 )}
                 <div
                   className={`
-                    rounded-md transition-colors relative
+                    rounded-lg transition-all duration-150 relative
                     ${selectedGroupId === group.id
-                      ? 'bg-blue-500/10 border border-blue-500/30'
-                      : 'hover:bg-slate-800/50 border border-transparent'
+                      ? 'bg-blue-500/10 border border-blue-500/50 shadow-sm'
+                      : 'hover:bg-slate-800/30 border border-slate-700/50 hover:border-slate-600'
                     }
                   `}
                 >
                   <button
                     type="button"
                     onClick={() => onSelectGroup(group.id)}
-                    className="w-full text-left p-3 pr-8"
+                    className="w-full text-left p-3 pr-9"
                   >
                     <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-start gap-2 flex-1 min-w-0">
-                        <GripVertical className="h-4 w-4 text-slate-500 mt-0.5 flex-shrink-0" />
+                      <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                        <GripVertical className="h-4 w-4 text-slate-500 mt-0.5 flex-shrink-0 opacity-60" />
                         <div className="flex-1 min-w-0">
-                          <div className="font-semibold text-slate-200 mb-0.5 truncate">
+                          <div className="font-medium text-slate-100 mb-1 truncate text-sm">
                             {group.name}
                           </div>
                           <div className="text-xs text-slate-400">
@@ -102,37 +101,37 @@ export function OptionGroupsSidebar({
                           </div>
                         </div>
                       </div>
-                      <ChevronRight 
-                        className={`h-4 w-4 flex-shrink-0 transition-transform ${
-                          selectedGroupId === group.id ? 'text-blue-400' : 'text-slate-500'
+                      <ChevronRight
+                        className={`h-4 w-4 flex-shrink-0 transition-all duration-150 ${
+                          selectedGroupId === group.id ? 'text-blue-400 rotate-90' : 'text-slate-500'
                         }`}
                       />
                     </div>
 
                     <div className="flex items-center gap-1.5 flex-wrap ml-6">
                       {group.isRequired && (
-                        <Badge variant="outline" className="text-xs bg-red-500/10 text-red-400 border-red-500/30">
+                        <Badge variant="outline" className="text-[10px] bg-red-500/10 text-red-400 border-red-500/40 px-1.5 py-0 h-5">
                           Required
                         </Badge>
                       )}
                       {group.isMultiSelect && (
-                        <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                        <Badge variant="outline" className="text-[10px] bg-purple-500/10 text-purple-400 border-purple-500/40 px-1.5 py-0 h-5">
                           Multi
                         </Badge>
                       )}
                       {hasPricing && (
-                        <div className="flex items-center gap-0.5 text-xs text-emerald-400">
-                          <DollarSign className="h-3 w-3" />
+                        <div className="flex items-center gap-0.5 text-xs text-emerald-400" title="Has pricing">
+                          <DollarSign className="h-3.5 w-3.5" />
                         </div>
                       )}
                       {hasProductionFlags && (
-                        <div className="flex items-center gap-0.5 text-xs text-cyan-400">
-                          <Settings className="h-3 w-3" />
+                        <div className="flex items-center gap-0.5 text-xs text-cyan-400" title="Has production flags">
+                          <Settings className="h-3.5 w-3.5" />
                         </div>
                       )}
                       {hasConditionals && (
-                        <div className="flex items-center gap-0.5 text-xs text-amber-400">
-                          <AlertTriangle className="h-3 w-3" />
+                        <div className="flex items-center gap-0.5 text-xs text-amber-400" title="Has conditional logic">
+                          <AlertTriangle className="h-3.5 w-3.5" />
                         </div>
                       )}
                     </div>
