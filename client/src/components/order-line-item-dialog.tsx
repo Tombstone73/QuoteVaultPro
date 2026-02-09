@@ -123,6 +123,21 @@ export function OrderLineItemDialog({
   const pbv2Tree = getPbv2Tree(selectedProduct);
   const pbv2ConfigMissing = isPbv2 && !pbv2Tree;
 
+  // Debug logging for PBV2 detection
+  if (selectedProduct) {
+    console.log('[OrderLineItemDialog] Product selected:', {
+      id: selectedProduct.id,
+      name: selectedProduct.name,
+      hasOptionTreeJson: !!(selectedProduct as any)?.optionTreeJson,
+      optionTreeJsonType: typeof (selectedProduct as any)?.optionTreeJson,
+      schemaVersion: (selectedProduct as any)?.optionTreeJson?.schemaVersion,
+      isPbv2,
+      hasPbv2Tree: !!pbv2Tree,
+      pbv2ConfigMissing,
+      hasLegacyOptions: !!productOptionsInline?.length
+    });
+  }
+
   // Build selectedOptions payload for API
   const buildSelectedOptionsPayload = useCallback(() => {
     const payload: Record<string, any> = {};
