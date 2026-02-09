@@ -65,8 +65,8 @@ const ProductEditorPage = () => {
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
 
-  // Track PBV2 tree meta (shippingConfig, productImages) for ProductForm
-  const [treeMeta, setTreeMeta] = useState<{ shippingConfig?: any; productImages?: any[] }>({});
+  // Track PBV2 tree meta (shippingConfig, productImages, pricingV2) for ProductForm
+  const [treeMeta, setTreeMeta] = useState<{ shippingConfig?: any; productImages?: any[]; pricingV2?: any }>({});
 
   // Track PBV2 pricing/validation data for page-level pricing panel
   const [pbv2PricingData, setPbv2PricingData] = useState<{
@@ -734,6 +734,43 @@ const ProductEditorPage = () => {
               formId="product-editor-form"
               treeMeta={treeMeta}
               onUpdateTreeMeta={(updates: Record<string, unknown>) => pbv2TreeProviderRef.current?.updateTreeMeta(updates)}
+              pricingV2={treeMeta.pricingV2}
+              onUpdatePricingV2Base={(base) => pbv2TreeProviderRef.current?.updateTreeMeta({ pricingV2: { ...(treeMeta.pricingV2 || {}), base } })}
+              onUpdatePricingV2UnitSystem={(unitSystem) => pbv2TreeProviderRef.current?.updateTreeMeta({ pricingV2: { ...(treeMeta.pricingV2 || {}), unitSystem } })}
+              onAddPricingV2Tier={(kind) => {
+                const current = treeMeta.pricingV2 || {};
+                const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);
+                const newTier = kind === 'qty' ? { minQty: 1 } : { minSqft: 0 };
+                pbv2TreeProviderRef.current?.updateTreeMeta({
+                  pricingV2: {
+                    ...current,
+                    [kind === 'qty' ? 'qtyTiers' : 'sqftTiers']: [...tiers, newTier]
+                  }
+                });
+              }}
+              onUpdatePricingV2Tier={(kind, index, tier) => {
+                const current = treeMeta.pricingV2 || {};
+                const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);
+                const updated = [...tiers];
+                updated[index] = tier;
+                pbv2TreeProviderRef.current?.updateTreeMeta({
+                  pricingV2: {
+                    ...current,
+                    [kind === 'qty' ? 'qtyTiers' : 'sqftTiers']: updated
+                  }
+                });
+              }}
+              onDeletePricingV2Tier={(kind, index) => {
+                const current = treeMeta.pricingV2 || {};
+                const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);
+                const updated = tiers.filter((_: any, i: number) => i !== index);
+                pbv2TreeProviderRef.current?.updateTreeMeta({
+                  pricingV2: {
+                    ...current,
+                    [kind === 'qty' ? 'qtyTiers' : 'sqftTiers']: updated
+                  }
+                });
+              }}
             />
 
             {/* Options Builder section with 2-column layout (pricing panel moved to page level) */}
