@@ -8,6 +8,7 @@ import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { ROUTES } from "@/config/routes";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem, Organization } from "@shared/schema";
+import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { QuoteLineItemDraft, Address, OptionSelection } from "./types";
 
@@ -225,6 +226,7 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
+    const [optionSelectionsJson, setOptionSelectionsJson] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
     const [lineItemNotes, setLineItemNotes] = useState<string>("");
 
     // ============================================================================
@@ -1357,6 +1359,7 @@ export function useQuoteEditorState() {
                 setCalculatedPrice(null);
                 setCalcError(null);
                 setOptionSelections({});
+                setOptionSelectionsJson({ schemaVersion: 2, selected: {} });
                 setLineItemNotes("");
             } catch (error: any) {
                 toast({
@@ -1471,6 +1474,7 @@ export function useQuoteEditorState() {
             setCalculatedPrice(null);
             setCalcError(null);
             setOptionSelections({});
+            setOptionSelectionsJson({ schemaVersion: 2, selected: {} });
             setLineItemNotes("");
         } catch (error: any) {
             console.error("Error creating temporary line item:", error);
@@ -2057,6 +2061,7 @@ export function useQuoteEditorState() {
                     selectedOptions: [],
                 });
                 setOptionSelections({});
+                setOptionSelectionsJson({ schemaVersion: 2, selected: {} });
             }
         }
     };
@@ -2604,6 +2609,7 @@ export function useQuoteEditorState() {
         isCalculating,
         calcError,
         optionSelections,
+        optionSelectionsJson,
         lineItemNotes,
         requiresDimensions,
         productOptions,
@@ -2707,6 +2713,7 @@ export function useQuoteEditorState() {
                 }
             },
             setOptionSelections,
+            setOptionSelectionsJson,
             setLineItemNotes,
             setProductSearchOpen,
             setProductSearchQuery,

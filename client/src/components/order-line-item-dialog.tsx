@@ -9,9 +9,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { Loader2, Calculator } from "lucide-react";
+import { Loader2, Calculator, AlertCircle } from "lucide-react";
 import type { OrderLineItem } from "@/hooks/useOrders";
 import type { ProductOptionItem } from "@shared/schema";
+import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
+import { ProductOptionsPanelV2 } from "@/features/quotes/editor/components/ProductOptionsPanelV2";
 
 /**
  * Helper function to format option price label based on priceMode
@@ -80,6 +83,11 @@ export function OrderLineItemDialog({
     hemsType?: string;
     polePocket?: string;
   }>>({});
+  const [optionSelectionsJson, setOptionSelectionsJson] = useState<LineItemOptionSelectionsV2>({
+    schemaVersion: 2,
+    selected: {},
+  });
+  const [optionsV2Valid, setOptionsV2Valid] = useState(true);
 
   // Fetch products for selection
   const { data: products = [] } = useQuery({
@@ -110,6 +118,11 @@ export function OrderLineItemDialog({
   const selectedProduct = products.find((p: any) => p.id === formData.productId);
   const productOptionsInline = selectedProduct?.optionsJson as ProductOptionItem[] | undefined;
 
+  // Detect PBV2 product and extract tree
+  const isPbv2 = isPbv2Product(selectedProduct);
+  const pbv2Tree = getPbv2Tree(selectedProduct);
+  const pbv2ConfigMissing = isPbv2 && !pbv2Tree;
+
   // Build selectedOptions payload for API
   const buildSelectedOptionsPayload = useCallback(() => {
     const payload: Record<string, any> = {};
@@ -131,6 +144,7 @@ export function OrderLineItemDialog({
   // Reset options when product changes
   useEffect(() => {
     setOptionSelections({});
+    setOptionSelectionsJson({ schemaVersion: 2, selected: {} });
   }, [formData.productId]);
 
   // Initialize form data when dialog opens
@@ -261,6 +275,11 @@ export function OrderLineItemDialog({
         totalPrice,
         status: formData.status,
         specsJson,
+        ...(isPbv2 && pbv2Tree
+          ? { optionSelectionsJson }
+          : productOptionsInline && productOptionsInline.length > 0
+            ? { selectedOptions: buildSelectedOptionsPayload() }
+            : {}),
       };
 
       if (mode === "add") {
@@ -385,7 +404,9 @@ export function OrderLineItemDialog({
           quantity: quantityNum,
           width: widthNum,
           height: heightNum,
-          selectedOptions: buildSelectedOptionsPayload(),
+          ...(isPbv2 && pbv2Tree
+            ? { optionSelectionsJson }
+            : { selectedOptions: buildSelectedOptionsPayload() }),
         }),
       });
 
@@ -422,7 +443,7 @@ export function OrderLineItemDialog({
     } finally {
       setIsCalculating(false);
     }
-  }, [formData.productId, formData.productVariantId, formData.width, formData.height, formData.quantity, products, variants, priceOverrideMode, buildSelectedOptionsPayload]);
+  }, [formData.productId, formData.productVariantId, formData.width, formData.height, formData.quantity, products, variants, priceOverrideMode, buildSelectedOptionsPayload, isPbv2, pbv2Tree, optionSelectionsJson]);
 
   // Debounced auto-calculation
   useEffect(() => {
@@ -551,8 +572,25 @@ export function OrderLineItemDialog({
               </div>
             </div>
 
-            {/* Product Options Selection - Inline options from product.optionsJson */}
-            {selectedProduct && productOptionsInline && productOptionsInline.length > 0 && (
+            {/* Product Options Selection - Conditional PBV2 or Legacy */}
+            {selectedProduct && (
+              <>
+                {pbv2ConfigMissing ? (
+                  <div className="flex items-center gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm text-destructive">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>PBV2 configuration missing for this product.</span>
+                  </div>
+                ) : isPbv2 && pbv2Tree ? (
+                  <div className="space-y-3 border-t pt-4">
+                    <Label className="text-base font-semibold">Product Options</Label>
+                    <ProductOptionsPanelV2
+                      tree={pbv2Tree}
+                      selections={optionSelectionsJson}
+                      onSelectionsChange={setOptionSelectionsJson}
+                      onValidityChange={setOptionsV2Valid}
+                    />
+                  </div>
+                ) : productOptionsInline && productOptionsInline.length > 0 ? (
               <div className="space-y-3 border-t pt-4">
                 <Label className="text-base font-semibold">Product Options</Label>
                 {[...productOptionsInline]
@@ -909,6 +947,8 @@ export function OrderLineItemDialog({
                     );
                   })}
               </div>
+                ) : null}
+              </>
             )}
 
             {/* Calculated Price Display */}

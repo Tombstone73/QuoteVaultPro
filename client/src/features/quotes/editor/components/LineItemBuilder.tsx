@@ -7,12 +7,15 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Loader2, Check, ChevronsUpDown, Upload, X } from "lucide-react";
+import { Plus, Loader2, Check, ChevronsUpDown, Upload, X, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import type { Product, ProductVariant } from "@shared/schema";
 import type { OptionSelection } from "../types";
+import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { isPbv2Product, getPbv2Tree } from "@/lib/pbv2Utils";
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
+import { ProductOptionsPanelV2 } from "./ProductOptionsPanelV2";
 
 type LineItemBuilderProps = {
     products: Product[];
@@ -27,6 +30,8 @@ type LineItemBuilderProps = {
     isCalculating: boolean;
     calcError: string | null;
     optionSelections: Record<string, OptionSelection>;
+    optionSelectionsJson?: LineItemOptionSelectionsV2;
+    onOptionSelectionsJsonChange?: (selections: LineItemOptionSelectionsV2) => void;
     lineItemNotes: string;
     requiresDimensions: boolean;
     productOptions: any[];
@@ -59,6 +64,8 @@ export function LineItemBuilder({
     isCalculating,
     calcError,
     optionSelections,
+    optionSelectionsJson,
+    onOptionSelectionsJsonChange,
     lineItemNotes,
     requiresDimensions,
     productOptions,
@@ -80,6 +87,12 @@ export function LineItemBuilder({
     const { toast } = useToast();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
+    const [optionsV2Valid, setOptionsV2Valid] = useState(true);
+
+    // Detect PBV2 product and extract tree
+    const isPbv2 = isPbv2Product(selectedProduct);
+    const pbv2Tree = getPbv2Tree(selectedProduct);
+    const pbv2ConfigMissing = isPbv2 && !pbv2Tree;
 
     // Max file size: 50MB
     const MAX_SIZE_BYTES = 50 * 1024 * 1024;
@@ -125,7 +138,7 @@ export function LineItemBuilder({
     const hasPrice = calculatedPrice !== null;
     const showRecalc = isCalculating && hasPrice;
     const showCalculating = isCalculating && !hasPrice;
-    const canSubmit = hasPrice && !isCalculating;
+    const canSubmit = hasPrice && !isCalculating && !pbv2ConfigMissing && (isPbv2 ? optionsV2Valid : true);
 
     return (
         <Card className="rounded-xl bg-card/80 border-border/60 shadow-md">
@@ -253,14 +266,30 @@ export function LineItemBuilder({
                     </div>
                 </div>
 
-                {/* Product Options */}
-                {selectedProduct && productOptions.length > 0 && (
-                    <ProductOptionsPanel
-                        product={selectedProduct}
-                        productOptions={productOptions}
-                        optionSelections={optionSelections}
-                        onOptionSelectionsChange={onOptionSelectionsChange}
-                    />
+                {/* Product Options - Conditional PBV2 or Legacy */}
+                {selectedProduct && (
+                    <>
+                        {pbv2ConfigMissing ? (
+                            <div className="flex items-center gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm text-destructive">
+                                <AlertCircle className="h-4 w-4 shrink-0" />
+                                <span>PBV2 configuration missing for this product.</span>
+                            </div>
+                        ) : isPbv2 && pbv2Tree ? (
+                            <ProductOptionsPanelV2
+                                tree={pbv2Tree}
+                                selections={optionSelectionsJson ?? { schemaVersion: 2, selected: {} }}
+                                onSelectionsChange={(next) => onOptionSelectionsJsonChange?.(next)}
+                                onValidityChange={setOptionsV2Valid}
+                            />
+                        ) : productOptions.length > 0 ? (
+                            <ProductOptionsPanel
+                                product={selectedProduct}
+                                productOptions={productOptions}
+                                optionSelections={optionSelections}
+                                onOptionSelectionsChange={onOptionSelectionsChange}
+                            />
+                        ) : null}
+                    </>
                 )}
 
                 {/* Artwork / Attachments section */}
