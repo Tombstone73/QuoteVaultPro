@@ -41,7 +41,7 @@ export function OptionGroupsSidebar({
   onDeleteGroup
 }: OptionGroupsSidebarProps) {
   return (
-    <aside className="h-full w-full flex flex-col overflow-hidden bg-[#0f172a]">
+    <aside className="h-full w-full flex flex-col overflow-hidden bg-[#1e293b]">
       <div className="border-b border-[#334155] p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
