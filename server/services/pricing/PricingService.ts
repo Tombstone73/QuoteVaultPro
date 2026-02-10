@@ -11,8 +11,7 @@ import { eq, and } from 'drizzle-orm';
 import { evaluateOptionTreeV2 } from '../optionTreeV2Evaluator';
 import type { 
   OptionTreeV2, 
-  LineItemOptionSelectionsV2,
-  SelectedOptionsSnapshotEntry 
+  LineItemOptionSelectionsV2
 } from '../../../shared/optionTreeV2';
 
 // ============================================================================
@@ -25,7 +24,7 @@ export type PricingInput = {
   quantity: number;
   widthIn?: number;
   heightIn?: number;
-  pbv2ExplicitSelections: LineItemOptionSelectionsV2;
+  pbv2ExplicitSelections: Record<string, any>; // Option selections from frontend
   pbv2TreeVersionIdOverride?: string; // Optional: use specific tree version
 };
 
@@ -42,9 +41,9 @@ export type PricingOutput = {
 
 export type PBV2PricingSnapshot = {
   treeVersionId: string;
-  treeJson: OptionTreeV2;
-  selections: LineItemOptionSelectionsV2;
-  selectedOptions: SelectedOptionsSnapshotEntry[];
+  treeJson: any; // DB stores as jsonb, not strongly typed
+  selections: Record<string, any>; // Option selections snapshot
+  selectedOptions: any[];
   visibleNodeIds: string[];
   pricedAt: string; // ISO timestamp
   dimensions?: {
@@ -126,7 +125,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     dimensions: widthIn || heightIn ? { widthIn, heightIn } : undefined,
     quantity,
     pricing: {
-      baseCents,
+      baseCents: basePriceCents,
       optionsCents,
       totalCents,
     },
@@ -137,7 +136,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pbv2SnapshotJson: snapshot,
     lineTotalCents,
     breakdown: {
-      baseCents,
+      baseCents: basePriceCents,
       optionsCents,
       totalCents,
     },
@@ -225,10 +224,10 @@ async function loadTreeVersion(organizationId: string, treeVersionId: string) {
  * PBV2 trees store base price in root node's priceConfig:
  * { nodes: { root: { priceConfig: { basePrice: 100 } } } }
  */
-function extractBasePrice(tree: OptionTreeV2): number {
+function extractBasePrice(tree: any): number {
   // Find root node (node with no parent or id === 'root')
-  const rootNode = tree.nodes['root'] 
-    || Object.values(tree.nodes).find(node => !node.parentId);
+  const rootNode = tree.nodes?.['root'] 
+    || Object.values(tree.nodes || {}).find((node: any) => !node.parentId);
 
   if (!rootNode) {
     throw new Error('PBV2 tree has no root node');
