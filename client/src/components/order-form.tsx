@@ -175,14 +175,30 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     setIsCalculating(true);
 
     try {
-      const response = await apiRequest("POST", "/api/quotes/calculate", {
+      // Detect PBV2 product
+      const selectedProduct = products?.find((p: any) => p.id === selectedProductId);
+      const isPbv2 = selectedProduct?.optionTreeJson && 
+        typeof selectedProduct.optionTreeJson === 'object' && 
+        (selectedProduct.optionTreeJson as any)?.schemaVersion === 2;
+
+      const payload: any = {
         productId: selectedProductId,
         variantId: selectedVariantId,
         width: widthNum,
         height: heightNum,
         quantity: quantityNum,
-        selectedOptions: buildSelectedOptionsPayload(),
-      });
+        debugSource: "order-form",
+      };
+
+      if (isPbv2) {
+        // PBV2: send optionSelectionsJson (order-form doesn't support PBV2 options yet, send empty)
+        payload.optionSelectionsJson = { schemaVersion: 2, selected: {} };
+      } else {
+        // Legacy: send selectedOptions
+        payload.selectedOptions = buildSelectedOptionsPayload();
+      }
+
+      const response = await apiRequest("POST", "/api/quotes/calculate", payload);
       const data = await response.json();
       
       // The API returns 'price' which is the TOTAL price for all items

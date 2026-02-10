@@ -202,14 +202,30 @@ export function DocumentCreateForm({
     setIsCalculating(true);
 
     try {
-      const response = await apiRequest("POST", "/api/quotes/calculate", {
+      // Detect PBV2 product
+      const selectedProduct = products?.find((p: any) => p.id === currentProductId);
+      const isPbv2 = selectedProduct?.optionTreeJson && 
+        typeof selectedProduct.optionTreeJson === 'object' && 
+        (selectedProduct.optionTreeJson as any)?.schemaVersion === 2;
+
+      const payload: any = {
         productId: currentProductId,
         variantId: currentVariantId,
         width: widthNum,
         height: heightNum,
         quantity: quantityNum,
-        selectedOptions: buildSelectedOptionsPayload(),
-      });
+        debugSource: "DocumentCreateForm",
+      };
+
+      if (isPbv2) {
+        // PBV2: send optionSelectionsJson (DocumentCreateForm doesn't support PBV2 options yet, send empty)
+        payload.optionSelectionsJson = { schemaVersion: 2, selected: {} };
+      } else {
+        // Legacy: send selectedOptions
+        payload.selectedOptions = buildSelectedOptionsPayload();
+      }
+
+      const response = await apiRequest("POST", "/api/quotes/calculate", payload);
       const data = await response.json();
       setCalculatedPrice(data.price || 0);
     } catch (error) {

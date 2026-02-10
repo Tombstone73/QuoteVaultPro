@@ -1047,19 +1047,35 @@ export function useQuoteEditorState() {
         // DO NOT clear calcError here - will be cleared on success
 
         try {
+            // Detect PBV2 product
+            const selectedProduct = products?.find((p: any) => p.id === selectedProductId);
+            const isPbv2 = selectedProduct?.optionTreeJson && 
+                typeof selectedProduct.optionTreeJson === 'object' && 
+                (selectedProduct.optionTreeJson as any)?.schemaVersion === 2;
+
+            const payload: any = {
+                productId: selectedProductId,
+                variantId: selectedVariantId,
+                width: widthNum,
+                height: heightNum,
+                quantity: quantityNum,
+                customerId: selectedCustomerId,
+                quoteId,
+                debugSource: "useQuoteEditorState.calculate",
+            };
+
+            if (isPbv2) {
+                // PBV2: send optionSelectionsJson (useQuoteEditorState doesn't support PBV2 options yet, send empty)
+                payload.optionSelectionsJson = { schemaVersion: 2, selected: {} };
+            } else {
+                // Legacy: send selectedOptions
+                payload.selectedOptions = buildSelectedOptionsPayload();
+            }
+
             const response = await apiRequest(
                 "POST",
                 "/api/quotes/calculate",
-                {
-                    productId: selectedProductId,
-                    variantId: selectedVariantId,
-                    width: widthNum,
-                    height: heightNum,
-                    quantity: quantityNum,
-                    selectedOptions: buildSelectedOptionsPayload(),
-                    customerId: selectedCustomerId,
-                    quoteId,
-                },
+                payload,
                 { signal: controller.signal }
             );
 
@@ -1109,16 +1125,33 @@ export function useQuoteEditorState() {
             const results = await Promise.all(
                 itemsToReprice.map(async (li) => {
                     const key = getStableLineItemKey(li);
-                    const response = await apiRequest("POST", "/api/quotes/calculate", {
+                    
+                    // Detect PBV2 product
+                    const product = products?.find((p: any) => p.id === li.productId);
+                    const isPbv2 = product?.optionTreeJson && 
+                        typeof product.optionTreeJson === 'object' && 
+                        (product.optionTreeJson as any)?.schemaVersion === 2;
+
+                    const payload: any = {
                         productId: li.productId,
                         variantId: li.variantId,
                         width: li.width,
                         height: li.height,
                         quantity: li.quantity,
-                        selectedOptions: li.selectedOptions,
                         customerId: nextCustomerId,
                         quoteId,
-                    });
+                        debugSource: "useQuoteEditorState.repricing",
+                    };
+
+                    if (isPbv2) {
+                        // PBV2: send optionSelectionsJson from line item or empty
+                        payload.optionSelectionsJson = (li as any).optionSelectionsJson ?? { schemaVersion: 2, selected: {} };
+                    } else {
+                        // Legacy: send selectedOptions
+                        payload.selectedOptions = li.selectedOptions;
+                    }
+
+                    const response = await apiRequest("POST", "/api/quotes/calculate", payload);
                     const data = await response.json();
                     const price = Number(data?.price);
                     if (!Number.isFinite(price)) return { key, ok: false as const };

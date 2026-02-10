@@ -770,6 +770,7 @@ export function OrderLineItemsSection({
           ? { optionSelectionsJson: optionSelectionsV2 }
           : { selectedOptions: optionSelections }),
         customerId,
+        debugSource: "OrderLineItemsSection.debounced",
       })
         .then((r) => r.json())
         .then((data) => {
@@ -1409,22 +1410,37 @@ export function OrderLineItemsSection({
                                       const widthForCalc = dimsRequiredForCalc ? Number.parseFloat(item.width || "") || 0 : 1;
                                       const heightForCalc = dimsRequiredForCalc ? Number.parseFloat(item.height || "") || 0 : 1;
 
+                                      // Detect if this is a PBV2 product to send correct payload format
+                                      const isPbv2 = isPbv2Product(productForCalc);
+                                      
+                                      // Build PBV2 selections if needed
+                                      let pbv2Selections: any = null;
+                                      if (isPbv2) {
+                                        const rawPbv2Selections = (item as any)?.optionSelectionsJson;
+                                        pbv2Selections = rawPbv2Selections && typeof rawPbv2Selections === "object"
+                                          ? rawPbv2Selections
+                                          : { schemaVersion: 2, selected: {} };
+                                      }
+
+                                      // Build legacy selections only for non-PBV2 products
                                       const selections: Record<string, OptionSelection> = {};
-                                      const savedSelectedOptions = (itemSpecsJson as any)?.selectedOptions;
-                                      if (Array.isArray(savedSelectedOptions)) {
-                                        savedSelectedOptions.forEach((opt: any) => {
-                                          if (!opt?.optionId) return;
-                                          selections[opt.optionId] = {
-                                            value: opt.value,
-                                            grommetsLocation: opt.grommetsLocation,
-                                            grommetsSpacingCount: opt.grommetsSpacingCount,
-                                            grommetsPerSign: opt.grommetsPerSign,
-                                            grommetsSpacingInches: opt.grommetsSpacingInches,
-                                            customPlacementNote: opt.customPlacementNote,
-                                            hemsType: opt.hemsType,
-                                            polePocket: opt.polePocket,
-                                          };
-                                        });
+                                      if (!isPbv2) {
+                                        const savedSelectedOptions = (itemSpecsJson as any)?.selectedOptions;
+                                        if (Array.isArray(savedSelectedOptions)) {
+                                          savedSelectedOptions.forEach((opt: any) => {
+                                            if (!opt?.optionId) return;
+                                            selections[opt.optionId] = {
+                                              value: opt.value,
+                                              grommetsLocation: opt.grommetsLocation,
+                                              grommetsSpacingCount: opt.grommetsSpacingCount,
+                                              grommetsPerSign: opt.grommetsPerSign,
+                                              grommetsSpacingInches: opt.grommetsSpacingInches,
+                                              customPlacementNote: opt.customPlacementNote,
+                                              hemsType: opt.hemsType,
+                                              polePocket: opt.polePocket,
+                                            };
+                                          });
+                                        }
                                       }
 
                                       try {
@@ -1445,15 +1461,25 @@ export function OrderLineItemsSection({
                                           return;
                                         }
 
-                                        const calcResponse = await apiRequest("POST", "/api/quotes/calculate", {
+                                        // Build payload with correct options format
+                                        const calcPayload: any = {
                                           productId: item.productId,
                                           variantId: item.productVariantId || undefined,
                                           width: widthForCalc,
                                           height: heightForCalc,
                                           quantity: nextQtyInt,
-                                          selectedOptions: selections,
                                           customerId,
-                                        });
+                                          debugSource: "OrderLineItemsSection.qtyChange",
+                                        };
+                                        
+                                        // Add options in correct format (PBV2 vs legacy)
+                                        if (isPbv2) {
+                                          calcPayload.optionSelectionsJson = pbv2Selections;
+                                        } else {
+                                          calcPayload.selectedOptions = selections;
+                                        }
+                                        
+                                        const calcResponse = await apiRequest("POST", "/api/quotes/calculate", calcPayload);
 
                                         const calcData = await calcResponse.json();
                                         const nextTotal = Number(calcData?.price);
