@@ -3319,6 +3319,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         (optionTreeJson as any)?.schemaVersion === 2
       );
       
+      console.log(`[PRICING DEBUG DETECT] Product: ${product.name} (${productId}), optionTree schemaVersion: ${(optionTreeJson as any)?.schemaVersion ?? 'none'}, isPbv2Product: ${isPbv2Product}`);
+      
       if (isPbv2Product) {
         console.log(`[PRICING DEBUG] PBV2 product detected: ${product.name}. Using option tree pricing exclusively (no material pricing).`);
       }
@@ -3363,6 +3365,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Calculate square footage (may be 0 for qty_only/fee profiles)
       const sqft = requiresDimensions ? (widthNum * heightNum) / 144 : 0;
+
+      // ========== PBV2 EXCLUSIVE PRICING PATH ==========
+      // PBV2 products use option tree pricing exclusively, bypassing all legacy pricing
+      if (isPbv2Product) {
+        console.log(`[PRICING DEBUG PBV2 EXCLUSIVE] Starting PBV2-only pricing for ${product.name} (${productId})`);
+        
+        try {
+          const tree = (product as any).optionTreeJson;
+          if (!tree || typeof tree !== "object" || (tree as any).schemaVersion !== 2) {
+            return res.status(400).json({ message: "PBV2 product missing valid optionTreeJson" });
+          }
+
+          console.log(`[PRICING DEBUG PBV2 INPUT] optionSelectionsJson:`, JSON.stringify(optionSelectionsJson, null, 2));
+          console.log(`[PRICING DEBUG PBV2 INPUT] width: ${widthNum}, height: ${heightNum}, quantity: ${quantityNum}`);
+
+          const graph = validateOptionTreeV2(tree);
+          if (!graph.ok) {
+            return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: graph.errors });
+          }
+
+          // PBV2 basePrice comes from product config or defaults to 0
+          const basePrice = Number(product.basePrice ?? 0);
+          
+          const v2 = evaluateOptionTreeV2({
+            tree,
+            selections: optionSelectionsJson ?? { schemaVersion: 2, selected: {} },
+            width: widthNum,
+            height: heightNum,
+            quantity: quantityNum,
+            basePrice,
+          });
+
+          console.log(`[PRICING DEBUG PBV2 OUTPUT] basePrice: ${basePrice}, optionsPrice: ${v2.optionsPrice}, selectedOptions count: ${v2.selectedOptions?.length ?? 0}`);
+
+          const subtotal = basePrice + v2.optionsPrice;
+          const total = subtotal;
+
+          // Validate total
+          if (!Number.isFinite(total)) {
+            console.error("PBV2 pricing produced invalid result:", total);
+            return res.status(400).json({ message: "PBV2 pricing calculation produced an invalid result" });
+          }
+
+          console.log(`[PRICING DEBUG PBV2 RESPONSE] Total: ${total}, formula: null, materialUsages: []`);
+
+          // Return PBV2 response (no formula, no materialUsages)
+          return res.json({
+            price: total,
+            breakdown: {
+              basePrice,
+              mediaSubtotal: basePrice,
+              addOnsPrice: 0,
+              optionsPrice: v2.optionsPrice,
+              subtotal,
+              priceBreakDiscount: 0,
+              priceBreakInfo: undefined,
+              total,
+              formula: null, // PBV2 products do not use formulas
+              selectedOptions: v2.selectedOptions ?? [],
+              variantInfo: variantName || undefined,
+              nestingDetails: undefined,
+              materialUsages: [], // PBV2 products do not track material usages via sell pricing
+            },
+            variant: variant ? {
+              id: variant.id,
+              name: variant.name,
+            } : undefined,
+          });
+        } catch (error) {
+          if (isZodError(error)) {
+            return res.status(400).json({ message: "Invalid optionTreeJson/optionSelectionsJson (v2)", errors: error.errors });
+          }
+          const details = (error as any)?.details;
+          if (Array.isArray(details)) {
+            return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: details });
+          }
+          console.error("[PBV2 PRICING ERROR]", error);
+          return res.status(400).json({ message: (error as Error)?.message || "Failed to evaluate PBV2 pricing" });
+        }
+      }
+
+      // ========== LEGACY PRICING PATH (non-PBV2 products only) ==========
+      console.log(`[PRICING DEBUG LEGACY] Starting legacy pricing for ${product.name} (${productId})`);
 
       // Build formula context with dimensions, quantity, variant base price, material pricing, and global variables
       const basePricePerSqft = variant ? parseFloat(variant.basePricePerSqft) : 0;
@@ -3615,15 +3700,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       } else {
         // Use formula evaluation (default, qty_only, fee profiles)
-        console.log(`[PRICING DEBUG] Using Formula Evaluation for product ${product.name}, profile: ${pricingProfile.key}`);
+        console.log(`[PRICING DEBUG LEGACY BRANCH] Using Formula Evaluation for product ${product.name} (${productId}), profile: ${pricingProfile.key}`);
         if (!product.pricingFormula) {
-          // PBV2 products: basePrice is 0, all pricing comes from option tree
-          if (isPbv2Product) {
-            basePrice = 0;
-            console.log(`[PRICING DEBUG] PBV2 product - basePrice set to 0, all pricing from option tree`);
-          }
           // For fee/qty_only profiles, default formula can be "q * unitPrice" or just the base price
-          else if (pricingProfile.key === "fee") {
+          if (pricingProfile.key === "fee") {
             // Fee profiles: use variant price directly
             basePrice = basePricePerSqft * quantityNum;
             console.log(`[PRICING DEBUG] Fee profile - using variant price: ${basePricePerSqft} × ${quantityNum} = ${basePrice}`);
@@ -3640,9 +3720,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log(`[PRICING DEBUG] Formula: ${formula}`);
 
             // Graceful failure: if formula references p but we cannot resolve it, return a clear error.
-            // Skip this check for PBV2 products since they get pricing from option tree
             const needsP = /\b(p|pricePerSqft|unitPrice|price)\b/.test(formula);
-            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p") && !isPbv2Product) {
+            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p")) {
               return res
                 .status(400)
                 .send(
@@ -3961,43 +4040,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Option Tree v2 (schemaVersion=2) additive evaluation
-      // When present on the product and provided by the client, evaluate and merge into snapshot/price.
-      try {
-        const tree = (product as any).optionTreeJson;
-        if (tree && typeof tree === "object" && (tree as any).schemaVersion === 2) {
-          const graph = validateOptionTreeV2(tree);
-          if (!graph.ok) {
-            return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: graph.errors });
-          }
-
-          const v2 = evaluateOptionTreeV2({
-            tree,
-            selections: optionSelectionsJson ?? { schemaVersion: 2, selected: {} },
-            width: widthNum,
-            height: heightNum,
-            quantity: quantityNum,
-            basePrice,
-          });
-
-          if (Array.isArray(v2.selectedOptions) && v2.selectedOptions.length > 0) {
-            for (let i = 0; i < v2.selectedOptions.length; i++) {
-              selectedOptionsArray.push(v2.selectedOptions[i]);
-            }
-          }
-
-          optionsPrice += v2.optionsPrice;
-        }
-      } catch (error) {
-        if (isZodError(error)) {
-          return res.status(400).json({ message: "Invalid optionTreeJson/optionSelectionsJson (v2)", errors: error.errors });
-        }
-        const details = (error as any)?.details;
-        if (Array.isArray(details)) {
-          return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: details });
-        }
-        return res.status(400).json({ message: (error as Error)?.message || "Failed to evaluate option tree (v2)" });
-      }
+      // Note: PBV2 products (schemaVersion=2) are handled exclusively in the early branch above
+      // and never reach this point. This section is LEGACY PRODUCTS ONLY.
 
       // CALCULATE mediaSubtotal - includes only media/printing costs, excludes finishing add-ons
       // Media costs include:
@@ -4227,6 +4271,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("Total price is invalid:", total);
         return res.status(400).json({ message: "Total price calculation produced an invalid result" });
       }
+
+      console.log(`[PRICING DEBUG RESPONSE] Product: ${product.name} (${productId}), formula: ${product.pricingFormula ?? 'none'}, hasMaterialUsages: ${materialUsages.length > 0}, price: ${total}`);
+      console.log(`[PRICING DEBUG RESPONSE] Response breakdown:`, JSON.stringify({ formula: product.pricingFormula, materialUsagesCount: materialUsages.length, price: total, basePrice, optionsPrice, isPbv2Product }, null, 2));
 
       res.json({
         price: total,
