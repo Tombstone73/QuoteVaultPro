@@ -3319,6 +3319,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         (optionTreeJson as any)?.schemaVersion === 2
       );
       
+      console.log(`[PRICING DEBUG DETECT] Product: ${product.name} (${productId}), optionTree schemaVersion: ${(optionTreeJson as any)?.schemaVersion ?? 'none'}, isPbv2Product: ${isPbv2Product}`);
+      
       if (isPbv2Product) {
         console.log(`[PRICING DEBUG] PBV2 product detected: ${product.name}. Using option tree pricing exclusively (no material pricing).`);
       }
@@ -3615,12 +3617,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       } else {
         // Use formula evaluation (default, qty_only, fee profiles)
-        console.log(`[PRICING DEBUG] Using Formula Evaluation for product ${product.name}, profile: ${pricingProfile.key}`);
+        console.log(`[PRICING DEBUG LEGACY BRANCH] Using Formula Evaluation for product ${product.name} (${productId}), profile: ${pricingProfile.key}, isPbv2Product: ${isPbv2Product}`);
         if (!product.pricingFormula) {
           // PBV2 products: basePrice is 0, all pricing comes from option tree
           if (isPbv2Product) {
             basePrice = 0;
-            console.log(`[PRICING DEBUG] PBV2 product - basePrice set to 0, all pricing from option tree`);
+            console.log(`[PRICING DEBUG PBV2 BRANCH] PBV2 product - basePrice set to 0, all pricing from option tree`);
           }
           // For fee/qty_only profiles, default formula can be "q * unitPrice" or just the base price
           else if (pricingProfile.key === "fee") {
@@ -3966,6 +3968,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const tree = (product as any).optionTreeJson;
         if (tree && typeof tree === "object" && (tree as any).schemaVersion === 2) {
+          console.log(`[PRICING DEBUG PBV2 TREE] Product: ${product.name} (${productId}), schemaVersion: 2, entering PBV2 evaluation`);
+          console.log(`[PRICING DEBUG PBV2 INPUT] optionSelectionsJson:`, JSON.stringify(optionSelectionsJson, null, 2));
+          console.log(`[PRICING DEBUG PBV2 INPUT] width: ${widthNum}, height: ${heightNum}, quantity: ${quantityNum}, basePrice: ${basePrice}`);
+          console.log(`[PRICING DEBUG PBV2 INPUT] sqft variable: ${sqft} (computed as width*height/144)`);
+          
           const graph = validateOptionTreeV2(tree);
           if (!graph.ok) {
             return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: graph.errors });
@@ -3979,6 +3986,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             quantity: quantityNum,
             basePrice,
           });
+          
+          console.log(`[PRICING DEBUG PBV2 OUTPUT] optionsPrice from PBV2: ${v2.optionsPrice}, selectedOptions count: ${v2.selectedOptions?.length ?? 0}`);
+          console.log(`[PRICING DEBUG PBV2 OUTPUT] PBV2 result:`, JSON.stringify({ optionsPrice: v2.optionsPrice, selectedOptionsCount: v2.selectedOptions?.length }, null, 2));
 
           if (Array.isArray(v2.selectedOptions) && v2.selectedOptions.length > 0) {
             for (let i = 0; i < v2.selectedOptions.length; i++) {
@@ -4227,6 +4237,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("Total price is invalid:", total);
         return res.status(400).json({ message: "Total price calculation produced an invalid result" });
       }
+
+      console.log(`[PRICING DEBUG RESPONSE] Product: ${product.name} (${productId}), formula: ${product.pricingFormula ?? 'none'}, hasMaterialUsages: ${materialUsages.length > 0}, price: ${total}`);
+      console.log(`[PRICING DEBUG RESPONSE] Response breakdown:`, JSON.stringify({ formula: product.pricingFormula, materialUsagesCount: materialUsages.length, price: total, basePrice, optionsPrice, isPbv2Product }, null, 2));
 
       res.json({
         price: total,
