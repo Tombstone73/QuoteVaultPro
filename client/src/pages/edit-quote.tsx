@@ -209,17 +209,32 @@ export default function EditQuote() {
     // DO NOT clear calculatedPrice - keep last known price visible
 
     try {
+      // Detect PBV2 product
+      const selectedProduct = products?.find((p: any) => p.id === selectedProductId);
+      const isPbv2 = selectedProduct?.optionTreeJson && 
+        typeof selectedProduct.optionTreeJson === 'object' && 
+        (selectedProduct.optionTreeJson as any)?.schemaVersion === 2;
+
+      const payload: any = {
+        productId: selectedProductId,
+        variantId: selectedVariantId,
+        width: parseFloat(lineItemWidth) || 1,
+        height: parseFloat(lineItemHeight) || 1,
+        quantity: parseInt(lineItemQuantity),
+      };
+
+      if (isPbv2) {
+        // PBV2: send optionSelectionsJson
+        payload.optionSelectionsJson = { schemaVersion: 2, selected: {} };
+      } else {
+        // Legacy: send selectedOptions
+        payload.selectedOptions = {};
+      }
+
       const response = await apiRequest(
         "POST",
         "/api/quotes/calculate",
-        {
-          productId: selectedProductId,
-          variantId: selectedVariantId,
-          width: parseFloat(lineItemWidth) || 1,
-          height: parseFloat(lineItemHeight) || 1,
-          quantity: parseInt(lineItemQuantity),
-          selectedOptions: {},
-        },
+        payload,
         { signal: controller.signal }
       );
 
