@@ -3821,10 +3821,29 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
             const parsed = insertOrderLineItemSchema.parse(req.body);
-            const { pbv2ExplicitSelections, pbv2Env, ...lineItemData } = parsed as any;
+            
+            // Server-authoritative: ignore any client-supplied pbv2 or price fields
+            const { 
+                pbv2ExplicitSelections, 
+                pbv2Env, 
+                pbv2TreeVersionId: _ignoredTreeVersionId,
+                pbv2SnapshotJson: _ignoredSnapshot,
+                pricedAt: _ignoredPricedAt,
+                unitPrice: _ignoredUnitPrice,
+                totalPrice: _ignoredTotalPrice,
+                ...lineItemData 
+            } = parsed as any;
 
-            const explicitSelections = (pbv2ExplicitSelections && typeof pbv2ExplicitSelections === 'object') ? pbv2ExplicitSelections : {};
-            const providedEnv = (pbv2Env && typeof pbv2Env === 'object') ? pbv2Env : {};
+            // Log warning if client tried to send forbidden fields
+            if (_ignoredTreeVersionId || _ignoredSnapshot || _ignoredPricedAt || _ignoredUnitPrice || _ignoredTotalPrice) {
+                console.warn('[ORDER_LINE_ITEM_CREATE] Client attempted to send forbidden pricing fields (ignored):', {
+                    hadTreeVersionId: !!_ignoredTreeVersionId,
+                    hadSnapshot: !!_ignoredSnapshot,
+                    hadPricedAt: !!_ignoredPricedAt,
+                    hadUnitPrice: !!_ignoredUnitPrice,
+                    hadTotalPrice: !!_ignoredTotalPrice,
+                });
+            }
 
             const [order] = await db
                 .select({ id: orders.id, customerId: orders.customerId })
@@ -3833,59 +3852,37 @@ export async function registerOrderRoutes(
                 .limit(1);
             if (!order) return res.status(404).json({ message: "Order not found" });
 
-            let customerTier: 'default' | 'wholesale' | 'retail' | undefined;
-            if ((order as any).customerId) {
-                const [customer] = await db
-                    .select({ pricingTier: customers.pricingTier })
-                    .from(customers)
-                    .where(and(eq(customers.organizationId, organizationId), eq(customers.id, String((order as any).customerId))))
-                    .limit(1);
-                const tier = (customer as any)?.pricingTier;
-                if (tier === 'default' || tier === 'wholesale' || tier === 'retail') customerTier = tier;
-            }
-
-            const created = await storage.createOrderLineItem(lineItemData);
-
-            const widthIn = numOrUndef(lineItemData.width) ?? numOrUndef((created as any).width);
-            const heightIn = numOrUndef(lineItemData.height) ?? numOrUndef((created as any).height);
-            const quantity = numOrUndef(lineItemData.quantity) ?? numOrUndef((created as any).quantity) ?? undefined;
-
-            const computedEnv: Record<string, unknown> = {
-                widthIn,
-                heightIn,
-                quantity,
-                sqft: widthIn != null && heightIn != null ? (widthIn * heightIn) / 144 : undefined,
-                perimeterIn: widthIn != null && heightIn != null ? 2 * (widthIn + heightIn) : undefined,
-            };
-
-            const env = { ...computedEnv, ...providedEnv };
-
-            const pbv2 = await evaluatePbv2SnapshotForProduct({
+            // Server-authoritative pricing using PricingService
+            const { priceLineItem } = await import("../../services/pricing/PricingService");
+            
+            const pricingResult = await priceLineItem({
                 organizationId,
-                productId: String(created.productId),
-                explicitSelections,
-                env,
-                pricingContext: { customerTier },
-                context: 'persist',
-            }).catch((e: any) => {
-                if (e?.statusCode) throw e;
-                throw Object.assign(new Error(e?.message || 'PBV2 evaluation failed'), { statusCode: 400 });
+                productId: lineItemData.productId,
+                quantity: Number(lineItemData.quantity),
+                widthIn: lineItemData.width ? Number(lineItemData.width) : undefined,
+                heightIn: lineItemData.height ? Number(lineItemData.height) : undefined,
+                pbv2ExplicitSelections: pbv2ExplicitSelections || {},
+                pbv2TreeVersionIdOverride: undefined, // Always use active tree
             });
 
-            const [updated] = await db
-                .update(orderLineItems)
-                .set({
-                    pbv2TreeVersionId: pbv2 ? pbv2.treeVersionId : null,
-                    pbv2SnapshotJson: pbv2 ? (pbv2.snapshotJson as any) : null,
-                    updatedAt: new Date(),
-                })
-                .where(eq(orderLineItems.id, created.id))
-                .returning();
+            // Structured logging for PBV2 pricing persistence
+            console.log(`[PBV2_PRICE_PERSIST] orderId=${lineItemData.orderId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
-            res.json(updated ?? created);
+            // Create line item with server-computed pricing
+            const created = await storage.createOrderLineItem({
+                ...lineItemData,
+                pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
+                pbv2SnapshotJson: pricingResult.pbv2SnapshotJson as any,
+                pricedAt: new Date(),
+                unitPrice: pricingResult.lineTotalCents / 100 / Number(lineItemData.quantity),
+                totalPrice: pricingResult.lineTotalCents / 100,
+            });
+
+            res.json(created);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
             if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
+            console.error('[ORDER_LINE_ITEM_CREATE] Error:', error);
             res.status(500).json({ message: "Failed to create order line item" });
         }
     });
@@ -3913,6 +3910,42 @@ export async function registerOrderRoutes(
             if (!ownership) return res.status(404).json({ message: "Order line item not found" });
 
             const oldLineItem = await storage.getOrderLineItemById(lineItemId);
+            if (!oldLineItem) return res.status(404).json({ message: "Order line item not found" });
+
+            // Server-authoritative: detect pricing-relevant changes
+            const pricingFieldsChanged =
+                updateData.productId !== undefined ||
+                updateData.width !== undefined ||
+                updateData.height !== undefined ||
+                updateData.quantity !== undefined ||
+                updateData.optionSelectionsJson !== undefined ||
+                (pbv2ExplicitSelections !== undefined && pbv2ExplicitSelections !== null);
+
+            if (pricingFieldsChanged) {
+                // Reprice using PricingService
+                const { priceLineItem } = await import("../../services/pricing/PricingService");
+                
+                const pricingResult = await priceLineItem({
+                    organizationId,
+                    productId: updateData.productId ?? oldLineItem.productId,
+                    quantity: updateData.quantity !== undefined ? Number(updateData.quantity) : oldLineItem.quantity,
+                    widthIn: updateData.width !== undefined ? Number(updateData.width) : (oldLineItem.width ? Number(oldLineItem.width) : undefined),
+                    heightIn: updateData.height !== undefined ? Number(updateData.height) : (oldLineItem.height ? Number(oldLineItem.height) : undefined),
+                    pbv2ExplicitSelections: pbv2ExplicitSelections || (oldLineItem as any).optionSelectionsJson?.selected || {},
+                    pbv2TreeVersionIdOverride: undefined, // Always reprice with active tree
+                });
+
+                // Structured logging for PBV2 repricing
+                console.log(`[PBV2_PRICE_PERSIST] orderId=${oldLineItem.orderId} lineItemId=${lineItemId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
+
+                // Set server-authoritative PBV2 fields
+                updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
+                updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson as any;
+                updateData.pricedAt = new Date();
+                updateData.unitPrice = pricingResult.lineTotalCents / 100 / Number(updateData.quantity ?? oldLineItem.quantity);
+                updateData.totalPrice = pricingResult.lineTotalCents / 100;
+            }
+
             const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
 
             // NOTE: PBV2 is recomputed explicitly via /pbv2/recompute.

@@ -765,9 +765,10 @@ export class OrdersRepository {
             specsJson: ql.specsJson,
             selectedOptions: ql.selectedOptions,
             optionSelectionsJson: (ql as any).optionSelectionsJson ?? null,
-            // PBV2 snapshot fields (copied from quote line item)
+            // PBV2 snapshot fields (copied from quote line item - no repricing during conversion)
             pbv2TreeVersionId: (ql as any).pbv2TreeVersionId ?? null,
             pbv2SnapshotJson: (ql as any).pbv2SnapshotJson ?? null,
+            pricedAt: (ql as any).pricedAt ?? null, // Preserve pricing timestamp from quote
             nestingConfigSnapshot: null,
             requiresInventory: false,
             materialId: null,
@@ -1027,6 +1028,10 @@ export class OrdersRepository {
             // In schema this is optional (defaultable) but not nullable: use undefined (omit) rather than null.
             taxAmount: lineItem.taxAmount == null ? undefined : String(lineItem.taxAmount),
             isTaxableSnapshot: lineItem.isTaxableSnapshot ?? undefined,
+            // PBV2 server-authoritative fields (Phase 5)
+            pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId ?? undefined,
+            pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson ?? undefined,
+            pricedAt: (lineItem as any).pricedAt ?? undefined,
         };
         const [created] = await this.dbInstance.insert(orderLineItems).values(lineItemInsert).returning();
         return created;

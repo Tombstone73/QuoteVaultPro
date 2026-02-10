@@ -2138,6 +2138,7 @@ export const orderLineItems = pgTable("order_line_items", {
   // PBV2 pricing snapshot fields (migration 0023 - nullable for backward compat with existing orders)
   pbv2TreeVersionId: varchar("pbv2_tree_version_id").references(() => pbv2TreeVersions.id, { onDelete: 'restrict' }),
   pbv2SnapshotJson: jsonb("pbv2_snapshot_json").$type<Record<string, any>>(),
+  pricedAt: timestamp("priced_at", { withTimezone: true }), // When this line item was last priced (Phase 5)
   productType: varchar("product_type", { length: 50 }).notNull().default('wide_roll'),
   description: text("description").notNull(), // Snapshot of what we sold
   width: decimal("width", { precision: 10, scale: 2 }),
