@@ -1,0 +1,130 @@
+  app.post("/api/quotes/calculate", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      
+      // Import PricingService for PBV2-only pricing
+      const { priceLineItem } = await import("./services/pricing/PricingService");
+      
+      // Extract request fields
+      const {
+        productId,
+        variantId,
+        width,
+        height,
+        quantity,
+        optionSelectionsJson, // PBV2 selections
+        pbv2TreeVersionIdOverride, // Optional: specific tree version to use
+      } = req.body;
+
+      // Validation: required fields
+      if (!productId) {
+        return res.status(400).json({ message: "productId is required" });
+      }
+      if (!quantity || quantity <= 0) {
+        return res.status(400).json({ message: "quantity must be a positive number" });
+      }
+
+      // Validation: dimensions (required for most products)
+      if (width == null || height == null) {
+        return res.status(400).json({ message: "width and height are required" });
+      }
+      if (width <= 0 || height <= 0) {
+        return res.status(400).json({ message: "width and height must be positive" });
+      }
+
+      // Parse PBV2 selections from JSON string or use directly
+      let pbv2ExplicitSelections: Record<string, any> = {};
+      if (optionSelectionsJson) {
+        try {
+          pbv2ExplicitSelections = typeof optionSelectionsJson === 'string' 
+            ? JSON.parse(optionSelectionsJson) 
+            : optionSelectionsJson;
+        } catch (parseError) {
+          return res.status(400).json({ 
+            message: "Invalid optionSelectionsJson format",
+            error: (parseError as Error).message 
+          });
+        }
+      }
+
+      // Validate selections structure (must be Record<string, any>)
+      if (typeof pbv2ExplicitSelections !== 'object' || Array.isArray(pbv2ExplicitSelections)) {
+        return res.status(400).json({ 
+          message: "optionSelectionsJson must be an object mapping optionId -> selection" 
+        });
+      }
+
+      // Load product to validate PBV2-ready
+      const [product] = await db
+        .select()
+        .from(products)
+        .where(
+          and(
+            eq(products.id, productId),
+            eq(products.organizationId, organizationId)
+          )
+        )
+        .limit(1);
+
+      if (!product) {
+        return res.status(404).json({ message: "Product not found" });
+      }
+
+      if (!product.pbv2ActiveTreeVersionId && !pbv2TreeVersionIdOverride) {
+        return res.status(400).json({ 
+          message: "Product does not have PBV2 pricing configured (missing pbv2ActiveTreeVersionId)" 
+        });
+      }
+
+      // Call unified PricingService
+      const pricingResult = await priceLineItem({
+        organizationId,
+        productId,
+        quantity,
+        widthIn: width,
+        heightIn: height,
+        pbv2ExplicitSelections,
+        pbv2TreeVersionIdOverride,
+      });
+
+      // Load variant info (display-only, not used for pricing)
+      let variant = null;
+      if (variantId) {
+        const variants = await storage.getProductVariants(productId);
+        variant = variants.find(v => v.id === variantId) ?? null;
+      }
+
+      // Format response (convert cents to dollars for legacy compatibility)
+      res.json({
+        success: true,
+        linePrice: pricingResult.lineTotalCents / 100,
+        priceBreakdown: {
+          basePriceCents: pricingResult.breakdown.baseCents,
+          optionsPriceCents: pricingResult.breakdown.optionsCents,
+          lineTotalCents: pricingResult.lineTotalCents,
+          basePrice: pricingResult.breakdown.baseCents / 100,
+          optionsPrice: pricingResult.breakdown.optionsCents / 100,
+          total: pricingResult.lineTotalCents / 100,
+        },
+        // PBV2 snapshot fields (for storage in quote/order line items)
+        pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
+        pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
+        product: {
+          id: product.id,
+          name: product.name,
+          pbv2ActiveTreeVersionId: product.pbv2ActiveTreeVersionId,
+        },
+        variant: variant ? {
+          id: variant.id,
+          name: variant.name,
+        } : null,
+      });
+    } catch (error) {
+      console.error("Error calculating price:", error);
+      console.error("Request body:", JSON.stringify(req.body, null, 2));
+      console.error("Stack:", (error as Error).stack);
+      res.status(500).json({ message: "Failed to calculate price", error: (error as Error).message });
+    }
+  });
+
