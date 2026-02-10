@@ -1065,7 +1065,16 @@ export default function PBV2ProductBuilderSectionV2({
       toast({ title: "Published successfully" });
       setHasLocalChanges(false);
       setConfirmOpen(false);
+      
+      // Refetch tree versions to get updated status
       await treeQuery.refetch();
+      
+      // CRITICAL: Invalidate products query so pbv2ActiveTreeVersionId is current
+      // This ensures add-item flows see the active tree and don't get 400 errors
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      if (productId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/products", productId] });
+      }
     } catch (error: any) {
       toast({ title: "Publish failed", description: error.message, variant: "destructive" });
     }
