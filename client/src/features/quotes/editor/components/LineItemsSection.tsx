@@ -636,6 +636,7 @@ export function LineItemsSection({
           : { selectedOptions: optionSelections }),
         customerId,
         quoteId,
+        debugSource: "LineItemsSection",
       })
         .then((r) => r.json())
         .then((data) => {

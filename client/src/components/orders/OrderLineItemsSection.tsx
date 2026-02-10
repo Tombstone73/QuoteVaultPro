@@ -770,6 +770,7 @@ export function OrderLineItemsSection({
           ? { optionSelectionsJson: optionSelectionsV2 }
           : { selectedOptions: optionSelections }),
         customerId,
+        debugSource: "OrderLineItemsSection.debounced",
       })
         .then((r) => r.json())
         .then((data) => {
@@ -1468,6 +1469,7 @@ export function OrderLineItemsSection({
                                           height: heightForCalc,
                                           quantity: nextQtyInt,
                                           customerId,
+                                          debugSource: "OrderLineItemsSection.qtyChange",
                                         };
                                         
                                         // Add options in correct format (PBV2 vs legacy)

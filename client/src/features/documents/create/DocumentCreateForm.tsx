@@ -214,6 +214,7 @@ export function DocumentCreateForm({
         width: widthNum,
         height: heightNum,
         quantity: quantityNum,
+        debugSource: "DocumentCreateForm",
       };
 
       if (isPbv2) {

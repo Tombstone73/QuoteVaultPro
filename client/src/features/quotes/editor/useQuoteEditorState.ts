@@ -1061,6 +1061,7 @@ export function useQuoteEditorState() {
                 quantity: quantityNum,
                 customerId: selectedCustomerId,
                 quoteId,
+                debugSource: "useQuoteEditorState.calculate",
             };
 
             if (isPbv2) {
@@ -1139,6 +1140,7 @@ export function useQuoteEditorState() {
                         quantity: li.quantity,
                         customerId: nextCustomerId,
                         quoteId,
+                        debugSource: "useQuoteEditorState.repricing",
                     };
 
                     if (isPbv2) {

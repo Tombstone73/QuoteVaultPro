@@ -221,6 +221,7 @@ export default function EditQuote() {
         width: parseFloat(lineItemWidth) || 1,
         height: parseFloat(lineItemHeight) || 1,
         quantity: parseInt(lineItemQuantity),
+        debugSource: "edit-quote",
       };
 
       if (isPbv2) {
