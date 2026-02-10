@@ -765,6 +765,9 @@ export class OrdersRepository {
             specsJson: ql.specsJson,
             selectedOptions: ql.selectedOptions,
             optionSelectionsJson: (ql as any).optionSelectionsJson ?? null,
+            // PBV2 snapshot fields (copied from quote line item)
+            pbv2TreeVersionId: (ql as any).pbv2TreeVersionId ?? null,
+            pbv2SnapshotJson: (ql as any).pbv2SnapshotJson ?? null,
             nestingConfigSnapshot: null,
             requiresInventory: false,
             materialId: null,

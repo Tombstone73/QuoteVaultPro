@@ -169,6 +169,41 @@
       "when": 0,
       "tag": "0031_prepress_findings_and_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 0,
+      "tag": "0032_user_invite_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 0,
+      "tag": "0033_add_password_hash",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 0,
+      "tag": "0034_auth_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 0,
+      "tag": "0035_password_reset_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 0,
+      "tag": "0036_pbv2_quote_line_items",
+      "breakpoints": true
     }
   ]
 }
