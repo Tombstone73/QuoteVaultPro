@@ -3853,7 +3853,7 @@ export async function registerOrderRoutes(
             if (!order) return res.status(404).json({ message: "Order not found" });
 
             // Server-authoritative pricing using PricingService
-            const { priceLineItem } = await import("../../services/pricing/PricingService");
+            const { priceLineItem } = await import("../services/pricing/PricingService");
             
             const pricingResult = await priceLineItem({
                 organizationId,
@@ -3923,7 +3923,7 @@ export async function registerOrderRoutes(
 
             if (pricingFieldsChanged) {
                 // Reprice using PricingService
-                const { priceLineItem } = await import("../../services/pricing/PricingService");
+                const { priceLineItem } = await import("../services/pricing/PricingService");
                 
                 const pricingResult = await priceLineItem({
                     organizationId,

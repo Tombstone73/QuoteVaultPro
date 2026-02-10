@@ -1043,6 +1043,22 @@ export default function PBV2ProductBuilderSectionV2({
       const json = (await readJsonSafe(res)) as any;
 
       if (!res.ok) {
+        // Phase 6: Check for base pricing error and provide actionable guidance
+        const errorCode = json?.findings?.[0]?.code;
+        if (errorCode === 'PBV2_E_BASE_PRICE_MISSING') {
+          toast({ 
+            title: "Base pricing required", 
+            description: "Please configure at least one base pricing field ($/sqft, $/piece, or minimum charge) in the Base Pricing section below before publishing.",
+            variant: "destructive",
+            duration: 8000,
+          });
+          // Auto-scroll to Base Pricing section if available
+          const basePricingSection = document.querySelector('[data-section="base-pricing"]');
+          if (basePricingSection) {
+            basePricingSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+          return;
+        }
         throw new Error(envelopeMessage(res.status, json, "Publish failed"));
       }
 
