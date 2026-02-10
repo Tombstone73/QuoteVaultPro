@@ -338,7 +338,7 @@ export const ProductForm = ({
       <Separator className="bg-slate-700/60 my-0" />
 
       {/* Section 3: Base Pricing Model (left) + Advanced Settings (right) */}
-      <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4">
+      <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4" data-section="base-pricing">
         <div className="grid grid-cols-2 gap-6">
         {/* LEFT: Base Pricing Model */}
         <div>

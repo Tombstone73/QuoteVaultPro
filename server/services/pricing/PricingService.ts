@@ -96,8 +96,12 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   // Step 3: Load tree version
   const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
 
-  // Step 4: Extract base price from tree
-  const basePriceCents = extractBasePrice(treeVersion.treeJson);
+  // Step 4: Calculate base price from tree metadata with dimensions/quantity
+  const basePriceCents = calculateBasePrice(treeVersion.treeJson, {
+    widthIn: widthIn ?? 0,
+    heightIn: heightIn ?? 0,
+    quantity,
+  });
 
   // Step 5: Evaluate PBV2 options
   const evalResult = await evaluateOptionTreeV2({
@@ -219,29 +223,111 @@ async function loadTreeVersion(organizationId: string, treeVersionId: string) {
 }
 
 /**
- * Extract base price from PBV2 tree root node
+ * Calculate base price from PBV2 tree metadata with tier-based pricing
  * 
- * PBV2 trees store base price in root node's priceConfig:
- * { nodes: { root: { priceConfig: { basePrice: 100 } } } }
+ * PBV2 trees store base price in meta.pricingV2.base with optional qtyTiers and sqftTiers:
+ * {
+ *   meta: {
+ *     pricingV2: {
+ *       base: { perSqftCents, perPieceCents, minimumChargeCents },
+ *       qtyTiers: [{ minQty, perSqftCents?, perPieceCents?, minimumChargeCents? }, ...],
+ *       sqftTiers: [{ minSqft, perSqftCents?, perPieceCents?, minimumChargeCents? }, ...]
+ *     }
+ *   }
+ * }
+ * 
+ * This mirrors computeBasePriceFromPricingV2 in shared/pbv2/pricingAdapter.ts
  */
-function extractBasePrice(tree: any): number {
-  // Find root node (node with no parent or id === 'root')
-  const rootNode = tree.nodes?.['root'] 
-    || Object.values(tree.nodes || {}).find((node: any) => !node.parentId);
-
-  if (!rootNode) {
-    throw new Error('PBV2 tree has no root node');
-  }
-
-  const priceConfig = (rootNode as any).priceConfig;
-  if (!priceConfig || typeof priceConfig.basePrice !== 'number') {
+function calculateBasePrice(
+  tree: any,
+  context: { widthIn: number; heightIn: number; quantity: number }
+): number {
+  const meta = tree?.meta;
+  if (!meta || typeof meta !== 'object') {
     throw new Error(
-      'PBV2 tree root node must have priceConfig.basePrice defined'
+      'PBV2 tree metadata missing. Base pricing configuration required.'
     );
   }
 
-  // basePrice in tree is in dollars, convert to cents
-  return Math.round(priceConfig.basePrice * 100);
+  const pricingV2 = (meta as any).pricingV2;
+  if (!pricingV2 || typeof pricingV2 !== 'object') {
+    throw new Error(
+      'PBV2 tree base pricing (meta.pricingV2) not configured. Configure base pricing before using this product.'
+    );
+  }
+
+  const base = pricingV2.base;
+  if (!base || typeof base !== 'object') {
+    throw new Error(
+      'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
+    );
+  }
+
+  const qtyTiers = Array.isArray(pricingV2.qtyTiers) ? pricingV2.qtyTiers : [];
+  const sqftTiers = Array.isArray(pricingV2.sqftTiers) ? pricingV2.sqftTiers : [];
+
+  // Start with base rates
+  let perSqftCents = typeof base.perSqftCents === 'number' ? base.perSqftCents : 0;
+  let perPieceCents = typeof base.perPieceCents === 'number' ? base.perPieceCents : 0;
+  let minimumChargeCents = typeof base.minimumChargeCents === 'number' ? base.minimumChargeCents : 0;
+
+  // Validate at least one pricing field is non-zero
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
+    throw new Error(
+      'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
+    );
+  }
+
+  const { widthIn, heightIn, quantity } = context;
+  const sqft = widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0;
+
+  // Apply best-match qtyTier (highest minQty <= quantity)
+  let bestQtyTier: any = null;
+  for (const tier of qtyTiers) {
+    if (!tier || typeof tier !== 'object') continue;
+    const minQty = typeof tier.minQty === 'number' ? tier.minQty : 0;
+    if (minQty <= quantity) {
+      if (!bestQtyTier || minQty > (bestQtyTier.minQty || 0)) {
+        bestQtyTier = tier;
+      }
+    }
+  }
+
+  if (bestQtyTier) {
+    if (typeof bestQtyTier.perSqftCents === 'number') perSqftCents = bestQtyTier.perSqftCents;
+    if (typeof bestQtyTier.perPieceCents === 'number') perPieceCents = bestQtyTier.perPieceCents;
+    if (typeof bestQtyTier.minimumChargeCents === 'number') minimumChargeCents = bestQtyTier.minimumChargeCents;
+  }
+
+  // Apply best-match sqftTier (highest minSqft <= sqft)
+  let bestSqftTier: any = null;
+  for (const tier of sqftTiers) {
+    if (!tier || typeof tier !== 'object') continue;
+    const minSqft = typeof tier.minSqft === 'number' ? tier.minSqft : 0;
+    if (minSqft <= sqft) {
+      if (!bestSqftTier || minSqft > (bestSqftTier.minSqft || 0)) {
+        bestSqftTier = tier;
+      }
+    }
+  }
+
+  if (bestSqftTier) {
+    if (typeof bestSqftTier.perSqftCents === 'number') perSqftCents = bestSqftTier.perSqftCents;
+    if (typeof bestSqftTier.perPieceCents === 'number') perPieceCents = bestSqftTier.perPieceCents;
+    if (typeof bestSqftTier.minimumChargeCents === 'number') minimumChargeCents = bestSqftTier.minimumChargeCents;
+  }
+
+  // Compute total
+  const sqftComponent = perSqftCents * sqft;
+  const pieceComponent = perPieceCents * quantity;
+  let total = sqftComponent + pieceComponent;
+
+  // Apply minimum charge
+  if (minimumChargeCents > 0 && total < minimumChargeCents) {
+    total = minimumChargeCents;
+  }
+
+  return Math.round(total);
 }
 
 // ============================================================================

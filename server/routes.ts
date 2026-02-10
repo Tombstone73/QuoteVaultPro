@@ -2097,6 +2097,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(409).json({ success: false, message: "Only DRAFT tree versions can be published" });
       }
 
+      // PHASE 6 GUARDRAIL: Validate base pricing is configured
+      const { validateTreeHasBasePrice } = await import("../shared/pbv2/validator/validateBasePrice");
+      const basePriceValidation = validateTreeHasBasePrice((draft as any).treeJson as any);
+      if (basePriceValidation.errors.length > 0) {
+        console.warn(`[PBV2_ACTIVATION_BLOCKED] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} reason=missing_base_price`);
+        return res.status(400).json({
+          success: false,
+          message: "PBV2 tree requires base pricing configuration before activation",
+          error: "Base pricing must be configured in the Base Pricing section. Set at least one of: $/sqft, $/piece, or minimum charge.",
+          findings: basePriceValidation.findings,
+        });
+      }
+
       // Validate publish gate (Appendix 5)
       const validation = validateTreeForPublish((draft as any).treeJson as any, DEFAULT_VALIDATE_OPTS);
       if (validation.errors.length > 0) {
