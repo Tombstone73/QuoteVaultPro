@@ -1,4 +1,4 @@
-﻿import type { Express } from "express";
+import type { Express } from "express";
 import { createServer, type Server } from "http";
 import path from "path";
 import { promises as fsPromises } from "fs";
@@ -569,9 +569,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   }
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // Quote Workflow (enterprise rule): Formal state machine enforcement
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
 
   /**
    * Get effective workflow state for a quote
@@ -1071,7 +1071,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 </p>
                 
                 <p style="color: #ef4444; font-weight: bold;">
-                  âš ï¸ You will be prompted to set a new password after logging in.
+                  ⚠️ You will be prompted to set a new password after logging in.
                 </p>
                 
                 <p style="color: #6b7280; font-size: 14px; margin-top: 24px;">
@@ -1188,7 +1188,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 </p>
                 
                 <p style="color: #ef4444; font-weight: bold;">
-                  âš ï¸ You will be prompted to set a new password after logging in.
+                  ⚠️ You will be prompted to set a new password after logging in.
                 </p>
               </div>
             `,
@@ -1544,10 +1544,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ──────────────────────────────────────────────────────────────────────────
   // Object storage routes moved to ./routes/attachments.routes.ts
   // (GET /objects/:objectPath, POST /api/objects/upload, POST /api/objects/acl)
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ──────────────────────────────────────────────────────────────────────────
 
   app.get("/api/media", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
@@ -1938,7 +1938,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // DEFENSIVE: Warn if rootNodeIds is empty but nodes exist (should be fixed client-side)
       if (nodeCount > 0 && rootCountBefore === 0) {
-        console.warn('[PBV2_DRAFT_PUT] âš ï¸ rootNodeIds is empty but tree has nodes - client should call ensureRootNodeIds', {
+        console.warn('[PBV2_DRAFT_PUT] ⚠️ rootNodeIds is empty but tree has nodes - client should call ensureRootNodeIds', {
           nodeCount,
           edgeCount,
           schemaVersion,
@@ -3132,118 +3132,1165 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      
-      // Import PricingService for PBV2-only pricing
-      const { priceLineItem } = await import("./services/pricing/PricingService");
-      
-      // Extract request fields
+      const { evaluateOptionTreeV2, isZodError } = await import("./services/optionTreeV2Evaluator");
+      const { validateOptionTreeV2 } = await import("../shared/optionTreeV2");
       const {
         productId,
         variantId,
         width,
         height,
         quantity,
-        optionSelectionsJson, // PBV2 selections
-        pbv2TreeVersionIdOverride, // Optional: specific tree version to use
+        selectedOptions: selectedOptionsRaw = {},
+        optionSelectionsJson,
+        productDraft,
+        customerTier,
+        customerId: customerIdRaw,
+        quoteId,
       } = req.body;
 
-      // Validation: required fields
-      if (!productId) {
-        return res.status(400).json({ message: "productId is required" });
-      }
-      if (!quantity || quantity <= 0) {
-        return res.status(400).json({ message: "quantity must be a positive number" });
+      type PricingTier = "default" | "wholesale" | "retail";
+      const parseOptionalNumber = (value: any): number | null => {
+        if (value === null || value === undefined) return null;
+        const num = typeof value === "number" ? value : parseFloat(String(value));
+        return Number.isFinite(num) ? num : null;
+      };
+
+      const normalizeSelectedOptions = (input: any): Record<string, any> => {
+        if (!input) return {};
+        if (Array.isArray(input)) {
+          const out: Record<string, any> = {};
+          for (const opt of input) {
+            if (!opt || typeof opt !== "object") continue;
+            const optionId = String((opt as any).optionId ?? "");
+            if (!optionId) continue;
+            const value = (opt as any).value;
+            const selection: any = typeof value === "object" && value !== null ? value : { value };
+            if (typeof (opt as any).note === "string") selection.note = (opt as any).note;
+            if (typeof (opt as any).grommetsLocation === "string") selection.grommetsLocation = (opt as any).grommetsLocation;
+            if (typeof (opt as any).customPlacementNote === "string") selection.customPlacementNote = (opt as any).customPlacementNote;
+            if (typeof (opt as any).hemsType === "string") selection.hemsType = (opt as any).hemsType;
+            if (typeof (opt as any).polePocket === "string") selection.polePocket = (opt as any).polePocket;
+            if (typeof (opt as any).grommetsSpacingCount === "number") selection.grommetsSpacingCount = (opt as any).grommetsSpacingCount;
+            if (typeof (opt as any).grommetsPerSign === "number") selection.grommetsPerSign = (opt as any).grommetsPerSign;
+            if (typeof (opt as any).grommetsSpacingInches === "number") selection.grommetsSpacingInches = (opt as any).grommetsSpacingInches;
+            out[optionId] = selection;
+          }
+          return out;
+        }
+        if (typeof input === "object") return input as Record<string, any>;
+        return {};
+      };
+
+      const selectedOptions = normalizeSelectedOptions(selectedOptionsRaw);
+
+      const resolveMaterialPricePerSqft = (material: any, tier: PricingTier): number | null => {
+        if (!material) return null;
+        const unit = String(material.unitOfMeasure || "").toLowerCase();
+        if (unit !== "sqft") return null;
+
+        const retail = parseOptionalNumber(material.retailBaseRate);
+        const wholesale = parseOptionalNumber(material.wholesaleBaseRate);
+        const base = parseOptionalNumber(material.costPerUnit);
+
+        let chosen: number | null = null;
+        if (tier === "wholesale") chosen = wholesale ?? retail ?? base;
+        else if (tier === "retail") chosen = retail ?? wholesale ?? base;
+        else chosen = retail ?? wholesale ?? base;
+
+        if (!chosen || !Number.isFinite(chosen) || chosen <= 0) return null;
+        return chosen;
+      };
+
+      const hasInlineDraft = !!productDraft && typeof productDraft === "object";
+      if ((!productId && !hasInlineDraft) || width == null || height == null || quantity == null) {
+        return res.status(400).json({ message: "Missing required fields" });
       }
 
-      // Validation: dimensions (required for most products)
-      if (width == null || height == null) {
-        return res.status(400).json({ message: "width and height are required" });
-      }
-      if (width <= 0 || height <= 0) {
-        return res.status(400).json({ message: "width and height must be positive" });
+      const mergeDefined = <T extends Record<string, any>>(base: T, patch: any): T => {
+        if (!patch || typeof patch !== "object") return base;
+        const out: any = { ...base };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === undefined) continue;
+          out[k] = v;
+        }
+        return out as T;
+      };
+
+      let product: any = null;
+      if (productId) {
+        product = await storage.getProductById(organizationId, productId);
+        if (!product) {
+          return res.status(404).json({ message: "Product not found" });
+        }
+        // If caller provides a draft overlay (Product Builder), simulate against draft values.
+        if (productDraft && typeof productDraft === "object") {
+          product = mergeDefined(product, productDraft);
+        }
+      } else {
+        // Draft-only simulation (new/unsaved product in Product Builder)
+        product = mergeDefined(
+          {
+            id: "draft",
+            name: "Draft Product",
+            pricingProfileKey: "default",
+            pricingProfileConfig: null,
+            pricingFormulaId: null,
+            pricingFormula: "",
+            primaryMaterialId: null,
+            useNestingCalculator: false,
+            sheetWidth: null,
+            sheetHeight: null,
+            materialType: "sheet",
+            minPricePerItem: null,
+            optionsJson: [],
+          } as any,
+          productDraft
+        );
       }
 
-      // Parse PBV2 selections from JSON string or use directly
-      let pbv2ExplicitSelections: Record<string, any> = {};
-      if (optionSelectionsJson) {
+      // Optional customer tier support (for wholesale/retail pricing overrides)
+      // Server-authoritative tier resolution priority:
+      // 1) customerId (from request)
+      // 2) quoteId -> quote.customerId
+      // 3) customerTier (legacy client hint; lowest priority)
+      let effectiveTier: PricingTier = "default";
+      let tierSource: "customerId" | "quoteId" | "customerTier" | "default" = "default";
+
+      const customerId = typeof customerIdRaw === "string" && customerIdRaw.trim() ? customerIdRaw : null;
+      let effectiveCustomerId: string | null = customerId;
+
+      if (!effectiveCustomerId && typeof quoteId === "string" && quoteId.trim()) {
         try {
-          pbv2ExplicitSelections = typeof optionSelectionsJson === 'string' 
-            ? JSON.parse(optionSelectionsJson) 
-            : optionSelectionsJson;
-        } catch (parseError) {
-          return res.status(400).json({ 
-            message: "Invalid optionSelectionsJson format",
-            error: (parseError as Error).message 
-          });
+          const q = await storage.getQuoteById(organizationId, quoteId);
+          const qCustomerId = (q as any)?.customerId;
+          if (typeof qCustomerId === "string" && qCustomerId.trim()) {
+            effectiveCustomerId = qCustomerId;
+          }
+        } catch {
+          // Fail-soft: quote lookup is optional for this endpoint
         }
       }
 
-      // Validate selections structure (must be Record<string, any>)
-      if (typeof pbv2ExplicitSelections !== 'object' || Array.isArray(pbv2ExplicitSelections)) {
-        return res.status(400).json({ 
-          message: "optionSelectionsJson must be an object mapping optionId -> selection" 
-        });
+      if (effectiveCustomerId) {
+        try {
+          const customer = await storage.getCustomerById(organizationId, effectiveCustomerId);
+          const tier = customer?.pricingTier;
+          if (tier === "wholesale" || tier === "retail" || tier === "default") {
+            effectiveTier = tier;
+            tierSource = effectiveCustomerId === customerId ? "customerId" : "quoteId";
+          }
+        } catch {
+          // Fail-soft: tiered pricing is optional for this endpoint
+        }
+      } else if (customerTier === "wholesale" || customerTier === "retail" || customerTier === "default") {
+        effectiveTier = customerTier;
+        tierSource = "customerTier";
       }
 
-      // Load product to validate PBV2-ready
-      const [product] = await db
-        .select()
-        .from(products)
-        .where(
-          and(
-            eq(products.id, productId),
-            eq(products.organizationId, organizationId)
-          )
-        )
-        .limit(1);
-
-      if (!product) {
-        return res.status(404).json({ message: "Product not found" });
-      }
-
-      if (!product.pbv2ActiveTreeVersionId && !pbv2TreeVersionIdOverride) {
-        return res.status(400).json({ 
-          message: "Product does not have PBV2 pricing configured (missing pbv2ActiveTreeVersionId)" 
-        });
-      }
-
-      // Call unified PricingService
-      const pricingResult = await priceLineItem({
-        organizationId,
-        productId,
-        quantity,
-        widthIn: width,
-        heightIn: height,
-        pbv2ExplicitSelections,
-        pbv2TreeVersionIdOverride,
-      });
-
-      // Load variant info (display-only, not used for pricing)
+      // Fetch product variant if provided
       let variant = null;
-      if (variantId) {
+      let variantName = null;
+      if (variantId && productId) {
         const variants = await storage.getProductVariants(productId);
         variant = variants.find(v => v.id === variantId) ?? null;
+        if (variant) {
+          variantName = variant.name;
+        }
       }
 
-      // Format response (convert cents to dollars for legacy compatibility)
+      // Fetch all global variables for formula evaluation
+      const globalVariables = await storage.getAllGlobalVariables(organizationId);
+      const globalVarsContext: Record<string, number> = {};
+      globalVariables.forEach(v => {
+        globalVarsContext[v.name] = parseFloat(v.value);
+      });
+
+      // Coerce inputs to numbers (handles both string and number inputs)
+      const widthNum = Number(width) || 0;
+      const heightNum = Number(height) || 0;
+      const quantityNum = Number(quantity);
+
+      // Detect PBV2 products: products with optionTreeJson schemaVersion 2
+      // PBV2 products use option tree pricing exclusively, NOT material pricing
+      const optionTreeJson = (product as any)?.optionTreeJson;
+      const isPbv2Product = Boolean(
+        optionTreeJson && 
+        typeof optionTreeJson === "object" && 
+        (optionTreeJson as any)?.schemaVersion === 2
+      );
+      
+      console.log(`[PRICING DEBUG DETECT] Product: ${product.name} (${productId}), optionTree schemaVersion: ${(optionTreeJson as any)?.schemaVersion ?? 'none'}, isPbv2Product: ${isPbv2Product}`);
+      
+      if (isPbv2Product) {
+        console.log(`[PRICING DEBUG] PBV2 product detected: ${product.name}. Using option tree pricing exclusively (no material pricing).`);
+      }
+
+      // If product has a pricing formula attached, use it to override profile/config
+      let effectivePricingProfileKey = product.pricingProfileKey ?? "default";
+      let effectivePricingProfileConfig = product.pricingProfileConfig;
+      let pricingFormulaName: string | null = null;
+
+      if (product.pricingFormulaId) {
+        const pricingFormula = await storage.getPricingFormulaById(organizationId, product.pricingFormulaId);
+        if (pricingFormula) {
+          effectivePricingProfileKey = pricingFormula.pricingProfileKey ?? "default";
+          effectivePricingProfileConfig = pricingFormula.config;
+          pricingFormulaName = pricingFormula.name;
+          console.log(`[PRICING DEBUG] Using pricing formula "${pricingFormula.name}" (${pricingFormula.code}) for product ${product.name}`);
+        }
+      }
+
+      // Determine pricing profile (new system) with fallback to legacy detection
+      const pricingProfile = getProfile(effectivePricingProfileKey);
+      const requiresDimensions = profileRequiresDimensions(effectivePricingProfileKey);
+
+      // Legacy detection: if useNestingCalculator is true but pricingProfileKey is default, treat as flat_goods
+      const isLegacyNesting = product.useNestingCalculator && product.sheetWidth && product.sheetHeight && effectivePricingProfileKey === "default";
+      const useFlatGoodsCalculator = pricingProfile.key === "flat_goods" || isLegacyNesting;
+
+      // Validate dimensions only if the profile requires them
+      if (requiresDimensions || useFlatGoodsCalculator) {
+        if (!Number.isFinite(widthNum) || widthNum <= 0) {
+          return res.status(400).json({ message: "Invalid width value" });
+        }
+        if (!Number.isFinite(heightNum) || heightNum <= 0) {
+          return res.status(400).json({ message: "Invalid height value" });
+        }
+      }
+
+      // Quantity is always required
+      if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
+        return res.status(400).json({ message: "Invalid quantity value" });
+      }
+
+      // Calculate square footage (may be 0 for qty_only/fee profiles)
+      const sqft = requiresDimensions ? (widthNum * heightNum) / 144 : 0;
+
+      // ========== PBV2 EXCLUSIVE PRICING PATH ==========
+      // PBV2 products use option tree pricing exclusively, bypassing all legacy pricing
+      if (isPbv2Product) {
+        console.log(`[PRICING DEBUG PBV2 EXCLUSIVE] Starting PBV2-only pricing for ${product.name} (${productId})`);
+        
+        try {
+          const tree = (product as any).optionTreeJson;
+          if (!tree || typeof tree !== "object" || (tree as any).schemaVersion !== 2) {
+            return res.status(400).json({ message: "PBV2 product missing valid optionTreeJson" });
+          }
+
+          console.log(`[PRICING DEBUG PBV2 INPUT] optionSelectionsJson:`, JSON.stringify(optionSelectionsJson, null, 2));
+          console.log(`[PRICING DEBUG PBV2 INPUT] width: ${widthNum}, height: ${heightNum}, quantity: ${quantityNum}`);
+
+          const graph = validateOptionTreeV2(tree);
+          if (!graph.ok) {
+            return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: graph.errors });
+          }
+
+          // PBV2 basePrice comes from product config or defaults to 0
+          const basePrice = Number(product.basePrice ?? 0);
+          
+          const v2 = evaluateOptionTreeV2({
+            tree,
+            selections: optionSelectionsJson ?? { schemaVersion: 2, selected: {} },
+            width: widthNum,
+            height: heightNum,
+            quantity: quantityNum,
+            basePrice,
+          });
+
+          console.log(`[PRICING DEBUG PBV2 OUTPUT] basePrice: ${basePrice}, optionsPrice: ${v2.optionsPrice}, selectedOptions count: ${v2.selectedOptions?.length ?? 0}`);
+
+          const subtotal = basePrice + v2.optionsPrice;
+          const total = subtotal;
+
+          // Validate total
+          if (!Number.isFinite(total)) {
+            console.error("PBV2 pricing produced invalid result:", total);
+            return res.status(400).json({ message: "PBV2 pricing calculation produced an invalid result" });
+          }
+
+          console.log(`[PRICING DEBUG PBV2 RESPONSE] Total: ${total}, formula: null, materialUsages: []`);
+
+          // Return PBV2 response (no formula, no materialUsages)
+          return res.json({
+            price: total,
+            breakdown: {
+              basePrice,
+              mediaSubtotal: basePrice,
+              addOnsPrice: 0,
+              optionsPrice: v2.optionsPrice,
+              subtotal,
+              priceBreakDiscount: 0,
+              priceBreakInfo: undefined,
+              total,
+              formula: null, // PBV2 products do not use formulas
+              selectedOptions: v2.selectedOptions ?? [],
+              variantInfo: variantName || undefined,
+              nestingDetails: undefined,
+              materialUsages: [], // PBV2 products do not track material usages via sell pricing
+            },
+            variant: variant ? {
+              id: variant.id,
+              name: variant.name,
+            } : undefined,
+          });
+        } catch (error) {
+          if (isZodError(error)) {
+            return res.status(400).json({ message: "Invalid optionTreeJson/optionSelectionsJson (v2)", errors: error.errors });
+          }
+          const details = (error as any)?.details;
+          if (Array.isArray(details)) {
+            return res.status(400).json({ message: "Invalid optionTreeJson (v2)", errors: details });
+          }
+          console.error("[PBV2 PRICING ERROR]", error);
+          return res.status(400).json({ message: (error as Error)?.message || "Failed to evaluate PBV2 pricing" });
+        }
+      }
+
+      // ========== LEGACY PRICING PATH (non-PBV2 products only) ==========
+      console.log(`[PRICING DEBUG LEGACY] Starting legacy pricing for ${product.name} (${productId})`);
+
+      // Build formula context with dimensions, quantity, variant base price, material pricing, and global variables
+      const basePricePerSqft = variant ? parseFloat(variant.basePricePerSqft) : 0;
+
+      // Resolve p (price per sqft) from Primary Material when available; fall back to variant base price.
+      // PBV2 products skip material pricing entirely - they use option tree pricing
+      let primaryMaterial: any = null;
+      let materialPricePerSqft: number | null = null;
+      let resolvedPricePerSqft: number | null = null;
+      
+      if (!isPbv2Product) {
+        if (product.primaryMaterialId) {
+          try {
+            primaryMaterial = await storage.getMaterialById(organizationId, product.primaryMaterialId);
+          } catch {
+            primaryMaterial = null;
+          }
+        }
+        materialPricePerSqft = resolveMaterialPricePerSqft(primaryMaterial, effectiveTier);
+        resolvedPricePerSqft = materialPricePerSqft ?? (Number.isFinite(basePricePerSqft) && basePricePerSqft > 0 ? basePricePerSqft : null);
+      }
+
+      const formulaContext: Record<string, number> = {
+        width: widthNum,
+        height: heightNum,
+        quantity: quantityNum,
+        qty: quantityNum,
+        sqft,
+        basePricePerSqft,
+        // Single-letter aliases for convenience
+        w: widthNum,
+        h: heightNum,
+        q: quantityNum,
+        ...globalVarsContext,
+      };
+
+      // Canonical pricing variable aliases
+      if (resolvedPricePerSqft !== null) {
+        formulaContext.p = resolvedPricePerSqft;
+        formulaContext.pricePerSqft = resolvedPricePerSqft;
+        formulaContext.unitPrice = resolvedPricePerSqft;
+        formulaContext.price = resolvedPricePerSqft;
+      }
+
+      if (process.env.NODE_ENV === "development") {
+        console.log("[FORMULA CONTEXT]", {
+          productId,
+          variantId: variantId ?? null,
+          tier: effectiveTier,
+          tierSource,
+          customerId: effectiveCustomerId,
+          materialId: product.primaryMaterialId ?? null,
+          resolvedPricePerSqft,
+          ctxKeys: Object.keys(formulaContext).sort(),
+        });
+      }
+
+      // Initialize calculation context for cross-option communication
+      let calculationContext: Record<string, any> = {};
+
+      // Calculate base price using nesting calculator or formula
+      let basePrice = 0;
+      let nestingDetails: any = undefined;
+      let effectiveMaterial: any = null; // Material from thickness selector, if any
+
+      console.log(`[PRICING DEBUG] Product: ${product.name}, pricingProfile: ${pricingProfile.key}, useFlatGoods: ${useFlatGoodsCalculator}${pricingFormulaName ? `, formula: ${pricingFormulaName}` : ''}`);
+
+      if (useFlatGoodsCalculator) {
+        // Use Flat Goods Calculator (flat goods profile or legacy nesting)
+        console.log(`[PRICING DEBUG] Using Flat Goods Calculator for product ${product.name}`);
+        try {
+          // Build input from profile config with legacy fallbacks
+          const profileConfig = effectivePricingProfileConfig as FlatGoodsConfig | null;
+
+          // PRE-PROCESSING: Check for thickness selector to override material
+          const productOptionsJson = ((product.optionsJson as unknown) as PricingOptionJson[]) || [];
+          let thicknessMultiplier = 1.0;
+          let thicknessVolumePricing: any = null;
+
+          for (const optionJson of productOptionsJson) {
+            if (optionJson.config?.kind === "thickness") {
+              const selectedThicknessKey = selectedOptions[optionJson.id];
+              if (selectedThicknessKey && optionJson.config.thicknessVariants) {
+                const selectedVariant = optionJson.config.thicknessVariants.find(
+                  (v: any) => v.key === selectedThicknessKey
+                );
+                if (selectedVariant && selectedVariant.materialId) {
+                  // Fetch material from database
+                  effectiveMaterial = await storage.getMaterialById(organizationId, selectedVariant.materialId);
+                  console.log(`[PRICING DEBUG] Thickness selector: using material ${effectiveMaterial?.name} for ${selectedThicknessKey}`);
+
+                  if (selectedVariant.pricingMode === "multiplier") {
+                    thicknessMultiplier = selectedVariant.priceMultiplier || 1.0;
+                  } else if (selectedVariant.pricingMode === "volume" && selectedVariant.volumeTiers) {
+                    // NestingCalculator expects: { enabled: true, tiers: [{ minSheets, maxSheets, pricePerSheet }] }
+                    thicknessVolumePricing = {
+                      enabled: true,
+                      tiers: selectedVariant.volumeTiers.map((tier: any) => ({
+                        minSheets: tier.minSheets,
+                        maxSheets: tier.maxSheets || null,
+                        pricePerSheet: parseFloat(tier.pricePerSheet) || 0
+                      }))
+                    };
+                  }
+                  break;
+                }
+              }
+            }
+          }
+
+          // Build base flatGoodsInput (will override with material if loaded)
+          const flatGoodsInput = buildFlatGoodsInput(
+            profileConfig,
+            product,
+            variant ?? null,
+            widthNum,
+            heightNum,
+            quantityNum
+          );
+
+          // If thickness selector provided a material, override sheet dimensions and cost
+          if (effectiveMaterial) {
+            // Check if this is a roll material
+            if (effectiveMaterial.type === "roll") {
+              // Roll material handling
+              const rollWidthIn = parseFloat(effectiveMaterial.width) || 0;
+              const rollLengthFt = parseFloat(effectiveMaterial.rollLengthFt) || 0;
+              const costPerRoll = parseFloat(effectiveMaterial.costPerRoll) || 0;
+              const edgeWasteInPerSide = parseFloat(effectiveMaterial.edgeWasteInPerSide) || 0;
+              const leadWasteFt = parseFloat(effectiveMaterial.leadWasteFt) || 0;
+              const tailWasteFt = parseFloat(effectiveMaterial.tailWasteFt) || 0;
+
+              // Set roll material configuration for the flat goods calculator
+              flatGoodsInput.rollMaterial = {
+                rollWidthIn,
+                rollLengthFt,
+                costPerRoll,
+                edgeWasteInPerSide,
+                leadWasteFt,
+                tailWasteFt,
+              };
+
+              // Set material type to roll
+              flatGoodsInput.materialType = "roll";
+
+              // Use roll width as sheet width (for compatibility with existing code)
+              flatGoodsInput.sheetWidth = rollWidthIn;
+              flatGoodsInput.sheetHeight = 0; // Rolls have no fixed height
+
+              // Calculate and set costPerSqft based on usable sqft
+              const usableWidthIn = Math.max(0, rollWidthIn - 2 * edgeWasteInPerSide);
+              const usableLengthFt = Math.max(0, rollLengthFt - leadWasteFt - tailWasteFt);
+              const usableSqftPerRoll = (usableWidthIn / 12) * usableLengthFt;
+
+              if (usableSqftPerRoll > 0 && costPerRoll > 0) {
+                flatGoodsInput.basePricePerSqft = costPerRoll / usableSqftPerRoll;
+                flatGoodsInput.rollMaterial.costPerSqft = flatGoodsInput.basePricePerSqft;
+              }
+
+              console.log(`[PRICING DEBUG] Roll material override: ${rollWidthIn}" x ${rollLengthFt}', edge waste: ${edgeWasteInPerSide}"/side, usable: ${usableWidthIn}" x ${usableLengthFt}', $/sqft: ${flatGoodsInput.basePricePerSqft.toFixed(4)}`);
+            } else {
+              // Sheet material handling (existing logic)
+              flatGoodsInput.sheetWidth = parseFloat(effectiveMaterial.width) || flatGoodsInput.sheetWidth;
+              flatGoodsInput.sheetHeight = parseFloat(effectiveMaterial.height) || flatGoodsInput.sheetHeight;
+              // Material cost per unit (assuming unit = sheet for flat goods)
+              const materialCostPerSheet = parseFloat(effectiveMaterial.costPerUnit) || 0;
+              // Calculate price per sqft from material cost
+              const sheetSqft = (flatGoodsInput.sheetWidth * flatGoodsInput.sheetHeight) / 144;
+              if (sheetSqft > 0) {
+                flatGoodsInput.basePricePerSqft = materialCostPerSheet / sheetSqft;
+              }
+              console.log(`[PRICING DEBUG] Sheet material override: ${flatGoodsInput.sheetWidth}×${flatGoodsInput.sheetHeight}, cost/sheet: ${materialCostPerSheet}, $/sqft: ${flatGoodsInput.basePricePerSqft}`);
+            }
+          }
+
+          // Apply thickness-based pricing if multiplier mode (no material override)
+          if (!effectiveMaterial && thicknessMultiplier !== 1.0) {
+            flatGoodsInput.basePricePerSqft *= thicknessMultiplier;
+            console.log(`[PRICING DEBUG] Thickness multiplier: ${thicknessMultiplier}x applied to base price`);
+          }
+
+          // Apply thickness volume pricing if volume mode
+          if (thicknessVolumePricing) {
+            flatGoodsInput.volumePricing = thicknessVolumePricing;
+            console.log(`[PRICING DEBUG] Thickness volume pricing: applied ${thicknessVolumePricing.tiers?.length || 0} tiers`);
+          }
+
+          // PRE-PROCESSING: Check if sides volume pricing is needed
+          // Scan selectedOptions for sides option with volume pricing mode
+          for (const optionJson of productOptionsJson) {
+            if (optionJson.config?.kind === "sides") {
+              const rawSelectedSide = selectedOptions[optionJson.id];
+              // Extract actual value from complex object if needed
+              const selectedSideValue = (typeof rawSelectedSide === 'object' && rawSelectedSide !== null && 'value' in rawSelectedSide)
+                ? rawSelectedSide.value
+                : rawSelectedSide;
+
+              if (selectedSideValue && optionJson.config.pricingMode === "volume" && optionJson.config.volumeTiers && optionJson.config.volumeTiers.length > 0) {
+                // Store context for later option processing
+                calculationContext.selectedSide = selectedSideValue;
+                calculationContext.sidesVolumeTiers = optionJson.config.volumeTiers;
+
+                // Override volumePricing in flatGoodsInput based on selected side
+                // NestingCalculator expects: { enabled: true, tiers: [{ minSheets, maxSheets, pricePerSheet }] }
+                flatGoodsInput.volumePricing = {
+                  enabled: true,
+                  tiers: optionJson.config.volumeTiers.map((tier: any) => ({
+                    minSheets: tier.minSheets,
+                    maxSheets: tier.maxSheets || null,
+                    pricePerSheet: parseFloat(selectedSideValue === "double" ? tier.doublePricePerSheet : tier.singlePricePerSheet) || 0
+                  }))
+                };
+
+                console.log(`[PRICING DEBUG] Sides volume pricing: Applied ${selectedSideValue} tiers to flatGoodsInput.volumePricing:`, JSON.stringify(flatGoodsInput.volumePricing));
+                break;
+              }
+            }
+          }
+
+          console.log(`[NESTING DEBUG] Sheet: ${flatGoodsInput.sheetWidth}×${flatGoodsInput.sheetHeight}, Material: ${flatGoodsInput.materialType}, Price/SqFt: $${flatGoodsInput.basePricePerSqft}`);
+
+          // Create nesting calculator factory for the helper
+          const createNestingCalculator = (
+            sheetWidth: number,
+            sheetHeight: number,
+            sheetCost: number,
+            minPricePerItem: number | null,
+            volumePricing: any
+          ) => new NestingCalculator(sheetWidth, sheetHeight, sheetCost, minPricePerItem, volumePricing);
+
+          // Calculate using centralized helper
+          const flatGoodsResult = flatGoodsCalculator(flatGoodsInput, createNestingCalculator);
+
+          // Check for errors
+          if (flatGoodsResult.error) {
+            return res.status(400).json({ message: flatGoodsResult.error });
+          }
+
+          basePrice = flatGoodsResult.totalPrice;
+          nestingDetails = flatGoodsResult.nestingDetails;
+
+          // Validate base price is a finite number
+          if (!Number.isFinite(basePrice)) {
+            console.error("Flat goods calculator produced invalid result:", basePrice);
+            return res.status(400).json({ message: "Flat goods calculation produced an invalid result" });
+          }
+        } catch (error) {
+          console.error("Error in flat goods calculator:", error);
+          return res.status(400).json({ message: "Flat goods calculation failed" });
+        }
+      } else {
+        // Use formula evaluation (default, qty_only, fee profiles)
+        console.log(`[PRICING DEBUG LEGACY BRANCH] Using Formula Evaluation for product ${product.name} (${productId}), profile: ${pricingProfile.key}`);
+        if (!product.pricingFormula) {
+          // For fee/qty_only profiles, default formula can be "q * unitPrice" or just the base price
+          if (pricingProfile.key === "fee") {
+            // Fee profiles: use variant price directly
+            basePrice = basePricePerSqft * quantityNum;
+            console.log(`[PRICING DEBUG] Fee profile - using variant price: ${basePricePerSqft} × ${quantityNum} = ${basePrice}`);
+          } else if (pricingProfile.key === "qty_only") {
+            // Quantity-only profiles: use variant price × quantity
+            basePrice = basePricePerSqft * quantityNum;
+            console.log(`[PRICING DEBUG] Qty-only profile - using variant price: ${basePricePerSqft} × ${quantityNum} = ${basePrice}`);
+          } else {
+            return res.status(400).json({ message: "Product must have either a pricing formula or nesting calculator enabled" });
+          }
+        } else {
+          try {
+            const formula = product.pricingFormula;
+            console.log(`[PRICING DEBUG] Formula: ${formula}`);
+
+            // Graceful failure: if formula references p but we cannot resolve it, return a clear error.
+            const needsP = /\b(p|pricePerSqft|unitPrice|price)\b/.test(formula);
+            if (needsP && !Object.prototype.hasOwnProperty.call(formulaContext, "p")) {
+              return res
+                .status(400)
+                .send(
+                  'Missing price per SqFt (p). Select a Primary Material with Unit "sqft" and a sell rate (retail/wholesale/base), or set a variant base price.'
+                );
+            }
+
+            if (process.env.NODE_ENV === "development") {
+              console.log("[FORMULA EVAL]", { formula, ctxKeys: Object.keys(formulaContext).sort() });
+            }
+            basePrice = evaluate(formula, formulaContext);
+
+            // Validate base price is a finite number
+            if (!Number.isFinite(basePrice)) {
+              console.error("Base pricing formula produced invalid result:", basePrice);
+              return res.status(400).json({ message: "Product pricing formula produced an invalid result" });
+            }
+          } catch (error) {
+            console.error("Error evaluating formula:", error);
+            return res.status(400).json({ message: "Invalid pricing formula" });
+          }
+        }
+      }
+
+      // Fetch product options and calculate option costs
+      // SUPPORT BOTH: old productOptions table AND new optionsJson field
+      const productOptions = productId ? await storage.getProductOptions(productId) : [];
+      const productOptionsJson = ((product.optionsJson as unknown) as PricingOptionJson[]) || [];
+
+      let optionsPrice = 0;
+      const selectedOptionsArray: Array<{
+        optionId: string;
+        optionName: string;
+        value: string | number | boolean;
+        setupCost: number;
+        calculatedCost: number;
+      }> = [];
+
+      // Build parent-child map to enforce parent toggle states
+      const parentChildMap = new Map<string, string[]>();
+      productOptions.forEach(opt => {
+        if (opt.parentOptionId) {
+          if (!parentChildMap.has(opt.parentOptionId)) {
+            parentChildMap.set(opt.parentOptionId, []);
+          }
+          parentChildMap.get(opt.parentOptionId)!.push(opt.id);
+        }
+      });
+
+      for (const optionId in selectedOptions) {
+        const option = productOptions.find(opt => opt.id === optionId);
+        if (!option || !option.isActive) continue;
+
+        const value = selectedOptions[optionId];
+
+        // Skip if toggle is false or value is null/undefined
+        if (option.type === "toggle" && !value) continue;
+        if (value === null || value === undefined) continue;
+
+        // For number type, validate that value is finite
+        if (option.type === "number") {
+          const numValue = parseFloat(value as string);
+          if (!Number.isFinite(numValue)) continue;
+        }
+
+        // Check if this option has a parent, and if so, verify parent is enabled
+        if (option.parentOptionId) {
+          const parent = productOptions.find(p => p.id === option.parentOptionId);
+          if (parent && parent.type === "toggle") {
+            const parentValue = selectedOptions[option.parentOptionId];
+            if (!parentValue) continue; // Skip child if parent toggle is off
+          }
+        }
+
+        // Parse setup cost safely with default to 0
+        const setupCost = option.setupCost ? parseFloat(option.setupCost) : 0;
+        let calculatedCost = Number.isFinite(setupCost) ? setupCost : 0;
+
+        // Evaluate price formula if provided
+        if (option.priceFormula) {
+          try {
+            let optionCost = 0;
+
+            // For select options with string values, use simple conditional parsing
+            // This is secure (no code execution) but limited to simple ternary patterns
+            if (option.type === "select" && typeof value === "string") {
+              // Parse formula pattern: value == "string" ? expr : ... : defaultExpr
+              // Extract all condition-expression pairs
+              const conditions: Array<{ compareValue: string; expression: string }> = [];
+              const pattern = /eqstr\(value,\s*"([^"]+)"\)\s*\?\s*([^:]+?)(?=\s*:\s*eqstr\(value|$)/g;
+
+              let match;
+              while ((match = pattern.exec(option.priceFormula)) !== null) {
+                conditions.push({
+                  compareValue: match[1],
+                  expression: match[2].trim()
+                });
+              }
+
+              // Find matching condition
+              let matched = false;
+              for (const condition of conditions) {
+                if (value === condition.compareValue) {
+                  optionCost = evaluate(condition.expression, formulaContext);
+                  matched = true;
+                  break;
+                }
+              }
+
+              // If no match, extract and evaluate default (after last colon)
+              if (!matched) {
+                const lastColonPos = option.priceFormula.lastIndexOf(':');
+                if (lastColonPos !== -1) {
+                  const defaultExpr = option.priceFormula.substring(lastColonPos + 1).trim();
+                  optionCost = evaluate(defaultExpr, formulaContext);
+                } else {
+                  optionCost = 0;
+                }
+              }
+            } else {
+              // For number and toggle options, evaluate with mathjs
+              optionCost = evaluate(option.priceFormula, {
+                ...formulaContext,
+                value: option.type === "number" ? parseFloat(value as string) : value,
+              });
+            }
+
+            // Validate result is a finite number
+            if (!Number.isFinite(optionCost)) {
+              console.error(`Formula for option ${option.name} produced invalid result: ${optionCost}`);
+              return res.status(400).json({ message: `Invalid formula result for option ${option.name}` });
+            }
+
+            calculatedCost += optionCost;
+          } catch (error) {
+            console.error(`Error evaluating formula for option ${option.name}:`, error);
+            return res.status(400).json({ message: `Invalid formula for option ${option.name}` });
+          }
+        }
+
+        // Final validation of calculated cost
+        if (!Number.isFinite(calculatedCost)) {
+          console.error(`Calculated cost for option ${option.name} is invalid: ${calculatedCost}`);
+          return res.status(400).json({ message: `Invalid cost calculation for option ${option.name}` });
+        }
+
+        optionsPrice += calculatedCost;
+        selectedOptionsArray.push({
+          optionId: option.id,
+          optionName: option.name,
+          value,
+          setupCost: Number.isFinite(setupCost) ? setupCost : 0,
+          calculatedCost,
+        });
+      }
+
+      // NEW: Process options from optionsJson field (inline product options)
+      for (const optionId in selectedOptions) {
+        const optionJson = productOptionsJson.find(opt => opt.id === optionId);
+        if (!optionJson) continue; // Skip if not found in optionsJson
+
+        const selectionData = selectedOptions[optionId];
+
+        // Extract value - handle both simple values and complex objects
+        let value: string | number | boolean;
+        let grommetsLocation: string | undefined;
+        let grommetsSpacingCount: number | undefined;
+        let grommetsSpacingInches: number | undefined;
+        let grommetsPerSign: number | undefined;
+        let customPlacementNote: string | undefined;
+        let hemsType: string | undefined;
+        let polePocket: string | undefined;
+
+        if (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData) {
+          // Complex selection with grommets/hems/pole pocket data
+          value = selectionData.value;
+          grommetsLocation = selectionData.grommetsLocation;
+          grommetsSpacingCount = selectionData.grommetsSpacingCount;
+          grommetsSpacingInches = selectionData.grommetsSpacingInches;
+          grommetsPerSign = selectionData.grommetsPerSign;
+          customPlacementNote = selectionData.customPlacementNote;
+          hemsType = selectionData.hemsType;
+          polePocket = selectionData.polePocket;
+        } else {
+          // Simple value
+          value = selectionData;
+        }
+
+        // Skip inactive selections
+        if (optionJson.type === "checkbox" && !value) continue;
+        if (value === null || value === undefined) continue;
+
+        const optionAmount = optionJson.amount || 0;
+        let setupCost = 0;
+        let calculatedCost = 0;
+
+        // Calculate costs based on priceMode
+        if (optionJson.priceMode === "flat") {
+          setupCost = optionAmount;
+          calculatedCost = optionAmount;
+        } else if (optionJson.priceMode === "per_qty") {
+          calculatedCost = optionAmount * quantityNum;
+        } else if (optionJson.priceMode === "per_sqft") {
+          calculatedCost = optionAmount * sqft * quantityNum;
+        } else if (optionJson.priceMode === "flat_per_item") {
+          // Flat amount per finished piece (after nesting)
+          calculatedCost = optionAmount * quantityNum;
+        } else if (optionJson.priceMode === "percent_of_base") {
+          // Percentage of base price (applied later after base calculation)
+          // Store for post-processing
+          calculatedCost = 0; // Will be calculated after base price
+        }
+
+        // Handle grommets special pricing
+        if (optionJson.config?.kind === "grommets") {
+          // Use grommetsPerSign if provided, otherwise default based on location
+          let grommetCount = grommetsPerSign ?? 4; // Default to 4 grommets per sign
+
+          if (!grommetsPerSign) {
+            // Fallback: infer count from location if grommetsPerSign not explicitly set
+            if (grommetsLocation === "all_corners") {
+              grommetCount = 4;
+            } else if (grommetsLocation === "top_corners") {
+              grommetCount = 2;
+            } else if (grommetsLocation === "top_even" && grommetsSpacingCount) {
+              grommetCount = grommetsSpacingCount;
+            } else if (grommetsLocation === "custom") {
+              grommetCount = grommetsPerSign ?? 4; // Custom uses explicit count or default
+            }
+          }
+
+          // For flat_per_item, multiply by grommet count and quantity
+          if (optionJson.priceMode === "flat_per_item") {
+            calculatedCost = optionAmount * grommetCount * quantityNum;
+            console.log(`[PRICING DEBUG] Grommets: ${grommetCount} grommets/sign × ${quantityNum} qty × $${optionAmount}/grommet = $${calculatedCost}`);
+          }
+        }
+
+        // Handle hems pricing
+        if (optionJson.config?.kind === "hems") {
+          const selectedHems = hemsType || optionJson.config.defaultHems || "none";
+          if (selectedHems !== "none") {
+            // Calculate hems cost - could be per linear foot or flat per piece
+            if (optionJson.priceMode === "flat_per_item") {
+              // Flat cost per piece based on hem selection
+              let hemMultiplier = 1;
+              if (selectedHems === "all_sides") hemMultiplier = 4;
+              else if (selectedHems === "top_bottom" || selectedHems === "left_right") hemMultiplier = 2;
+              calculatedCost = optionAmount * quantityNum * hemMultiplier;
+              console.log(`[PRICING DEBUG] Hems (${selectedHems}): ${hemMultiplier} sides × ${quantityNum} qty × $${optionAmount} = $${calculatedCost}`);
+            } else if (optionJson.priceMode === "per_sqft") {
+              // Linear foot based pricing - approximate perimeter based on dimensions
+              const perimeter = 2 * (widthNum + heightNum) / 12; // Convert to feet
+              let hemFeet = perimeter;
+              if (selectedHems === "top_bottom") hemFeet = 2 * widthNum / 12;
+              else if (selectedHems === "left_right") hemFeet = 2 * heightNum / 12;
+              calculatedCost = optionAmount * hemFeet * quantityNum;
+              console.log(`[PRICING DEBUG] Hems (${selectedHems}): ${hemFeet.toFixed(2)} linear ft × ${quantityNum} qty × $${optionAmount}/ft = $${calculatedCost}`);
+            }
+          } else {
+            calculatedCost = 0; // No hems selected
+          }
+        }
+
+        // Handle pole pockets pricing
+        if (optionJson.config?.kind === "pole_pockets") {
+          const selectedPolePocket = polePocket || optionJson.config.defaultPolePocket || "none";
+          if (selectedPolePocket !== "none") {
+            // Calculate pole pocket cost
+            if (optionJson.priceMode === "flat_per_item") {
+              // Flat cost per pocket per piece
+              let pocketCount = 1;
+              if (selectedPolePocket === "top_bottom") pocketCount = 2;
+              calculatedCost = optionAmount * pocketCount * quantityNum;
+              console.log(`[PRICING DEBUG] Pole Pockets (${selectedPolePocket}): ${pocketCount} pockets × ${quantityNum} qty × $${optionAmount} = $${calculatedCost}`);
+            } else if (optionJson.priceMode === "per_sqft") {
+              // Linear foot based - width of banner for each pocket
+              let pocketFeet = widthNum / 12;
+              if (selectedPolePocket === "top_bottom") pocketFeet *= 2;
+              calculatedCost = optionAmount * pocketFeet * quantityNum;
+              console.log(`[PRICING DEBUG] Pole Pockets (${selectedPolePocket}): ${pocketFeet.toFixed(2)} linear ft × ${quantityNum} qty × $${optionAmount}/ft = $${calculatedCost}`);
+            }
+          } else {
+            calculatedCost = 0; // No pole pockets selected
+          }
+        }
+
+        // Skip thickness selector option - already processed in pre-stage
+        if (optionJson.config?.kind === "thickness") {
+          continue;
+        }
+
+        // Handle sides pricing - multiplier vs volume pricing mode
+        if (optionJson.config?.kind === "sides" && value === "double") {
+          const pricingMode = optionJson.config.pricingMode || "multiplier";
+
+          if (pricingMode === "multiplier") {
+            // Legacy multiplier mode - apply BEFORE profile pricing
+            const multiplier = optionJson.config.doublePriceMultiplier || 1.6;
+            basePrice *= multiplier;
+            console.log(`[PRICING DEBUG] Sides option: applied ${multiplier}x multiplier to base price`);
+          } else if (pricingMode === "volume") {
+            // Volume pricing mode - already handled in flatGoodsInput preprocessing
+            // No additional pricing logic needed here; volumePricing was injected before calculator
+            console.log(`[PRICING DEBUG] Sides option: volume pricing already applied via flatGoodsInput.volumePricing`);
+          }
+        }
+
+        optionsPrice += calculatedCost;
+        selectedOptionsArray.push({
+          optionId: optionJson.id,
+          optionName: optionJson.label,
+          value,
+          setupCost,
+          calculatedCost,
+        });
+      }
+
+      // Note: PBV2 products (schemaVersion=2) are handled exclusively in the early branch above
+      // and never reach this point. This section is LEGACY PRODUCTS ONLY.
+
+      // CALCULATE mediaSubtotal - includes only media/printing costs, excludes finishing add-ons
+      // Media costs include:
+      // - Base sheet/area price from NestingCalculator (after volume tiers, thickness, sides)
+      // - Laminate (material add-ons that are part of the printed media)
+      // Media costs EXCLUDE:
+      // - Grommets, stakes, weed & tape, rush, and other non-media finishing options
+      let mediaSubtotal = basePrice; // Start with base price (includes thickness, sides multipliers already applied)
+
+      // Add non-percent, media-related options to mediaSubtotal
+      // For now, we consider material add-ons (laminate) as part of media cost
+      // All other options (grommets, stakes, etc.) are considered finishing and excluded
+      for (const optJson of productOptionsJson) {
+        if (!selectedOptions[optJson.id]) continue;
+        if (optJson.priceMode === "percent_of_base") continue; // Skip percent options for now
+        if (optJson.config?.kind === "thickness") continue; // Already in basePrice
+        if (optJson.config?.kind === "sides") continue; // Already in basePrice
+
+        // If option has materialAddonConfig, it's a media add-on (like laminate)
+        if (optJson.materialAddonConfig) {
+          // Find this option in selectedOptionsArray to get its calculated cost
+          const optInArray = selectedOptionsArray.find(o => o.optionId === optJson.id);
+          if (optInArray) {
+            mediaSubtotal += optInArray.calculatedCost;
+          }
+        }
+        // All other options (grommets, weed/tape, stakes, rush) are NOT added to mediaSubtotal
+      }
+
+      console.log(`[PRICING DEBUG] Media subtotal (print + material add-ons): $${mediaSubtotal}`);
+
+      // Post-processing: Apply percent_of_base options with percentBase awareness
+      const percentOfBaseOptions = productOptionsJson.filter(
+        opt => opt.priceMode === "percent_of_base" && selectedOptions[opt.id]
+      );
+
+      // Separate options by their percentBase setting
+      const mediaPercentOptions = percentOfBaseOptions.filter(opt => opt.percentBase === "media");
+      const linePercentOptions = percentOfBaseOptions.filter(opt => !opt.percentBase || opt.percentBase === "line");
+
+      // Apply media-based percent options (e.g., Contour Cutting)
+      for (const percentOpt of mediaPercentOptions) {
+        const percentValue = percentOpt.amount || 0;
+        const percentCost = mediaSubtotal * (percentValue / 100);
+        optionsPrice += percentCost;
+
+        // Extract the actual value from selection data (could be simple or complex object)
+        const selectionData = selectedOptions[percentOpt.id];
+        const extractedValue = (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData)
+          ? selectionData.value
+          : selectionData;
+
+        // Find and update the option in selectedOptionsArray
+        const existingOpt = selectedOptionsArray.find(o => o.optionId === percentOpt.id);
+        if (existingOpt) {
+          existingOpt.calculatedCost = percentCost;
+        } else {
+          selectedOptionsArray.push({
+            optionId: percentOpt.id,
+            optionName: percentOpt.label,
+            value: extractedValue,
+            setupCost: 0,
+            calculatedCost: percentCost,
+          });
+        }
+
+        console.log(`[PRICING DEBUG] Percent of MEDIA: ${percentOpt.label} added ${percentValue}% of ${mediaSubtotal} = ${percentCost}`);
+      }
+
+      // Apply line-based percent options (e.g., Rush Fee - percent of full line)
+      for (const percentOpt of linePercentOptions) {
+        const percentValue = percentOpt.amount || 0;
+        const percentCost = basePrice * (percentValue / 100);
+        optionsPrice += percentCost;
+
+        // Extract the actual value from selection data (could be simple or complex object)
+        const selectionData = selectedOptions[percentOpt.id];
+        const extractedValue = (typeof selectionData === 'object' && selectionData !== null && 'value' in selectionData)
+          ? selectionData.value
+          : selectionData;
+
+        // Find and update the option in selectedOptionsArray
+        const existingOpt = selectedOptionsArray.find(o => o.optionId === percentOpt.id);
+        if (existingOpt) {
+          existingOpt.calculatedCost = percentCost;
+        } else {
+          selectedOptionsArray.push({
+            optionId: percentOpt.id,
+            optionName: percentOpt.label,
+            value: extractedValue,
+            setupCost: 0,
+            calculatedCost: percentCost,
+          });
+        }
+
+        console.log(`[PRICING DEBUG] Percent of LINE: ${percentOpt.label} added ${percentValue}% of ${basePrice} = ${percentCost}`);
+      }
+
+      // Build materialUsages array for multi-material tracking
+      const materialUsages: Array<{
+        materialId: string;
+        unitType: "sheet" | "sqft" | "linear_ft";
+        quantity: number;
+      }> = [];
+
+      // Primary material usage
+      if (useFlatGoodsCalculator && nestingDetails) {
+        // Sheet-based product - use billableSheets from nesting calculator
+        const primaryMaterialId = effectiveMaterial?.id || product.primaryMaterialId;
+        if (primaryMaterialId && nestingDetails.billableSheets) {
+          materialUsages.push({
+            materialId: primaryMaterialId,
+            unitType: "sheet",
+            quantity: nestingDetails.billableSheets
+          });
+          console.log(`[MATERIAL USAGE] Primary material (sheet): ${primaryMaterialId}, ${nestingDetails.billableSheets} sheets`);
+        }
+      } else if (requiresDimensions && sqft > 0) {
+        // Roll-based or area-based product - use total square footage
+        const primaryMaterialId = product.primaryMaterialId;
+        if (primaryMaterialId) {
+          const totalSqFt = sqft * quantityNum;
+          materialUsages.push({
+            materialId: primaryMaterialId,
+            unitType: "sqft",
+            quantity: totalSqFt
+          });
+          console.log(`[MATERIAL USAGE] Primary material (roll): ${primaryMaterialId}, ${totalSqFt} sqft`);
+        }
+      }
+
+      // Secondary material usage from material add-on options
+      for (const optionJson of productOptionsJson) {
+        if (optionJson.materialAddonConfig && selectedOptions[optionJson.id]) {
+          const cfg = optionJson.materialAddonConfig;
+          const wasteFactor = cfg.wasteFactor || 0;
+
+          if (cfg.usageBasis === "same_area") {
+            // Roll/area-based laminate - uses same square footage as printed area
+            const baseAreaSqFt = sqft * quantityNum;
+            const quantity = baseAreaSqFt * (1 + wasteFactor);
+
+            materialUsages.push({
+              materialId: cfg.materialId,
+              unitType: cfg.unitType,
+              quantity
+            });
+
+            console.log(`[MATERIAL USAGE] Add-on material (${optionJson.label}): ${cfg.materialId}, ${quantity} ${cfg.unitType} (base: ${baseAreaSqFt}, waste: ${wasteFactor * 100}%)`);
+          } else if (cfg.usageBasis === "same_sheets" && nestingDetails?.billableSheets) {
+            // Sheet-based laminate - uses same number of sheets
+            const baseSheets = nestingDetails.billableSheets;
+            const quantity = baseSheets * (1 + wasteFactor);
+
+            materialUsages.push({
+              materialId: cfg.materialId,
+              unitType: cfg.unitType,
+              quantity
+            });
+
+            console.log(`[MATERIAL USAGE] Add-on material (${optionJson.label}): ${cfg.materialId}, ${quantity} ${cfg.unitType} (base: ${baseSheets} sheets, waste: ${wasteFactor * 100}%)`);
+          }
+        }
+      }
+
+      let subtotal = basePrice + optionsPrice;
+      let priceBreakDiscount = 0;
+      let priceBreakInfo: { type: string; tier: string; discount: number } | undefined;
+
+      // Apply price breaks if enabled
+      if (product.priceBreaks && typeof product.priceBreaks === 'object') {
+        const priceBreaks = product.priceBreaks as any;
+        if (priceBreaks.enabled && priceBreaks.tiers && Array.isArray(priceBreaks.tiers)) {
+          // Determine the value to compare based on price break type
+          let compareValue = 0;
+          switch (priceBreaks.type) {
+            case "quantity":
+              compareValue = quantityNum;
+              break;
+            case "sheets":
+              compareValue = quantityNum; // For sheets, use quantity directly
+              break;
+            case "sqft":
+              compareValue = sqft;
+              break;
+            default:
+              compareValue = quantityNum;
+          }
+
+          // Find the applicable tier
+          const applicableTier = priceBreaks.tiers
+            .filter((tier: any) => {
+              const minValue = tier.minValue || 0;
+              const maxValue = tier.maxValue;
+              return compareValue >= minValue && (maxValue === undefined || maxValue === null || compareValue <= maxValue);
+            })
+            .sort((a: any, b: any) => (b.minValue || 0) - (a.minValue || 0))[0];
+
+          if (applicableTier) {
+            // Apply the discount based on type
+            switch (applicableTier.discountType) {
+              case "percentage":
+                priceBreakDiscount = subtotal * (applicableTier.discountValue / 100);
+                break;
+              case "fixed":
+                priceBreakDiscount = applicableTier.discountValue;
+                break;
+              case "multiplier":
+                subtotal = subtotal * applicableTier.discountValue;
+                priceBreakDiscount = 0; // Multiplier is applied directly, not as a discount
+                break;
+            }
+
+            priceBreakInfo = {
+              type: priceBreaks.type,
+              tier: `${applicableTier.minValue}${applicableTier.maxValue ? `-${applicableTier.maxValue}` : '+'}`,
+              discount: priceBreakDiscount,
+            };
+          }
+        }
+      }
+
+      const total = subtotal - priceBreakDiscount;
+
+      // Final validation of total price
+      if (!Number.isFinite(total)) {
+        console.error("Total price is invalid:", total);
+        return res.status(400).json({ message: "Total price calculation produced an invalid result" });
+      }
+
+      console.log(`[PRICING DEBUG RESPONSE] Product: ${product.name} (${productId}), formula: ${product.pricingFormula ?? 'none'}, hasMaterialUsages: ${materialUsages.length > 0}, price: ${total}`);
+      console.log(`[PRICING DEBUG RESPONSE] Response breakdown:`, JSON.stringify({ formula: product.pricingFormula, materialUsagesCount: materialUsages.length, price: total, basePrice, optionsPrice, isPbv2Product }, null, 2));
+
       res.json({
-        success: true,
-        linePrice: pricingResult.lineTotalCents / 100,
-        priceBreakdown: {
-          basePriceCents: pricingResult.breakdown.baseCents,
-          optionsPriceCents: pricingResult.breakdown.optionsCents,
-          lineTotalCents: pricingResult.lineTotalCents,
-          basePrice: pricingResult.breakdown.baseCents / 100,
-          optionsPrice: pricingResult.breakdown.optionsCents / 100,
-          total: pricingResult.lineTotalCents / 100,
-        },
-        // PBV2 snapshot fields (for storage in quote/order line items)
-        pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
-        pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
-        product: {
-          id: product.id,
-          name: product.name,
-          pbv2ActiveTreeVersionId: product.pbv2ActiveTreeVersionId,
+        price: total,
+        breakdown: {
+          basePrice,
+          mediaSubtotal, // NEW: Media/printing cost only (excludes finishing add-ons)
+          addOnsPrice: 0, // Deprecated - keeping for backwards compatibility
+          optionsPrice,
+          subtotal,
+          priceBreakDiscount,
+          priceBreakInfo,
+          total,
+          formula: product.pricingFormula,
+          selectedOptions: selectedOptionsArray,
+          variantInfo: variantName || undefined,
+          nestingDetails: nestingDetails || undefined,
+          materialUsages, // NEW: Multi-material tracking
         },
         variant: variant ? {
           id: variant.id,
@@ -4292,7 +5339,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get current workflow state
       const currentState = getQuoteWorkflowState(quote);
 
-      // Enforce requireApproval preference: Block draft â†’ sent if approval is required
+      // Enforce requireApproval preference: Block draft → sent if approval is required
       if (requireApproval && currentState === 'draft' && toState === 'sent') {
         return res.status(403).json({
           error: 'Quote approval is required before sending. Ask an authorized user to approve, or use Approve & Send.'
@@ -5032,9 +6079,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // Quote Files / Attachments
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
 
   /**
    * Helper: Enrich attachment records with signed URLs for display
@@ -5048,14 +6095,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
    */
 
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // Quote file/attachment routes moved to ./routes/attachments.routes.ts
   // (GET/POST/DELETE /api/quotes/:id/files, chunked uploads, /api/quotes/:quoteId/attachments)
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // Quote Line Item Attachments (per-line-item artwork)
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
 
   // Get attachments for a specific quote line item
   app.get("/api/quotes/:quoteId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -6862,7 +7909,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // =============================
-  // Enterprise Import Jobs (Validate â†’ Apply)
+  // Enterprise Import Jobs (Validate → Apply)
   // =============================
   app.post('/api/import/jobs/validate', isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
     try {
@@ -7667,7 +8714,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 case 'status_transition':
                 case 'status_pill_changed':
                   if (row.fromStatus && row.toStatus) {
-                    message = `Status changed: ${row.fromStatus} â†’ ${row.toStatus}`;
+                    message = `Status changed: ${row.fromStatus} → ${row.toStatus}`;
                   } else if (row.toStatus) {
                     message = `Status changed to ${row.toStatus}`;
                   } else {
@@ -7677,7 +8724,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 case 'priority_change':
                   if (meta.oldValue && meta.newValue) {
-                    message = `Priority changed: ${meta.oldValue} â†’ ${meta.newValue}`;
+                    message = `Priority changed: ${meta.oldValue} → ${meta.newValue}`;
                   } else if (meta.newValue) {
                     message = `Priority set to ${meta.newValue}`;
                   } else {
@@ -7687,7 +8734,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 case 'due_date_change':
                   if (meta.oldValue && meta.newValue) {
-                    message = `Due date changed: ${meta.oldValue} â†’ ${meta.newValue}`;
+                    message = `Due date changed: ${meta.oldValue} → ${meta.newValue}`;
                   } else if (meta.newValue) {
                     message = `Due date set to ${meta.newValue}`;
                   } else {
@@ -7697,7 +8744,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 case 'promised_date_change':
                   if (meta.oldValue && meta.newValue) {
-                    message = `Promised date changed: ${meta.oldValue} â†’ ${meta.newValue}`;
+                    message = `Promised date changed: ${meta.oldValue} → ${meta.newValue}`;
                   } else if (meta.newValue) {
                     message = `Promised date set to ${meta.newValue}`;
                   } else {
@@ -7708,7 +8755,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 case 'label_change':
                 case 'job_label_change':
                   if (meta.oldValue && meta.newValue) {
-                    message = `Job label changed: "${meta.oldValue}" â†’ "${meta.newValue}"`;
+                    message = `Job label changed: "${meta.oldValue}" → "${meta.newValue}"`;
                   } else if (meta.newValue) {
                     message = `Job label set to "${meta.newValue}"`;
                   } else {
@@ -7718,7 +8765,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 case 'po_number_change':
                   if (meta.oldValue && meta.newValue) {
-                    message = `PO # changed: ${meta.oldValue} â†’ ${meta.newValue}`;
+                    message = `PO # changed: ${meta.oldValue} → ${meta.newValue}`;
                   } else if (meta.newValue) {
                     message = `PO # set to ${meta.newValue}`;
                   } else {
@@ -7728,7 +8775,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 case 'line_item_status_change':
                   if (meta.lineItemId && meta.oldStatus && meta.newStatus) {
-                    message = `Line item status changed: ${meta.oldStatus} â†’ ${meta.newStatus}`;
+                    message = `Line item status changed: ${meta.oldStatus} → ${meta.newStatus}`;
                   } else {
                     message = 'Line item status updated';
                   }
@@ -7762,7 +8809,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 default:
                   // Fallback: use status transition if available, else actionType
                   if (row.fromStatus || row.toStatus) {
-                    message = `${row.fromStatus || ''} â†’ ${row.toStatus || ''}`.trim();
+                    message = `${row.fromStatus || ''} → ${row.toStatus || ''}`.trim();
                   } else {
                     message = row.actionType.replace(/_/g, ' ');
                   }
@@ -7963,7 +9010,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           for (const row of js) {
             const label = keyToLabel.get(row.newStatusKey) || row.newStatusKey;
             const oldLabel = row.oldStatusKey ? (keyToLabel.get(row.oldStatusKey) || row.oldStatusKey) : null;
-            const msg = oldLabel ? `Job status: ${oldLabel} â†’ ${label}` : `Job status: ${label}`;
+            const msg = oldLabel ? `Job status: ${oldLabel} → ${label}` : `Job status: ${label}`;
             events.push({
               id: `job_status:${row.logId}`,
               occurredAt: toIso(row.createdAt),
@@ -9295,16 +10342,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           media = String(primaryLineItem?.description || "").trim();
         }
         if (!media) {
-          media = "â€”"; // Only show "â€”" if both materialName and description are empty
+          media = "—"; // Only show "—" if both materialName and description are empty
         }
         
-        // 2) Size: Format width Ã— height if both exist
+        // 2) Size: Format width × height if both exist
         const width = primaryLineItem?.width;
         const height = primaryLineItem?.height;
-        const size = (width && height) ? `${width} Ã— ${height}` : "â€”";
+        const size = (width && height) ? `${width} × ${height}` : "—";
         
         // 3) Sides: Parse selected_options for "Single Sided" / "Double Sided" choice
-        let sides: string = "â€”";
+        let sides: string = "—";
         if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
           const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
             const optName = String(opt.optionName || "").toLowerCase();
@@ -9320,7 +10367,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
         // Fallback: if selected_options didn't provide sides, use artwork count
-        if (sides === "â€”" && artworkBasedSides) {
+        if (sides === "—" && artworkBasedSides) {
           sides = artworkBasedSides === 1 ? "Single" : "Double";
         }
 
@@ -9362,7 +10409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineItemId: String(row.lineItemId ?? ""),
           orderId: row.orderId,
           orderNumber: String(row.orderNumber ?? ""), // Order number at top level for easy access
-          customerName: String(row.customerName ?? "â€”"),
+          customerName: String(row.customerName ?? "—"),
           dueDate: row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
           stepKey: String(row.stepKey ?? ""),
@@ -9742,15 +10789,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!media) {
         media = String(primaryLineItem?.description || "").trim();
       }
-      if (!media) media = "â€”";
+      if (!media) media = "—";
 
       // 2) Size
       const width = primaryLineItem?.width;
       const height = primaryLineItem?.height;
-      const size = width && height ? `${width} Ã— ${height}` : "â€”";
+      const size = width && height ? `${width} × ${height}` : "—";
 
       // 3) Sides
-      let sides: string = "â€”";
+      let sides: string = "—";
       if (primaryLineItem?.selectedOptions && Array.isArray(primaryLineItem.selectedOptions)) {
         const sidesOption = primaryLineItem.selectedOptions.find((opt: any) => {
           const optName = String(opt.optionName || "").toLowerCase();
@@ -9765,7 +10812,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       }
-      if (sides === "â€”" && artworkBasedSides) {
+      if (sides === "—" && artworkBasedSides) {
         sides = artworkBasedSides === 1 ? "Single" : "Double";
       }
 
@@ -9800,13 +10847,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         let rowMedia = String(li?.materialName || "").trim();
         if (!rowMedia) rowMedia = String(li?.description || "").trim();
-        if (!rowMedia) rowMedia = "â€”";
+        if (!rowMedia) rowMedia = "—";
 
         const rowWidth = li?.width;
         const rowHeight = li?.height;
-        const rowSize = rowWidth && rowHeight ? `${rowWidth} Ã— ${rowHeight}` : "â€”";
+        const rowSize = rowWidth && rowHeight ? `${rowWidth} × ${rowHeight}` : "—";
 
-        let rowSides: string = "â€”";
+        let rowSides: string = "—";
         if (li?.selectedOptions && Array.isArray(li.selectedOptions)) {
           const sidesOption = li.selectedOptions.find((opt: any) => {
             const optName = String(opt.optionName || "").toLowerCase();
@@ -9821,7 +10868,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }
         }
-        if (rowSides === "â€”" && rowArtworkSides) {
+        if (rowSides === "—" && rowArtworkSides) {
           rowSides = rowArtworkSides === 1 ? "Single" : "Double";
         }
 
@@ -9883,7 +10930,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           mediaLabel: media,
           // Convenience top-level order context
           orderNumber: order.orderNumber,
-          customerName: String(order.customerName || "â€”"),
+          customerName: String(order.customerName || "—"),
           dueDate: order.dueDate ?? null,
           priority: order.priority ?? null,
           // Convenience top-level artwork (same list used in order.artwork)
@@ -9891,7 +10938,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           order: {
             id: orderId,
             orderNumber: order.orderNumber,
-            customerName: String(order.customerName || "â€”"),
+            customerName: String(order.customerName || "—"),
             dueDate: order.dueDate,
             priority: order.priority,
             fulfillmentStatus: order.fulfillmentStatus,
@@ -12594,9 +13641,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // API catch-all: Prevent HTML fallback for unknown API routes
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   app.use('/api/*', (req, res) => {
     res.status(404).json({ error: 'API endpoint not found' });
   });
