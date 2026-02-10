@@ -211,6 +211,9 @@ export function useQuoteEditorState() {
     const [height, setHeight] = useState("");
     const [quantity, setQuantity] = useState("1");
     const [calculatedPrice, setCalculatedPrice] = useState<number | null>(null);
+    // PBV2 snapshot state (from /api/quotes/calculate response)
+    const [pbv2TreeVersionId, setPbv2TreeVersionId] = useState<string | null>(null);
+    const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
     const [isCalculating, setIsCalculating] = useState(false);
     const [calcError, setCalcError] = useState<string | null>(null);
     const [pricingStale, setPricingStale] = useState(false);
@@ -989,6 +992,8 @@ export function useQuoteEditorState() {
         // Check if all required fields are present and valid
         if (!selectedProductId || !quantity) {
             setCalculatedPrice(null);
+            setPbv2TreeVersionId(null);
+            setPbv2SnapshotJson(null);
             setCalcError(null);
             return;
         }
@@ -996,6 +1001,8 @@ export function useQuoteEditorState() {
         // For dimension-requiring products, also need width/height
         if (requiresDimensions && (!width || !height)) {
             setCalculatedPrice(null);
+            setPbv2TreeVersionId(null);
+            setPbv2SnapshotJson(null);
             setCalcError(null);
             return;
         }
@@ -1088,7 +1095,10 @@ export function useQuoteEditorState() {
             }
 
             const data = await response.json();
-            setCalculatedPrice(data.price);
+            setCalculatedPrice(data.price || data.linePrice);
+            // Capture PBV2 snapshot fields for persistence
+            setPbv2TreeVersionId(data.pbv2TreeVersionId || null);
+            setPbv2SnapshotJson(data.pbv2SnapshotJson || null);
             setCalcError(null);
             lastCalcInputsHashRef.current = inputHash;
         } catch (error) {
@@ -1153,17 +1163,29 @@ export function useQuoteEditorState() {
 
                     const response = await apiRequest("POST", "/api/quotes/calculate", payload);
                     const data = await response.json();
-                    const price = Number(data?.price);
+                    const price = Number(data?.price || data?.linePrice);
                     if (!Number.isFinite(price)) return { key, ok: false as const };
-                    return { key, ok: true as const, price, priceBreakdown: data?.breakdown };
+                    return { 
+                        key, 
+                        ok: true as const, 
+                        price, 
+                        priceBreakdown: data?.priceBreakdown || data?.breakdown,
+                        pbv2TreeVersionId: data?.pbv2TreeVersionId,
+                        pbv2SnapshotJson: data?.pbv2SnapshotJson,
+                    };
                 })
             );
 
             if (requestId !== repricingRequestIdRef.current) return;
 
-            const byKey = new Map<string, { price: number; priceBreakdown: any }>();
+            const byKey = new Map<string, { price: number; priceBreakdown: any; pbv2TreeVersionId?: string; pbv2SnapshotJson?: any }>();
             for (const r of results) {
-                if (r.ok) byKey.set(r.key, { price: r.price, priceBreakdown: r.priceBreakdown });
+                if (r.ok) byKey.set(r.key, { 
+                    price: r.price, 
+                    priceBreakdown: r.priceBreakdown,
+                    pbv2TreeVersionId: r.pbv2TreeVersionId,
+                    pbv2SnapshotJson: r.pbv2SnapshotJson,
+                });
             }
 
             setLineItems((prev) =>
@@ -1183,6 +1205,9 @@ export function useQuoteEditorState() {
                                 basePrice: hit.price,
                                 total: hit.price,
                             } as any),
+                        // Store PBV2 snapshot fields for persistence
+                        ...(hit.pbv2TreeVersionId && { pbv2TreeVersionId: hit.pbv2TreeVersionId }),
+                        ...(hit.pbv2SnapshotJson && { pbv2SnapshotJson: hit.pbv2SnapshotJson }),
                     };
                 })
             );
@@ -1313,6 +1338,7 @@ export function useQuoteEditorState() {
                 height: heightVal,
                 quantity: quantityVal,
                 specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
+                // PBV2 fields are server-authoritative - NOT sent from client
                 selectedOptions: selectedOptionsArray,
                 linePrice,
                 priceBreakdown: {
@@ -1390,6 +1416,8 @@ export function useQuoteEditorState() {
                 setHeight("");
                 setQuantity("1");
                 setCalculatedPrice(null);
+                setPbv2TreeVersionId(null);
+                setPbv2SnapshotJson(null);
                 setCalcError(null);
                 setOptionSelections({});
                 setOptionSelectionsJson({ schemaVersion: 2, selected: {} });
@@ -1416,6 +1444,8 @@ export function useQuoteEditorState() {
                 height: heightVal,
                 quantity: quantityVal,
                 specsJson: lineItemNotes ? { notes: lineItemNotes } : {},
+                optionSelectionsJson: optionSelectionsJson,
+                // PBV2 fields are server-authoritative - NOT sent from client
                 selectedOptions: selectedOptionsArray,
                 linePrice,
                 priceBreakdown: {
@@ -2207,6 +2237,7 @@ export function useQuoteEditorState() {
                 quantity: item.quantity,
                 specsJson: item.specsJson || {},
                 optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
+                // PBV2 fields are server-authoritative - NOT sent from client
                 selectedOptions: item.selectedOptions || [],
                 linePrice: item.linePrice ?? 0,
                 priceBreakdown: item.priceBreakdown || {

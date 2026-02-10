@@ -558,6 +558,10 @@ export class QuotesRepository {
             // Tax fields
             taxAmount: (item as any).taxAmount != null ? (item as any).taxAmount.toString() : null,
             isTaxableSnapshot: (item as any).isTaxableSnapshot ?? null,
+            // PBV2 server-authoritative fields (required as of migration 0036)
+            pbv2TreeVersionId: (item as any).pbv2TreeVersionId || 'MISSING',
+            pbv2SnapshotJson: (item as any).pbv2SnapshotJson || {},
+            pricedAt: (item as any).pricedAt || new Date(),
         }));
 
         const createdLineItems = lineItemsData.length
@@ -789,6 +793,10 @@ export class QuotesRepository {
                 variantInfo: lineItem.priceBreakdown.variantInfo as string | undefined,
             },
             displayOrder: lineItem.displayOrder || 0,
+            // PBV2 server-authoritative fields (required as of migration 0036)
+            pbv2TreeVersionId: (lineItem as any).pbv2TreeVersionId || 'MISSING',
+            pbv2SnapshotJson: (lineItem as any).pbv2SnapshotJson || {},
+            pricedAt: (lineItem as any).pricedAt || new Date(),
         };
 
         const [created] = await this.dbInstance.insert(quoteLineItems).values(lineItemData).returning();

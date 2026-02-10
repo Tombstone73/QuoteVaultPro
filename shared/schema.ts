@@ -1196,6 +1196,10 @@ export const quoteLineItems = pgTable("quote_line_items", {
   height: decimal("height", { precision: 10, scale: 2 }).notNull(),
   quantity: integer("quantity").notNull(),
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
+  // PBV2 pricing snapshot fields (migration 0036 - NOT NULL, server-authoritative)
+  pbv2TreeVersionId: varchar("pbv2_tree_version_id").notNull().references(() => pbv2TreeVersions.id, { onDelete: 'restrict' }),
+  pbv2SnapshotJson: jsonb("pbv2_snapshot_json").$type<Record<string, any>>().notNull(),
+  pricedAt: timestamp("priced_at", { withTimezone: true }).notNull().defaultNow(),
   // NEW: v2 canonical option selections (additive)
   optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
   selectedOptions: jsonb("selected_options").$type<Array<{
@@ -1232,6 +1236,8 @@ export const quoteLineItems = pgTable("quote_line_items", {
   index("quote_line_items_quote_id_idx").on(table.quoteId),
   index("quote_line_items_product_id_idx").on(table.productId),
   index("quote_line_items_product_type_idx").on(table.productType),
+  index("quote_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
+  index("quote_line_items_priced_at_idx").on(table.pricedAt),
 ]);
 
 export const insertQuoteSchema = createInsertSchema(quotes).omit({
@@ -2129,7 +2135,8 @@ export const orderLineItems = pgTable("order_line_items", {
   quoteLineItemId: varchar("quote_line_item_id").references(() => quoteLineItems.id, { onDelete: 'set null' }),
   productId: varchar("product_id").notNull().references(() => products.id, { onDelete: 'restrict' }),
   productVariantId: varchar("product_variant_id").references(() => productVariants.id, { onDelete: 'set null' }),
-  pbv2TreeVersionId: varchar("pbv2_tree_version_id"),
+  // PBV2 pricing snapshot fields (migration 0023 - nullable for backward compat with existing orders)
+  pbv2TreeVersionId: varchar("pbv2_tree_version_id").references(() => pbv2TreeVersions.id, { onDelete: 'restrict' }),
   pbv2SnapshotJson: jsonb("pbv2_snapshot_json").$type<Record<string, any>>(),
   productType: varchar("product_type", { length: 50 }).notNull().default('wide_roll'),
   description: text("description").notNull(), // Snapshot of what we sold
