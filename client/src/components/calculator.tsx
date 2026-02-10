@@ -192,14 +192,29 @@ export default function CalculatorComponent() {
 
   const calculateMutation = useMutation({
     mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/quotes/calculate", {
+      // Detect PBV2 product
+      const isPbv2 = selectedProduct?.optionTreeJson && 
+        typeof selectedProduct.optionTreeJson === 'object' && 
+        (selectedProduct.optionTreeJson as any)?.schemaVersion === 2;
+
+      const payload: any = {
         productId: selectedProductId,
         variantId: selectedVariant,
         width: parseFloat(width),
         height: parseFloat(height),
         quantity: parseInt(quantity),
-        selectedOptions: buildSelectedOptionsPayload(),
-      });
+        debugSource: "calculator",
+      };
+
+      if (isPbv2) {
+        // PBV2: send optionSelectionsJson (calculator doesn't support PBV2 options yet, send empty)
+        payload.optionSelectionsJson = { schemaVersion: 2, selected: {} };
+      } else {
+        // Legacy: send selectedOptions
+        payload.selectedOptions = buildSelectedOptionsPayload();
+      }
+
+      const response = await apiRequest("POST", "/api/quotes/calculate", payload);
       return await response.json();
     },
     onSuccess: (data: any) => {
