@@ -4834,42 +4834,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!assertQuoteEditable(res, quote)) return;
 
-      // Allow placeholder line items (productId can be null for newly created items awaiting product selection)
-      // This enables the "create first, then edit" workflow where artwork can be attached immediately
-      const isPlaceholder = !lineItem.productId;
-
-      // For non-placeholder items, validate required fields
-      if (!isPlaceholder && (!lineItem.productName || lineItem.width == null || lineItem.height == null || lineItem.quantity == null || lineItem.linePrice == null)) {
-        return res.status(400).json({ message: "Missing required fields in line item" });
+      // Validate required fields for pricing
+      if (!lineItem.productId || lineItem.width == null || lineItem.height == null || lineItem.quantity == null) {
+        return res.status(400).json({ message: "Missing required fields: productId, width, height, quantity" });
       }
+
+      // Server-authoritative PBV2 pricing - call PricingService directly
+      const { priceLineItem } = await import("./services/pricing/PricingService");
+      
+      const pricingResult = await priceLineItem({
+        organizationId,
+        productId: lineItem.productId,
+        quantity: parseInt(lineItem.quantity),
+        widthIn: parseFloat(lineItem.width),
+        heightIn: parseFloat(lineItem.height),
+        pbv2ExplicitSelections: lineItem.optionSelectionsJson?.selected || {},
+        pbv2TreeVersionIdOverride: undefined, // Always use active tree for new line items
+      });
+
+      // Structured logging for PBV2 pricing persistence
+      console.log(`[PBV2_PRICE_PERSIST] quoteId=${id} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
       const allowedStatus = ["draft", "active", "canceled"];
       const incomingStatus = allowedStatus.includes(lineItem.status) ? lineItem.status : "active";
 
       const validatedLineItem = {
-        productId: lineItem.productId || null,
-        productName: lineItem.productName || "New Item (Select Product)",
+        productId: lineItem.productId,
+        productName: lineItem.productName || "New Item",
         variantId: lineItem.variantId || null,
         variantName: lineItem.variantName || null,
         productType: lineItem.productType || 'wide_roll',
         status: incomingStatus,
-        width: lineItem.width != null ? parseFloat(lineItem.width) : 0,
-        height: lineItem.height != null ? parseFloat(lineItem.height) : 0,
-        quantity: lineItem.quantity != null ? parseInt(lineItem.quantity) : 1,
+        width: parseFloat(lineItem.width),
+        height: parseFloat(lineItem.height),
+        quantity: parseInt(lineItem.quantity),
         specsJson: lineItem.specsJson || null,
         optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
+        // PBV2 snapshot fields (server-authoritative from PricingService)
+        pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
+        pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
+        pricedAt: new Date(),
         selectedOptions: lineItem.selectedOptions || [],
-        linePrice: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
-        formulaLinePrice: lineItem.formulaLinePrice != null ? String(parseFloat(lineItem.formulaLinePrice)) : null,
-        priceOverride: lineItem.priceOverride || null,
-        priceBreakdown: lineItem.priceBreakdown || {
-          basePrice: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
-          optionsPrice: 0,
-          total: lineItem.linePrice != null ? parseFloat(lineItem.linePrice) : 0,
+        linePrice: pricingResult.lineTotalCents / 100, // Convert cents to dollars
+        formulaLinePrice: null,
+        priceOverride: null,
+        priceBreakdown: {
+          basePrice: pricingResult.breakdown.baseCents / 100,
+          optionsPrice: pricingResult.breakdown.optionsCents / 100,
+          total: pricingResult.lineTotalCents / 100,
           formula: "",
         },
         displayOrder: lineItem.displayOrder || 0,
-        // Existing route always attaches to a concrete quote, so not temporary
         isTemporary: false,
       };
 
@@ -4877,7 +4892,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(createdLineItem);
     } catch (error) {
       console.error("Error adding line item:", error);
-      res.status(500).json({ message: "Failed to add line item" });
+      res.status(500).json({ message: "Failed to add line item", error: (error as Error).message });
     }
   });
 
@@ -4905,10 +4920,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         specsJson,
         optionSelectionsJson,
         selectedOptions,
-        linePrice,
-        formulaLinePrice,
-        priceOverride,
-        priceBreakdown,
         displayOrder,
       } = req.body;
 
@@ -4919,14 +4930,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const widthNum = width != null ? Number(width) : 1;
       const heightNum = height != null ? Number(height) : 1;
       const quantityNum = quantity != null ? Number(quantity) : 1;
-      const linePriceNum = linePrice != null ? Number(linePrice) : 0;
 
-      const effectivePriceBreakdown = priceBreakdown || {
-        basePrice: linePriceNum,
-        optionsPrice: 0,
-        total: linePriceNum,
-        formula: "",
-      };
+      if (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0) {
+        return res.status(400).json({ message: "Invalid dimensions for pricing" });
+      }
+
+      // Server-authoritative PBV2 pricing - call PricingService directly
+      const { priceLineItem } = await import("./services/pricing/PricingService");
+      
+      const pricingResult = await priceLineItem({
+        organizationId,
+        productId,
+        quantity: quantityNum,
+        widthIn: widthNum,
+        heightIn: heightNum,
+        pbv2ExplicitSelections: optionSelectionsJson?.selected || {},
+        pbv2TreeVersionIdOverride: undefined, // Always use active tree
+      });
+
+      // Structured logging for PBV2 pricing persistence
+      console.log(`[PBV2_PRICE_PERSIST] tempLineItem treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
 
       const validatedLineItem = {
         productId,
@@ -4934,16 +4957,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         variantId: variantId || null,
         variantName: variantName || null,
         productType: productType || "wide_roll",
-        width: Number.isFinite(widthNum) && widthNum > 0 ? widthNum : 1,
-        height: Number.isFinite(heightNum) && heightNum > 0 ? heightNum : 1,
-        quantity: Number.isFinite(quantityNum) && quantityNum > 0 ? quantityNum : 1,
+        width: widthNum,
+        height: heightNum,
+        quantity: quantityNum,
         specsJson: specsJson || null,
         optionSelectionsJson: optionSelectionsJson ?? null,
+        // PBV2 snapshot fields (server-authoritative from PricingService)
+        pbv2TreeVersionId: pricingResult.pbv2TreeVersionId,
+        pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
+        pricedAt: new Date(),
         selectedOptions: Array.isArray(selectedOptions) ? selectedOptions : [],
-        linePrice: Number.isFinite(linePriceNum) && linePriceNum >= 0 ? linePriceNum : 0,
-        formulaLinePrice: formulaLinePrice != null ? String(Number(formulaLinePrice)) : null,
-        priceOverride: priceOverride || null,
-        priceBreakdown: effectivePriceBreakdown,
+        linePrice: pricingResult.lineTotalCents / 100, // Convert cents to dollars
+        formulaLinePrice: null,
+        priceOverride: null,
+        priceBreakdown: {
+          basePrice: pricingResult.breakdown.baseCents / 100,
+          optionsPrice: pricingResult.breakdown.optionsCents / 100,
+          total: pricingResult.lineTotalCents / 100,
+          formula: "",
+        },
         displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
       };
 
@@ -4956,7 +4988,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, data: createdLineItem });
     } catch (error) {
       console.error("Error creating temporary line item:", error);
-      res.status(500).json({ message: "Failed to create temporary line item" });
+      res.status(500).json({ message: "Failed to create temporary line item", error: (error as Error).message });
     }
   });
 
@@ -4980,6 +5012,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const updateData: any = {};
       const allowedStatus = ["draft", "active", "canceled"];
+      
+      // Check if pricing-relevant fields changed (require repricing)
+      const pricingFieldsChanged = 
+        lineItem.productId !== undefined ||
+        lineItem.width !== undefined ||
+        lineItem.height !== undefined ||
+        lineItem.quantity !== undefined ||
+        lineItem.optionSelectionsJson !== undefined;
+
+      if (pricingFieldsChanged) {
+        // Server-authoritative repricing when pricing inputs change
+        const { priceLineItem } = await import("./services/pricing/PricingService");
+        
+        // Get current line item to fill in missing fields
+        const currentLineItem = quote.lineItems?.find((li: any) => li.id === lineItemId);
+        if (!currentLineItem) {
+          return res.status(404).json({ message: "Line item not found" });
+        }
+
+        const pricingResult = await priceLineItem({
+          organizationId,
+          productId: lineItem.productId ?? currentLineItem.productId,
+          quantity: lineItem.quantity !== undefined ? parseInt(lineItem.quantity) : currentLineItem.quantity,
+          widthIn: lineItem.width !== undefined ? parseFloat(lineItem.width) : parseFloat(currentLineItem.width),
+          heightIn: lineItem.height !== undefined ? parseFloat(lineItem.height) : parseFloat(currentLineItem.height),
+          pbv2ExplicitSelections: lineItem.optionSelectionsJson?.selected || currentLineItem.optionSelectionsJson?.selected || {},
+          pbv2TreeVersionIdOverride: undefined, // Always reprice with active tree
+        });
+
+        // Structured logging for PBV2 pricing persistence
+        console.log(`[PBV2_PRICE_PERSIST] quoteId=${id} lineItemId=${lineItemId} treeVersionId=${pricingResult.pbv2TreeVersionId} totalCents=${pricingResult.lineTotalCents} pricedAt=${new Date().toISOString()}`);
+
+        // Set server-authoritative PBV2 fields
+        updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
+        updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson;
+        updateData.pricedAt = new Date();
+        updateData.linePrice = pricingResult.lineTotalCents / 100;
+        updateData.priceBreakdown = {
+          basePrice: pricingResult.breakdown.baseCents / 100,
+          optionsPrice: pricingResult.breakdown.optionsCents / 100,
+          total: pricingResult.lineTotalCents / 100,
+          formula: "",
+        };
+        updateData.formulaLinePrice = null;
+        updateData.priceOverride = null;
+      }
+
+      // Apply other field updates
       if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
       if (lineItem.productName) updateData.productName = lineItem.productName;
       if (lineItem.variantId !== undefined) updateData.variantId = lineItem.variantId;
@@ -4991,11 +5071,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
       if (lineItem.optionSelectionsJson !== undefined) updateData.optionSelectionsJson = lineItem.optionSelectionsJson;
       if (lineItem.selectedOptions !== undefined) updateData.selectedOptions = lineItem.selectedOptions;
-      if (lineItem.linePrice !== undefined) updateData.linePrice = parseFloat(lineItem.linePrice);
-      if (lineItem.formulaLinePrice !== undefined) updateData.formulaLinePrice = lineItem.formulaLinePrice != null ? String(parseFloat(lineItem.formulaLinePrice)) : null;
-      if (lineItem.priceOverride !== undefined) updateData.priceOverride = lineItem.priceOverride;
-      if (lineItem.priceBreakdown !== undefined) updateData.priceBreakdown = lineItem.priceBreakdown;
       if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;
+      if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
+      if (lineItem.quoteId !== undefined) updateData.quoteId = lineItem.quoteId;
       if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
       if (lineItem.quoteId !== undefined) updateData.quoteId = lineItem.quoteId;
 
