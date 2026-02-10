@@ -151,6 +151,7 @@ const ProductSimulator = ({
           height: debouncedInputs.height,
           quantity: debouncedInputs.quantity,
           selectedOptions: optionSelections,
+          debugSource: "ProductSimulator.legacy",
         });
         return await response.json();
       }
@@ -166,6 +167,7 @@ const ProductSimulator = ({
           height: debouncedInputs.height,
           quantity: debouncedInputs.quantity,
           optionSelectionsJson: optionSelectionsV2,
+          debugSource: "ProductSimulator.v2",
         }),
       });
 

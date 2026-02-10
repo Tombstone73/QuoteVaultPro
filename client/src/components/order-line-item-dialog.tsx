@@ -422,6 +422,7 @@ export function OrderLineItemDialog({
           ...(isPbv2 && pbv2Tree
             ? { optionSelectionsJson }
             : { selectedOptions: buildSelectedOptionsPayload() }),
+          debugSource: "order-line-item-dialog",
         }),
       });
 

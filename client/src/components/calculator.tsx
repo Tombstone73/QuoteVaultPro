@@ -203,6 +203,7 @@ export default function CalculatorComponent() {
         width: parseFloat(width),
         height: parseFloat(height),
         quantity: parseInt(quantity),
+        debugSource: "calculator",
       };
 
       if (isPbv2) {
