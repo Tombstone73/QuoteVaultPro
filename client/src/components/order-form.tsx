@@ -187,6 +187,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
         width: widthNum,
         height: heightNum,
         quantity: quantityNum,
+        debugSource: "order-form",
       };
 
       if (isPbv2) {
