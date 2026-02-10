@@ -1409,6 +1409,13 @@ export function OrderLineItemsSection({
                                       const widthForCalc = dimsRequiredForCalc ? Number.parseFloat(item.width || "") || 0 : 1;
                                       const heightForCalc = dimsRequiredForCalc ? Number.parseFloat(item.height || "") || 0 : 1;
 
+                                      // Detect if this is a PBV2 product to send correct payload format
+                                      const isPbv2 = isPbv2Product(productForCalc);
+                                      const rawPbv2Selections = (item as any)?.optionSelectionsJson;
+                                      const pbv2Selections = isPbv2 && rawPbv2Selections && typeof rawPbv2Selections === "object"
+                                        ? rawPbv2Selections
+                                        : { schemaVersion: 2, selected: {} };
+
                                       const selections: Record<string, OptionSelection> = {};
                                       const savedSelectedOptions = (itemSpecsJson as any)?.selectedOptions;
                                       if (Array.isArray(savedSelectedOptions)) {
@@ -1451,7 +1458,7 @@ export function OrderLineItemsSection({
                                           width: widthForCalc,
                                           height: heightForCalc,
                                           quantity: nextQtyInt,
-                                          selectedOptions: selections,
+                                          ...(isPbv2 ? { optionSelectionsJson: pbv2Selections } : { selectedOptions: selections }),
                                           customerId,
                                         });
 
