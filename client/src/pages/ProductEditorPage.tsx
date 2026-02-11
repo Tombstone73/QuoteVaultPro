@@ -626,12 +626,40 @@ const ProductEditorPage = () => {
   };
 
   const handleDiscard = () => {
+    if (DEBUG_NAV_GUARD) {
+      console.log('[DISCARD] Before reset:', {
+        formDirty: form.formState.isDirty,
+        pbv2HasChanges: pbv2State?.hasChanges,
+        pbv2Saving: pbv2State?.isSaving,
+        engineDirty,
+        hasUnsavedChanges: form.formState.isDirty || ((pbv2State?.hasChanges ?? false) && !(pbv2State?.isSaving ?? false)) || engineDirty
+      });
+    }
+
+    // Reset RHF form to last loaded snapshot
     const baseline = lastLoadedRef.current;
     if (baseline) {
       form.reset(baseline);
     } else {
       form.reset();
     }
+
+    // Clear PBV2 dirty flag
+    if (pbv2ClearDirtyRef.current) {
+      pbv2ClearDirtyRef.current();
+    }
+
+    // Clear pricing engine dirty flag
+    setEngineDirty(false);
+
+    if (DEBUG_NAV_GUARD) {
+      console.log('[DISCARD] After reset:', {
+        formDirty: form.formState.isDirty,
+        engineDirty: false,
+        note: 'PBV2 dirty flag cleared via pbv2ClearDirtyRef.current()'
+      });
+    }
+
     toast({ title: "Discarded Changes", description: "Reverted to last loaded values." });
   };
 
