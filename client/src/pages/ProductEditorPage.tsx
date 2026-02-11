@@ -68,6 +68,10 @@ const ProductEditorPage = () => {
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean } | null>(null);
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
+  
+  // Track pricing engine dirty state
+  const [engineDirty, setEngineDirty] = useState(false);
+  const [pricingEngine, setPricingEngine] = useState<"formulaLibrary" | "pricingProfile" | "pricingFormula">("pricingProfile");
 
   // Track PBV2 tree meta (shippingConfig, productImages, pricingV2) for ProductForm
   const [treeMeta, setTreeMeta] = useState<{ shippingConfig?: any; productImages?: any[]; pricingV2?: any }>({});
@@ -162,6 +166,15 @@ const ProductEditorPage = () => {
       lastLoadedRef.current = nextValues;
       form.reset(nextValues);
       
+      // Hydrate pricing engine selection from product
+      const loadedEngine = (product as any).pricingEngine || "pricingProfile";
+      setPricingEngine(loadedEngine);
+      setEngineDirty(false); // Clear engine dirty on load
+      
+      if (import.meta.env.DEV) {
+        console.log('[ProductEditor] Loaded pricingEngine:', loadedEngine);
+      }
+      
       // DEV: Verify form is not dirty after reset
       if (import.meta.env.DEV) {
         // Check dirty state on next tick (after reset completes)
@@ -180,10 +193,10 @@ const ProductEditorPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNewProduct]);
 
-  // Derived dirty state: combine RHF form dirty + PBV2 dirty
-  // CRITICAL: hasUnsavedChanges triggers navigation guard
+  // Derived dirty state: combine RHF form dirty + PBV2 dirty + engine dirty
+  // CRITICAL: hasUnsavedChanges is SINGLE SOURCE OF TRUTH for all dirty state
   // Exclude PBV2 changes when isSaving=true to prevent guard during save
-  const hasUnsavedChanges = form.formState.isDirty || ((pbv2State?.hasChanges ?? false) && !(pbv2State?.isSaving ?? false));
+  const hasUnsavedChanges = form.formState.isDirty || ((pbv2State?.hasChanges ?? false) && !(pbv2State?.isSaving ?? false)) || engineDirty;
   
   // DEV: Log dirty state changes
   useEffect(() => {
@@ -192,11 +205,12 @@ const ProductEditorPage = () => {
         hasUnsavedChanges,
         rhfDirty: form.formState.isDirty,
         pbv2Dirty: pbv2State?.hasChanges ?? false,
+        engineDirty,
         pbv2Saving: pbv2State?.isSaving ?? false,
         location: location.pathname
       });
     }
-  }, [hasUnsavedChanges, form.formState.isDirty, pbv2State?.hasChanges, pbv2State?.isSaving, location.pathname]);
+  }, [hasUnsavedChanges, form.formState.isDirty, pbv2State?.hasChanges, engineDirty, pbv2State?.isSaving, location.pathname]);
   
   // Use ref to prevent stale closure in guard function
   const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
@@ -327,6 +341,7 @@ const ProductEditorPage = () => {
           ...cleanData,
           optionsJson: data.optionsJson && data.optionsJson.length > 0 ? data.optionsJson : null,
           primaryMaterialId: data.primaryMaterialId || null,
+          pricingEngine: pricingEngine, // Include pricing engine selection
         };
         
         let response;
@@ -496,8 +511,11 @@ const ProductEditorPage = () => {
           }
         }
         
+        // Clear engine dirty state
+        setEngineDirty(false);
+        
         if (import.meta.env.DEV) {
-          console.log('[SAVE_PIPELINE] phase=cleanup isDirty=', form.formState.isDirty);
+          console.log('[SAVE_PIPELINE] phase=cleanup isDirty=', form.formState.isDirty, 'engineDirty=false');
         }
         
         // CRITICAL: Set bypass flag AFTER clearing dirty states
@@ -792,6 +810,14 @@ const ProductEditorPage = () => {
               pricingV2={treeMeta.pricingV2}
               onUpdatePricingV2Base={(base) => pbv2TreeProviderRef.current?.updateTreeMeta({ pricingV2: { ...(treeMeta.pricingV2 || {}), base } })}
               onUpdatePricingV2UnitSystem={(unitSystem) => pbv2TreeProviderRef.current?.updateTreeMeta({ pricingV2: { ...(treeMeta.pricingV2 || {}), unitSystem } })}
+              pricingEngine={pricingEngine}
+              onPricingEngineChange={(engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => {
+                setPricingEngine(engine);
+                setEngineDirty(true);
+                if (import.meta.env.DEV) {
+                  console.log('[PRICING_ENGINE] Changed to:', engine, 'engineDirty=true');
+                }
+              }}
               onAddPricingV2Tier={(kind) => {
                 const current = treeMeta.pricingV2 || {};
                 const tiers = kind === 'qty' ? (current.qtyTiers || []) : (current.sqftTiers || []);

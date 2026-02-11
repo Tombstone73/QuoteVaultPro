@@ -557,6 +557,8 @@ export const products = pgTable("products", {
   pricingProfileKey: varchar("pricing_profile_key", { length: 100 }).default("default"),
   // NEW: Pricing profile config - calculator-specific settings (e.g., FlatGoodsConfig)
   pricingProfileConfig: jsonb("pricing_profile_config").$type<FlatGoodsConfig | Record<string, any>>(),
+  // NEW: Pricing engine selection - which UI mode user selected (formulaLibrary, pricingProfile, pricingFormula)
+  pricingEngine: varchar("pricing_engine", { length: 32 }).$type<"formulaLibrary" | "pricingProfile" | "pricingFormula">().default("pricingProfile"),
   // NEW: Link to reusable pricing formula
   pricingFormulaId: varchar("pricing_formula_id").references(() => pricingFormulas.id, { onDelete: 'set null' }),
   // Nesting Calculator fields
