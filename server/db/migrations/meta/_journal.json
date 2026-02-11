@@ -211,6 +211,13 @@
       "when": 0,
       "tag": "0037_pbv2_activation_governance",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 0,
+      "tag": "0038_add_pricing_engine",
+      "breakpoints": true
     }
   ]
 }
