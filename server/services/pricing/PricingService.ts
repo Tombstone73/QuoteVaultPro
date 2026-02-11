@@ -219,6 +219,22 @@ async function loadTreeVersion(organizationId: string, treeVersionId: string) {
     );
   }
 
+  // Log loaded tree details at debug level
+  const treeSchemaVersion = (treeVersion.treeJson as any)?.schemaVersion ?? 'unknown';
+  console.log(`[PBV2_PRICING_DEBUG] Loaded tree: versionId=${treeVersionId} schemaVersion=${treeSchemaVersion} status=${treeVersion.status}`);
+
+  // CRITICAL: Validate schemaVersion = 2
+  if (treeSchemaVersion !== 2) {
+    const error = new Error(
+      `PBV2 tree version ${treeVersionId} has outdated schema (v${treeSchemaVersion}). ` +
+      `This product's active PBV2 config must be upgraded to v2. ` +
+      `Open the product in the PBV2 builder and re-save to upgrade, then activate.`
+    );
+    (error as any).code = 'PBV2_E_SCHEMA_VERSION_MISMATCH';
+    (error as any).schemaVersion = treeSchemaVersion;
+    throw error;
+  }
+
   return treeVersion;
 }
 
