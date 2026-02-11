@@ -1970,8 +1970,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Upsert: update if exists, insert if not
+      // CRITICAL: Order by updated_at DESC to get most recent draft deterministically
+      // This prevents repeated INSERTs when activation is blocked (draft stays DRAFT)
       const [existingDraft] = await db
-        .select({ id: pbv2TreeVersions.id })
+        .select({ id: pbv2TreeVersions.id, updatedAt: pbv2TreeVersions.updatedAt })
         .from(pbv2TreeVersions)
         .where(
           and(
@@ -1980,6 +1982,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             eq(pbv2TreeVersions.status, "DRAFT")
           )
         )
+        .orderBy(desc(pbv2TreeVersions.updatedAt))
         .limit(1);
 
       console.log('[PBV2_DRAFT_PUT] existing draft check', { 
