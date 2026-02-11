@@ -666,8 +666,8 @@ const ProductEditorPage = () => {
               />
             </div>
 
-            <Badge variant={form.formState.isDirty ? "secondary" : "outline"} className="text-[11px]">
-              {form.formState.isDirty ? "Draft" : "Saved"}
+            <Badge variant={hasUnsavedChanges ? "secondary" : "outline"} className="text-[11px]">
+              {hasUnsavedChanges ? "Draft" : "Saved"}
             </Badge>
 
             {lastSavedAt ? (

@@ -65,10 +65,14 @@ export const ProductForm = ({
   const addPricingProfileKey = form.watch("pricingProfileKey");
 
   // Shipping config local state — synced from treeMeta
+  // CRITICAL: Also use setValue to mark form dirty when shipping fields change
   const [shippingPolicy, setShippingPolicy] = useState<ShippingPolicy>(treeMeta?.shippingConfig?.shippingPolicy ?? "pickup_only");
   const [baseWeight, setBaseWeight] = useState<string>(treeMeta?.shippingConfig?.baseWeight != null ? String(treeMeta.shippingConfig.baseWeight) : "");
   const [weightUnit, setWeightUnit] = useState<WeightUnit>(treeMeta?.shippingConfig?.weightUnit ?? "oz");
   const [weightBasis, setWeightBasis] = useState<WeightBasis>(treeMeta?.shippingConfig?.weightBasis ?? "per_item");
+  
+  // Hidden tracking field to mark form dirty when shipping config changes
+  const shippingConfigTracker = form.watch("__shippingConfigTracker");
 
   // Sync local state from treeMeta when it loads from server
   useEffect(() => {
@@ -93,7 +97,11 @@ export const ProductForm = ({
       current.baseWeight = null;
     }
     onUpdateTreeMeta?.({ shippingConfig: current });
-  }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta]);
+    
+    // CRITICAL: Mark form dirty when shipping config changes
+    // Use hidden tracking field to trigger RHF dirty state
+    form.setValue("__shippingConfigTracker", Date.now(), { shouldDirty: true });
+  }, [shippingPolicy, baseWeight, weightUnit, weightBasis, onUpdateTreeMeta, form]);
 
   const isWeightDisabled = shippingPolicy === "pickup_only";
 
@@ -427,8 +435,24 @@ function PricingEngineRadioSection({
 
   // Derive initial mode from form state
   const formulaId = form.watch("pricingFormulaId");
+  const currentFormula = form.watch("pricingFormula");
+  const currentProfile = form.watch("pricingProfileKey");
+  
   const [pricingMode, setPricingMode] = useState<PricingMode>(() => {
+    // Restore mode from persisted state:
+    // 1. If pricingFormulaId is set → formulaLibrary
+    // 2. If pricingFormula is non-default and different from profile's default → pricingFormula
+    // 3. Otherwise → pricingProfile
     if (formulaId) return "formulaLibrary";
+    
+    const profile = getProfile(currentProfile || "default");
+    const defaultFormula = profile.defaultFormula || getDefaultFormula(currentProfile || "default");
+    
+    // If formula differs from default, user was in custom formula mode
+    if (currentFormula && currentFormula !== defaultFormula) {
+      return "pricingFormula";
+    }
+    
     return "pricingProfile";
   });
 
@@ -437,20 +461,24 @@ function PricingEngineRadioSection({
     if (formulaId && pricingMode !== "formulaLibrary") {
       setPricingMode("formulaLibrary");
     }
-  }, [formulaId]);
+  }, [formulaId, pricingMode]);
 
   const handleModeChange = (mode: PricingMode) => {
     setPricingMode(mode);
     // Clear other fields when switching modes
     if (mode !== "formulaLibrary") {
-      form.setValue("pricingFormulaId", null);
+      form.setValue("pricingFormulaId", null, { shouldDirty: true });
     }
     if (mode === "pricingFormula") {
       // Ensure formula field has a value
       const currentFormula = form.getValues("pricingFormula");
       if (!currentFormula) {
-        form.setValue("pricingFormula", getDefaultFormula(pricingProfileKey));
+        form.setValue("pricingFormula", getDefaultFormula(pricingProfileKey), { shouldDirty: true });
       }
+    }
+    // Log mode change for verification
+    if (import.meta.env.DEV) {
+      console.log('[PRICING_ENGINE] Mode changed to:', mode);
     }
   };
 
