@@ -521,11 +521,13 @@ export default function PBV2ProductBuilderSectionV2({
     if (import.meta.env.DEV) {
       const nc = Object.keys((normalizedTree as any)?.nodes || {}).length;
       const gc = Object.values((normalizedTree as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
-      console.log('[PBV2_HYDRATE] Tree loaded:', { 
-        productId, 
+      const hasPricingV2 = !!(normalizedTree as any)?.meta?.pricingV2;
+      console.log('[PBV2_HYDRATE]', { 
         source: treeSource,
+        hasPricingV2,
+        nodeCount: nc,
+        productId, 
         treeId: sourceTree.id, 
-        nodes: nc, 
         groups: gc,
         hasDraft: !!draft,
         hasActive: !!active,
