@@ -2067,7 +2067,150 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log('[PBV2_DRAFT_PUT] verification SELECT succeeded', { verifiedId: verifiedDraft.id });
 
-      return res.json({ success: true, data: draft });
+      // ============================================================
+      // AUTO-ACTIVATION: If org mode is 'auto_on_save', attempt activation
+      // ============================================================
+      let activationAttempted = false;
+      let activationResult: {
+        success: boolean;
+        activated?: boolean;
+        findings?: any[];
+        errorCode?: string;
+        message?: string;
+      } = { success: false };
+
+      // Load org to check activation mode
+      const [org] = await db
+        .select({ pbv2ActivationMode: organizations.pbv2ActivationMode })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (org?.pbv2ActivationMode === 'auto_on_save') {
+        activationAttempted = true;
+        console.log('[PBV2_AUTO_ACTIVATE] attempting auto-activation', { draftId: draft.id, productId, orgId: organizationId });
+
+        try {
+          // GUARDRAIL 1: Check schemaVersion = 2
+          const treeJson = (draft as any).treeJson as any;
+          const schemaVersion = treeJson?.schemaVersion ?? 1;
+          if (schemaVersion !== 2) {
+            activationResult = {
+              success: false,
+              activated: false,
+              errorCode: 'PBV2_E_SCHEMA_VERSION_UNSUPPORTED',
+              message: 'Draft saved but not activated: tree must be upgraded to PBV2 v2',
+              findings: [{
+                severity: "error",
+                message: "Tree schemaVersion must be 2 for activation",
+                path: "schemaVersion",
+                actual: schemaVersion,
+                expected: 2,
+              }],
+            };
+            console.log('[PBV2_AUTO_ACTIVATE] blocked by schemaVersion', { draftId: draft.id, schemaVersion });
+          } else {
+          // GUARDRAIL 2: Run same validations as publish
+          const { validateTreeHasBasePrice } = await import("../shared/pbv2/validator/validateBasePrice");
+          const basePriceValidation = validateTreeHasBasePrice(treeJson);
+          
+          if (basePriceValidation.errors.length > 0) {
+            activationResult = {
+              success: false,
+              activated: false,
+              errorCode: 'BASE_PRICE_MISSING',
+              message: 'Draft saved but not activated: base pricing required',
+              findings: basePriceValidation.findings,
+            };
+            console.log('[PBV2_AUTO_ACTIVATE] blocked by base pricing validation', { draftId: draft.id });
+          } else {
+            const { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } = await import("../shared/pbv2/validator");
+            const publishValidation = validateTreeForPublish((draft as any).treeJson as any, DEFAULT_VALIDATE_OPTS);
+            
+            if (publishValidation.errors.length > 0) {
+              activationResult = {
+                success: false,
+                activated: false,
+                errorCode: 'VALIDATION_ERRORS',
+                message: 'Draft saved but not activated: validation errors present',
+                findings: publishValidation.findings,
+              };
+              console.log('[PBV2_AUTO_ACTIVATE] blocked by publish validation', { draftId: draft.id, errorCount: publishValidation.errors.length });
+            } else {
+              // Validation passed, activate the tree
+              const publishedAt = new Date();
+              
+              await db.transaction(async (tx) => {
+                // Check for previous active version
+                const [productRecord] = await tx
+                  .select({ pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+                  .from(products)
+                  .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+                  .limit(1);
+
+                const previousActiveId = productRecord?.pbv2ActiveTreeVersionId;
+                
+                // Deprecate previous active if different
+                if (previousActiveId && previousActiveId !== draft.id) {
+                  await tx
+                    .update(pbv2TreeVersions)
+                    .set({ status: "DEPRECATED", updatedAt: publishedAt, updatedByUserId: userId ?? null })
+                    .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, previousActiveId)));
+                }
+
+                // Activate this version
+                const nextTreeJson = {
+                  ...(draft as any).treeJson,
+                  schemaVersion: 2, // Preserve v2 schema
+                  status: "ACTIVE",
+                };
+
+                await tx
+                  .update(pbv2TreeVersions)
+                  .set({
+                    status: "ACTIVE",
+                    publishedAt,
+                    updatedAt: publishedAt,
+                    updatedByUserId: userId ?? null,
+                    treeJson: nextTreeJson,
+                  })
+                  .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, draft.id)));
+
+                // Update product pointer
+                await tx
+                  .update(products)
+                  .set({ pbv2ActiveTreeVersionId: draft.id, updatedAt: publishedAt })
+                  .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)));
+              });
+
+              activationResult = {
+                success: true,
+                activated: true,
+                message: 'Draft saved and activated successfully',
+                findings: publishValidation.warnings.length > 0 ? publishValidation.findings : undefined,
+              };
+              console.log('[PBV2_AUTO_ACTIVATE] activation succeeded', { draftId: draft.id, productId, pbv2ActiveTreeVersionId: draft.id });
+            }
+          }
+          }
+        } catch (activationError: any) {
+          // Don't fail the save if activation fails
+          activationResult = {
+            success: false,
+            activated: false,
+            errorCode: 'ACTIVATION_FAILED',
+            message: 'Draft saved but activation failed: ' + (activationError.message || 'Unknown error'),
+          };
+          console.error('[PBV2_AUTO_ACTIVATE] activation failed', { draftId: draft.id, error: activationError });
+        }
+      }
+
+      return res.json({ 
+        success: true, 
+        data: draft,
+        activationAttempted,
+        activationResult: activationAttempted ? activationResult : undefined,
+      });
     } catch (error: any) {
       console.error('[PBV2_DRAFT_PUT] FATAL ERROR:', error);
       console.error('[PBV2_DRAFT_PUT] error stack:', error.stack);
@@ -2119,9 +2262,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(409).json({ success: false, message: "Only DRAFT tree versions can be published" });
       }
 
-      // PHASE 6 GUARDRAIL: Validate base pricing is configured
+      // GUARDRAIL 1: Validate schemaVersion = 2
+      const treeJson = (draft as any).treeJson as any;
+      const schemaVersion = treeJson?.schemaVersion ?? 1;
+      if (schemaVersion !== 2) {
+        console.warn(`[PBV2_ACTIVATION_BLOCKED] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} reason=schema_version_unsupported schemaVersion=${schemaVersion}`);
+        return res.status(400).json({
+          success: false,
+          code: "PBV2_E_SCHEMA_VERSION_UNSUPPORTED",
+          message: "Cannot activate this PBV2 tree: schema version outdated",
+          error: "This tree uses PBV2 schema v" + schemaVersion + ". Only v2 trees can be activated. Open the product in the PBV2 builder and re-save to upgrade, then try publishing again.",
+          findings: [{
+            severity: "error",
+            message: "Tree must be PBV2 schema version 2",
+            path: "schemaVersion",
+            actual: schemaVersion,
+            expected: 2,
+          }],
+        });
+      }
+
+      // GUARDRAIL 2: Validate base pricing is configured
       const { validateTreeHasBasePrice } = await import("../shared/pbv2/validator/validateBasePrice");
-      const basePriceValidation = validateTreeHasBasePrice((draft as any).treeJson as any);
+      const basePriceValidation = validateTreeHasBasePrice(treeJson);
       if (basePriceValidation.errors.length > 0) {
         console.warn(`[PBV2_ACTIVATION_BLOCKED] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} reason=missing_base_price`);
         return res.status(400).json({
@@ -2133,7 +2296,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Validate publish gate (Appendix 5)
-      const validation = validateTreeForPublish((draft as any).treeJson as any, DEFAULT_VALIDATE_OPTS);
+      const validation = validateTreeForPublish(treeJson, DEFAULT_VALIDATE_OPTS);
       if (validation.errors.length > 0) {
         return res.status(400).json({
           success: false,
@@ -2173,7 +2336,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         const nextTreeJson: Record<string, any> = {
           ...(draft as any).treeJson,
-          schemaVersion: 1,
+          schemaVersion: 2, // Preserve v2 schema
           status: "ACTIVE",
         };
 
@@ -3262,16 +3425,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Call unified PricingService
-      const pricingResult = await priceLineItem({
-        organizationId,
-        productId,
-        quantity,
-        widthIn: width,
-        heightIn: height,
-        pbv2ExplicitSelections,
-        pbv2TreeVersionIdOverride,
-      });
+      // Call unified PricingService with error handling
+      let pricingResult;
+      try {
+        pricingResult = await priceLineItem({
+          organizationId,
+          productId,
+          quantity,
+          widthIn: width,
+          heightIn: height,
+          pbv2ExplicitSelections,
+          pbv2TreeVersionIdOverride,
+        });
+      } catch (pricingError: any) {
+        // Convert PBV2 schema version errors to 400 with friendly message
+        if (pricingError.code === 'PBV2_E_SCHEMA_VERSION_MISMATCH') {
+          console.warn(`[CALCULATE_PBV2_SCHEMA_MISMATCH] productId=${productId} schemaVersion=${pricingError.schemaVersion}`);
+          return res.status(400).json({
+            message: "This product's active PBV2 configuration is outdated (schema v" + (pricingError.schemaVersion || 1) + "). Open the product and re-save to upgrade, then activate.",
+            code: "PBV2_E_SCHEMA_VERSION_MISMATCH",
+            schemaVersion: pricingError.schemaVersion,
+            details: pricingError.message,
+          });
+        }
+        
+        // Re-throw other pricing errors (will be caught by outer handler)
+        throw pricingError;
+      }
 
       // Load variant info (display-only, not used for pricing)
       let variant = null;

@@ -479,27 +479,62 @@ export class SharedRepository {
                     .limit(1);
 
                 if (originalActive) {
-                    const [newActive] = await tx
+                    // Clone active tree as DRAFT (never directly create ACTIVE)
+                    const [newDraftFromActive] = await tx
                         .insert(pbv2TreeVersions)
                         .values({
                             organizationId,
                             productId: newProduct.id,
-                            status: 'ACTIVE',
+                            status: 'DRAFT',
                             schemaVersion: originalActive.schemaVersion,
                             treeJson: cloneJson(originalActive.treeJson as any),
-                            publishedAt: originalActive.publishedAt,
+                            publishedAt: null,
                             createdByUserId: userId,
                             updatedByUserId: userId,
                         } as any)
                         .returning();
 
-                    await tx
-                        .update(products)
-                        .set({
-                            pbv2ActiveTreeVersionId: newActive.id,
-                            updatedAt: new Date(),
-                        } as any)
-                        .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
+                    // Only activate if schemaVersion === 2 (guards prevent v1 activation)
+                    if (originalActive.schemaVersion === 2) {
+                        // Validate tree before activation
+                        const { validateTreeHasBasePrice } = await import("../../shared/pbv2/validator/validateBasePrice");
+                        const { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } = await import("../../shared/pbv2/validator");
+                        
+                        const treeJson = cloneJson(originalActive.treeJson as any);
+                        const basePriceValidation = validateTreeHasBasePrice(treeJson);
+                        const publishValidation = validateTreeForPublish(treeJson, DEFAULT_VALIDATE_OPTS);
+
+                        if (basePriceValidation.errors.length === 0 && publishValidation.errors.length === 0) {
+                            // Activation logic: promote DRAFT to ACTIVE
+                            const publishedAt = new Date();
+                            const nextTreeJson = {
+                                ...treeJson,
+                                schemaVersion: 2,
+                                status: "ACTIVE",
+                            };
+
+                            await tx
+                                .update(pbv2TreeVersions)
+                                .set({
+                                    status: 'ACTIVE' as any,
+                                    publishedAt,
+                                    updatedAt: publishedAt,
+                                    updatedByUserId: userId,
+                                    treeJson: nextTreeJson as any,
+                                } as any)
+                                .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, newDraftFromActive.id)));
+
+                            await tx
+                                .update(products)
+                                .set({
+                                    pbv2ActiveTreeVersionId: newDraftFromActive.id,
+                                    updatedAt: publishedAt,
+                                } as any)
+                                .where(and(eq(products.id, newProduct.id), eq(products.organizationId, organizationId)));
+                        }
+                        // If validation fails, tree stays as DRAFT
+                    }
+                    // If schemaVersion !== 2, tree stays as DRAFT (no activation)
                 }
             }
 
