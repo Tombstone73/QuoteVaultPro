@@ -976,6 +976,19 @@ export default function PBV2ProductBuilderSectionV2({
     const edgeCount = edges.length;
     const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
 
+    // VALIDATION: Block save if tree is empty (only seed node)
+    if (nodeCount <= 1) {
+      setIsSaving(false);
+      isSavingRef.current = false;
+      toast({ 
+        title: "Cannot save: builder tree is empty", 
+        description: "Add at least one option group before saving (nodeCount=1 is seed only)",
+        variant: "destructive" 
+      });
+      console.warn('[PBV2_SAVE_BLOCKED] nodeCount=1 (seed only), refusing to save empty tree');
+      return;
+    }
+
     // Count nodes by type to detect missing options/pricing
     const nodesByType: Record<string, number> = {};
     const nodesByKind: Record<string, number> = {};
