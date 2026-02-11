@@ -61,7 +61,7 @@ const ProductEditorPage = () => {
   const createdProductIdRef = useRef<string | null>(null);
   
   // Track PBV2 state for persistence
-  const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null } | null>(null);
+  const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean } | null>(null);
   const pbv2TreeProviderRef = useRef<{ getCurrentTree: () => unknown | null; updateTreeMeta: (metaUpdates: Record<string, unknown>) => void } | null>(null);
   const pbv2ClearDirtyRef = useRef<(() => void) | null>(null);
 
@@ -177,7 +177,9 @@ const ProductEditorPage = () => {
   }, [isNewProduct]);
 
   // Derived dirty state: combine RHF form dirty + PBV2 dirty
-  const hasUnsavedChanges = form.formState.isDirty || (pbv2State?.hasChanges ?? false);
+  // CRITICAL: hasUnsavedChanges triggers navigation guard
+  // Exclude PBV2 changes when isSaving=true to prevent guard during save
+  const hasUnsavedChanges = form.formState.isDirty || ((pbv2State?.hasChanges ?? false) && !(pbv2State?.isSaving ?? false));
   
   // DEV: Log dirty state changes
   useEffect(() => {
@@ -186,10 +188,11 @@ const ProductEditorPage = () => {
         hasUnsavedChanges,
         rhfDirty: form.formState.isDirty,
         pbv2Dirty: pbv2State?.hasChanges ?? false,
+        pbv2Saving: pbv2State?.isSaving ?? false,
         location: location.pathname
       });
     }
-  }, [hasUnsavedChanges, form.formState.isDirty, pbv2State?.hasChanges, location.pathname]);
+  }, [hasUnsavedChanges, form.formState.isDirty, pbv2State?.hasChanges, pbv2State?.isSaving, location.pathname]);
   
   // Use ref to prevent stale closure in guard function
   const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
@@ -228,7 +231,8 @@ const ProductEditorPage = () => {
             dirty, 
             decision,
             rhfDirty: form.formState.isDirty,
-            pbv2Dirty: pbv2State?.hasChanges ?? false
+            pbv2Dirty: pbv2State?.hasChanges ?? false,
+            pbv2Saving: pbv2State?.isSaving ?? false
           });
         }
         
