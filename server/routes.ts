@@ -2093,6 +2093,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .limit(1);
 
       if (!draft) return res.status(404).json({ success: false, message: "Tree version not found" });
+      
+      // Idempotency: If already ACTIVE, check if product points to it
+      if (draft.status === "ACTIVE") {
+        const [product] = await db
+          .select({ pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+          .from(products)
+          .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)))
+          .limit(1);
+        
+        if (product && product.pbv2ActiveTreeVersionId === id) {
+          // Already published and active - idempotent success
+          console.log(`[PBV2_PUBLISH_IDEMPOTENT] orgId=${organizationId} productId=${draft.productId} treeVersionId=${id} status=already_active`);
+          return res.json({
+            success: true,
+            data: draft,
+            productId: draft.productId,
+            pbv2ActiveTreeVersionId: id,
+            message: "Tree version already published and active"
+          });
+        }
+      }
+      
       if (draft.status !== "DRAFT") {
         return res.status(409).json({ success: false, message: "Only DRAFT tree versions can be published" });
       }
@@ -2172,10 +2194,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .set({ pbv2ActiveTreeVersionId: draft.id, updatedAt: publishedAt })
           .where(and(eq(products.id, draft.productId), eq(products.organizationId, organizationId)));
 
-        return updatedVersion;
+        console.log(`[PBV2_PUBLISH_SUCCESS] orgId=${organizationId} productId=${draft.productId} treeVersionId=${draft.id} previousActiveId=${previousActiveId || 'none'}`);
+
+        return { 
+          updatedVersion, 
+          productId: draft.productId, 
+          pbv2ActiveTreeVersionId: draft.id 
+        };
       });
 
-      return res.json({ success: true, data: result, findings: validation.findings });
+      return res.json({ 
+        success: true, 
+        data: result.updatedVersion, 
+        productId: result.productId,
+        pbv2ActiveTreeVersionId: result.pbv2ActiveTreeVersionId,
+        findings: validation.findings 
+      });
     } catch (error: any) {
       if (error?.statusCode === 404) {
         return res.status(404).json({ success: false, message: error.message });
@@ -3200,7 +3234,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Load product to validate PBV2-ready
       const [product] = await db
-        .select()
+        .select({
+          id: products.id,
+          name: products.name,
+          pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+        })
         .from(products)
         .where(
           and(
@@ -3214,7 +3252,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Product not found" });
       }
 
+      // Debug: Log what we actually fetched
+      console.log(`[CALCULATE_DEBUG] productId=${productId} pbv2ActiveTreeVersionId=${product.pbv2ActiveTreeVersionId} hasOverride=${!!pbv2TreeVersionIdOverride}`);
+
       if (!product.pbv2ActiveTreeVersionId && !pbv2TreeVersionIdOverride) {
+        console.warn(`[CALCULATE_PBV2_MISSING] productId=${productId} organizationId=${organizationId} - Product loaded but pbv2ActiveTreeVersionId is ${product.pbv2ActiveTreeVersionId}`);
         return res.status(400).json({ 
           message: "Product does not have PBV2 pricing configured (missing pbv2ActiveTreeVersionId)" 
         });
