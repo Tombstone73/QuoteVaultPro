@@ -974,18 +974,34 @@ export default function PBV2ProductBuilderSectionV2({
     const edges = Array.isArray((normalizedTree as any)?.edges) ? (normalizedTree as any).edges : [];
     const nodeCount = Object.keys(nodes).length;
     const edgeCount = edges.length;
-    const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
+    const rootNodeIds = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds : [];
+    const rootCount = rootNodeIds.length;
 
-    // VALIDATION: Block save if tree is empty (only seed node)
-    if (nodeCount <= 1) {
+    // VALIDATION: Block save if tree is structurally invalid (not a valid OptionTreeV2)
+    // Allow base-only trees (nodeCount=1) for products with no options
+    const schemaVersion = (normalizedTree as any)?.schemaVersion;
+    const isStructurallyValid = 
+      schemaVersion === 2 &&
+      rootCount > 0 &&
+      typeof nodes === 'object' &&
+      rootNodeIds.every((rootId: string) => nodes[rootId] !== undefined);
+
+    if (!isStructurallyValid) {
       setIsSaving(false);
       isSavingRef.current = false;
+      const issues = [];
+      if (schemaVersion !== 2) issues.push(`schemaVersion=${schemaVersion} (expected 2)`);
+      if (rootCount === 0) issues.push('rootNodeIds is empty');
+      if (typeof nodes !== 'object') issues.push('nodes is not an object');
+      const missingRoots = rootNodeIds.filter((id: string) => !nodes[id]);
+      if (missingRoots.length > 0) issues.push(`missing root nodes: ${missingRoots.join(', ')}`);
+      
       toast({ 
-        title: "Cannot save: builder tree is empty", 
-        description: "Add at least one option group before saving (nodeCount=1 is seed only)",
+        title: "Cannot save: PBV2 tree payload is invalid", 
+        description: issues.join('; '),
         variant: "destructive" 
       });
-      console.warn('[PBV2_SAVE_BLOCKED] nodeCount=1 (seed only), refusing to save empty tree');
+      console.error('[PBV2_SAVE_BLOCKED] Structural validation failed:', { schemaVersion, rootCount, nodeCount, issues });
       return;
     }
 
