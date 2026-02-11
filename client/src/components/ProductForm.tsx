@@ -44,6 +44,8 @@ export const ProductForm = ({
   onAddPricingV2Tier,
   onUpdatePricingV2Tier,
   onDeletePricingV2Tier,
+  pricingEngine,
+  onPricingEngineChange,
 }: {
   form: any;
   materials: any;
@@ -60,6 +62,8 @@ export const ProductForm = ({
   onAddPricingV2Tier?: (kind: 'qty' | 'sqft') => void;
   onUpdatePricingV2Tier?: (kind: 'qty' | 'sqft', index: number, tier: any) => void;
   onDeletePricingV2Tier?: (kind: 'qty' | 'sqft', index: number) => void;
+  pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
+  onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
 }) => {
   const { toast } = useToast();
   const addPricingProfileKey = form.watch("pricingProfileKey");
@@ -214,6 +218,8 @@ export const ProductForm = ({
           form={form}
           pricingFormulas={pricingFormulas}
           pricingProfileKey={addPricingProfileKey}
+          pricingEngine={pricingEngine}
+          onPricingEngineChange={onPricingEngineChange}
         />
 
         {/* RIGHT: Material & Weight Configuration */}
@@ -426,45 +432,39 @@ function PricingEngineRadioSection({
   form,
   pricingFormulas,
   pricingProfileKey,
+  pricingEngine,
+  onPricingEngineChange,
 }: {
   form: any;
   pricingFormulas: any;
   pricingProfileKey: string;
+  pricingEngine?: "formulaLibrary" | "pricingProfile" | "pricingFormula";
+  onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
 }) {
   type PricingMode = "formulaLibrary" | "pricingProfile" | "pricingFormula";
 
-  // Derive initial mode from form state
+  // Use controlled pricingEngine prop, with fallback to derive from form state
   const formulaId = form.watch("pricingFormulaId");
   const currentFormula = form.watch("pricingFormula");
   const currentProfile = form.watch("pricingProfileKey");
   
-  const [pricingMode, setPricingMode] = useState<PricingMode>(() => {
-    // Restore mode from persisted state:
-    // 1. If pricingFormulaId is set → formulaLibrary
-    // 2. If pricingFormula is non-default and different from profile's default → pricingFormula
-    // 3. Otherwise → pricingProfile
+  // Determine effective mode (controlled or derived)
+  const effectiveMode: PricingMode = pricingEngine || (() => {
     if (formulaId) return "formulaLibrary";
     
     const profile = getProfile(currentProfile || "default");
     const defaultFormula = profile.defaultFormula || getDefaultFormula(currentProfile || "default");
     
-    // If formula differs from default, user was in custom formula mode
     if (currentFormula && currentFormula !== defaultFormula) {
       return "pricingFormula";
     }
     
     return "pricingProfile";
-  });
-
-  // Sync mode if formula is selected externally
-  useEffect(() => {
-    if (formulaId && pricingMode !== "formulaLibrary") {
-      setPricingMode("formulaLibrary");
-    }
-  }, [formulaId, pricingMode]);
+  })();
 
   const handleModeChange = (mode: PricingMode) => {
-    setPricingMode(mode);
+    // Call parent handler if provided (for controlled mode)
+    onPricingEngineChange?.(mode);
     // Clear other fields when switching modes
     if (mode !== "formulaLibrary") {
       form.setValue("pricingFormulaId", null, { shouldDirty: true });
@@ -487,19 +487,19 @@ function PricingEngineRadioSection({
       <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Pricing Engine</h3>
 
       <RadioGroup
-        value={pricingMode}
+        value={effectiveMode}
         onValueChange={(v) => handleModeChange(v as PricingMode)}
         className="space-y-0 gap-0"
       >
         {/* — Field 1: Formula Library — */}
-        <div className={`rounded-md px-3 py-2.5 transition-colors ${pricingMode === "formulaLibrary" ? "bg-slate-800/60" : "bg-transparent"}`}>
+        <div className={`rounded-md px-3 py-2.5 transition-colors ${effectiveMode === "formulaLibrary" ? "bg-slate-800/60" : "bg-transparent"}`}>
           <div className="flex items-center gap-2 mb-1.5">
             <RadioGroupItem value="formulaLibrary" id="pe-formula-lib" className="h-3.5 w-3.5" />
             <label htmlFor="pe-formula-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
               Formula Library
             </label>
           </div>
-          <div className={pricingMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
+          <div className={effectiveMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
             <FormField
               control={form.control}
               name="pricingFormulaId"
@@ -542,14 +542,14 @@ function PricingEngineRadioSection({
         </div>
 
         {/* — Field 2: Pricing Profile — */}
-        <div className={`rounded-md px-3 py-2.5 transition-colors ${pricingMode === "pricingProfile" ? "bg-slate-800/60" : "bg-transparent"}`}>
+        <div className={`rounded-md px-3 py-2.5 transition-colors ${effectiveMode === "pricingProfile" ? "bg-slate-800/60" : "bg-transparent"}`}>
           <div className="flex items-center gap-2 mb-1.5">
             <RadioGroupItem value="pricingProfile" id="pe-profile" className="h-3.5 w-3.5" />
             <label htmlFor="pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
               Pricing Profile
             </label>
           </div>
-          <div className={pricingMode !== "pricingProfile" ? "opacity-40 pointer-events-none" : ""}>
+          <div className={effectiveMode !== "pricingProfile" ? "opacity-40 pointer-events-none" : ""}>
             <FormField
               control={form.control}
               name="pricingProfileKey"
@@ -594,14 +594,14 @@ function PricingEngineRadioSection({
 
         {/* — Field 3: Pricing Formula — */}
         {getProfile(pricingProfileKey).usesFormula && (
-          <div className={`rounded-md px-3 py-2.5 transition-colors ${pricingMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
+          <div className={`rounded-md px-3 py-2.5 transition-colors ${effectiveMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
             <div className="flex items-center gap-2 mb-1.5">
               <RadioGroupItem value="pricingFormula" id="pe-formula" className="h-3.5 w-3.5" />
               <label htmlFor="pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
                 Pricing Formula
               </label>
             </div>
-            <div className={pricingMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}>
+            <div className={effectiveMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}>
               <FormField
                 control={form.control}
                 name="pricingFormula"
