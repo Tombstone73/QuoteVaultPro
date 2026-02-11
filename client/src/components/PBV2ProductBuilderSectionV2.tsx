@@ -453,10 +453,11 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
-    // Existing product mode: Load from server draft or seed new tree
-    if (!draft) {
+    // Existing product mode: Load from server draft or active tree
+    // If draft not found (e.g., auto_on_save activated it), load from active
+    if (!draft && !active) {
       
-      // No draft exists yet - create seed tree with runtime node
+      // No draft AND no active - create seed tree with runtime node
       const baseNodeId = 'node_base_entry';
       const seedTree = {
         schemaVersion: 2,
@@ -488,7 +489,7 @@ export default function PBV2ProductBuilderSectionV2({
       const normalizedSeed = normalizeTreeJson(seedTree);
       if (import.meta.env.DEV) {
         const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
-        console.log('[PBV2_SEED] Existing product initialized:', { mode: 'no-draft', productId, nodeCount: nc });
+        console.log('[PBV2_SEED] Existing product initialized:', { mode: 'no-draft-no-active', productId, nodeCount: nc });
       }
       
       setLocalTreeJson(normalizedSeed);
@@ -496,22 +497,38 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
-    // Draft exists - hydrate from server
-    const normalizedDraft = normalizeTreeJson(draft.treeJson);
+    // Prefer draft over active, but fallback to active if draft missing (auto_on_save case)
+    const sourceTree = draft || active;
+    if (!sourceTree) {
+      console.error('[PBV2_LOAD_ERROR] No draft or active tree found, should have been handled above');
+      return;
+    }
+
+    // Hydrate from source tree (draft or active)
+    const normalizedTree = normalizeTreeJson(sourceTree.treeJson);
+    const treeSource = draft ? 'DRAFT' : 'ACTIVE';
     if (import.meta.env.DEV) {
-      const nc = Object.keys((normalizedDraft as any)?.nodes || {}).length;
-      const gc = Object.values((normalizedDraft as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
-      console.log('[PBV2_HYDRATE] Draft loaded:', { productId, draftId: draft.id, nodes: nc, groups: gc });
+      const nc = Object.keys((normalizedTree as any)?.nodes || {}).length;
+      const gc = Object.values((normalizedTree as any)?.nodes || {}).filter((n: any) => (n.type || '').toUpperCase() === 'GROUP').length;
+      console.log('[PBV2_HYDRATE] Tree loaded:', { 
+        productId, 
+        source: treeSource,
+        treeId: sourceTree.id, 
+        nodes: nc, 
+        groups: gc,
+        hasDraft: !!draft,
+        hasActive: !!active,
+      });
     }
     
-    setLocalTreeJson(normalizedDraft);
+    setLocalTreeJson(normalizedTree);
     // CRITICAL: Clear dirty flag after hydration - user hasn't made changes yet
     setHasLocalChanges(false);
     
     if (import.meta.env.DEV) {
-      console.log('[PBV2_HYDRATE] Dirty flag cleared after draft load');
+      console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
     }
-  }, [productId, draft?.id, draft?.treeJson, isLocalDirty]);
+  }, [productId, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {
@@ -943,6 +960,36 @@ export default function PBV2ProductBuilderSectionV2({
     const nodeCount = Object.keys(nodes).length;
     const edgeCount = edges.length;
     const rootCount = Array.isArray((normalizedTree as any)?.rootNodeIds) ? (normalizedTree as any).rootNodeIds.length : 0;
+
+    // Count nodes by type to detect missing options/pricing
+    const nodesByType: Record<string, number> = {};
+    const nodesByKind: Record<string, number> = {};
+    for (const node of Object.values(nodes) as any[]) {
+      const nodeType = (node?.type || 'UNKNOWN').toUpperCase();
+      const nodeKind = node?.kind || 'unknown';
+      nodesByType[nodeType] = (nodesByType[nodeType] || 0) + 1;
+      nodesByKind[nodeKind] = (nodesByKind[nodeKind] || 0) + 1;
+    }
+
+    // Check if tree has pricing config in meta
+    const hasPricingV2 = !!(normalizedTree as any)?.meta?.pricingV2;
+    const basePricingConfig = (normalizedTree as any)?.meta?.pricingV2?.base || null;
+
+    // CRITICAL: Comprehensive payload debug logging
+    console.log('[PBV2_SAVE_PAYLOAD_DEBUG]', {
+      productId,
+      schemaVersion: (normalizedTree as any)?.schemaVersion,
+      rootNodeIdsLength: rootCount,
+      nodeCount,
+      edgeCount,
+      nodesByType,
+      nodesByKind,
+      hasPricingV2,
+      basePricingConfig,
+      firstFiveNodeKeys: Object.keys(nodes).slice(0, 5),
+      localTreeJsonType: typeof localTreeJson,
+      localTreeJsonIsNull: localTreeJson === null,
+    });
 
     // DEV-ONLY: Log PUT details before sending
     if (import.meta.env.DEV) {
