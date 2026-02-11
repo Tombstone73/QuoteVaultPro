@@ -2067,7 +2067,130 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log('[PBV2_DRAFT_PUT] verification SELECT succeeded', { verifiedId: verifiedDraft.id });
 
-      return res.json({ success: true, data: draft });
+      // ============================================================
+      // AUTO-ACTIVATION: If org mode is 'auto_on_save', attempt activation
+      // ============================================================
+      let activationAttempted = false;
+      let activationResult: {
+        success: boolean;
+        activated?: boolean;
+        findings?: any[];
+        errorCode?: string;
+        message?: string;
+      } = { success: false };
+
+      // Load org to check activation mode
+      const [org] = await db
+        .select({ pbv2ActivationMode: organizations.pbv2ActivationMode })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+
+      if (org?.pbv2ActivationMode === 'auto_on_save') {
+        activationAttempted = true;
+        console.log('[PBV2_AUTO_ACTIVATE] attempting auto-activation', { draftId: draft.id, productId, orgId: organizationId });
+
+        try {
+          // Run same validations as publish
+          const { validateTreeHasBasePrice } = await import("../shared/pbv2/validator/validateBasePrice");
+          const basePriceValidation = validateTreeHasBasePrice((draft as any).treeJson as any);
+          
+          if (basePriceValidation.errors.length > 0) {
+            activationResult = {
+              success: false,
+              activated: false,
+              errorCode: 'BASE_PRICE_MISSING',
+              message: 'Draft saved but not activated: base pricing required',
+              findings: basePriceValidation.findings,
+            };
+            console.log('[PBV2_AUTO_ACTIVATE] blocked by base pricing validation', { draftId: draft.id });
+          } else {
+            const { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } = await import("../shared/pbv2/validator");
+            const publishValidation = validateTreeForPublish((draft as any).treeJson as any, DEFAULT_VALIDATE_OPTS);
+            
+            if (publishValidation.errors.length > 0) {
+              activationResult = {
+                success: false,
+                activated: false,
+                errorCode: 'VALIDATION_ERRORS',
+                message: 'Draft saved but not activated: validation errors present',
+                findings: publishValidation.findings,
+              };
+              console.log('[PBV2_AUTO_ACTIVATE] blocked by publish validation', { draftId: draft.id, errorCount: publishValidation.errors.length });
+            } else {
+              // Validation passed, activate the tree
+              const publishedAt = new Date();
+              
+              await db.transaction(async (tx) => {
+                // Check for previous active version
+                const [productRecord] = await tx
+                  .select({ pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+                  .from(products)
+                  .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+                  .limit(1);
+
+                const previousActiveId = productRecord?.pbv2ActiveTreeVersionId;
+                
+                // Deprecate previous active if different
+                if (previousActiveId && previousActiveId !== draft.id) {
+                  await tx
+                    .update(pbv2TreeVersions)
+                    .set({ status: "DEPRECATED", updatedAt: publishedAt, updatedByUserId: userId ?? null })
+                    .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, previousActiveId)));
+                }
+
+                // Activate this version
+                const nextTreeJson = {
+                  ...(draft as any).treeJson,
+                  schemaVersion: 1,
+                  status: "ACTIVE",
+                };
+
+                await tx
+                  .update(pbv2TreeVersions)
+                  .set({
+                    status: "ACTIVE",
+                    publishedAt,
+                    updatedAt: publishedAt,
+                    updatedByUserId: userId ?? null,
+                    treeJson: nextTreeJson,
+                  })
+                  .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, draft.id)));
+
+                // Update product pointer
+                await tx
+                  .update(products)
+                  .set({ pbv2ActiveTreeVersionId: draft.id, updatedAt: publishedAt })
+                  .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)));
+              });
+
+              activationResult = {
+                success: true,
+                activated: true,
+                message: 'Draft saved and activated successfully',
+                findings: publishValidation.warnings.length > 0 ? publishValidation.findings : undefined,
+              };
+              console.log('[PBV2_AUTO_ACTIVATE] activation succeeded', { draftId: draft.id, productId, pbv2ActiveTreeVersionId: draft.id });
+            }
+          }
+        } catch (activationError: any) {
+          // Don't fail the save if activation fails
+          activationResult = {
+            success: false,
+            activated: false,
+            errorCode: 'ACTIVATION_FAILED',
+            message: 'Draft saved but activation failed: ' + (activationError.message || 'Unknown error'),
+          };
+          console.error('[PBV2_AUTO_ACTIVATE] activation failed', { draftId: draft.id, error: activationError });
+        }
+      }
+
+      return res.json({ 
+        success: true, 
+        data: draft,
+        activationAttempted,
+        activationResult: activationAttempted ? activationResult : undefined,
+      });
     } catch (error: any) {
       console.error('[PBV2_DRAFT_PUT] FATAL ERROR:', error);
       console.error('[PBV2_DRAFT_PUT] error stack:', error.stack);
