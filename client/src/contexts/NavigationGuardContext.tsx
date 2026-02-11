@@ -51,38 +51,71 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
 
   // Guarded navigate for PUSH navigation (sidebar clicks, programmatic nav)
   const guardedNavigate = useCallback((to: string) => {
+    if (import.meta.env.DEV) {
+      console.log('[guardedNavigate] Called', {
+        to,
+        stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
+      });
+    }
+    
     const shouldBlock = shouldBlockRef.current;
     const guard = guardRef.current;
     
     // CRITICAL: Check shouldBlock() FIRST before calling guard
     // If no shouldBlock function OR it returns false, navigate immediately
     if (!shouldBlock || !shouldBlock()) {
+      if (import.meta.env.DEV) {
+        console.log('[guardedNavigate] shouldBlock returned false, navigating immediately');
+      }
       navigate(to);
       return;
+    }
+    
+    if (import.meta.env.DEV) {
+      console.log('[guardedNavigate] shouldBlock returned true, checking guard');
     }
     
     // shouldBlock returned true - dirty state, check guard
     if (!guard) {
       // No guard function but shouldBlock is true - allow navigation anyway
+      if (import.meta.env.DEV) {
+        console.log('[guardedNavigate] No guard function, navigating anyway');
+      }
       navigate(to);
       return;
     }
 
     const result = guard(to);
     
+    if (import.meta.env.DEV) {
+      console.log('[guardedNavigate] Guard returned:', { result, type: typeof result });
+    }
+    
     // Guard returned false/null/undefined, allow navigation
     if (!result) {
+      if (import.meta.env.DEV) {
+        console.log('[guardedNavigate] Guard allowed navigation (falsy result)');
+      }
       navigate(to);
       return;
     }
 
     // Guard returned true, block silently
     if (result === true) {
+      if (import.meta.env.DEV) {
+        console.log('[guardedNavigate] Guard blocked silently (result === true)');
+      }
       return;
     }
 
     // Guard returned string message, show confirm
+    if (import.meta.env.DEV) {
+      console.log('[guardedNavigate] Showing window.confirm with message:', result);
+    }
     const confirmed = window.confirm(result);
+    if (import.meta.env.DEV) {
+      console.log('[guardedNavigate] User response:', { confirmed });
+    }
     if (confirmed) {
       navigate(to);
     }
