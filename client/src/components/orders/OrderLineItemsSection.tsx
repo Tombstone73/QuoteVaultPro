@@ -779,7 +779,21 @@ export function OrderLineItemsSection({
           setComputedTotal(price);
         })
         .catch((err: any) => {
-          setCalcError(err?.message || "Calculation failed");
+          // Parse JSON error for PBV2 schema mismatch
+          let errorMessage = err?.message || "Calculation failed";
+          try {
+            // Error message format: "400: {json}" or similar
+            const jsonMatch = errorMessage.match(/\d+:\s*({.*})/);
+            if (jsonMatch) {
+              const errorData = JSON.parse(jsonMatch[1]);
+              if (errorData.code === "PBV2_E_SCHEMA_VERSION_MISMATCH") {
+                errorMessage = "PBV2_SCHEMA_MISMATCH";
+              }
+            }
+          } catch (parseErr) {
+            // Keep original error message if parsing fails
+          }
+          setCalcError(errorMessage);
         })
         .finally(() => setIsCalculating(false));
     },
@@ -1709,7 +1723,14 @@ export function OrderLineItemsSection({
                               </div>
                               <div className="h-5 flex items-center justify-end">
                                 {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
-                                {!!calcError && <div className="text-[11px] text-destructive">{calcError}</div>}
+                                {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
+                                  <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
+                                    ⚠️ Outdated PBV2 config
+                                  </div>
+                                )}
+                                {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" && (
+                                  <div className="text-[11px] text-destructive">{calcError}</div>
+                                )}
                                 {!isCalculating && !calcError && <div className="text-[11px] text-transparent">—</div>}
                               </div>
                             </div>

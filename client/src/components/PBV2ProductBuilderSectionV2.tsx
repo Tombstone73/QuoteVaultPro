@@ -195,6 +195,14 @@ type Envelope<T> = {
   message?: string;
   findings?: Finding[];
   requiresWarningsConfirm?: boolean;
+  activationAttempted?: boolean;
+  activationResult?: {
+    success: boolean;
+    activated?: boolean;
+    findings?: any[];
+    errorCode?: string;
+    message?: string;
+  };
 };
 
 async function readJsonSafe(res: Response): Promise<any> {
@@ -955,7 +963,51 @@ export default function PBV2ProductBuilderSectionV2({
         console.log('[PBV2_DRAFT_PUT] success:', { productId, nodeCount, edgeCount, rootCount });
       }
       
-      toast({ title: "Draft saved" });
+      // Handle activation result (auto_on_save mode)
+      const activationAttempted = result.json.activationAttempted;
+      const activationResult = result.json.activationResult;
+      
+      if (activationAttempted && activationResult) {
+        if (activationResult.activated) {
+          toast({ 
+            title: "Saved and activated", 
+            description: "Tree is now active and ready for pricing" 
+          });
+          // Invalidate product queries so pbv2ActiveTreeVersionId is current
+          queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+          if (productId) {
+            queryClient.invalidateQueries({ queryKey: ["/api/products", productId] });
+          }
+        } else {
+          // Saved but not activated
+          const errorCode = activationResult.errorCode;
+          if (errorCode === 'BASE_PRICE_MISSING') {
+            toast({ 
+              title: "Draft saved", 
+              description: "Configure base pricing to activate for pricing",
+              variant: "default",
+              duration: 5000,
+            });
+          } else if (errorCode === 'VALIDATION_ERRORS') {
+            toast({ 
+              title: "Draft saved with warnings", 
+              description: "Fix validation issues to activate",
+              variant: "default",
+              duration: 5000,
+            });
+          } else {
+            toast({ 
+              title: "Draft saved", 
+              description: activationResult.message || "Not yet active for pricing",
+              variant: "default",
+            });
+          }
+        }
+      } else {
+        // Manual publish mode or no activation attempted
+        toast({ title: "Draft saved" });
+      }
+      
       setHasLocalChanges(false);
       setIsLocalDirty(false); // Clear dirty flag on successful save
       
