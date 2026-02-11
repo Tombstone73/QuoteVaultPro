@@ -201,12 +201,15 @@ const ProductEditorPage = () => {
   }, [hasUnsavedChanges]);
 
   // Browser-level protection: warn on tab close/refresh if unsaved changes
+  // CRITICAL: Do NOT block when isSaving=true (PBV2 save in progress)
   // TODO: When migrating to Data Router (RouterProvider + createBrowserRouter),
   // replace this with official useBlocker hook and errorElement boundaries.
   // See: https://reactrouter.com/en/main/hooks/use-blocker
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (hasUnsavedChanges) {
+      // Check isSaving flag from pbv2State - do NOT block during save
+      const isSaving = pbv2State?.isSaving ?? false;
+      if (hasUnsavedChanges && !isSaving) {
         e.preventDefault();
         e.returnValue = ''; // Chrome requires returnValue to be set
       }
@@ -214,7 +217,7 @@ const ProductEditorPage = () => {
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [hasUnsavedChanges]);
+  }, [hasUnsavedChanges, pbv2State?.isSaving]);
 
   // In-app navigation guard: register with NavigationGuardContext
   const { registerGuard, guardedNavigate } = useNavigationGuard();
