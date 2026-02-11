@@ -640,7 +640,8 @@ export function LineItemsSection({
       })
         .then((r) => r.json())
         .then((data) => {
-          const price = Number(data?.price);
+          // Backend returns 'linePrice' in dollars (legacy compatibility)
+          const price = Number(data?.linePrice);
           if (!Number.isFinite(price)) return;
           if (expandedKey) {
             const breakdown = data?.breakdown;
