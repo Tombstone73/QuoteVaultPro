@@ -46,6 +46,8 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
 }
 
 const ProductEditorPage = () => {
+  const DEBUG_NAV_GUARD = true; // Temporary debug flag
+  
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -264,8 +266,13 @@ const ProductEditorPage = () => {
       },
       () => {
         // shouldBlock function - bypass if allowNextNavRef is true
-        if (allowNextNavRef.current) return false;
-        return hasUnsavedChangesRef.current;
+        const bypass = allowNextNavRef.current;
+        const dirty = hasUnsavedChangesRef.current;
+        if (DEBUG_NAV_GUARD) {
+          console.log('[GUARD_shouldBlock]', { bypass, dirty, willBlock: !bypass && dirty });
+        }
+        if (bypass) return false;
+        return dirty;
       }
     );
     
@@ -501,7 +508,22 @@ const ProductEditorPage = () => {
         
         // CRITICAL: Set bypass flag AFTER clearing dirty states
         // This allows save-driven navigation to bypass guard without prompt
+        if (DEBUG_NAV_GUARD) {
+          console.log('[SAVE_NAV_GUARD] BEFORE setting bypass:', {
+            isDirty: form.formState.isDirty,
+            pbv2HasChanges: pbv2State?.hasChanges,
+            hasUnsavedChangesRef: hasUnsavedChangesRef.current,
+            allowNextNavRef: allowNextNavRef.current
+          });
+        }
+        
         allowNextNavRef.current = true;
+        
+        if (DEBUG_NAV_GUARD) {
+          console.log('[SAVE_NAV_GUARD] AFTER setting bypass, BEFORE guardedNavigate:', {
+            allowNextNavRef: allowNextNavRef.current
+          });
+        }
         
         if (import.meta.env.DEV) {
           console.log('[SAVE_PIPELINE] phase=nav bypass=true');
@@ -509,6 +531,10 @@ const ProductEditorPage = () => {
         
         // Navigate away on full success
         guardedNavigate("/products");
+        
+        if (DEBUG_NAV_GUARD) {
+          console.log('[SAVE_NAV_GUARD] AFTER guardedNavigate returned');
+        }
         
       } catch (error: any) {
         // Catch any unexpected errors in onSuccess
