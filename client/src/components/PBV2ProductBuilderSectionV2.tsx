@@ -242,7 +242,7 @@ export default function PBV2ProductBuilderSectionV2({
   onTreeMetaChange,
 }: {
   productId?: string | null;
-  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null }) => void;
+  onPbv2StateChange?: (state: { treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean }) => void;
   onPbv2PricingDataChange?: (data: {
     pricingPreview: { addOnCents: number; breakdown: Array<{ label: string; cents: number }> } | null;
     weightPreview: { totalOz: number; breakdown: Array<{ label: string; oz: number }> } | null;
@@ -266,6 +266,10 @@ export default function PBV2ProductBuilderSectionV2({
   // Dirty lock: Prevent server sync from overwriting local edits
   const [isLocalDirty, setIsLocalDirty] = useState(false);
   const lastLoadedProductIdRef = useRef<string | null | undefined>(null);
+  
+  // Saving lock: Prevent nav guard from blocking during save
+  const [isSaving, setIsSaving] = useState(false);
+  const isSavingRef = useRef(false);
   
   // Hydration guard: Prevent stale async responses from overwriting newer state
   const hydrateRequestIdRef = useRef<number>(0);
@@ -620,9 +624,10 @@ export default function PBV2ProductBuilderSectionV2({
         treeJson: normalizedTree,
         hasChanges: hasLocalChanges,
         draftId: draft?.id ?? null,
+        isSaving: isSavingRef.current, // Pass saving state to parent for nav guard bypass
       });
     }
-  }, [localTreeJson, hasLocalChanges, draft?.id, onPbv2StateChange]);
+  }, [localTreeJson, hasLocalChanges, draft?.id, onPbv2StateChange, isSaving]);
 
   // Notify parent of tree meta changes (shippingConfig, productImages, pricingV2)
   useEffect(() => {
@@ -953,8 +958,18 @@ export default function PBV2ProductBuilderSectionV2({
       return;
     }
 
+    // CRITICAL: Set saving flag BEFORE any async work to bypass nav guard
+    setIsSaving(true);
+    isSavingRef.current = true;
+    if (import.meta.env.DEV) {
+      console.log('[PBV2_SAVE_START] isSaving=true, capturing tree snapshot');
+    }
+
+    // CRITICAL: Capture tree snapshot IMMEDIATELY before any state changes
+    const treeSnapshot = localTreeJson;
+
     // Normalize + ensure rootNodeIds before PUT (client has authority over this field)
-    const normalizedTree = normalizeTreeJson(localTreeJson);
+    const normalizedTree = normalizeTreeJson(treeSnapshot);
     const nodes = (normalizedTree as any)?.nodes || {};
     const edges = Array.isArray((normalizedTree as any)?.edges) ? (normalizedTree as any).edges : [];
     const nodeCount = Object.keys(nodes).length;
@@ -1057,6 +1072,12 @@ export default function PBV2ProductBuilderSectionV2({
       
       setHasLocalChanges(false);
       setIsLocalDirty(false); // Clear dirty flag on successful save
+      setIsSaving(false); // Release saving lock
+      isSavingRef.current = false;
+      
+      if (import.meta.env.DEV) {
+        console.log('[PBV2_SAVE_SUCCESS] isSaving=false, tree persisted with nodeCount=', nodeCount);
+      }
       
       // Update query cache with saved tree to prevent stale refetch
       queryClient.setQueryData(
@@ -1096,6 +1117,13 @@ export default function PBV2ProductBuilderSectionV2({
         console.error('[PBV2_DRAFT_PUT] failed:', error.message);
       }
       toast({ title: "Draft save failed", description: error.message, variant: "destructive" });
+    } finally {
+      // ALWAYS clear saving lock, even on error
+      setIsSaving(false);
+      isSavingRef.current = false;
+      if (import.meta.env.DEV) {
+        console.log('[PBV2_SAVE_COMPLETE] isSaving=false (finally block)');
+      }
     }
   };
 
