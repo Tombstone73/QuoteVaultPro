@@ -1864,12 +1864,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .orderBy(desc(pbv2TreeVersions.updatedAt))
         .limit(1);
 
+      // Read ACTIVE tree using products.pbv2ActiveTreeVersionId
+      let active = null;
+      const [productWithActiveId] = await db
+        .select({ pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.organizationId, organizationId)))
+        .limit(1);
+
+      if (productWithActiveId?.pbv2ActiveTreeVersionId) {
+        const [activeVersion] = await db
+          .select()
+          .from(pbv2TreeVersions)
+          .where(
+            and(
+              eq(pbv2TreeVersions.organizationId, organizationId),
+              eq(pbv2TreeVersions.id, productWithActiveId.pbv2ActiveTreeVersionId)
+            )
+          )
+          .limit(1);
+        active = activeVersion || null;
+      }
+
       // LOG: What we found
       console.log('[PBV2_TREE_GET] rows found', { 
         orgId: organizationId,
         productId,
         draftFound: !!draft,
-        draftId: draft?.id || null
+        draftId: draft?.id || null,
+        activeFound: !!active,
+        activeId: active?.id || null,
       });
 
       // DEV-ONLY: Log details
@@ -1877,18 +1901,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (draft) {
           const nodeCount = typeof draft.treeJson === 'object' && draft.treeJson ? Object.keys((draft.treeJson as any).nodes || {}).length : 0;
           const rootCount = Array.isArray((draft.treeJson as any).rootNodeIds) ? (draft.treeJson as any).rootNodeIds.length : 0;
-          console.log(`[GET /api/products/${productId}/pbv2/tree] Returning DRAFT from pbv2_tree_versions:`, {
+          console.log(`[GET /api/products/${productId}/pbv2/tree] DRAFT:`, {
             draftId: draft.id,
             nodeCount,
             rootCount,
             schemaVersion: (draft.treeJson as any)?.schemaVersion,
           });
         } else {
-          console.log(`[GET /api/products/${productId}/pbv2/tree] No DRAFT found in pbv2_tree_versions`);
+          console.log(`[GET /api/products/${productId}/pbv2/tree] No DRAFT found`);
+        }
+        if (active) {
+          const nodeCount = typeof active.treeJson === 'object' && active.treeJson ? Object.keys((active.treeJson as any).nodes || {}).length : 0;
+          const rootCount = Array.isArray((active.treeJson as any).rootNodeIds) ? (active.treeJson as any).rootNodeIds.length : 0;
+          console.log(`[GET /api/products/${productId}/pbv2/tree] ACTIVE:`, {
+            activeId: active.id,
+            nodeCount,
+            rootCount,
+            schemaVersion: (active.treeJson as any)?.schemaVersion,
+            hasPricingV2: !!(active.treeJson as any)?.meta?.pricingV2,
+          });
+        } else {
+          console.log(`[GET /api/products/${productId}/pbv2/tree] No ACTIVE found`);
         }
       }
 
-      return res.json({ success: true, data: { draft: draft || null, active: null } });
+      return res.json({ success: true, data: { draft: draft || null, active: active || null } });
     } catch (error: any) {
       console.error("Error fetching PBV2 tree:", error);
       return res.status(500).json({ success: false, message: "Failed to fetch PBV2 tree" });
