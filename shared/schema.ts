@@ -84,6 +84,11 @@ export const organizations = pgTable("organizations", {
   // Tax system fields
   defaultTaxRate: decimal("default_tax_rate", { precision: 5, scale: 4 }).default("0").notNull(),
   taxEnabled: boolean("tax_enabled").default(true).notNull(),
+  // PBV2 activation governance
+  pbv2ActivationMode: varchar("pbv2_activation_mode", { length: 20 })
+    .$type<'auto_on_save' | 'manual_publish'>()
+    .default('auto_on_save')
+    .notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
