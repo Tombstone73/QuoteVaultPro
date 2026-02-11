@@ -450,6 +450,9 @@ export default function PBV2ProductBuilderSectionV2({
       if (import.meta.env.DEV) {
         const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
         console.log('[PBV2_SEED] New product initialized:', { mode: 'new', nodeCount: nc });
+        console.log('[PBV2_STATE_RESET] setLocalTreeJson called (new product seed)', {
+          stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
+        });
       }
       
       setLocalTreeJson(normalizedSeed);
@@ -494,6 +497,10 @@ export default function PBV2ProductBuilderSectionV2({
       if (import.meta.env.DEV) {
         const nc = Object.keys((normalizedSeed as any)?.nodes || {}).length;
         console.log('[PBV2_SEED] Existing product initialized:', { mode: 'no-draft-no-active', productId, nodeCount: nc });
+        console.log('[PBV2_STATE_RESET] setLocalTreeJson called (no draft/active, resetting to seed)', {
+          productId,
+          stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
+        });
       }
       
       setLocalTreeJson(normalizedSeed);
@@ -527,6 +534,13 @@ export default function PBV2ProductBuilderSectionV2({
     
     setLocalTreeJson(normalizedTree);
     // CRITICAL: Clear dirty flag after hydration - user hasn't made changes yet
+      console.log('[PBV2_STATE_RESET] setLocalTreeJson called (hydration from server)', {
+        source: treeSource,
+        productId,
+        draftId: draft?.id,
+        activeId: active?.id,
+        stack: new Error().stack?.split('\n').slice(0, 6).join('\n')
+      });
     setHasLocalChanges(false);
     
     if (import.meta.env.DEV) {

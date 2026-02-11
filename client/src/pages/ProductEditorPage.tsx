@@ -500,12 +500,6 @@ const ProductEditorPage = () => {
           console.log('[SAVE_PIPELINE] phase=cleanup isDirty=', form.formState.isDirty);
         }
         
-        // Invalidate caches
-        queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-        if (productId) {
-          queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
-        }
-        
         // CRITICAL: Set bypass flag AFTER clearing dirty states
         // This allows save-driven navigation to bypass guard without prompt
         if (DEBUG_NAV_GUARD) {
@@ -513,7 +507,8 @@ const ProductEditorPage = () => {
             isDirty: form.formState.isDirty,
             pbv2HasChanges: pbv2State?.hasChanges,
             hasUnsavedChangesRef: hasUnsavedChangesRef.current,
-            allowNextNavRef: allowNextNavRef.current
+            allowNextNavRef: allowNextNavRef.current,
+            stack: new Error().stack?.split('\n').slice(0, 5).join('\n')
           });
         }
         
@@ -534,6 +529,13 @@ const ProductEditorPage = () => {
         
         if (DEBUG_NAV_GUARD) {
           console.log('[SAVE_NAV_GUARD] AFTER guardedNavigate returned');
+        }
+        
+        // CRITICAL: Invalidate caches AFTER navigation succeeds
+        // Doing this before navigation causes refetch → hydration → state wipe
+        queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+        if (productId) {
+          queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
         }
         
       } catch (error: any) {
