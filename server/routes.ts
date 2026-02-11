@@ -1953,6 +1953,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Count nodes by type to detect missing options/pricing
+      const nodesByType: Record<string, number> = {};
+      const nodesByKind: Record<string, number> = {};
+      for (const node of Object.values(nodes) as any[]) {
+        const nodeType = (node?.type || 'UNKNOWN').toUpperCase();
+        const nodeKind = node?.kind || 'unknown';
+        nodesByType[nodeType] = (nodesByType[nodeType] || 0) + 1;
+        nodesByKind[nodeKind] = (nodesByKind[nodeKind] || 0) + 1;
+      }
+      const firstFiveNodeKeys = Object.keys(nodes).slice(0, 5);
+      console.log('[PBV2_DRAFT_PUT] node breakdown', {
+        nodesByType,
+        nodesByKind,
+        firstFiveNodeKeys,
+      });
+
       // Upsert: update if exists, insert if not
       const [existingDraft] = await db
         .select({ id: pbv2TreeVersions.id })
