@@ -3234,7 +3234,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Load product to validate PBV2-ready
       const [product] = await db
-        .select()
+        .select({
+          id: products.id,
+          name: products.name,
+          pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+        })
         .from(products)
         .where(
           and(
@@ -3248,7 +3252,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Product not found" });
       }
 
+      // Debug: Log what we actually fetched
+      console.log(`[CALCULATE_DEBUG] productId=${productId} pbv2ActiveTreeVersionId=${product.pbv2ActiveTreeVersionId} hasOverride=${!!pbv2TreeVersionIdOverride}`);
+
       if (!product.pbv2ActiveTreeVersionId && !pbv2TreeVersionIdOverride) {
+        console.warn(`[CALCULATE_PBV2_MISSING] productId=${productId} organizationId=${organizationId} - Product loaded but pbv2ActiveTreeVersionId is ${product.pbv2ActiveTreeVersionId}`);
         return res.status(400).json({ 
           message: "Product does not have PBV2 pricing configured (missing pbv2ActiveTreeVersionId)" 
         });
