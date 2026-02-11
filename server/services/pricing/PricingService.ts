@@ -103,22 +103,30 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     quantity,
   });
 
-  // Step 5: Evaluate PBV2 options
+  // Step 5: Map selections to LineItemOptionSelectionsV2 format
+  // Frontend sends Record<string, any> as pbv2ExplicitSelections
+  // Evaluator expects { schemaVersion: 2, selected: Record<nodeId, { value, note? }> }
+  const selectionsV2: LineItemOptionSelectionsV2 = {
+    schemaVersion: 2,
+    selected: pbv2ExplicitSelections || {},
+  };
+
+  // Step 6: Evaluate PBV2 options
   const evalResult = await evaluateOptionTreeV2({
     tree: treeVersion.treeJson,
-    selections: pbv2ExplicitSelections,
+    selections: selectionsV2,
     width: widthIn ?? 0,
     height: heightIn ?? 0,
     quantity,
     basePrice: basePriceCents / 100, // Convert cents to dollars for evaluator
   });
 
-  // Step 6: Build pricing breakdown
+  // Step 7: Build pricing breakdown
   const optionsCents = Math.round(evalResult.optionsPrice * 100);
   const totalCents = basePriceCents + optionsCents;
   const lineTotalCents = totalCents * quantity;
 
-  // Step 7: Build snapshot
+  // Step 8: Build snapshot
   const snapshot: PBV2PricingSnapshot = {
     treeVersionId,
     treeJson: treeVersion.treeJson,

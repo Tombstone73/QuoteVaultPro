@@ -3448,6 +3448,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             details: pricingError.message,
           });
         }
+
+        // Convert Zod validation errors to 400 with stable error code
+        if (pricingError.name === 'ZodError') {
+          console.warn(`[CALCULATE_PBV2_VALIDATION_ERROR] productId=${productId} zodErrors=${JSON.stringify(pricingError.issues)}`);
+          return res.status(400).json({
+            message: "Invalid PBV2 tree or selections format",
+            code: "PBV2_E_INVALID_SELECTIONS",
+            details: pricingError.issues ? pricingError.issues.map((issue: any) => `${issue.path.join('.')}: ${issue.message}`).join('; ') : pricingError.message,
+          });
+        }
         
         // Re-throw other pricing errors (will be caught by outer handler)
         throw pricingError;
