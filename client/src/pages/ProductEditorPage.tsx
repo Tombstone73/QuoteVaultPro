@@ -59,6 +59,8 @@ const ProductEditorPage = () => {
   const saveInFlightRef = useRef<boolean>(false);
   // Idempotency: Once product is created, store ID to prevent duplicate creates
   const createdProductIdRef = useRef<string | null>(null);
+  // One-shot bypass: Allow save-driven navigation without guard prompt
+  const allowNextNavRef = useRef<boolean>(false);
   
   // Track PBV2 state for persistence
   const [pbv2State, setPbv2State] = useState<{ treeJson: unknown; hasChanges: boolean; draftId: string | null; isSaving?: boolean } | null>(null);
@@ -224,6 +226,16 @@ const ProductEditorPage = () => {
   useEffect(() => {
     const unregister = registerGuard(
       (targetPath) => {
+        // CRITICAL: Check bypass FIRST before checking dirty state
+        // Save sets allowNextNavRef.current = true to skip guard
+        if (allowNextNavRef.current) {
+          allowNextNavRef.current = false; // One-shot: clear immediately
+          if (import.meta.env.DEV) {
+            console.log('[NAV_GUARD] ProductEditor guard: bypass (save navigation)', { targetPath });
+          }
+          return false; // Allow navigation without prompt
+        }
+        
         // Read from ref to avoid stale closure
         const dirty = hasUnsavedChangesRef.current;
         
@@ -250,7 +262,11 @@ const ProductEditorPage = () => {
         }
         return 'You have unsaved changes. Are you sure you want to leave without saving?';
       },
-      () => hasUnsavedChangesRef.current // shouldBlock function
+      () => {
+        // shouldBlock function - bypass if allowNextNavRef is true
+        if (allowNextNavRef.current) return false;
+        return hasUnsavedChangesRef.current;
+      }
     );
     
     if (import.meta.env.DEV) {
@@ -483,8 +499,12 @@ const ProductEditorPage = () => {
           queryClient.invalidateQueries({ queryKey: ["/api/products", productId, "pbv2", "tree"] });
         }
         
+        // CRITICAL: Set bypass flag AFTER clearing dirty states
+        // This allows save-driven navigation to bypass guard without prompt
+        allowNextNavRef.current = true;
+        
         if (import.meta.env.DEV) {
-          console.log('[SAVE_PIPELINE] phase=nav');
+          console.log('[SAVE_PIPELINE] phase=nav bypass=true');
         }
         
         // Navigate away on full success
