@@ -122,9 +122,22 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   });
 
   // Step 7: Build pricing breakdown
+  // NOTE: basePriceCents already includes quantity (line-total from calculateBasePrice)
+  // NOTE: optionsCents already includes quantity (evaluator multiplies internally)
   const optionsCents = Math.round(evalResult.optionsPrice * 100);
-  const totalCents = basePriceCents + optionsCents;
-  const lineTotalCents = totalCents * quantity;
+  const lineTotalCents = basePriceCents + optionsCents;
+
+  // Debug log to verify quantity applied once
+  console.log('[PBV2_PRICING_DEBUG]', {
+    widthIn: widthIn ?? 0,
+    heightIn: heightIn ?? 0,
+    quantity,
+    sqftPerItem: widthIn && heightIn ? ((widthIn * heightIn) / 144).toFixed(2) : 0,
+    baseCents: basePriceCents,
+    optionsCents,
+    lineTotalCents,
+    perUnitEstimate: quantity > 0 ? (lineTotalCents / quantity).toFixed(2) : 0,
+  });
 
   // Step 8: Build snapshot
   const snapshot: PBV2PricingSnapshot = {
@@ -139,7 +152,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pricing: {
       baseCents: basePriceCents,
       optionsCents,
-      totalCents,
+      totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
     },
   };
 
@@ -150,7 +163,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     breakdown: {
       baseCents: basePriceCents,
       optionsCents,
-      totalCents,
+      totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
     },
   };
 }
