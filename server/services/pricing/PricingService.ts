@@ -122,9 +122,22 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
   });
 
   // Step 7: Build pricing breakdown
+  // NOTE: basePriceCents already includes quantity (line-total from calculateBasePrice)
+  // NOTE: optionsCents already includes quantity (evaluator multiplies internally)
   const optionsCents = Math.round(evalResult.optionsPrice * 100);
-  const totalCents = basePriceCents + optionsCents;
-  const lineTotalCents = totalCents * quantity;
+  const lineTotalCents = basePriceCents + optionsCents;
+
+  // Debug log to verify quantity applied once
+  console.log('[PBV2_PRICING_DEBUG]', {
+    widthIn: widthIn ?? 0,
+    heightIn: heightIn ?? 0,
+    quantity,
+    sqftPerItem: widthIn && heightIn ? ((widthIn * heightIn) / 144).toFixed(2) : 0,
+    baseCents: basePriceCents,
+    optionsCents,
+    lineTotalCents,
+    perUnitEstimate: quantity > 0 ? (lineTotalCents / quantity).toFixed(2) : 0,
+  });
 
   // Step 8: Build snapshot
   const snapshot: PBV2PricingSnapshot = {
@@ -139,7 +152,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     pricing: {
       baseCents: basePriceCents,
       optionsCents,
-      totalCents,
+      totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
     },
   };
 
@@ -150,7 +163,7 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     breakdown: {
       baseCents: basePriceCents,
       optionsCents,
-      totalCents,
+      totalCents: lineTotalCents, // Changed from totalCents to lineTotalCents for clarity
     },
   };
 }
@@ -303,7 +316,7 @@ function calculateBasePrice(
   }
 
   const { widthIn, heightIn, quantity } = context;
-  const sqft = widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0;
+  const sqftPerItem = widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0;
 
   // Apply best-match qtyTier (highest minQty <= quantity)
   let bestQtyTier: any = null;
@@ -323,12 +336,12 @@ function calculateBasePrice(
     if (typeof bestQtyTier.minimumChargeCents === 'number') minimumChargeCents = bestQtyTier.minimumChargeCents;
   }
 
-  // Apply best-match sqftTier (highest minSqft <= sqft)
+  // Apply best-match sqftTier (highest minSqft <= sqftPerItem)
   let bestSqftTier: any = null;
   for (const tier of sqftTiers) {
     if (!tier || typeof tier !== 'object') continue;
     const minSqft = typeof tier.minSqft === 'number' ? tier.minSqft : 0;
-    if (minSqft <= sqft) {
+    if (minSqft <= sqftPerItem) {
       if (!bestSqftTier || minSqft > (bestSqftTier.minSqft || 0)) {
         bestSqftTier = tier;
       }
@@ -341,15 +354,14 @@ function calculateBasePrice(
     if (typeof bestSqftTier.minimumChargeCents === 'number') minimumChargeCents = bestSqftTier.minimumChargeCents;
   }
 
-  // Compute total
-  const sqftComponent = perSqftCents * sqft;
+  // Compute line base total: perSqft applies to total sqft across all items
+  const totalSqft = sqftPerItem * quantity;
+  const sqftComponent = perSqftCents * totalSqft;
   const pieceComponent = perPieceCents * quantity;
-  let total = sqftComponent + pieceComponent;
+  const lineBaseCents = sqftComponent + pieceComponent;
 
-  // Apply minimum charge
-  if (minimumChargeCents > 0 && total < minimumChargeCents) {
-    total = minimumChargeCents;
-  }
+  // Apply minimum charge once per line item (not per unit)
+  const total = minimumChargeCents > 0 ? Math.max(lineBaseCents, minimumChargeCents) : lineBaseCents;
 
   return Math.round(total);
 }
