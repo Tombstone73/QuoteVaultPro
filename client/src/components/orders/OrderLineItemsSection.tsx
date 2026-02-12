@@ -1775,6 +1775,17 @@ export function OrderLineItemsSection({
                             </div>
                           </div>
 
+                          {/* DEBUG: PBV2 Status (remove after verification) */}
+                          {(isExpandedTreeV2 || pbv2SnapshotJson || (expandedProduct as any)?.pbv2ActiveTreeVersionId) && (
+                            <div className="mt-2 px-2 py-1 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded text-xs font-mono">
+                              <span className="font-semibold">PBV2 Debug:</span>{' '}
+                              snapshot={pbv2SnapshotJson ? 'yes' : 'no'},{' '}
+                              visibleNodeIds={pbv2SnapshotJson?.visibleNodeIds?.length ?? 0},{' '}
+                              isExpandedTreeV2={isExpandedTreeV2 ? 'yes' : 'no'},{' '}
+                              hasTree={expandedOptionTreeJson ? 'yes' : 'no'}
+                            </div>
+                          )}
+
                           <Separator className="my-3" />
 
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
