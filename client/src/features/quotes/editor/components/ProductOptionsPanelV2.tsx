@@ -218,6 +218,7 @@ export function ProductOptionsPanelV2({
 
             const error = nodeErrors.get(nodeId);
 
+            // Structural nodes: render as section headers or skip
             if (node.kind === "group") {
               return (
                 <div key={nodeId} className="rounded-md border border-border/50 bg-muted/20 p-2">
@@ -230,15 +231,15 @@ export function ProductOptionsPanelV2({
               );
             }
 
+            // "computed" nodes are structural (calculated values, not user inputs) - skip rendering
+            if (node.kind === "computed") {
+              return null;
+            }
+
+            // Only "question" nodes with input definitions are user-facing controls
             if (node.kind !== "question" || !node.input) {
-              return (
-                <div key={nodeId} className="rounded-md border border-border/50 bg-muted/10 p-2">
-                  <div className="text-sm font-medium">{node.label}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    Unsupported node kind.
-                  </div>
-                </div>
-              );
+              // This should never happen with valid schema, but provide fallback
+              return null;
             }
 
             const currentValue = getNodeValue(safeSelections, nodeId);
