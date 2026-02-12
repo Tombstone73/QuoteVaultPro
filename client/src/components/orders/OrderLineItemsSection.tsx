@@ -965,18 +965,6 @@ export function OrderLineItemsSection({
 
   return (
     <Card className="border-0 bg-transparent shadow-none">
-      <div style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 99999,
-        padding: "10px 12px",
-        background: "#ff0066",
-        color: "white",
-        fontWeight: 900,
-        letterSpacing: "0.5px"
-      }}>
-        FRONTEND FINGERPRINT v123 — ORDERS PAGE
-      </div>
       <CardHeader className="px-0 pt-0 pb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
