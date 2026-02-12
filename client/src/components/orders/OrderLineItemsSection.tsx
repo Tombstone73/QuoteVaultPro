@@ -965,6 +965,10 @@ export function OrderLineItemsSection({
 
   return (
     <Card className="border-0 bg-transparent shadow-none">
+      {/* MARKER A - Verify component is loaded */}
+      <div style={{ position:'sticky', top:0, zIndex:50, padding:'6px 10px', background:'#ff0066', color:'white', fontWeight:700 }}>
+        ORDERLINEITEMSSECTION MARKER A v999
+      </div>
       <CardHeader className="px-0 pt-0 pb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -1756,9 +1760,9 @@ export function OrderLineItemsSection({
 
                           <Separator className="my-3" />
 
-                          {/* UNCONDITIONAL HARD DEBUG — REMOVE AFTER VERIFICATION */}
+                          {/* MARKER B - Verify expanded editor branch */}
                           <div style={{ padding: 12, background: "#220022", color: "white" }}>
-                            PBV2 HARD DEBUG — THIS SHOULD ALWAYS SHOW
+                            PBV2 HARD DEBUG MARKER B v999
                           </div>
 
                           {/* PBV2 Options Section */}
