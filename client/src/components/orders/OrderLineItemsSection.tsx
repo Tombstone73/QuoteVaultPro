@@ -581,13 +581,31 @@ export function OrderLineItemsSection({
     return injectDerivedMaterialOptionIntoProductOptions(expandedProduct, base);
   }, [expandedProduct]);
 
+  // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
+  // Declared early so useMemo hooks below can access it
+  const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
+
   const expandedOptionTreeJson = useMemo(() => {
+    // For PBV2 products: prefer snapshot tree (from calculate response) over product tree
+    // This ensures we show the correct tree version and visibleNodeIds
+    if (pbv2SnapshotJson?.treeJson) {
+      return pbv2SnapshotJson.treeJson as OptionTreeV2 | null;
+    }
+    
+    // Fallback: use product's optionTreeJson (legacy or before first calculate)
     return (((expandedProduct as any)?.optionTreeJson ?? null) as OptionTreeV2 | null) ?? null;
-  }, [expandedProduct]);
+  }, [expandedProduct, pbv2SnapshotJson]);
 
   const isExpandedTreeV2 = useMemo(() => {
-    return Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
-  }, [expandedOptionTreeJson]);
+    // Check for PBV2 product either by:
+    // 1. pbv2SnapshotJson presence (after calculate)
+    // 2. product.pbv2ActiveTreeVersionId existence
+    const hasPbv2Snapshot = Boolean(pbv2SnapshotJson?.treeJson);
+    const hasPbv2Active = Boolean((expandedProduct as any)?.pbv2ActiveTreeVersionId);
+    const hasV2Schema = Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
+    
+    return hasPbv2Snapshot || hasPbv2Active || hasV2Schema;
+  }, [expandedOptionTreeJson, pbv2SnapshotJson, expandedProduct]);
 
   const dimsRequired = requiresDimensions(expandedProduct);
 
@@ -601,9 +619,6 @@ export function OrderLineItemsSection({
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [computedTotal, setComputedTotal] = useState<number | null>(null);
-  
-  // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
-  const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
 
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [savedItemId, setSavedItemId] = useState<string | null>(null);
