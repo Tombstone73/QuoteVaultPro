@@ -625,15 +625,22 @@ export function LineItemsSection({
         }
       }
 
+      // PBV2 request: backend expects optionSelectionsJson as Record<string, any>
+      // ProductOptionsPanelV2 manages LineItemOptionSelectionsV2 { schemaVersion: 2, selected: {...} }
+      // Extract .selected dict for API
+      const pbv2Payload = isExpandedTreeV2 
+        ? { optionSelectionsJson: optionSelectionsV2.selected || {} } 
+        : {};
+      const v1Payload = !isExpandedTreeV2 ? { selectedOptions: optionSelections } : {};
+
       apiRequest("POST", "/api/quotes/calculate", {
         productId: expandedItem.productId,
         variantId: expandedItem.variantId,
         width: widthNum,
         height: heightNum,
         quantity: qtyNum,
-        ...(isExpandedTreeV2
-          ? { optionSelectionsJson: optionSelectionsV2 }
-          : { selectedOptions: optionSelections }),
+        ...pbv2Payload,
+        ...v1Payload,
         customerId,
         quoteId,
         debugSource: "LineItemsSection",
@@ -657,6 +664,8 @@ export function LineItemsSection({
                   total: price,
                 } as any),
               ...(snapshotSelectedOptions ? { selectedOptions: snapshotSelectedOptions } : {}),
+              // Store PBV2 snapshot from /calculate for future reference
+              ...(data?.pbv2SnapshotJson ? { pbv2SnapshotJson: data.pbv2SnapshotJson } : {}),
             });
           }
         })
