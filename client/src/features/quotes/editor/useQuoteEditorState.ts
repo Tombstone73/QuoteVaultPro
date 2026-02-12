@@ -426,23 +426,38 @@ export function useQuoteEditorState() {
 
     // Single source of truth: computedTotals derived from current editor state
     const computedTotals = useMemo(() => {
-        // Subtotal = sum of current lineItems' linePrice (or lineTotal if used)
+        // Subtotal = sum of current lineItems' linePrice
+        // NOTE: linePrice is in dollars for quotes/temp items (different from order line items which use totalPrice)
         const subtotal = activeLineItems.reduce((sum, item) => {
-            const lineTotal = item.linePrice ?? 0;
-            return sum + (Number.isFinite(lineTotal) ? lineTotal : 0);
+            // Defensive: handle both number and string values, parse if needed
+            const lineTotal = typeof item.linePrice === 'string' 
+                ? parseFloat(item.linePrice) 
+                : (item.linePrice ?? 0);
+            
+            if (!Number.isFinite(lineTotal)) {
+                console.warn("[QuoteEditor] Invalid linePrice for item:", item.id, item.linePrice);
+                return sum;
+            }
+            return sum + lineTotal;
         }, 0);
 
-        // Discount = current discount in state
-        const discount = effectiveDiscount;
+        // DIAGNOSTIC: Warn if we have active line items but subtotal is still 0
+        if (activeLineItems.length > 0 && subtotal === 0) {
+            console.warn("[QuoteEditor] Active line items present but subtotal is $0.00 - check linePrice values:", 
+                activeLineItems.map(li => ({ id: li.id, linePrice: li.linePrice, productName: li.productName }))
+            );
+        }
+
+        // Discount = current discount in state (clamped to not exceed subtotal)
+        const discount = Math.min(effectiveDiscount, subtotal);
 
         // Tax = computed from taxable subtotal * current taxRate (respect tax exempt)
         const taxableBase = Math.max(0, subtotal - discount);
         const tax = taxableBase * effectiveTaxRate;
 
-        // Grand Total = subtotal - discount + tax + shipping + fees
+        // Grand Total = taxableBase (subtotal minus discount) + tax + shipping
         const shippingAmount = (shippingCents ?? 0) / 100;
-        const fees = 0; // Fees not currently in state; keep as 0
-        const grandTotal = taxableBase + tax + shippingAmount + fees;
+        const grandTotal = taxableBase + tax + shippingAmount;
 
         return {
             subtotal,
@@ -461,13 +476,15 @@ export function useQuoteEditorState() {
     useEffect(() => {
         if (process.env.NODE_ENV === "development") {
             console.debug("[QuoteEditor] Totals updated", {
+                activeLineItemsCount: activeLineItems.length,
+                lineItemPrices: activeLineItems.map(li => ({ id: li.id, linePrice: li.linePrice, status: li.status })),
                 subtotal: computedTotals.subtotal,
                 discount: computedTotals.discount,
                 tax: computedTotals.tax,
                 total: computedTotals.grandTotal,
             });
         }
-    }, [computedTotals]);
+    }, [computedTotals, activeLineItems]);
 
     // ============================================================================
     // COMPUTED VALUES: Save/Convert Flags
