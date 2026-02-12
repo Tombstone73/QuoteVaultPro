@@ -88,6 +88,7 @@ export function OrderLineItemDialog({
     selected: {},
   });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
+  const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
 
   // Fetch products for selection
   const { data: products = [] } = useQuery({
@@ -433,6 +434,15 @@ export function OrderLineItemDialog({
       console.log("API Response:", data);
       console.log("Quantity:", quantityNum);
       
+      // Capture PBV2 snapshot from response
+      if (data.pbv2SnapshotJson) {
+        setPbv2SnapshotJson(data.pbv2SnapshotJson);
+        console.log('[OrderLineItemDialog] Captured pbv2SnapshotJson:', {
+          hasTreeJson: !!data.pbv2SnapshotJson.treeJson,
+          visibleCount: data.pbv2SnapshotJson.visibleNodeIds?.length || 0,
+        });
+      }
+      
       // The API returns 'price' which is the TOTAL price for all items
       // We need to calculate the unit price by dividing by quantity
       if (data.price !== undefined) {
@@ -588,6 +598,15 @@ export function OrderLineItemDialog({
               </div>
             </div>
 
+            {/* DEBUG: PBV2 Status (temporary) */}
+            {isPbv2 && (
+              <div style={{ padding: 8, background: "#002222", color: "white", fontSize: '12px', fontFamily: 'monospace' }}>
+                PBV2 snapshot={String(Boolean(pbv2SnapshotJson))}
+                {' '}visibleCount={String(pbv2SnapshotJson?.visibleNodeIds?.length ?? 0)}
+                {' '}hasTreeJson={String(Boolean(pbv2SnapshotJson?.treeJson))}
+              </div>
+            )}
+
             {/* Product Options Selection - Conditional PBV2 or Legacy */}
             {selectedProduct && (
               <>
@@ -596,11 +615,11 @@ export function OrderLineItemDialog({
                     <AlertCircle className="h-4 w-4 shrink-0" />
                     <span>PBV2 configuration missing for this product.</span>
                   </div>
-                ) : isPbv2 && pbv2Tree ? (
+                ) : isPbv2 && pbv2SnapshotJson?.treeJson && (pbv2SnapshotJson.visibleNodeIds?.length ?? 0) > 0 ? (
                   <div className="space-y-3 border-t pt-4">
-                    <Label className="text-base font-semibold">Product Options</Label>
+                    <Label className="text-base font-semibold">Product Options (PBV2 from snapshot)</Label>
                     <ProductOptionsPanelV2
-                      tree={pbv2Tree}
+                      tree={pbv2SnapshotJson.treeJson}
                       selections={optionSelectionsJson}
                       onSelectionsChange={setOptionSelectionsJson}
                       onValidityChange={setOptionsV2Valid}
