@@ -713,19 +713,6 @@ export function LineItemsSection({
 
   return (
     <Card className="rounded-lg border border-border/40 bg-card/50">
-      {/* TESTER: Verify this fingerprint appears on /orders/new after hard refresh */}
-      <div style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 99999,
-        padding: "10px 12px",
-        background: "#ff0066",
-        color: "white",
-        fontWeight: 900,
-        letterSpacing: "0.5px"
-      }}>
-        ORDERS_REAL_UI_FINGERPRINT_v124
-      </div>
       <CardHeader className="px-4 py-2.5 border-b border-border/40">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="border-border/60 text-xs">
@@ -940,11 +927,6 @@ export function LineItemsSection({
                           </div>
 
                           <Separator className="my-3" />
-
-                          {/* TESTER: Verify this fingerprint appears when line item is expanded */}
-                          <div style={{ padding: 10, background: "#220022", color: "white", fontWeight: 900 }}>
-                            LINEITEM_EDITOR_FINGERPRINT_v124
-                          </div>
 
                           {/* Options (left) + Artwork (right) */}
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
