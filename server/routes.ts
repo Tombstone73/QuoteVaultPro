@@ -3053,54 +3053,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 if (!updatedActiveTree.meta.pricingV2) updatedActiveTree.meta.pricingV2 = {};
                 updatedActiveTree.meta.pricingV2.base = draftBasePricing;
                 
-                // Create NEW ACTIVE tree version (immutability preserved)
-                const [newActiveVersion] = await db
-                  .insert(pbv2TreeVersions)
-                  .values({
-                    organizationId,
-                    productId,
-                    status: "ACTIVE",
-                    schemaVersion: updatedActiveTree.schemaVersion ?? 2,
-                    treeJson: updatedActiveTree,
-                    publishedAt: new Date(),
-                    createdByUserId: userId ?? null,
-                    updatedByUserId: userId ?? null,
-                  })
-                  .returning();
+                // Use transaction to ensure atomic state transition: DEPRECATE old → INSERT new → UPDATE pointer
+                const newActiveVersion = await db.transaction(async (tx) => {
+                  // STEP 1: Deprecate old ACTIVE version FIRST (removes unique constraint conflict)
+                  await tx
+                    .update(pbv2TreeVersions)
+                    .set({ 
+                      status: "DEPRECATED", 
+                      updatedAt: new Date(),
+                      updatedByUserId: userId ?? null 
+                    })
+                    .where(
+                      and(
+                        eq(pbv2TreeVersions.id, activeTreeVersion.id),
+                        eq(pbv2TreeVersions.organizationId, organizationId)
+                      )
+                    );
+                  
+                  // STEP 2: Create NEW ACTIVE tree version (immutability preserved)
+                  const [newVersion] = await tx
+                    .insert(pbv2TreeVersions)
+                    .values({
+                      organizationId,
+                      productId,
+                      status: "ACTIVE",
+                      schemaVersion: updatedActiveTree.schemaVersion ?? 2,
+                      treeJson: updatedActiveTree,
+                      publishedAt: new Date(),
+                      createdByUserId: userId ?? null,
+                      updatedByUserId: userId ?? null,
+                    })
+                    .returning();
+                  
+                  // STEP 3: Update product pointer to new ACTIVE version
+                  await tx
+                    .update(products)
+                    .set({ 
+                      pbv2ActiveTreeVersionId: newVersion.id,
+                      updatedAt: new Date()
+                    })
+                    .where(
+                      and(
+                        eq(products.id, productId),
+                        eq(products.organizationId, organizationId)
+                      )
+                    );
+                  
+                  return newVersion;
+                });
                 
-                // Deprecate old ACTIVE version
-                await db
-                  .update(pbv2TreeVersions)
-                  .set({ 
-                    status: "DEPRECATED", 
-                    updatedAt: new Date(),
-                    updatedByUserId: userId ?? null 
-                  })
-                  .where(
-                    and(
-                      eq(pbv2TreeVersions.id, activeTreeVersion.id),
-                      eq(pbv2TreeVersions.organizationId, organizationId)
-                    )
-                  );
-                
-                // Update product pointer to new ACTIVE version
-                await db
-                  .update(products)
-                  .set({ 
-                    pbv2ActiveTreeVersionId: newActiveVersion.id,
-                    updatedAt: new Date()
-                  })
-                  .where(
-                    and(
-                      eq(products.id, productId),
-                      eq(products.organizationId, organizationId)
-                    )
-                  );
-                
-                console.log('[PBV2_BASE_PRICING_PROPAGATION] success', {
+                console.log('[PBV2_BASE_PRICING_PROPAGATION] success - status transitions completed', {
                   productId,
                   oldActiveId: activeTreeVersion.id,
+                  oldStatus: 'ACTIVE → DEPRECATED',
                   newActiveId: newActiveVersion.id,
+                  newStatus: 'ACTIVE',
                   basePricing: draftBasePricing,
                 });
                 
