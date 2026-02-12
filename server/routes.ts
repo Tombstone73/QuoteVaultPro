@@ -2992,6 +2992,144 @@ export async function registerRoutes(app: Express): Promise<Server> {
           schemaVersion: (product.optionTreeJson as any)?.schemaVersion,
         });
       }
+
+      // ============================================================
+      // PBV2 BASE PRICING PROPAGATION
+      // ============================================================
+      // After product save, propagate DRAFT base pricing to ACTIVE tree
+      // This ensures /calculate uses current pricing without manual publish
+      const userId = getUserId(req.user);
+      
+      if (product.pbv2ActiveTreeVersionId) {
+        try {
+          // Load DRAFT tree version
+          const [draftTreeVersion] = await db
+            .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+            .from(pbv2TreeVersions)
+            .where(
+              and(
+                eq(pbv2TreeVersions.organizationId, organizationId),
+                eq(pbv2TreeVersions.productId, productId),
+                eq(pbv2TreeVersions.status, "DRAFT")
+              )
+            )
+            .limit(1);
+          
+          if (draftTreeVersion) {
+            // Load current ACTIVE tree version
+            const [activeTreeVersion] = await db
+              .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
+              .from(pbv2TreeVersions)
+              .where(
+                and(
+                  eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId),
+                  eq(pbv2TreeVersions.organizationId, organizationId),
+                  eq(pbv2TreeVersions.status, "ACTIVE")
+                )
+              )
+              .limit(1);
+            
+            if (activeTreeVersion) {
+              // Extract base pricing from DRAFT and ACTIVE
+              const draftTree = draftTreeVersion.treeJson as any;
+              const activeTree = activeTreeVersion.treeJson as any;
+              const draftBasePricing = draftTree?.meta?.pricingV2?.base;
+              const activeBasePricing = activeTree?.meta?.pricingV2?.base;
+              
+              // Compare base pricing - only propagate if changed
+              const basePricingChanged = JSON.stringify(draftBasePricing) !== JSON.stringify(activeBasePricing);
+              
+              if (basePricingChanged && draftBasePricing) {
+                console.log('[PBV2_BASE_PRICING_PROPAGATION] detected change', {
+                  productId,
+                  activeTreeVersionId: activeTreeVersion.id,
+                  draftBasePricing,
+                  activeBasePricing,
+                });
+                
+                // Deep clone ACTIVE tree and update only meta.pricingV2.base
+                const updatedActiveTree = JSON.parse(JSON.stringify(activeTree));
+                if (!updatedActiveTree.meta) updatedActiveTree.meta = {};
+                if (!updatedActiveTree.meta.pricingV2) updatedActiveTree.meta.pricingV2 = {};
+                updatedActiveTree.meta.pricingV2.base = draftBasePricing;
+                
+                // Use transaction to ensure atomic state transition: DEPRECATE old → INSERT new → UPDATE pointer
+                const newActiveVersion = await db.transaction(async (tx) => {
+                  // STEP 1: Deprecate old ACTIVE version FIRST (removes unique constraint conflict)
+                  await tx
+                    .update(pbv2TreeVersions)
+                    .set({ 
+                      status: "DEPRECATED", 
+                      updatedAt: new Date(),
+                      updatedByUserId: userId ?? null 
+                    })
+                    .where(
+                      and(
+                        eq(pbv2TreeVersions.id, activeTreeVersion.id),
+                        eq(pbv2TreeVersions.organizationId, organizationId)
+                      )
+                    );
+                  
+                  // STEP 2: Create NEW ACTIVE tree version (immutability preserved)
+                  const [newVersion] = await tx
+                    .insert(pbv2TreeVersions)
+                    .values({
+                      organizationId,
+                      productId,
+                      status: "ACTIVE",
+                      schemaVersion: updatedActiveTree.schemaVersion ?? 2,
+                      treeJson: updatedActiveTree,
+                      publishedAt: new Date(),
+                      createdByUserId: userId ?? null,
+                      updatedByUserId: userId ?? null,
+                    })
+                    .returning();
+                  
+                  // STEP 3: Update product pointer to new ACTIVE version
+                  await tx
+                    .update(products)
+                    .set({ 
+                      pbv2ActiveTreeVersionId: newVersion.id,
+                      updatedAt: new Date()
+                    })
+                    .where(
+                      and(
+                        eq(products.id, productId),
+                        eq(products.organizationId, organizationId)
+                      )
+                    );
+                  
+                  return newVersion;
+                });
+                
+                console.log('[PBV2_BASE_PRICING_PROPAGATION] success - status transitions completed', {
+                  productId,
+                  oldActiveId: activeTreeVersion.id,
+                  oldStatus: 'ACTIVE → DEPRECATED',
+                  newActiveId: newActiveVersion.id,
+                  newStatus: 'ACTIVE',
+                  basePricing: draftBasePricing,
+                });
+                
+                // Update product object for response
+                product.pbv2ActiveTreeVersionId = newActiveVersion.id;
+              } else {
+                console.log('[PBV2_BASE_PRICING_PROPAGATION] skipped - no change', {
+                  productId,
+                  activeTreeVersionId: activeTreeVersion.id,
+                });
+              }
+            }
+          }
+        } catch (propagationError: any) {
+          // Don't fail product save if propagation fails
+          console.error('[PBV2_BASE_PRICING_PROPAGATION] failed', {
+            productId,
+            error: propagationError.message,
+            stack: propagationError.stack,
+          });
+        }
+      }
       
       res.json(product);
     } catch (error) {
