@@ -1756,6 +1756,11 @@ export function OrderLineItemsSection({
 
                           <Separator className="my-3" />
 
+                          {/* UNCONDITIONAL HARD DEBUG — REMOVE AFTER VERIFICATION */}
+                          <div style={{ padding: 12, background: "#220022", color: "white" }}>
+                            PBV2 HARD DEBUG — THIS SHOULD ALWAYS SHOW
+                          </div>
+
                           {/* PBV2 Options Section */}
                           {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
                             <div className="mb-3">
