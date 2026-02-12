@@ -601,6 +601,9 @@ export function OrderLineItemsSection({
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [computedTotal, setComputedTotal] = useState<number | null>(null);
+  
+  // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
+  const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
 
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [savedItemId, setSavedItemId] = useState<string | null>(null);
@@ -707,6 +710,10 @@ export function OrderLineItemsSection({
       setOptionSelectionsV2({ schemaVersion: 2, selected: {} });
     }
 
+    // Hydrate PBV2 snapshot from line item (used to render option questions)
+    const savedSnapshot = getPbv2SnapshotFromLineItem(expandedItem);
+    setPbv2SnapshotJson(savedSnapshot);
+
     setCalcError(null);
 
     const currentTotal = Number.parseFloat(expandedItem.totalPrice || "0") || 0;
@@ -760,15 +767,22 @@ export function OrderLineItemsSection({
       setIsCalculating(true);
       setCalcError(null);
 
+      // PBV2 request: backend expects optionSelectionsJson as Record<string, any>
+      // ProductOptionsPanelV2 manages LineItemOptionSelectionsV2 { schemaVersion: 2, selected: {...} }
+      // Extract .selected dict for API
+      const pbv2Payload = isExpandedTreeV2 
+        ? { optionSelectionsJson: optionSelectionsV2.selected || {} } 
+        : {};
+      const v1Payload = !isExpandedTreeV2 ? { selectedOptions: optionSelections } : {};
+
       apiRequest("POST", "/api/quotes/calculate", {
         productId: expandedItem.productId,
         variantId: expandedItem.productVariantId || undefined,
         width: widthNum,
         height: heightNum,
         quantity: qtyNum,
-        ...(isExpandedTreeV2
-          ? { optionSelectionsJson: optionSelectionsV2 }
-          : { selectedOptions: optionSelections }),
+        ...pbv2Payload,
+        ...v1Payload,
         customerId,
         debugSource: "OrderLineItemsSection.debounced",
       })
@@ -778,6 +792,11 @@ export function OrderLineItemsSection({
           const price = Number(data?.linePrice);
           if (!Number.isFinite(price)) return;
           setComputedTotal(price);
+
+          // Store PBV2 snapshot from response (contains treeJson, visibleNodeIds, selections)
+          if (data?.pbv2SnapshotJson) {
+            setPbv2SnapshotJson(data.pbv2SnapshotJson);
+          }
         })
         .catch((err: any) => {
           // Parse JSON error for PBV2 schema mismatch
@@ -805,7 +824,7 @@ export function OrderLineItemsSection({
       heightText,
       qtyNum,
       optionSelections,
-      optionSelectionsV2,
+      optionSelectionsV2, // PBV2: reprice when selections change
       isExpandedTreeV2,
       optionsV2Valid,
       expandedItem?.id,
@@ -833,7 +852,11 @@ export function OrderLineItemsSection({
       };
 
       const v2Patch = isExpandedTreeV2
-        ? { optionSelectionsJson: optionSelectionsV2 }
+        ? { 
+            optionSelectionsJson: optionSelectionsV2,
+            // Store PBV2 snapshot from /calculate for future reference
+            pbv2SnapshotJson: pbv2SnapshotJson || undefined,
+          }
         : {};
 
       await updateLineItem.mutateAsync({
