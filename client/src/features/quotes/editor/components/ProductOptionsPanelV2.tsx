@@ -200,13 +200,19 @@ export function ProductOptionsPanelV2({
     );
   }
 
+  // Extract root node label for section header (dynamic from tree structure)
+  const rootNodeId = tree.rootNodeIds?.[0];
+  const rootNode = rootNodeId ? tree.nodes[rootNodeId] : null;
+  const sectionLabel = rootNode?.kind === "group" ? rootNode.label : null;
+
   return (
     <div className={cn("space-y-3", className)}>
-      <div className="flex items-center gap-2">
-        <div className="text-sm font-medium">Options</div>
-        <Badge variant="secondary" className="text-[11px]">Tree v2</Badge>
-        {!isValid && <Badge variant="destructive" className="text-[11px]">Missing required</Badge>}
-      </div>
+      {sectionLabel && (
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-medium">{sectionLabel}</div>
+          {!isValid && <Badge variant="destructive" className="text-[11px]">Missing required</Badge>}
+        </div>
+      )}
 
       {visibleNodeIds.length === 0 ? (
         <div className="text-xs text-muted-foreground">No options.</div>
