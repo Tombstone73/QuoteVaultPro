@@ -1764,7 +1764,6 @@ export function OrderLineItemsSection({
                           <div style={{ padding: 12, background: "#220022", color: "white", fontWeight: 800 }}>
                             EXPANDED EDITOR MARKER B v999
                           </div>
-                          </div>
 
                           {/* PBV2 Options Section */}
                           {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
