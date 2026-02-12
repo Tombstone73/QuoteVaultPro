@@ -582,30 +582,7 @@ export function OrderLineItemsSection({
   }, [expandedProduct]);
 
   // PBV2 snapshot from /calculate response (contains treeJson, visibleNodeIds, selections)
-  // Declared early so useMemo hooks below can access it
   const [pbv2SnapshotJson, setPbv2SnapshotJson] = useState<any>(null);
-
-  const expandedOptionTreeJson = useMemo(() => {
-    // For PBV2 products: prefer snapshot tree (from calculate response) over product tree
-    // This ensures we show the correct tree version and visibleNodeIds
-    if (pbv2SnapshotJson?.treeJson) {
-      return pbv2SnapshotJson.treeJson as OptionTreeV2 | null;
-    }
-    
-    // Fallback: use product's optionTreeJson (legacy or before first calculate)
-    return (((expandedProduct as any)?.optionTreeJson ?? null) as OptionTreeV2 | null) ?? null;
-  }, [expandedProduct, pbv2SnapshotJson]);
-
-  const isExpandedTreeV2 = useMemo(() => {
-    // Check for PBV2 product either by:
-    // 1. pbv2SnapshotJson presence (after calculate)
-    // 2. product.pbv2ActiveTreeVersionId existence
-    const hasPbv2Snapshot = Boolean(pbv2SnapshotJson?.treeJson);
-    const hasPbv2Active = Boolean((expandedProduct as any)?.pbv2ActiveTreeVersionId);
-    const hasV2Schema = Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
-    
-    return hasPbv2Snapshot || hasPbv2Active || hasV2Schema;
-  }, [expandedOptionTreeJson, pbv2SnapshotJson, expandedProduct]);
 
   const dimsRequired = requiresDimensions(expandedProduct);
 
@@ -774,7 +751,8 @@ export function OrderLineItemsSection({
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
 
-      if (isExpandedTreeV2 && !optionsV2Valid) {
+      const isPbv2 = Boolean(pbv2SnapshotJson?.treeJson);
+      if (isPbv2 && !optionsV2Valid) {
         setCalcError(null);
         return;
       }
@@ -785,10 +763,10 @@ export function OrderLineItemsSection({
       // PBV2 request: backend expects optionSelectionsJson as Record<string, any>
       // ProductOptionsPanelV2 manages LineItemOptionSelectionsV2 { schemaVersion: 2, selected: {...} }
       // Extract .selected dict for API
-      const pbv2Payload = isExpandedTreeV2 
+      const pbv2Payload = isPbv2
         ? { optionSelectionsJson: optionSelectionsV2.selected || {} } 
         : {};
-      const v1Payload = !isExpandedTreeV2 ? { selectedOptions: optionSelections } : {};
+      const v1Payload = !isPbv2 ? { selectedOptions: optionSelections } : {};
 
       apiRequest("POST", "/api/quotes/calculate", {
         productId: expandedItem.productId,
@@ -840,7 +818,7 @@ export function OrderLineItemsSection({
       qtyNum,
       optionSelections,
       optionSelectionsV2, // PBV2: reprice when selections change
-      isExpandedTreeV2,
+      pbv2SnapshotJson?.treeJson, // Detect PBV2 mode
       optionsV2Valid,
       expandedItem?.id,
       customerId,
@@ -866,7 +844,8 @@ export function OrderLineItemsSection({
         selectedOptions: selectedOptionsArray,
       };
 
-      const v2Patch = isExpandedTreeV2
+      const isPbv2 = Boolean(pbv2SnapshotJson?.treeJson);
+      const v2Patch = isPbv2
         ? { 
             optionSelectionsJson: optionSelectionsV2,
             // Store PBV2 snapshot from /calculate for future reference
@@ -1775,36 +1754,41 @@ export function OrderLineItemsSection({
                             </div>
                           </div>
 
-                          {/* DEBUG: PBV2 Status (remove after verification) */}
-                          {(isExpandedTreeV2 || pbv2SnapshotJson || (expandedProduct as any)?.pbv2ActiveTreeVersionId) && (
-                            <div className="mt-2 px-2 py-1 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded text-xs font-mono">
-                              <span className="font-semibold">PBV2 Debug:</span>{' '}
-                              snapshot={pbv2SnapshotJson ? 'yes' : 'no'},{' '}
-                              visibleNodeIds={pbv2SnapshotJson?.visibleNodeIds?.length ?? 0},{' '}
-                              isExpandedTreeV2={isExpandedTreeV2 ? 'yes' : 'no'},{' '}
-                              hasTree={expandedOptionTreeJson ? 'yes' : 'no'}
+                          <Separator className="my-3" />
+
+                          {/* PBV2 Options Section */}
+                          {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
+                            <div className="mb-3">
+                              {/* DEBUG: Remove after verification */}
+                              <div style={{ color: 'orange', fontSize: '12px', marginBottom: '8px', fontFamily: 'monospace' }}>
+                                PBV2 DEBUG:
+                                {' '}snapshot={String(Boolean(pbv2SnapshotJson))}
+                                {' '}visibleCount={pbv2SnapshotJson?.visibleNodeIds?.length || 0}
+                              </div>
+
+                              <ProductOptionsPanelV2
+                                tree={pbv2SnapshotJson.treeJson}
+                                selections={optionSelectionsV2}
+                                onSelectionsChange={setOptionSelectionsV2}
+                                onValidityChange={setOptionsV2Valid}
+                              />
                             </div>
                           )}
 
-                          <Separator className="my-3" />
+                          {/* Legacy Options (non-PBV2 products) */}
+                          {!pbv2SnapshotJson?.treeJson && expandedProductOptions.length > 0 && (
+                            <div className="mb-3">
+                              <ProductOptionsPanel
+                                product={expandedProduct}
+                                productOptions={expandedProductOptions}
+                                optionSelections={optionSelections as any}
+                                onOptionSelectionsChange={setOptionSelections as any}
+                              />
+                            </div>
+                          )}
 
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
                             <div className="min-w-0">
-                              {isExpandedTreeV2 && expandedOptionTreeJson ? (
-                                <ProductOptionsPanelV2
-                                  tree={expandedOptionTreeJson}
-                                  selections={optionSelectionsV2}
-                                  onSelectionsChange={setOptionSelectionsV2}
-                                  onValidityChange={setOptionsV2Valid}
-                                />
-                              ) : (
-                                <ProductOptionsPanel
-                                  product={expandedProduct}
-                                  productOptions={expandedProductOptions}
-                                  optionSelections={optionSelections as any}
-                                  onOptionSelectionsChange={setOptionSelections as any}
-                                />
-                              )}
 
                               {!readOnly && (
                                 <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
@@ -1816,7 +1800,7 @@ export function OrderLineItemsSection({
                                         size="sm"
                                         className="h-8"
                                         onClick={handleSaveItem}
-                                        disabled={savingItemId === item.id || isCalculating || (isExpandedTreeV2 && !optionsV2Valid)}
+                                        disabled={savingItemId === item.id || isCalculating || (pbv2SnapshotJson?.treeJson && !optionsV2Valid)}
                                       >
                                         {savingItemId === item.id ? (
                                           <>
