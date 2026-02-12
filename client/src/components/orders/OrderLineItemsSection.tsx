@@ -965,9 +965,17 @@ export function OrderLineItemsSection({
 
   return (
     <Card className="border-0 bg-transparent shadow-none">
-      {/* MARKER A - Always visible on Orders page */}
-      <div style={{ position: "sticky", top: 0, zIndex: 9999, padding: "8px 12px", background: "#ff0066", color: "white", fontWeight: 800 }}>
-        ORDERS LINE ITEMS MARKER A v999
+      <div style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 99999,
+        padding: "10px 12px",
+        background: "#ff0066",
+        color: "white",
+        fontWeight: 900,
+        letterSpacing: "0.5px"
+      }}>
+        FRONTEND FINGERPRINT v123 — ORDERS PAGE
       </div>
       <CardHeader className="px-0 pt-0 pb-2">
         <div className="flex items-center justify-between gap-2">
@@ -1760,9 +1768,8 @@ export function OrderLineItemsSection({
 
                           <Separator className="my-3" />
 
-                          {/* MARKER B - Inside expanded editor only */}
-                          <div style={{ padding: 12, background: "#220022", color: "white", fontWeight: 800 }}>
-                            EXPANDED EDITOR MARKER B v999
+                          <div style={{ padding: 10, background: "#220022", color: "white", fontWeight: 900 }}>
+                            EXPANDED EDITOR FINGERPRINT v123
                           </div>
 
                           {/* PBV2 Options Section */}
