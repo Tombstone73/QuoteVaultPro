@@ -398,8 +398,10 @@ export function useQuoteEditorState() {
     // COMPUTED VALUES: Pricing (reactive - updates when lineItems change)
     // ============================================================================
 
+    // activeLineItems for order/quote DISPLAY includes items being edited (including draft)
+    // Excludes only explicitly canceled/deleted items
     const activeLineItems = useMemo(
-        () => lineItems.filter((li) => li.status !== "draft" && li.status !== "canceled"),
+        () => lineItems.filter((li) => li.status !== "canceled"),
         [lineItems]
     );
 
@@ -426,44 +428,69 @@ export function useQuoteEditorState() {
 
     // Single source of truth: computedTotals derived from current editor state
     const computedTotals = useMemo(() => {
-        // Subtotal = sum of current lineItems' linePrice
+        // Subtotal = sum of current lineItems in CENTS (PBV2-compatible)
         // NOTE: linePrice is in dollars for quotes/temp items (different from order line items which use totalPrice)
-        const subtotal = activeLineItems.reduce((sum, item) => {
-            // Defensive: handle both number and string values, parse if needed
-            const lineTotal = typeof item.linePrice === 'string' 
-                ? parseFloat(item.linePrice) 
-                : (item.linePrice ?? 0);
+        // Priority: lineTotalCents > pbv2SnapshotJson.pricing.totalCents > linePrice (converted to cents)
+        const subtotalCents = activeLineItems.reduce((sum, item) => {
+            // Try cents fields first (PBV2 pricing)
+            let itemCents: number | null = null;
             
-            if (!Number.isFinite(lineTotal)) {
-                console.warn("[QuoteEditor] Invalid linePrice for item:", item.id, item.linePrice);
+            // Priority 1: priceBreakdown.lineTotalCents
+            if ((item.priceBreakdown as any)?.lineTotalCents != null) {
+                itemCents = Number((item.priceBreakdown as any).lineTotalCents);
+            }
+            // Priority 2: pbv2SnapshotJson.pricing.totalCents
+            else if ((item as any).pbv2SnapshotJson?.pricing?.totalCents != null) {
+                itemCents = Number((item as any).pbv2SnapshotJson.pricing.totalCents);
+            }
+            // Priority 3: lineTotalCents (if exists)
+            else if ((item as any).lineTotalCents != null) {
+                itemCents = Number((item as any).lineTotalCents);
+            }
+            // Fallback: Convert dollar fields to cents
+            else if (item.linePrice != null) {
+                const linePrice = typeof item.linePrice === 'string' 
+                    ? parseFloat(item.linePrice) 
+                    : item.linePrice;
+                if (Number.isFinite(linePrice)) {
+                    itemCents = Math.round(linePrice * 100);
+                }
+            }
+            // Last resort: totalPrice (decimal string)
+            else if ((item as any).totalPrice != null) {
+                const totalPrice = parseFloat(String((item as any).totalPrice));
+                if (Number.isFinite(totalPrice)) {
+                    itemCents = Math.round(totalPrice * 100);
+                }
+            }
+            
+            if (itemCents == null || !Number.isFinite(itemCents)) {
+                console.warn("[QuoteEditor] Invalid price for item:", item.id, item);
                 return sum;
             }
-            return sum + lineTotal;
+            return sum + itemCents;
         }, 0);
 
-        // DIAGNOSTIC: Warn if we have active line items but subtotal is still 0
-        if (activeLineItems.length > 0 && subtotal === 0) {
-            console.warn("[QuoteEditor] Active line items present but subtotal is $0.00 - check linePrice values:", 
-                activeLineItems.map(li => ({ id: li.id, linePrice: li.linePrice, productName: li.productName }))
-            );
-        }
-
-        // Discount = current discount in state (clamped to not exceed subtotal)
-        const discount = Math.min(effectiveDiscount, subtotal);
+        // Discount in cents (clamped to not exceed subtotal)
+        const discountCents = Math.min(
+            Math.round((effectiveDiscount ?? 0) * 100),
+            subtotalCents
+        );
 
         // Tax = computed from taxable subtotal * current taxRate (respect tax exempt)
-        const taxableBase = Math.max(0, subtotal - discount);
-        const tax = taxableBase * effectiveTaxRate;
+        const taxableBaseCents = Math.max(0, subtotalCents - discountCents);
+        const taxCents = Math.round(taxableBaseCents * effectiveTaxRate);
 
-        // Grand Total = taxableBase (subtotal minus discount) + tax + shipping
-        const shippingAmount = (shippingCents ?? 0) / 100;
-        const grandTotal = taxableBase + tax + shippingAmount;
+        // Grand Total = taxableBase + tax + shipping
+        const shippingAmountCents = shippingCents ?? 0;
+        const grandTotalCents = taxableBaseCents + taxCents + shippingAmountCents;
 
+        // Convert to dollars for backward compatibility
         return {
-            subtotal,
-            discount,
-            tax,
-            grandTotal,
+            subtotal: subtotalCents / 100,
+            discount: discountCents / 100,
+            tax: taxCents / 100,
+            grandTotal: grandTotalCents / 100,
         };
     }, [activeLineItems, effectiveDiscount, effectiveTaxRate, shippingCents]);
 
