@@ -433,9 +433,15 @@ export function LineItemsSection({
     [products, expandedItem]
   );
 
+  // Prefer pbv2SnapshotJson.treeJson from line item (server-calculated)
+  // Fallback to product definition optionTreeJson
   const expandedOptionTreeJson = useMemo(() => {
+    const snapshot = (expandedItem as any)?.pbv2SnapshotJson;
+    if (snapshot?.treeJson) {
+      return snapshot.treeJson as OptionTreeV2 | null;
+    }
     return (((expandedProduct as any)?.optionTreeJson ?? null) as OptionTreeV2 | null) ?? null;
-  }, [expandedProduct]);
+  }, [expandedProduct, expandedItem]);
 
   const isExpandedTreeV2 = useMemo(() => {
     return Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
@@ -943,6 +949,12 @@ export function LineItemsSection({
                           {/* Options (left) + Artwork (right) */}
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
                             <div className="min-w-0">
+                              {/* DEBUG: PBV2 snapshot status */}
+                              {isExpandedTreeV2 && (
+                                <div style={{ color: 'orange', fontSize: '12px', marginBottom: '8px', fontFamily: 'monospace' }}>
+                                  PBV2: snapshot={(expandedItem as any)?.pbv2SnapshotJson ? 'true' : 'false'} visible={(expandedItem as any)?.pbv2SnapshotJson?.visibleNodeIds?.length || 0}
+                                </div>
+                              )}
                               {/* Finishing / options */}
                               {isExpandedTreeV2 && expandedOptionTreeJson ? (
                                 <ProductOptionsPanelV2
