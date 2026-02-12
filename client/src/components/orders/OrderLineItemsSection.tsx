@@ -1756,10 +1756,6 @@ export function OrderLineItemsSection({
 
                           <Separator className="my-3" />
 
-                          <div style={{ padding: 10, background: "#220022", color: "white", fontWeight: 900 }}>
-                            EXPANDED EDITOR FINGERPRINT v123
-                          </div>
-
                           {/* PBV2 Options Section */}
                           {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
                             <div className="mb-3">
