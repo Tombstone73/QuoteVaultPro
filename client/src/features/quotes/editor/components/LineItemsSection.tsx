@@ -931,12 +931,6 @@ export function LineItemsSection({
                           {/* Options (left) + Artwork (right) */}
                           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
                             <div className="min-w-0">
-                              {/* DEBUG: PBV2 snapshot status */}
-                              {isExpandedTreeV2 && (
-                                <div style={{ color: 'orange', fontSize: '12px', marginBottom: '8px', fontFamily: 'monospace' }}>
-                                  PBV2: snapshot={(expandedItem as any)?.pbv2SnapshotJson ? 'true' : 'false'} visible={(expandedItem as any)?.pbv2SnapshotJson?.visibleNodeIds?.length || 0}
-                                </div>
-                              )}
                               {/* Finishing / options */}
                               {isExpandedTreeV2 && expandedOptionTreeJson ? (
                                 <ProductOptionsPanelV2
