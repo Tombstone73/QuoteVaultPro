@@ -68,7 +68,6 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   // PBV2_DEBUG: Log evaluator entry point
   if (process.env.PBV2_DEBUG === "1") {
     console.log("[PBV2_EVAL_ENTRY] " + JSON.stringify({ 
-      treeVersionId: tree.versionId || 'unknown',
       schemaVersion: tree.schemaVersion,
       nodeCount: Object.keys(tree.nodes || {}).length,
       selectionKeys: Object.keys(selections.selected || {})
@@ -77,7 +76,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
   // DEV: Log evaluation start with detailed context
   if (process.env.NODE_ENV === "development") {
-    console.log(`[PBV2_EVAL_START] TreeVersionId: ${tree.versionId || 'unknown'}`);
+    console.log(`[PBV2_EVAL_START] Schema version: ${tree.schemaVersion}`);
     console.log(`[PBV2_EVAL_START] Total nodes: ${Object.keys(tree.nodes).length}`);
     console.log(`[PBV2_EVAL_START] Selections count: ${Object.keys(selections.selected || {}).length}`);
     console.log(`[PBV2_EVAL_START] Selections:`, JSON.stringify(selections.selected, null, 2));
@@ -163,6 +162,20 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
     const valueRaw = getSelectionValue(node, selected);
 
+    // PBV2_DEBUG: Log every node we're iterating (confirms loop runs)
+    if (process.env.PBV2_DEBUG === "1") {
+      console.log("[PBV2_NODE_ITER] " + JSON.stringify({
+        nodeId,
+        nodeKind: node.kind,
+        nodeLabel: node.label,
+        inputType: node.input?.type,
+        selectionKey: node.input?.selectionKey || (node as any).key || nodeId,
+        valueRaw: valueRaw,
+        hasChoices: Array.isArray(node.choices),
+        choicesCount: node.choices?.length || 0
+      }));
+    }
+
     const isSelected = (() => {
       if (valueRaw === null || valueRaw === undefined) return false;
       // Support both new schema (kind="question") and legacy (type="INPUT")
@@ -222,7 +235,30 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     // Only for select-type nodes with a selected value
     if (isSelected && node.input?.type === "select" && Array.isArray(node.choices)) {
       const selectedValue = typeof valueRaw === "string" ? valueRaw : String(valueRaw);
+      
+      // PBV2_DEBUG: Log entry into choice processing
+      if (process.env.PBV2_DEBUG === "1") {
+        console.log("[PBV2_CHOICE_ENTRY] " + JSON.stringify({
+          nodeId,
+          selectedValue,
+          choicesCount: node.choices.length,
+          choiceValues: node.choices.map(c => c.value)
+        }));
+      }
+      
       const choice = node.choices.find((c) => c.value === selectedValue);
+      
+      // PBV2_DEBUG: Log choice match result
+      if (process.env.PBV2_DEBUG === "1") {
+        console.log("[PBV2_CHOICE_MATCH] " + JSON.stringify({
+          nodeId,
+          selectedValue,
+          choiceFound: !!choice,
+          choiceLabel: choice?.label,
+          hasPricingImpact: choice ? Array.isArray(choice.pricingImpact) : false,
+          impactCount: choice?.pricingImpact?.length || 0
+        }));
+      }
       
       // DEV: Log choice selection and pricing impact status
       if (process.env.NODE_ENV === "development") {
