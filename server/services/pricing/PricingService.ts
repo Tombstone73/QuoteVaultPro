@@ -244,6 +244,27 @@ async function loadTreeVersion(organizationId: string, treeVersionId: string) {
   const treeSchemaVersion = (treeVersion.treeJson as any)?.schemaVersion ?? 'unknown';
   console.log(`[PBV2_PRICING_DEBUG] Loaded tree: versionId=${treeVersionId} schemaVersion=${treeSchemaVersion} status=${treeVersion.status}`);
 
+  // DEV: Sample tree nodes to check for choice-level pricingImpact
+  if (process.env.NODE_ENV === "development") {
+    const nodes = (treeVersion.treeJson as any)?.nodes || {};
+    const nodeIds = Object.keys(nodes);
+    console.log(`[PBV2_TREE_DEBUG] Tree has ${nodeIds.length} nodes`);
+    
+    // Find first node with choices that have pricingImpact
+    for (const nodeId of nodeIds.slice(0, 10)) {  // Check first 10 nodes
+      const node = nodes[nodeId];
+      if (Array.isArray(node?.choices)) {
+        const choicesWithPricing = node.choices.filter((c: any) => Array.isArray(c.pricingImpact) && c.pricingImpact.length > 0);
+        if (choicesWithPricing.length > 0) {
+          console.log(`[PBV2_TREE_DEBUG] Node "${node.label}" (${nodeId}) has ${choicesWithPricing.length} choices with pricing:`);
+          choicesWithPricing.forEach((c: any) => {
+            console.log(`  - Choice "${c.label}" (value: ${c.value}): ${c.pricingImpact.length} impacts`, JSON.stringify(c.pricingImpact));
+          });
+        }
+      }
+    }
+  }
+
   // CRITICAL: Validate schemaVersion = 2
   if (treeSchemaVersion !== 2) {
     const error = new Error(
