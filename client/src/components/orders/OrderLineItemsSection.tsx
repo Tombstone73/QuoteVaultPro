@@ -1759,12 +1759,12 @@ export function OrderLineItemsSection({
                           {/* PBV2 Options Section */}
                           {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
                             <div className="mb-3">
-                              {/* DEBUG: Remove after verification */}
-                              <div style={{ color: 'orange', fontSize: '12px', marginBottom: '8px', fontFamily: 'monospace' }}>
-                                PBV2 DEBUG:
-                                {' '}snapshot={String(Boolean(pbv2SnapshotJson))}
-                                {' '}visibleCount={pbv2SnapshotJson?.visibleNodeIds?.length || 0}
-                              </div>
+                              {/* Dev-only PBV2 diagnostics */}
+                              {import.meta.env.DEV && (
+                                <div className="text-xs text-muted-foreground mb-2 font-mono bg-muted/30 p-2 rounded">
+                                  PBV2: snapshot={String(Boolean(pbv2SnapshotJson))}, visibleNodes={pbv2SnapshotJson?.visibleNodeIds?.length || 0}
+                                </div>
+                              )}
 
                               <ProductOptionsPanelV2
                                 tree={pbv2SnapshotJson.treeJson}
