@@ -12,7 +12,7 @@
  * - Keep all edits local until "Save Draft" is called
  */
 
-import type { OptionNodeV2 } from '@shared/optionTreeV2';
+import type { OptionNodeV2, PricingImpact } from '@shared/optionTreeV2';
 
 /**
  * CANONICAL PBV2 GRAPH RULES (enforced by normalizeTreeJson):
@@ -862,12 +862,29 @@ export function createUpdateChoicePatch(
   treeJson: unknown,
   optionId: string,
   choiceValue: string,
-  updates: { label?: string; value?: string; description?: string; priceDeltaCents?: number }
+  updates: { label?: string; value?: string; description?: string; priceDeltaCents?: number; pricingImpact?: PricingImpact[] }
 ): { patch: any; validationError?: string } {
   const { tree, nodes, edges } = normalizeArrays(treeJson);
   
   const optionNode = nodes.find(n => n.id === optionId);
   const existingChoices = optionNode?.choices || [];
+
+  // DEV guard: log if node/choice not found
+  if (import.meta.env.DEV) {
+    if (!optionNode) {
+      console.error('[createUpdateChoicePatch] Option node not found', { optionId, availableNodes: nodes.map(n => n.id) });
+    } else {
+      const choiceExists = existingChoices.some((c: any) => c.value === choiceValue);
+      if (!choiceExists) {
+        console.error('[createUpdateChoicePatch] Choice not found in node', { 
+          optionId, 
+          choiceValue, 
+          availableChoices: existingChoices.map((c: any) => c.value),
+          updates 
+        });
+      }
+    }
+  }
 
   // Check for duplicate value if updating value
   if (updates.value !== undefined && updates.value !== choiceValue) {
@@ -891,6 +908,7 @@ export function createUpdateChoicePatch(
       if (updates.value !== undefined) updated.value = updates.value;
       if (updates.description !== undefined) updated.description = updates.description;
       if (updates.priceDeltaCents !== undefined) updated.priceDeltaCents = updates.priceDeltaCents;
+      if (updates.pricingImpact !== undefined) updated.pricingImpact = updates.pricingImpact;
       return updated;
     });
 
