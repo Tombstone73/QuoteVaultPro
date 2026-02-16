@@ -56,6 +56,21 @@ export function fromPricingEffect(effect?: PricingEffect | null): { uiUnitDefaul
       return { uiUnitDefault: "percentOfBase", amountCentsDisplay: effect.percent };
     case "multiplier":
       return { uiUnitDefault: "multiplier", amountCentsDisplay: effect.factor };
+    // New modes (v2.1: choice-level pricing) - map to legacy UI for now
+    case "addCents":
+      return { uiUnitDefault: "flat", amountCentsDisplay: effect.cents };
+    case "addPercent":
+      return { uiUnitDefault: "percentOfBase", amountCentsDisplay: effect.percent };
+    case "addPerUnit":
+      // Map to best-fit legacy UI unit
+      if (effect.unit === "perPiece" || effect.unit === "perQty") {
+        return { uiUnitDefault: "perQty", amountCentsDisplay: effect.centsPerUnit };
+      } else if (effect.unit === "perSqft") {
+        return { uiUnitDefault: "perSqft", amountCentsDisplay: effect.centsPerUnit };
+      } else {
+        // Default fallback for perLinearFoot, perInch
+        return { uiUnitDefault: "flat", amountCentsDisplay: effect.centsPerUnit };
+      }
     default: {
       const _exhaustive: never = effect;
       return { uiUnitDefault: "none", amountCentsDisplay: 0 };
@@ -92,6 +107,21 @@ export function decodePricingImpact(schemaImpact?: PricingImpact | null): UiPric
       return { mode: "percentOfBase", amountCents: schemaImpact.percent, displayUnit: "percent", taxable: true };
     case "multiplier":
       return { mode: "multiplier", amountCents: schemaImpact.factor, displayUnit: "multiplier", taxable: true };
+    // New modes (v2.1: choice-level pricing) - map to legacy UI for now
+    case "addCents":
+      return { mode: "addFlat", amountCents: schemaImpact.cents, displayUnit: "each", taxable: true };
+    case "addPercent":
+      return { mode: "percentOfBase", amountCents: schemaImpact.percent, displayUnit: "percent", taxable: true };
+    case "addPerUnit":
+      // Map to best-fit legacy UI unit
+      if (schemaImpact.unit === "perPiece" || schemaImpact.unit === "perQty") {
+        return { mode: "addPerQty", amountCents: schemaImpact.centsPerUnit, displayUnit: "per_qty", taxable: true };
+      } else if (schemaImpact.unit === "perSqft") {
+        return { mode: "addPerSqft", amountCents: schemaImpact.centsPerUnit, displayUnit: "per_sqft", taxable: true };
+      } else {
+        // Default fallback for perLinearFoot, perInch
+        return { mode: "addFlat", amountCents: schemaImpact.centsPerUnit, displayUnit: "each", taxable: true };
+      }
     default: {
       const _exhaustive: never = schemaImpact;
       return { mode: "none", amountCents: 0, displayUnit: "each", taxable: true };

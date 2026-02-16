@@ -80,10 +80,20 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Invalid quantity for option evaluation");
   if (!Number.isFinite(basePrice)) throw new Error("Invalid basePrice for option evaluation");
 
+  // Compute dimensional units (for per-unit pricing)
+  const widthIn = width;
+  const heightIn = height;
+  const sqftPerItem = widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0;
+  // linearFoot = width in feet (assumes width is the "roll length" dimension)
+  const linearFootPerItem = widthIn > 0 ? widthIn / 12 : 0;
+  // inches = width (default dimension for per-inch pricing)
+  const inchesPerItem = widthIn;
+
+  const baseCents = Math.round(basePrice * 100); // Convert base price to cents
   const visibleNodeIds = resolveVisibleNodes(tree, selections);
   const selected = selections.selected ?? {};
 
-  let optionsPrice = 0;
+  let optionsCents = 0; // Running total in cents
   const selectedOptions: SelectedOptionsSnapshotEntry[] = [];
 
   for (let i = 0; i < visibleNodeIds.length; i++) {
@@ -104,10 +114,12 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     })();
 
     let nodeCost = 0;
-    const impacts = node.pricingImpact ?? [];
 
-    for (let j = 0; j < impacts.length; j++) {
-      const impact: any = impacts[j];
+    // STEP 1: Process NODE-level pricing impacts (legacy backward compatibility)
+    // This is kept for existing data but NEW flows should use choice-level pricing
+    const nodeImpacts = node.pricingImpact ?? [];
+    for (let j = 0; j < nodeImpacts.length; j++) {
+      const impact: any = nodeImpacts[j];
       if (!impact) continue;
 
       // applyWhen evaluation is handled in shared runtime in future extensions;
@@ -118,6 +130,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
       if (!isSelected) continue;
 
+      // Process legacy modes (dollars)
       switch (impact.mode) {
         case "addFlat":
           nodeCost += (impact.amountCents ?? 0) / 100;
@@ -128,6 +141,119 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
         default:
           // MVP: ignore unsupported impact modes.
           break;
+      }
+    }
+
+    // STEP 2: Process CHOICE-level pricing impacts (v2.1: NEW model)
+    // Only for select-type nodes with a selected value
+    if (isSelected && node.input?.type === "select" && Array.isArray(node.choices)) {
+      const selectedValue = typeof valueRaw === "string" ? valueRaw : String(valueRaw);
+      const choice = node.choices.find((c) => c.value === selectedValue);
+      
+      if (choice && Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0) {
+        // Dev logging to verify choice-level pricing is working
+        if (process.env.NODE_ENV === "development") {
+          console.log(`[PBV2_CHOICE_PRICING] Node: ${node.label}, Choice: ${choice.label}, Impacts: ${choice.pricingImpact.length}`);
+        }
+        
+        for (let k = 0; k < choice.pricingImpact.length; k++) {
+          const impact: any = choice.pricingImpact[k];
+          if (!impact) continue;
+
+          if (!applyWhenOk(impact.applyWhen, selected)) {
+            continue;
+          }
+
+          // Process new choice-level pricing modes (all in cents)
+          switch (impact.mode) {
+            case "addCents": {
+              const cents = Number(impact.cents ?? 0);
+              if (Number.isFinite(cents)) {
+                optionsCents += cents; // Direct cents impact (can be negative)
+                if (process.env.NODE_ENV === "development") {
+                  console.log(`[PBV2_CHOICE_PRICING] addCents: ${cents} (total options: ${optionsCents})`);
+                }
+              }
+              break;
+            }
+            
+            case "addPercent": {
+              const percent = Number(impact.percent ?? 0);
+              const basis = impact.basis || "base"; // Default to "base"
+              
+              if (Number.isFinite(percent)) {
+                let basisCents = 0;
+                
+                // Determine basis for percentage calculation
+                if (basis === "base") {
+                  basisCents = baseCents;
+                } else if (basis === "optionsSubtotal") {
+                  // Use current running optionsCents (order-dependent)
+                  basisCents = optionsCents;
+                } else if (basis === "lineSubtotal") {
+                  // Use base + current options (order-dependent)
+                  basisCents = baseCents + optionsCents;
+                }
+                
+                // Apply percentage (can be negative for discounts)
+                const percentCents = Math.round(basisCents * (percent / 100));
+                optionsCents += percentCents;
+                
+                if (process.env.NODE_ENV === "development") {
+                  console.log(`[PBV2_CHOICE_PRICING] addPercent: ${percent}% of ${basis} (${basisCents}¢) = ${percentCents}¢ (total options: ${optionsCents})`);
+                }
+              }
+              break;
+            }
+            
+            case "addPerUnit": {
+              const centsPerUnit = Number(impact.centsPerUnit ?? 0);
+              const unit = impact.unit;
+              
+              if (Number.isFinite(centsPerUnit) && unit) {
+                let unitAmount = 0;
+                
+                // Calculate unit amount based on unit type
+                if (unit === "perPiece" || unit === "perQty") {
+                  // perQty is treated as alias of perPiece
+                  unitAmount = quantity;
+                } else if (unit === "perSqft") {
+                  unitAmount = sqftPerItem * quantity;
+                } else if (unit === "perLinearFoot") {
+                  unitAmount = linearFootPerItem * quantity;
+                } else if (unit === "perInch") {
+                  unitAmount = inchesPerItem * quantity;
+                }
+                
+                // Apply per-unit pricing (can be negative)
+                const unitCents = Math.round(centsPerUnit * unitAmount);
+                optionsCents += unitCents;
+                
+                if (process.env.NODE_ENV === "development") {
+                  console.log(`[PBV2_CHOICE_PRICING] addPerUnit: ${centsPerUnit}¢/${unit} × ${unitAmount.toFixed(2)} = ${unitCents}¢ (total options: ${optionsCents})`);
+                }
+              }
+              break;
+            }
+            
+            // Legacy modes (for backward compatibility if stored on choices)
+            case "addFlat": {
+              const cents = Number(impact.amountCents ?? 0);
+              if (Number.isFinite(cents)) {
+                nodeCost += cents / 100; // Convert to dollars for legacy flow
+              }
+              break;
+            }
+            
+            case "addPerQty": {
+              const cents = Number(impact.amountCents ?? 0);
+              if (Number.isFinite(cents)) {
+                nodeCost += (cents / 100) * quantity; // Convert to dollars for legacy flow
+              }
+              break;
+            }
+          }
+        }
       }
     }
 
@@ -148,12 +274,15 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       });
     }
 
-    optionsPrice += nodeCost;
+    // Add node-level cost (legacy flow uses dollars, converted to cents)
+    optionsCents += Math.round(nodeCost * 100);
   }
 
-  if (!Number.isFinite(optionsPrice)) {
-    throw new Error("OptionTreeV2 evaluation produced invalid optionsPrice");
+  if (!Number.isFinite(optionsCents)) {
+    throw new Error("OptionTreeV2 evaluation produced invalid optionsCents");
   }
+
+  const optionsPrice = optionsCents / 100; // Convert back to dollars for result
 
   return { optionsPrice, selectedOptions, visibleNodeIds };
 }
