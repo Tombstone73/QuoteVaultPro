@@ -65,6 +65,12 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const tree: OptionTreeV2 = optionTreeV2Schema.parse(input.tree);
   const selections: LineItemOptionSelectionsV2 = lineItemOptionSelectionsV2Schema.parse(input.selections);
 
+  // DEV: Log incoming selections for debugging
+  if (process.env.NODE_ENV === "development") {
+    console.log(`[PBV2_EVALUATOR] Received selections:`, JSON.stringify(selections.selected, null, 2));
+    console.log(`[PBV2_EVALUATOR] Tree has ${Object.keys(tree.nodes).length} nodes`);
+  }
+
   const graphValidation = validateOptionTreeV2(tree);
   if (!graphValidation.ok) {
     const err = new Error("Invalid optionTreeJson (v2)");
@@ -149,6 +155,19 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     if (isSelected && node.input?.type === "select" && Array.isArray(node.choices)) {
       const selectedValue = typeof valueRaw === "string" ? valueRaw : String(valueRaw);
       const choice = node.choices.find((c) => c.value === selectedValue);
+      
+      // DEV: Log choice selection and pricing impact status
+      if (process.env.NODE_ENV === "development") {
+        console.log(`[PBV2_CHOICE_DEBUG] Node: ${nodeId} (${node.label}), Selected value: "${selectedValue}", Choice found: ${!!choice}`);
+        if (choice) {
+          console.log(`[PBV2_CHOICE_DEBUG] Choice "${choice.label}", hasPricingImpact: ${Array.isArray(choice.pricingImpact)}, impacts count: ${choice.pricingImpact?.length ?? 0}`);
+          if (choice.pricingImpact) {
+            console.log(`[PBV2_CHOICE_DEBUG] Pricing impacts:`, JSON.stringify(choice.pricingImpact, null, 2));
+          }
+        } else {
+          console.log(`[PBV2_CHOICE_DEBUG] Available choice values:`, node.choices.map(c => c.value));
+        }
+      }
       
       if (choice && Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0) {
         // Dev logging to verify choice-level pricing is working
