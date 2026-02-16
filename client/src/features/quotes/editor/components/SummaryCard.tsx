@@ -148,29 +148,11 @@ export function SummaryCard({
     return (
         <Card className="rounded-lg border border-border/40 bg-card/50">
             <CardContent className="space-y-4 px-4 py-3 pt-4">
-                {/* TEMPORARY DEBUG FINGERPRINT */}
-                <div className="bg-orange-500 text-white p-3 mb-4 font-mono text-sm">
-                    <div className="font-bold text-lg mb-2">🔍 SUMMARY_FINGERPRINT v200</div>
-                    <div>Line Items Count: {lineItems.length}</div>
-                    <div>IDs: {lineItems.map(li => li.id || li.tempId || 'NO_ID').join(', ') || 'NONE'}</div>
-                    <div>Statuses: {lineItems.map(li => li.status || 'undefined').join(', ') || 'NONE'}</div>
-                </div>
-
-                {/* TEMPORARY LINE ITEM FIELD INSPECTOR */}
-                {lineItems.length > 0 && (
-                    <div className="bg-blue-900 text-white p-3 mb-4 font-mono text-xs max-h-64 overflow-y-auto">
-                        <div className="font-bold mb-2">📊 LINE ITEM FIELDS:</div>
-                        {lineItems.map((item, idx) => (
-                            <div key={idx} className="border-t border-blue-700 pt-2 mt-2">
-                                <div>Item #{idx + 1}: {item.id || item.tempId || 'NO_ID'}</div>
-                                <div>• status: {item.status || 'undefined'}</div>
-                                <div>• linePrice: {typeof item.linePrice === 'number' ? `$${item.linePrice.toFixed(2)}` : String(item.linePrice)}</div>
-                                <div>• priceBreakdown.lineTotalCents: {(item.priceBreakdown as any)?.lineTotalCents ?? 'N/A'}</div>
-                                <div>• pbv2SnapshotJson.pricing.totalCents: {(item as any).pbv2SnapshotJson?.pricing?.totalCents ?? 'N/A'}</div>
-                                <div>• lineTotalCents: {(item as any).lineTotalCents ?? 'N/A'}</div>
-                                <div>• totalPrice: {(item as any).totalPrice ?? 'N/A'}</div>
-                            </div>
-                        ))}
+                {/* Dev-only diagnostics */}
+                {import.meta.env.DEV && (
+                    <div className="bg-muted/50 text-muted-foreground p-2 mb-3 font-mono text-xs rounded border border-border/40">
+                        <div className="font-bold text-sm mb-1">Dev Diagnostics:</div>
+                        <div>Line Items: {lineItems.length} ({lineItems.filter(li => li.status === 'draft').length} draft, {lineItems.filter(li => li.status === 'canceled').length} canceled)</div>
                     </div>
                 )}
 
