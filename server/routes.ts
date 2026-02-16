@@ -3551,6 +3551,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         pbv2TreeVersionIdOverride, // Optional: specific tree version to use
       } = req.body;
 
+      // PBV2_DEBUG: Log calculation entry point
+      if (process.env.PBV2_DEBUG === "1") {
+        console.log("[PBV2_CALC_ENTRY] " + JSON.stringify({ 
+          productId, 
+          organizationId, 
+          hasOptionSelectionsJson: !!optionSelectionsJson, 
+          selectionKeys: Object.keys(optionSelectionsJson || {}) 
+        }));
+      }
+
       // Validation: required fields
       if (!productId) {
         return res.status(400).json({ message: "productId is required" });

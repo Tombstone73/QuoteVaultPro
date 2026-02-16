@@ -65,6 +65,16 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const tree: OptionTreeV2 = optionTreeV2Schema.parse(input.tree);
   const selections: LineItemOptionSelectionsV2 = lineItemOptionSelectionsV2Schema.parse(input.selections);
 
+  // PBV2_DEBUG: Log evaluator entry point
+  if (process.env.PBV2_DEBUG === "1") {
+    console.log("[PBV2_EVAL_ENTRY] " + JSON.stringify({ 
+      treeVersionId: tree.versionId || 'unknown',
+      schemaVersion: tree.schemaVersion,
+      nodeCount: Object.keys(tree.nodes || {}).length,
+      selectionKeys: Object.keys(selections.selected || {})
+    }));
+  }
+
   // DEV: Log evaluation start with detailed context
   if (process.env.NODE_ENV === "development") {
     console.log(`[PBV2_EVAL_START] TreeVersionId: ${tree.versionId || 'unknown'}`);
@@ -343,6 +353,21 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
         if (process.env.NODE_ENV === "development" && choiceCentsApplied !== 0) {
           console.log(`[PBV2_CHOICE_PRICING]   - Total choice impact: ${choiceCentsApplied}¢`);
         }
+
+        // PBV2_DEBUG: Log per-node choice pricing application
+        if (process.env.PBV2_DEBUG === "1") {
+          console.log("[PBV2_EVAL_NODE] " + JSON.stringify({
+            nodeId,
+            nodeKey: (node as any).key,
+            selectionKey: node.input?.selectionKey,
+            selectedValue,
+            choiceFound: true,
+            choiceValue: choice.value,
+            impactCount: choice.pricingImpact?.length || 0,
+            deltaCentsApplied: choiceCentsApplied,
+            runningOptionsCents: optionsCents
+          }));
+        }
       }
     }
 
@@ -372,6 +397,14 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     console.log(`[PBV2_EVAL_OPTIONS_SUM] Final optionsCents: ${optionsCents}`);
     console.log(`[PBV2_EVAL_OPTIONS_SUM] selectedOptions length: ${selectedOptions.length}`);
     console.log(`[PBV2_EVAL_OPTIONS_SUM] selectedOptions:`, JSON.stringify(selectedOptions, null, 2));
+  }
+
+  // PBV2_DEBUG: Log evaluation summary
+  if (process.env.PBV2_DEBUG === "1") {
+    console.log("[PBV2_EVAL_SUMMARY] " + JSON.stringify({ 
+      finalOptionsCents: optionsCents, 
+      selectedOptionsLen: selectedOptions.length 
+    }));
   }
 
   if (!Number.isFinite(optionsCents)) {
