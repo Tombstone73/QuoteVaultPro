@@ -111,6 +111,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     selected: pbv2ExplicitSelections || {},
   };
 
+  // DEV: Build identifier and calculation path logging
+  if (process.env.NODE_ENV === "development") {
+    const PBV2_BUILD_ID = "PBV2_DEBUG_V2_INPUT_FIX";
+    console.log(`[PBV2_CALC_PATH] Build: ${PBV2_BUILD_ID}`);
+    console.log(`[PBV2_CALC_PATH] Evaluator: evaluateOptionTreeV2`);
+    console.log(`[PBV2_CALC_PATH] TreeVersionId: ${treeVersionId}`);
+    console.log(`[PBV2_CALC_PATH] Selection keys:`, Object.keys(pbv2ExplicitSelections || {}));
+  }
+
   // Step 6: Evaluate PBV2 options
   const evalResult = await evaluateOptionTreeV2({
     tree: treeVersion.treeJson,
