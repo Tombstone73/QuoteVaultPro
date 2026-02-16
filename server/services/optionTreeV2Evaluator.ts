@@ -147,7 +147,9 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
     const isSelected = (() => {
       if (valueRaw === null || valueRaw === undefined) return false;
-      if (node.kind !== "question") return false;
+      // Support both new schema (kind="question") and legacy (type="INPUT")
+      const isQuestionNode = node.kind === "question" || (node as any).type === "INPUT";
+      if (!isQuestionNode) return false;
       const inputType = node.input?.type;
       if (inputType === "boolean") return valueRaw === true;
       if (inputType === "select") return typeof valueRaw === "string" && valueRaw.trim().length > 0;
@@ -393,7 +395,9 @@ export function pbv2ToWeightTotal(input: OptionTreeV2WeightInput): OptionTreeV2W
 
     const isSelected = (() => {
       if (valueRaw === null || valueRaw === undefined) return false;
-      if (node.kind !== "question") return false;
+      // Support both new schema (kind="question") and legacy (type="INPUT")
+      const isQuestionNode = node.kind === "question" || (node as any).type === "INPUT";
+      if (!isQuestionNode) return false;
       const inputType = node.input?.type;
       if (inputType === "boolean") return valueRaw === true;
       if (inputType === "select") return typeof valueRaw === "string" && valueRaw.trim().length > 0;
