@@ -99,6 +99,42 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const visibleNodeIds = resolveVisibleNodes(tree, selections);
   const selected = selections.selected ?? {};
 
+  /**
+   * Resolve selection value for a node, supporting multiple key formats.
+   * Priority: selectionKey > key > id (for backward compatibility)
+   */
+  function getSelectionValue(node: any, selected: Record<string, any>): any {
+    const selectionKey = node.input?.selectionKey;
+    const nodeKey = node.key;
+    const nodeId = node.id;
+
+    // Try selectionKey first (correct/new way)
+    if (selectionKey && selected[selectionKey]) {
+      if (process.env.NODE_ENV === "development") {
+        console.log(`[PBV2_SELECTION_KEY] Found via selectionKey: ${selectionKey}`);
+      }
+      return selected[selectionKey].value;
+    }
+
+    // Try node.key (intermediate fallback)
+    if (nodeKey && selected[nodeKey]) {
+      if (process.env.NODE_ENV === "development") {
+        console.log(`[PBV2_SELECTION_KEY] Found via node.key: ${nodeKey} (legacy compat)`);
+      }
+      return selected[nodeKey].value;
+    }
+
+    // Try node.id (legacy/old way)
+    if (selected[nodeId]) {
+      if (process.env.NODE_ENV === "development") {
+        console.log(`[PBV2_SELECTION_KEY] Found via node.id: ${nodeId} (legacy compat)`);
+      }
+      return selected[nodeId].value;
+    }
+
+    return undefined;
+  }
+
   let optionsCents = 0; // Running total in cents
   const selectedOptions: SelectedOptionsSnapshotEntry[] = [];
 
@@ -107,8 +143,7 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     const node = tree.nodes[nodeId];
     if (!node) continue;
 
-    const selectionEntry = selected[nodeId];
-    const valueRaw = selectionEntry ? selectionEntry.value : undefined;
+    const valueRaw = getSelectionValue(node, selected);
 
     const isSelected = (() => {
       if (valueRaw === null || valueRaw === undefined) return false;
@@ -163,6 +198,8 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
           console.log(`[PBV2_CHOICE_DEBUG] Choice "${choice.label}", hasPricingImpact: ${Array.isArray(choice.pricingImpact)}, impacts count: ${choice.pricingImpact?.length ?? 0}`);
           if (choice.pricingImpact) {
             console.log(`[PBV2_CHOICE_DEBUG] Pricing impacts:`, JSON.stringify(choice.pricingImpact, null, 2));
+          } else {
+            console.log(`[PBV2_CHOICE_DEBUG] No pricingImpact on choice "${choice.label}" (value: ${choice.value})`);
           }
         } else {
           console.log(`[PBV2_CHOICE_DEBUG] Available choice values:`, node.choices.map(c => c.value));

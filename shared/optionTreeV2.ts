@@ -83,6 +83,7 @@ export type OptionNodeV2 = {
     type: "boolean" | "select" | "multiselect" | "number" | "text" | "textarea" | "file" | "dimension";
     required?: boolean;
     defaultValue?: any;
+    selectionKey?: string; // Key used for storing/retrieving selections (defaults to node.key or node.id)
     constraints?: {
       number?: { min?: number; max?: number; step?: number; integerOnly?: boolean };
       text?: { minLen?: number; maxLen?: number; pattern?: string };

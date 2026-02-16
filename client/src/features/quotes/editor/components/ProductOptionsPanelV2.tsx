@@ -22,8 +22,38 @@ function isTreeV2Selections(input: any): input is LineItemOptionSelectionsV2 {
   return !!input && typeof input === "object" && input.schemaVersion === 2 && !!input.selected && typeof input.selected === "object";
 }
 
-function getNodeValue(selections: LineItemOptionSelectionsV2, nodeId: string): any {
-  return selections.selected?.[nodeId]?.value;
+/**
+ * Get the selection key for a node (used for storing/retrieving selections).
+ * Priority: selectionKey > key > id
+ */
+function getSelectionKey(node: OptionNodeV2): string {
+  return (node.input as any)?.selectionKey || (node as any).key || node.id;
+}
+
+/**
+ * Get node value from selections, supporting both new (selectionKey) and legacy (nodeId) keys.
+ * Tries selectionKey first, then key, then id for backward compatibility.
+ */
+function getNodeValue(selections: LineItemOptionSelectionsV2, node: OptionNodeV2): any {
+  const selectionKey = getSelectionKey(node);
+  
+  // Try selectionKey first (new/correct way)
+  if (selections.selected?.[selectionKey]?.value !== undefined) {
+    return selections.selected[selectionKey].value;
+  }
+  
+  // Backward compat: try node.key
+  const nodeKey = (node as any).key;
+  if (nodeKey && selections.selected?.[nodeKey]?.value !== undefined) {
+    return selections.selected[nodeKey].value;
+  }
+  
+  // Backward compat: try node.id (legacy)
+  if (selections.selected?.[node.id]?.value !== undefined) {
+    return selections.selected[node.id].value;
+  }
+  
+  return undefined;
 }
 
 function requiredMissing(node: OptionNodeV2, value: any): boolean {
@@ -82,9 +112,27 @@ export function ProductOptionsPanelV2({
 
     let changed = false;
 
-    for (const nodeId of Object.keys(nextSelected)) {
-      if (!tree.nodes[nodeId] || !visibleSet.has(nodeId)) {
-        delete nextSelected[nodeId];
+    // Prune selections for hidden/missing nodes
+    // Support both selectionKey and legacy id-based keys
+    for (const key of Object.keys(nextSelected)) {
+      // Try to find node by this selection key
+      let nodeFound = false;
+      
+      for (const nodeId of visibleNodeIds) {
+        const node = tree.nodes[nodeId];
+        if (!node) continue;
+        
+        const selectionKey = getSelectionKey(node);
+        const nodeKey = (node as any).key;
+        
+        if (key === selectionKey || key === nodeKey || key === node.id) {
+          nodeFound = true;
+          break;
+        }
+      }
+      
+      if (!nodeFound) {
+        delete nextSelected[key];
         changed = true;
       }
     }
@@ -113,7 +161,7 @@ export function ProductOptionsPanelV2({
     const missingRequired = visibleNodeIds.some((id) => {
       const node = tree.nodes[id];
       if (!node || node.kind !== "question" || !node.input) return false;
-      const value = getNodeValue(next, id);
+      const value = getNodeValue(next, node);
       return requiredMissing(node, value);
     });
 
@@ -127,7 +175,7 @@ export function ProductOptionsPanelV2({
     for (const nodeId of visibleNodeIds) {
       const node = tree.nodes[nodeId];
       if (!node || node.kind !== "question" || !node.input) continue;
-      const value = getNodeValue(safeSelections, nodeId);
+      const value = getNodeValue(safeSelections, node);
 
       if (requiredMissing(node, value)) {
         out.set(nodeId, "Required");
@@ -158,8 +206,13 @@ export function ProductOptionsPanelV2({
 
   const isValid = graph.ok && nodeErrors.size === 0;
 
-  const setNodeValue = (nodeId: string, value: any) => {
+  /**
+   * Set node value using correct selectionKey.
+   * Also cleans up legacy keys (id/key) to prevent duplicates.
+   */
+  const setNodeValue = (node: OptionNodeV2, value: any) => {
     const nextSelected = { ...(safeSelections.selected ?? {}) };
+    const selectionKey = getSelectionKey(node);
 
     const shouldClear =
       value === undefined ||
@@ -167,10 +220,14 @@ export function ProductOptionsPanelV2({
       (typeof value === "string" && value.trim() === "") ||
       value === false;
 
-    if (shouldClear) {
-      delete nextSelected[nodeId];
-    } else {
-      nextSelected[nodeId] = { ...(nextSelected[nodeId] ?? {}), value };
+    // Clean up all possible legacy keys
+    delete nextSelected[node.id];
+    if ((node as any).key) delete nextSelected[(node as any).key];
+    delete nextSelected[selectionKey];
+
+    // Store with correct key (unless clearing)
+    if (!shouldClear) {
+      nextSelected[selectionKey] = { value };
     }
 
     onSelectionsChange({
@@ -248,7 +305,7 @@ export function ProductOptionsPanelV2({
               return null;
             }
 
-            const currentValue = getNodeValue(safeSelections, nodeId);
+            const currentValue = getNodeValue(safeSelections, node);
             const helpText = node.ui?.helpText;
 
             const commonHeader = (
@@ -269,7 +326,7 @@ export function ProductOptionsPanelV2({
                     <div className="min-w-0">{commonHeader}</div>
                     <Switch
                       checked={currentValue === true}
-                      onCheckedChange={(checked) => setNodeValue(nodeId, checked)}
+                      onCheckedChange={(checked) => setNodeValue(node, checked)}
                     />
                   </div>
                   {error ? <div className="mt-1 text-xs text-destructive">{error}</div> : null}
@@ -294,8 +351,8 @@ export function ProductOptionsPanelV2({
                   <Select
                     value={String(currentValue ?? "")}
                     onValueChange={(val) => {
-                      if (val === "" && allowEmpty) setNodeValue(nodeId, "");
-                      else setNodeValue(nodeId, val);
+                      if (val === "" && allowEmpty) setNodeValue(node, "");
+                      else setNodeValue(node, val);
                     }}
                   >
                     <SelectTrigger className="h-9">
@@ -335,8 +392,8 @@ export function ProductOptionsPanelV2({
                     value={currentValue == null ? "" : String(currentValue)}
                     onChange={(e) => {
                       const n = normalizeNumberInput(e.target.value);
-                      if (n === null) setNodeValue(nodeId, "");
-                      else setNodeValue(nodeId, constraints?.integerOnly ? Math.trunc(n) : n);
+                      if (n === null) setNodeValue(node, "");
+                      else setNodeValue(node, constraints?.integerOnly ? Math.trunc(n) : n);
                     }}
                   />
                   {error ? <div className="text-xs text-destructive">{error}</div> : null}
@@ -351,7 +408,7 @@ export function ProductOptionsPanelV2({
                   <Input
                     className="h-9"
                     value={typeof currentValue === "string" ? currentValue : String(currentValue ?? "")}
-                    onChange={(e) => setNodeValue(nodeId, e.target.value)}
+                    onChange={(e) => setNodeValue(node, e.target.value)}
                   />
                   {error ? <div className="text-xs text-destructive">{error}</div> : null}
                 </div>
@@ -365,7 +422,7 @@ export function ProductOptionsPanelV2({
                   <Textarea
                     rows={3}
                     value={typeof currentValue === "string" ? currentValue : String(currentValue ?? "")}
-                    onChange={(e) => setNodeValue(nodeId, e.target.value)}
+                    onChange={(e) => setNodeValue(node, e.target.value)}
                   />
                   {error ? <div className="text-xs text-destructive">{error}</div> : null}
                 </div>
