@@ -65,10 +65,12 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const tree: OptionTreeV2 = optionTreeV2Schema.parse(input.tree);
   const selections: LineItemOptionSelectionsV2 = lineItemOptionSelectionsV2Schema.parse(input.selections);
 
-  // DEV: Log incoming selections for debugging
+  // DEV: Log evaluation start with detailed context
   if (process.env.NODE_ENV === "development") {
-    console.log(`[PBV2_EVALUATOR] Received selections:`, JSON.stringify(selections.selected, null, 2));
-    console.log(`[PBV2_EVALUATOR] Tree has ${Object.keys(tree.nodes).length} nodes`);
+    console.log(`[PBV2_EVAL_START] TreeVersionId: ${tree.versionId || 'unknown'}`);
+    console.log(`[PBV2_EVAL_START] Total nodes: ${Object.keys(tree.nodes).length}`);
+    console.log(`[PBV2_EVAL_START] Selections count: ${Object.keys(selections.selected || {}).length}`);
+    console.log(`[PBV2_EVAL_START] Selections:`, JSON.stringify(selections.selected, null, 2));
   }
 
   const graphValidation = validateOptionTreeV2(tree);
@@ -98,6 +100,12 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   const baseCents = Math.round(basePrice * 100); // Convert base price to cents
   const visibleNodeIds = resolveVisibleNodes(tree, selections);
   const selected = selections.selected ?? {};
+
+  // DEV: Log visible nodes for debugging
+  if (process.env.NODE_ENV === "development") {
+    console.log(`[PBV2_EVAL_START] Visible nodes count: ${visibleNodeIds.length}`);
+    console.log(`[PBV2_EVAL_START] Visible node IDs:`, visibleNodeIds);
+  }
 
   /**
    * Resolve selection value for a node, supporting multiple key formats.
@@ -156,6 +164,19 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       return true;
     })();
 
+    // DEV: Log per-node processing for INPUT/question nodes
+    if (process.env.NODE_ENV === "development") {
+      const isInputNode = node.kind === "question" || (node as any).type === "INPUT";
+      if (isInputNode) {
+        console.log(`[PBV2_NODE_PROCESS] Node: ${nodeId} (${node.label})`);
+        console.log(`[PBV2_NODE_PROCESS]   - kind: ${node.kind}, type: ${(node as any).type}`);
+        console.log(`[PBV2_NODE_PROCESS]   - input.selectionKey: ${node.input?.selectionKey}`);
+        console.log(`[PBV2_NODE_PROCESS]   - node.key: ${(node as any).key}`);
+        console.log(`[PBV2_NODE_PROCESS]   - isSelected: ${isSelected}`);
+        console.log(`[PBV2_NODE_PROCESS]   - valueRaw: ${JSON.stringify(valueRaw)}`);
+      }
+    }
+
     let nodeCost = 0;
 
     // STEP 1: Process NODE-level pricing impacts (legacy backward compatibility)
@@ -209,9 +230,11 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       }
       
       if (choice && Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0) {
+        let choiceCentsApplied = 0; // Track total cents from this choice
+        
         // Dev logging to verify choice-level pricing is working
         if (process.env.NODE_ENV === "development") {
-          console.log(`[PBV2_CHOICE_PRICING] Node: ${node.label}, Choice: ${choice.label}, Impacts: ${choice.pricingImpact.length}`);
+          console.log(`[PBV2_CHOICE_PRICING] Processing choice pricing for node: ${node.label}, Choice: ${choice.label}, Impacts: ${choice.pricingImpact.length}`);
         }
         
         for (let k = 0; k < choice.pricingImpact.length; k++) {
@@ -228,8 +251,9 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
               const cents = Number(impact.cents ?? 0);
               if (Number.isFinite(cents)) {
                 optionsCents += cents; // Direct cents impact (can be negative)
+                choiceCentsApplied += cents;
                 if (process.env.NODE_ENV === "development") {
-                  console.log(`[PBV2_CHOICE_PRICING] addCents: ${cents} (total options: ${optionsCents})`);
+                  console.log(`[PBV2_CHOICE_PRICING]   - addCents: ${cents}¢ applied (running total: ${optionsCents}¢)`);
                 }
               }
               break;
@@ -256,9 +280,10 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
                 // Apply percentage (can be negative for discounts)
                 const percentCents = Math.round(basisCents * (percent / 100));
                 optionsCents += percentCents;
+                choiceCentsApplied += percentCents;
                 
                 if (process.env.NODE_ENV === "development") {
-                  console.log(`[PBV2_CHOICE_PRICING] addPercent: ${percent}% of ${basis} (${basisCents}¢) = ${percentCents}¢ (total options: ${optionsCents})`);
+                  console.log(`[PBV2_CHOICE_PRICING]   - addPercent: ${percent}% of ${basisCents}¢ = ${percentCents}¢ applied (running total: ${optionsCents}¢)`);
                 }
               }
               break;
@@ -286,9 +311,10 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
                 // Apply per-unit pricing (can be negative)
                 const unitCents = Math.round(centsPerUnit * unitAmount);
                 optionsCents += unitCents;
+                choiceCentsApplied += unitCents;
                 
                 if (process.env.NODE_ENV === "development") {
-                  console.log(`[PBV2_CHOICE_PRICING] addPerUnit: ${centsPerUnit}¢/${unit} × ${unitAmount.toFixed(2)} = ${unitCents}¢ (total options: ${optionsCents})`);
+                  console.log(`[PBV2_CHOICE_PRICING]   - addPerUnit: ${centsPerUnit}¢/${unit} × ${unitAmount.toFixed(2)} = ${unitCents}¢ applied (running total: ${optionsCents}¢)`);
                 }
               }
               break;
@@ -312,6 +338,11 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
             }
           }
         }
+        
+        // DEV: Log total cents applied from this choice
+        if (process.env.NODE_ENV === "development" && choiceCentsApplied !== 0) {
+          console.log(`[PBV2_CHOICE_PRICING]   - Total choice impact: ${choiceCentsApplied}¢`);
+        }
       }
     }
 
@@ -334,6 +365,13 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
     // Add node-level cost (legacy flow uses dollars, converted to cents)
     optionsCents += Math.round(nodeCost * 100);
+  }
+
+  // DEV: Log final pricing summary
+  if (process.env.NODE_ENV === "development") {
+    console.log(`[PBV2_EVAL_OPTIONS_SUM] Final optionsCents: ${optionsCents}`);
+    console.log(`[PBV2_EVAL_OPTIONS_SUM] selectedOptions length: ${selectedOptions.length}`);
+    console.log(`[PBV2_EVAL_OPTIONS_SUM] selectedOptions:`, JSON.stringify(selectedOptions, null, 2));
   }
 
   if (!Number.isFinite(optionsCents)) {
