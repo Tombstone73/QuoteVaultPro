@@ -120,6 +120,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     console.log(`[PBV2_CALC_PATH] Selection keys:`, Object.keys(pbv2ExplicitSelections || {}));
   }
 
+  // PBV2_DEBUG: Log pricing entry point
+  if (process.env.PBV2_DEBUG === "1") {
+    console.log("[PBV2_PRICING_ENTRY] " + JSON.stringify({ 
+      productId, 
+      pbv2TreeVersionId: treeVersionId, 
+      selectionKeys: Object.keys(selectionsV2.selected || {}) 
+    }));
+  }
+
   // Step 6: Evaluate PBV2 options
   const evalResult = await evaluateOptionTreeV2({
     tree: treeVersion.treeJson,
@@ -129,6 +138,16 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     quantity,
     basePrice: basePriceCents / 100, // Convert cents to dollars for evaluator
   });
+
+  // PBV2_DEBUG: Log evaluator return values
+  if (process.env.PBV2_DEBUG === "1") {
+    console.log("[PBV2_EVAL_RETURN] " + JSON.stringify({ 
+      optionsPrice: evalResult.optionsPrice, 
+      optionsPriceCents: Math.round(evalResult.optionsPrice * 100),
+      selectedOptionsLen: evalResult.selectedOptions?.length || 0,
+      visibleNodeIdsLen: evalResult.visibleNodeIds?.length || 0
+    }));
+  }
 
   // Step 7: Build pricing breakdown
   // NOTE: basePriceCents already includes quantity (line-total from calculateBasePrice)
@@ -147,6 +166,15 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     lineTotalCents,
     perUnitEstimate: quantity > 0 ? (lineTotalCents / quantity).toFixed(2) : 0,
   });
+
+  // PBV2_DEBUG: Log final pricing result
+  if (process.env.PBV2_DEBUG === "1") {
+    console.log("[PBV2_PRICING_RESULT] " + JSON.stringify({ 
+      basePriceCents, 
+      optionsCents, 
+      lineTotalCents 
+    }));
+  }
 
   // Step 8: Build snapshot
   const snapshot: PBV2PricingSnapshot = {
