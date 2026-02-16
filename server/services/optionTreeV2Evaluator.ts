@@ -118,17 +118,19 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
 
   /**
    * Resolve selection value for a node, supporting multiple key formats.
-   * Priority: selectionKey > key > id (for backward compatibility)
-   * Returns { valueRaw, matchedKey } where matchedKey is the key that matched in selections.
+   * Priority: selectionKey > key > opt_${id} > id (for backward compatibility)
+   * Returns { valueRaw, matchedKey, candidateKeys } where matchedKey is the key that matched in selections.
    */
-  function getSelectionValue(node: any, selected: Record<string, any>): { valueRaw: any; matchedKey: string | null } {
-    const keysToTry = [
-      node.input?.selectionKey,
-      node.key,
-      node.id
-    ].filter(k => k); // Remove null/undefined
+  function getSelectionValue(node: any, selected: Record<string, any>): { valueRaw: any; matchedKey: string | null; candidateKeys: string[] } {
+    // Build candidate keys in priority order
+    const candidateKeys: string[] = [];
+    if (node.input?.selectionKey) candidateKeys.push(node.input.selectionKey);
+    if (node.key) candidateKeys.push(node.key);
+    // CRITICAL: Frontend may send "opt_opt_..." but node.id is "opt_..."
+    if (node.id) candidateKeys.push(`opt_${node.id}`);
+    if (node.id) candidateKeys.push(node.id);
 
-    for (const key of keysToTry) {
+    for (const key of candidateKeys) {
       if (selected[key] !== undefined) {
         // Support multiple selection shapes:
         // 1. { value: ... } (standard)
@@ -138,11 +140,11 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
           ? entry.value 
           : entry;
         
-        return { valueRaw, matchedKey: key };
+        return { valueRaw, matchedKey: key, candidateKeys };
       }
     }
 
-    return { valueRaw: undefined, matchedKey: null };
+    return { valueRaw: undefined, matchedKey: null, candidateKeys };
   }
 
   let optionsCents = 0; // Running total in cents
@@ -153,10 +155,11 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     const node = tree.nodes[nodeId];
     if (!node) continue;
 
-    const { valueRaw, matchedKey } = getSelectionValue(node, selected);
+    const { valueRaw, matchedKey, candidateKeys } = getSelectionValue(node, selected);
 
     // PBV2_DEBUG: Log every node we're iterating (confirms loop runs)
     if (process.env.PBV2_DEBUG === "1") {
+      const isQuestionOrSelect = (node.kind === "question" || (node as any).type === "INPUT") && node.input?.type === "select";
       console.log("[PBV2_NODE_ITER] " + JSON.stringify({
         nodeId,
         nodeKey: (node as any).key,
@@ -164,6 +167,8 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
         nodeLabel: node.label,
         inputType: node.input?.type,
         inputSelectionKey: node.input?.selectionKey,
+        candidateKeys: isQuestionOrSelect ? candidateKeys : undefined,
+        selectionKeysPresent: isQuestionOrSelect ? Object.keys(selected).slice(0, 10) : undefined,
         matchedKey: matchedKey,
         valueRaw: valueRaw,
         hasChoices: Array.isArray(node.choices),
