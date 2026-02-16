@@ -119,37 +119,30 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
   /**
    * Resolve selection value for a node, supporting multiple key formats.
    * Priority: selectionKey > key > id (for backward compatibility)
+   * Returns { valueRaw, matchedKey } where matchedKey is the key that matched in selections.
    */
-  function getSelectionValue(node: any, selected: Record<string, any>): any {
-    const selectionKey = node.input?.selectionKey;
-    const nodeKey = node.key;
-    const nodeId = node.id;
+  function getSelectionValue(node: any, selected: Record<string, any>): { valueRaw: any; matchedKey: string | null } {
+    const keysToTry = [
+      node.input?.selectionKey,
+      node.key,
+      node.id
+    ].filter(k => k); // Remove null/undefined
 
-    // Try selectionKey first (correct/new way)
-    if (selectionKey && selected[selectionKey]) {
-      if (process.env.NODE_ENV === "development") {
-        console.log(`[PBV2_SELECTION_KEY] Found via selectionKey: ${selectionKey}`);
+    for (const key of keysToTry) {
+      if (selected[key] !== undefined) {
+        // Support multiple selection shapes:
+        // 1. { value: ... } (standard)
+        // 2. primitive value (legacy)
+        const entry = selected[key];
+        const valueRaw = (entry && typeof entry === "object" && "value" in entry) 
+          ? entry.value 
+          : entry;
+        
+        return { valueRaw, matchedKey: key };
       }
-      return selected[selectionKey].value;
     }
 
-    // Try node.key (intermediate fallback)
-    if (nodeKey && selected[nodeKey]) {
-      if (process.env.NODE_ENV === "development") {
-        console.log(`[PBV2_SELECTION_KEY] Found via node.key: ${nodeKey} (legacy compat)`);
-      }
-      return selected[nodeKey].value;
-    }
-
-    // Try node.id (legacy/old way)
-    if (selected[nodeId]) {
-      if (process.env.NODE_ENV === "development") {
-        console.log(`[PBV2_SELECTION_KEY] Found via node.id: ${nodeId} (legacy compat)`);
-      }
-      return selected[nodeId].value;
-    }
-
-    return undefined;
+    return { valueRaw: undefined, matchedKey: null };
   }
 
   let optionsCents = 0; // Running total in cents
@@ -160,16 +153,18 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
     const node = tree.nodes[nodeId];
     if (!node) continue;
 
-    const valueRaw = getSelectionValue(node, selected);
+    const { valueRaw, matchedKey } = getSelectionValue(node, selected);
 
     // PBV2_DEBUG: Log every node we're iterating (confirms loop runs)
     if (process.env.PBV2_DEBUG === "1") {
       console.log("[PBV2_NODE_ITER] " + JSON.stringify({
         nodeId,
+        nodeKey: (node as any).key,
         nodeKind: node.kind,
         nodeLabel: node.label,
         inputType: node.input?.type,
-        selectionKey: node.input?.selectionKey || (node as any).key || nodeId,
+        inputSelectionKey: node.input?.selectionKey,
+        matchedKey: matchedKey,
         valueRaw: valueRaw,
         hasChoices: Array.isArray(node.choices),
         choicesCount: node.choices?.length || 0
@@ -186,6 +181,21 @@ export function evaluateOptionTreeV2(input: OptionTreeV2EvaluateInput): OptionTr
       if (inputType === "select") return typeof valueRaw === "string" && valueRaw.trim().length > 0;
       return true;
     })();
+
+    // PBV2_DEBUG: Log isSelected result with matched key
+    if (process.env.PBV2_DEBUG === "1") {
+      const isQuestionNode = node.kind === "question" || (node as any).type === "INPUT";
+      console.log("[PBV2_NODE_SELECT] " + JSON.stringify({
+        nodeId,
+        isQuestionNode,
+        isSelected,
+        matchedKey,
+        inputType: node.input?.type,
+        valueRaw,
+        valueType: typeof valueRaw,
+        reason: !isSelected ? (valueRaw === null || valueRaw === undefined ? "noValue" : !isQuestionNode ? "notQuestion" : "otherCheck") : "selected"
+      }));
+    }
 
     // DEV: Log per-node processing for INPUT/question nodes
     if (process.env.NODE_ENV === "development") {
