@@ -14,12 +14,18 @@ export type ConditionExpr =
   | { op: "or"; args: ConditionExpr[] }
   | { op: "not"; arg: ConditionExpr };
 
+// New unified pricing impact types (can be negative for discounts)
 export type PricingImpact =
+  // Legacy modes (kept for backward compatibility)
   | { mode: "addFlat"; amountCents: number; applyWhen?: ConditionExpr; label?: string }
   | { mode: "addPerQty"; amountCents: number; applyWhen?: ConditionExpr; label?: string }
   | { mode: "addPerSqft"; amountCents: number; applyWhen?: ConditionExpr; label?: string }
   | { mode: "percentOfBase"; percent: number; applyWhen?: ConditionExpr; label?: string }
-  | { mode: "multiplier"; factor: number; applyWhen?: ConditionExpr; label?: string };
+  | { mode: "multiplier"; factor: number; applyWhen?: ConditionExpr; label?: string }
+  // New modes (v2.1: choice-level pricing)
+  | { mode: "addCents"; cents: number; applyWhen?: ConditionExpr; label?: string }
+  | { mode: "addPercent"; percent: number; basis?: "base" | "lineSubtotal" | "optionsSubtotal"; applyWhen?: ConditionExpr; label?: string }
+  | { mode: "addPerUnit"; centsPerUnit: number; unit: "perPiece" | "perQty" | "perSqft" | "perLinearFoot" | "perInch"; applyWhen?: ConditionExpr; label?: string };
 
 export type WeightImpact =
   | { mode: "addFlat"; oz: number; applyWhen?: ConditionExpr; label?: string }
@@ -83,7 +89,14 @@ export type OptionNodeV2 = {
       select?: { allowEmpty?: boolean; emptyLabel?: string };
     };
   };
-  choices?: Array<{ value: string; label: string; description?: string; sortOrder?: number; weightOz?: number }>;
+  choices?: Array<{ 
+    value: string; 
+    label: string; 
+    description?: string; 
+    sortOrder?: number; 
+    weightOz?: number;
+    pricingImpact?: PricingImpact[]; // v2.1: Choice-level pricing impacts
+  }>;
   visibility?: { condition?: ConditionExpr };
   edges?: { children?: BranchEdge[] };
   pricingImpact?: PricingImpact[];
@@ -151,11 +164,16 @@ export const conditionExprSchema: z.ZodType<ConditionExpr> = z.lazy(() =>
 );
 
 export const pricingImpactSchema: z.ZodType<PricingImpact> = z.discriminatedUnion("mode", [
+  // Legacy modes
   z.object({ mode: z.literal("addFlat"), amountCents: z.number().int(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
   z.object({ mode: z.literal("addPerQty"), amountCents: z.number().int(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
   z.object({ mode: z.literal("addPerSqft"), amountCents: z.number().int(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
   z.object({ mode: z.literal("percentOfBase"), percent: z.number(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
   z.object({ mode: z.literal("multiplier"), factor: z.number(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
+  // New modes (v2.1)
+  z.object({ mode: z.literal("addCents"), cents: z.number(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
+  z.object({ mode: z.literal("addPercent"), percent: z.number(), basis: z.enum(["base", "lineSubtotal", "optionsSubtotal"]).optional(), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
+  z.object({ mode: z.literal("addPerUnit"), centsPerUnit: z.number(), unit: z.enum(["perPiece", "perQty", "perSqft", "perLinearFoot", "perInch"]), applyWhen: conditionExprSchema.optional(), label: z.string().optional() }),
 ]);
 
 export const weightImpactSchema: z.ZodType<WeightImpact> = z.discriminatedUnion("mode", [
@@ -240,6 +258,7 @@ export const optionNodeV2Schema: z.ZodType<OptionNodeV2> = z.object({
         description: z.string().optional(),
         sortOrder: z.number().optional(),
         weightOz: z.number().optional(),
+        pricingImpact: z.array(pricingImpactSchema).optional(), // v2.1: Choice-level pricing
       })
     )
     .optional(),

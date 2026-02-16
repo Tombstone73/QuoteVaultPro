@@ -305,6 +305,189 @@ export function OptionDetailsEditor({
                               </div>
                             )}
                           </div>
+
+                          {/* Choice-level Pricing Impacts (v2.1) */}
+                          <div className="mt-3 pt-3 border-t border-slate-700">
+                            <div className="flex items-center justify-between mb-2">
+                              <Label className="text-xs text-slate-400">Pricing Impacts</Label>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  const currentImpacts = choice.pricingImpact || [];
+                                  onUpdateChoice(option.id, choice.value, {
+                                    pricingImpact: [...currentImpacts, { mode: 'addCents', cents: 0 }]
+                                  });
+                                }}
+                                className="h-6 text-xs text-slate-400 hover:text-slate-200"
+                              >
+                                <Plus className="h-3 w-3 mr-1" />
+                                Add Impact
+                              </Button>
+                            </div>
+                            
+                            {Array.isArray(choice.pricingImpact) && choice.pricingImpact.length > 0 ? (
+                              <div className="space-y-2">
+                                {choice.pricingImpact.map((impact: any, impactIdx: number) => {
+                                  const mode = impact.mode || 'addCents';
+                                  const cents = impact.cents ?? impact.centsPerUnit ?? 0;
+                                  const percent = impact.percent ?? 0;
+                                  const basis = impact.basis || 'base';
+                                  const unit = impact.unit || 'perPiece';
+
+                                  return (
+                                    <div key={impactIdx} className="bg-[#0f172a] border border-slate-600 rounded p-2 space-y-2">
+                                      <div className="flex items-start gap-2">
+                                        <div className="flex-1 space-y-2">
+                                          <div>
+                                            <Label className="text-xs text-slate-500 mb-1 block">Type</Label>
+                                            <Select
+                                              value={mode}
+                                              onValueChange={(newMode) => {
+                                                const updated = [...(choice.pricingImpact || [])];
+                                                updated[impactIdx] = { ...updated[impactIdx], mode: newMode };
+                                                onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
+                                              }}
+                                            >
+                                              <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7">
+                                                <SelectValue />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                <SelectItem value="addCents">Add Cents</SelectItem>
+                                                <SelectItem value="addPercent">Add Percent</SelectItem>
+                                                <SelectItem value="addPerUnit">Per Unit</SelectItem>
+                                              </SelectContent>
+                                            </Select>
+                                          </div>
+
+                                          {mode === 'addCents' && (
+                                            <div>
+                                              <Label className="text-xs text-slate-500 mb-1 block">Cents (negative = discount)</Label>
+                                              <Input
+                                                type="number"
+                                                value={cents}
+                                                onChange={(e) => {
+                                                  const val = parseInt(e.target.value, 10) || 0;
+                                                  const updated = [...(choice.pricingImpact || [])];
+                                                  updated[impactIdx] = { ...updated[impactIdx], cents: val };
+                                                  onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
+                                                }}
+                                                className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                              />
+                                              <div className="text-xs text-slate-500 mt-0.5">
+                                                {cents >= 0 ? '+' : ''}${(cents / 100).toFixed(2)}
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          {mode === 'addPercent' && (
+                                            <>
+                                              <div>
+                                                <Label className="text-xs text-slate-500 mb-1 block">Percent (negative = discount)</Label>
+                                                <Input
+                                                  type="number"
+                                                  step="0.01"
+                                                  value={percent}
+                                                  onChange={(e) => {
+                                                    const val = parseFloat(e.target.value) || 0;
+                                                    const updated = [...(choice.pricingImpact || [])];
+                                                    updated[impactIdx] = { ...updated[impactIdx], percent: val };
+                                                    onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
+                                                  }}
+                                                  className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                                />
+                                                <div className="text-xs text-slate-500 mt-0.5">
+                                                  {percent >= 0 ? '+' : ''}{percent}%
+                                                </div>
+                                              </div>
+                                              <div>
+                                                <Label className="text-xs text-slate-500 mb-1 block">Basis</Label>
+                                                <Select
+                                                  value={basis}
+                                                  onValueChange={(val) => {
+                                                    const updated = [...(choice.pricingImpact || [])];
+                                                    updated[impactIdx] = { ...updated[impactIdx], basis: val };
+                                                    onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
+                                                  }}
+                                                >
+                                                  <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7">
+                                                    <SelectValue />
+                                                  </SelectTrigger>
+                                                  <SelectContent>
+                                                    <SelectItem value="base">Base Price</SelectItem>
+                                                    <SelectItem value="lineSubtotal">Line Subtotal</SelectItem>
+                                                    <SelectItem value="optionsSubtotal">Options Subtotal</SelectItem>
+                                                  </SelectContent>
+                                                </Select>
+                                              </div>
+                                            </>
+                                          )}
+
+                                          {mode === 'addPerUnit' && (
+                                            <>
+                                              <div>
+                                                <Label className="text-xs text-slate-500 mb-1 block">Cents Per Unit</Label>
+                                                <Input
+                                                  type="number"
+                                                  value={cents}
+                                                  onChange={(e) => {
+                                                    const val = parseInt(e.target.value, 10) || 0;
+                                                    const updated = [...(choice.pricingImpact || [])];
+                                                    updated[impactIdx] = { ...updated[impactIdx], centsPerUnit: val };
+                                                    onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
+                                                  }}
+                                                  className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7"
+                                                />
+                                              </div>
+                                              <div>
+                                                <Label className="text-xs text-slate-500 mb-1 block">Unit</Label>
+                                                <Select
+                                                  value={unit}
+                                                  onValueChange={(val) => {
+                                                    const updated = [...(choice.pricingImpact || [])];
+                                                    updated[impactIdx] = { ...updated[impactIdx], unit: val };
+                                                    onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
+                                                  }}
+                                                >
+                                                  <SelectTrigger className="bg-[#0a0f1a] border-slate-700 text-slate-200 text-xs h-7">
+                                                    <SelectValue />
+                                                  </SelectTrigger>
+                                                  <SelectContent>
+                                                    <SelectItem value="perPiece">Per Piece</SelectItem>
+                                                    <SelectItem value="perQty">Per Qty (alias)</SelectItem>
+                                                    <SelectItem value="perSqft">Per Sqft</SelectItem>
+                                                    <SelectItem value="perLinearFoot">Per Linear Foot</SelectItem>
+                                                    <SelectItem value="perInch">Per Inch</SelectItem>
+                                                  </SelectContent>
+                                                </Select>
+                                              </div>
+                                            </>
+                                          )}
+                                        </div>
+
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => {
+                                            const updated = [...(choice.pricingImpact || [])];
+                                            updated.splice(impactIdx, 1);
+                                            onUpdateChoice(option.id, choice.value, { pricingImpact: updated });
+                                          }}
+                                          className="text-red-400 hover:text-red-300 h-6 w-6 p-0 mt-4"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-slate-500 italic">No pricing impacts defined</div>
+                            )}
+                          </div>
                         </div>
 
                         <Button
