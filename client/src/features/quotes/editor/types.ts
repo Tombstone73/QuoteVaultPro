@@ -30,6 +30,8 @@ export type QuoteLineItemDraft = {
   overrideByUserId?: string | null; // User who set the override
   overrideReason?: string | null; // Optional reason for override
   description?: string | null; // Per-line-item description
+  // Migration 0040: Production notes (internal only)
+  productionNotes?: string | null; // Internal production notes (not shown to customers)
   // DEPRECATED: Legacy override fields (kept for backward compatibility)
   priceOverridden?: boolean;
   overriddenPrice?: number | null;

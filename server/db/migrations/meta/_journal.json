@@ -225,6 +225,13 @@
       "when": 1771286400000,
       "tag": "0039_line_item_enhancements",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1771372800000,
+      "tag": "0040_add_line_item_production_notes",
+      "breakpoints": true
     }
   ]
 }
