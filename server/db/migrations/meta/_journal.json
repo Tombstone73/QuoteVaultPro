@@ -218,6 +218,14 @@
       "when": 0,
       "tag": "0038_add_pricing_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1771286400000,
+      "tag": "0039_line_item_enhancements",
+      "breakpoints": true
     }
   ]
 }
+
