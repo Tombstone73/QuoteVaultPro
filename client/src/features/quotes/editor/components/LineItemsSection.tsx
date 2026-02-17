@@ -8,7 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image, GripVertical } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image, GripVertical, Undo2 } from "lucide-react";
 import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -87,6 +87,19 @@ function requiresDimensions(product: Product | null): boolean {
   if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") return false;
   if (anyProduct.pricingMode === "area") return true;
   return false;
+}
+
+/**
+ * Check if dimensions are required for a PBV2 product tree.
+ * Reads from tree.meta?.requiresDimensions if available, otherwise falls back to product-level logic.
+ */
+function requiresDimensionsV2(product: Product | null, treeJson: OptionTreeV2 | null): boolean {
+  // Priority 1: PBV2 tree meta (if present)
+  if (treeJson?.meta?.requiresDimensions !== undefined) {
+    return treeJson.meta.requiresDimensions;
+  }
+  // Priority 2: Product-level logic
+  return requiresDimensions(product);
 }
 
 function formatMoney(n: number): string {
@@ -458,6 +471,7 @@ export function LineItemsSection({
   const [heightText, setHeightText] = useState("");
   const [qty, setQty] = useState<number>(1);
   const [notes, setNotes] = useState<string>("");
+  const [description, setDescription] = useState<string>("");
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
@@ -465,6 +479,8 @@ export function LineItemsSection({
   const [calcError, setCalcError] = useState<string | null>(null);
   const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
   const [savedItemKey, setSavedItemKey] = useState<string | null>(null);
+  const [editingPrice, setEditingPrice] = useState(false);
+  const [priceEditText, setPriceEditText] = useState("0.00");
   
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<
@@ -488,6 +504,7 @@ export function LineItemsSection({
     setHeightText(String(expandedItem.height || 1));
     setQty(expandedItem.quantity || 1);
     setNotes((expandedItem.specsJson as any)?.notes || expandedItem.notes || "");
+    setDescription(expandedItem.description || "");
     const selections: Record<string, OptionSelection> = {};
     (expandedItem.selectedOptions || []).forEach((opt: any) => {
       selections[opt.optionId] = {
@@ -510,6 +527,13 @@ export function LineItemsSection({
       setOptionSelectionsV2({ schemaVersion: 2, selected: {} });
     }
 
+    // Initialize price edit text from override or calculated price
+    const displayPrice = expandedItem.overridePriceCents != null 
+      ? expandedItem.overridePriceCents / 100 
+      : (expandedItem.linePrice || 0);
+    setPriceEditText(displayPrice.toFixed(2));
+    setEditingPrice(false);
+
     setCalcError(null);
     
     // Save snapshot for dirty detection
@@ -523,7 +547,7 @@ export function LineItemsSection({
     };
   }, [expandedItem?.id, expandedItem?.tempId]);
 
-  const dimsRequired = requiresDimensions(expandedProduct);
+  const dimsRequired = requiresDimensionsV2(expandedProduct, expandedOptionTreeJson);
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
@@ -578,6 +602,65 @@ export function LineItemsSection({
     }
   };
 
+  // Price override handlers
+  const handlePriceClick = () => {
+    if (readOnly) return;
+    setEditingPrice(true);
+  };
+
+  const handlePriceBlur = () => {
+    if (!expandedItem || !expandedKey) {
+      setEditingPrice(false);
+      return;
+    }
+    const parsed = Number.parseFloat(priceEditText);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      // Reset to current price on invalid input
+      const currentPrice = expandedItem.overridePriceCents != null 
+        ? expandedItem.overridePriceCents / 100 
+        : (expandedItem.linePrice || 0);
+      setPriceEditText(currentPrice.toFixed(2));
+      setEditingPrice(false);
+      return;
+    }
+
+    const newCents = Math.round(parsed * 100);
+    const currentCents = expandedItem.overridePriceCents;
+    const calculatedCents = Math.round((expandedItem.linePrice || 0) * 100);
+
+    // Only set override if different from calculated price
+    if (newCents !== calculatedCents) {
+      onUpdateLineItem(expandedKey, {
+        overridePriceCents: newCents,
+        overrideAt: new Date().toISOString(),
+        overrideByUserId: null, // Backend will fill this
+        overrideReason: null,
+      });
+    } else if (currentCents != null) {
+      // Clear override if user set it back to calculated price
+      onUpdateLineItem(expandedKey, {
+        overridePriceCents: null,
+        overrideAt: null,
+        overrideByUserId: null,
+        overrideReason: null,
+      });
+    }
+
+    setEditingPrice(false);
+  };
+
+  const handleUndoOverride = () => {
+    if (!expandedKey) return;
+    onUpdateLineItem(expandedKey, {
+      overridePriceCents: null,
+      overrideAt: null,
+      overrideByUserId: null,
+      overrideReason: null,
+    });
+    const calcPrice = expandedItem?.linePrice || 0;
+    setPriceEditText(calcPrice.toFixed(2));
+  };
+
   // Keep line item fields in sync as user edits
   useEffect(() => {
     if (!expandedItem || !expandedKey) return;
@@ -597,10 +680,11 @@ export function LineItemsSection({
       quantity: qtyNum,
       specsJson: nextSpecsJson,
       notes: notes || undefined,
+      description: description || undefined,
       ...(v2Patch as any),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedKey, widthNum, heightNum, qtyNum, notes, isExpandedTreeV2, optionSelectionsV2]);
+  }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, isExpandedTreeV2, optionSelectionsV2]);
 
   // Identity persistence must not reset edit snapshot; only explicit user saves do.
   // The snapshot is already correctly updated in handleSaveItem when user clicks Save.
@@ -910,7 +994,54 @@ export function LineItemsSection({
 
                             <div className="ml-auto text-right min-h-[60px]">
                               <div className="text-xs text-muted-foreground">Total</div>
-                              <div className="font-mono text-lg font-bold">{formatMoney(expandedItem?.linePrice ?? item.linePrice)}</div>
+                              <div className="flex items-center gap-2 justify-end">
+                                {editingPrice ? (
+                                  <Input
+                                    type="text"
+                                    value={priceEditText}
+                                    onChange={(e) => setPriceEditText(e.target.value)}
+                                    onBlur={handlePriceBlur}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') handlePriceBlur();
+                                      if (e.key === 'Escape') {
+                                        setEditingPrice(false);
+                                        const currentPrice = expandedItem?.overridePriceCents != null 
+                                          ? expandedItem.overridePriceCents / 100 
+                                          : (expandedItem?.linePrice ?? item.linePrice);
+                                        setPriceEditText(currentPrice.toFixed(2));
+                                      }
+                                    }}
+                                    autoFocus
+                                    className="font-mono text-lg font-bold h-auto px-2 py-1 text-right w-32"
+                                  />
+                                ) : (
+                                  <div 
+                                    className={`font-mono text-lg font-bold ${!readOnly ? 'cursor-pointer hover:bg-accent/50 px-2 py-1 rounded transition-colors' : ''}`}
+                                    onClick={handlePriceClick}
+                                  >
+                                    {formatMoney(expandedItem?.overridePriceCents != null ? expandedItem.overridePriceCents / 100 : (expandedItem?.linePrice ?? item.linePrice))}
+                                  </div>
+                                )}
+                                {expandedItem?.overridePriceCents != null && (
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded font-medium">
+                                      Override
+                                    </span>
+                                    {!readOnly && (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-5 w-5"
+                                        onClick={handleUndoOverride}
+                                        title="Undo override"
+                                      >
+                                        <Undo2 className="h-3 w-3" />
+                                      </Button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                               <div className="h-5 flex items-center justify-end">
                                 {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
                                 {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
@@ -947,6 +1078,18 @@ export function LineItemsSection({
                                   onOptionSelectionsChange={setOptionSelections}
                                 />
                               )}
+
+                              {/* Description field */}
+                              <div className="mt-3 space-y-1.5">
+                                <label className="text-sm font-medium text-muted-foreground">Description (optional)</label>
+                                <textarea
+                                  value={description}
+                                  onChange={(e) => setDescription(e.target.value)}
+                                  placeholder="Add custom description for this line item..."
+                                  className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                  disabled={readOnly}
+                                />
+                              </div>
 
                               {/* Bottom actions - Edit mode only */}
                               {!readOnly && (
