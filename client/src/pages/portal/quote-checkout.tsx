@@ -174,6 +174,9 @@ export default function QuoteCheckout() {
                       <p className="text-sm text-muted-foreground">{item.variantName}</p>
                     )}
                     <p className="text-sm text-muted-foreground">Qty: {item.quantity}</p>
+                    {item.description && (
+                      <p className="text-sm text-muted-foreground mt-1 italic">{item.description}</p>
+                    )}
                   </div>
                   <div className="text-right">
                     <p className="font-medium">${parseFloat(item.linePrice || 0).toFixed(2)}</p>
