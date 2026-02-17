@@ -19,13 +19,20 @@ export type QuoteLineItemDraft = {
   selectedOptions: any[];
   linePrice: number;
   /**
-   * Price override support (client-side for now).
-   * - linePrice is the ACTIVE line price (formula by default, overridden when set)
+   * Price override support (migration 0039).
+   * - linePrice is the ACTIVE line price (calculated by default, overridden when overridePriceCents is set)
    * - formulaLinePrice tracks the last known formula price for easy reset
    */
+  formulaLinePrice?: number;
+  // NEW: Migration 0039 override fields
+  overridePriceCents?: number | null; // Manual price override in cents
+  overrideAt?: string | null; // ISO timestamp when override was set
+  overrideByUserId?: string | null; // User who set the override
+  overrideReason?: string | null; // Optional reason for override
+  description?: string | null; // Per-line-item description
+  // DEPRECATED: Legacy override fields (kept for backward compatibility)
   priceOverridden?: boolean;
   overriddenPrice?: number | null;
-  formulaLinePrice?: number;
   priceBreakdown: any;
   displayOrder: number;
   notes?: string;
