@@ -26,6 +26,7 @@ export type PricingInput = {
   heightIn?: number;
   pbv2ExplicitSelections: Record<string, any>; // Option selections from frontend
   pbv2TreeVersionIdOverride?: string; // Optional: use specific tree version
+  overridePriceCents?: number | null; // Manual price override (if set, skip calculation)
 };
 
 export type PricingOutput = {
@@ -37,6 +38,7 @@ export type PricingOutput = {
     optionsCents: number;
     totalCents: number;
   };
+  pricingOverrideApplied?: boolean; // True if overridePriceCents was used
 };
 
 export type PBV2PricingSnapshot = {
@@ -76,7 +78,63 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     heightIn,
     pbv2ExplicitSelections,
     pbv2TreeVersionIdOverride,
+    overridePriceCents,
   } = input;
+
+  // Step 0: Check for manual price override
+  // If override is set, return it immediately without calculating PBV2
+  if (overridePriceCents != null && typeof overridePriceCents === 'number') {
+    // Still need minimal tree data for snapshot (use active or override tree version)
+    const product = await loadProduct(organizationId, productId);
+    const treeVersionId = pbv2TreeVersionIdOverride 
+      || resolvePbv2Override(product)
+      || product.pbv2ActiveTreeVersionId;
+
+    if (!treeVersionId) {
+      throw new Error(
+        `Product ${productId} does not have a PBV2 tree. ` +
+        `All products must have pbv2_active_tree_version_id set.`
+      );
+    }
+
+    const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
+    const selectionsV2: LineItemOptionSelectionsV2 = {
+      schemaVersion: 2,
+      selected: pbv2ExplicitSelections || {},
+    };
+
+    // Build minimal snapshot
+    const snapshot: PBV2PricingSnapshot = {
+      treeVersionId,
+      treeJson: treeVersion.treeJson,
+      selections: pbv2ExplicitSelections || {},
+      selectedOptions: [],
+      visibleNodeIds: [],
+      pricedAt: new Date().toISOString(),
+      dimensions: {
+        widthIn: widthIn ?? undefined,
+        heightIn: heightIn ?? undefined,
+      },
+      quantity,
+      pricing: {
+        baseCents: 0,
+        optionsCents: 0,
+        totalCents: overridePriceCents,
+      },
+    };
+
+    return {
+      pbv2TreeVersionId: treeVersionId,
+      pbv2SnapshotJson: snapshot,
+      lineTotalCents: overridePriceCents,
+      breakdown: {
+        baseCents: 0,
+        optionsCents: 0,
+        totalCents: overridePriceCents,
+      },
+      pricingOverrideApplied: true,
+    };
+  }
 
   // Step 1: Load product (with org scoping)
   const product = await loadProduct(organizationId, productId);

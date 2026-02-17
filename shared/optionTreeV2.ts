@@ -136,6 +136,7 @@ export type OptionTreeV2 = {
     pricingV2?: PricingV2;
     shippingConfig?: ShippingConfig;
     productImages?: ProductImage[];
+    requiresDimensions?: boolean; // Default true if missing (product requires W x H)
   };
 };
 
@@ -302,6 +303,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
       pricingV2: pricingV2Schema.optional(),
       shippingConfig: shippingConfigSchema.optional(),
       productImages: z.array(productImageSchema).optional(),
+      requiresDimensions: z.boolean().optional(),
     })
     .optional(),
 });

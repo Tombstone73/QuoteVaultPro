@@ -1237,6 +1237,12 @@ export const quoteLineItems = pgTable("quote_line_items", {
   displayOrder: integer("display_order").default(0).notNull(),
   // Temporary line item support (for artwork before quote is saved)
   isTemporary: boolean("is_temporary").default(false).notNull(),
+  // Line item enhancements (migration 0039)
+  description: text("description"),
+  overridePriceCents: integer("override_price_cents"),
+  overrideAt: timestamp("override_at", { withTimezone: true }),
+  overrideByUserId: varchar("override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  overrideReason: text("override_reason"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
@@ -2187,6 +2193,11 @@ export const orderLineItems = pgTable("order_line_items", {
   // Tax system fields
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0").notNull(),
   isTaxableSnapshot: boolean("is_taxable_snapshot").default(true).notNull(),
+  // Line item enhancements (migration 0039)
+  overridePriceCents: integer("override_price_cents"),
+  overrideAt: timestamp("override_at", { withTimezone: true }),
+  overrideByUserId: varchar("override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  overrideReason: text("override_reason"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
