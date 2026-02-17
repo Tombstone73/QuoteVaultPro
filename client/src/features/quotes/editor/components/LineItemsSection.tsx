@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronDown, ChevronRight, FileText, Minus, Plus, Save, Loader2, Check, ChevronsUpDown, Download, Image, GripVertical, Undo2 } from "lucide-react";
 import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
@@ -472,6 +473,7 @@ export function LineItemsSection({
   const [qty, setQty] = useState<number>(1);
   const [notes, setNotes] = useState<string>("");
   const [description, setDescription] = useState<string>("");
+  const [productionNotes, setProductionNotes] = useState<string>("");
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
@@ -505,6 +507,7 @@ export function LineItemsSection({
     setQty(expandedItem.quantity || 1);
     setNotes((expandedItem.specsJson as any)?.notes || expandedItem.notes || "");
     setDescription(expandedItem.description || "");
+    setProductionNotes(expandedItem.productionNotes || "");
     const selections: Record<string, OptionSelection> = {};
     (expandedItem.selectedOptions || []).forEach((opt: any) => {
       selections[opt.optionId] = {
@@ -681,10 +684,11 @@ export function LineItemsSection({
       specsJson: nextSpecsJson,
       notes: notes || undefined,
       description: description || undefined,
+      productionNotes: productionNotes || undefined,
       ...(v2Patch as any),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, isExpandedTreeV2, optionSelectionsV2]);
+  }, [expandedKey, widthNum, heightNum, qtyNum, notes, description, productionNotes, isExpandedTreeV2, optionSelectionsV2]);
 
   // Identity persistence must not reset edit snapshot; only explicit user saves do.
   // The snapshot is already correctly updated in handleSaveItem when user clicks Save.
@@ -878,6 +882,21 @@ export function LineItemsSection({
                                       <span>·</span>
                                       <span>Qty {item.quantity}</span>
                                     </div>
+                                    {/* Description preview (customer-facing) */}
+                                    {item.description && (
+                                      <TooltipProvider delayDuration={300}>
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <div className="text-xs text-muted-foreground/80 mt-0.5 truncate max-w-full italic">
+                                              {item.description}
+                                            </div>
+                                          </TooltipTrigger>
+                                          <TooltipContent side="bottom" align="start" className="max-w-sm">
+                                            <p className="text-xs whitespace-pre-wrap">{item.description}</p>
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </TooltipProvider>
+                                    )}
                                   </div>
                                 </div>
 
@@ -1086,6 +1105,23 @@ export function LineItemsSection({
                                   value={description}
                                   onChange={(e) => setDescription(e.target.value)}
                                   placeholder="Add custom description for this line item..."
+                                  className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                  disabled={readOnly}
+                                />
+                              </div>
+
+                              {/* Production Notes field (internal only) */}
+                              <div className="mt-3 space-y-1.5">
+                                <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                                  Production Notes (internal)
+                                  <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
+                                    Staff only
+                                  </span>
+                                </label>
+                                <textarea
+                                  value={productionNotes}
+                                  onChange={(e) => setProductionNotes(e.target.value)}
+                                  placeholder="Internal production notes (not shown to customers)..."
                                   className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                                   disabled={readOnly}
                                 />

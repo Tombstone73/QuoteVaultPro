@@ -435,13 +435,16 @@ class EmailService {
     const lineItemsHTML = quote.lineItems
       .map((item: any) => {
         const variantInfo = item.variant ? ` - ${item.variant.name}` : "";
+        const descriptionHTML = item.description
+          ? `<br><span style="color: #666; font-size: 13px; font-style: italic;">${item.description}</span>`
+          : "";
         return `
           <tr>
             <td style="padding: 12px; border-bottom: 1px solid #eee;">
               <strong>${item.product?.name || "Unknown Product"}${variantInfo}</strong><br>
               <span style="color: #666; font-size: 14px;">
                 ${item.width}" × ${item.height}" × ${item.quantity} qty
-              </span>
+              </span>${descriptionHTML}
             </td>
             <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">
               $${parseFloat(item.linePrice).toFixed(2)}

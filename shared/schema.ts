@@ -1243,6 +1243,8 @@ export const quoteLineItems = pgTable("quote_line_items", {
   overrideAt: timestamp("override_at", { withTimezone: true }),
   overrideByUserId: varchar("override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   overrideReason: text("override_reason"),
+  // Line item production notes (migration 0040)
+  productionNotes: text("production_notes"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
@@ -2198,6 +2200,8 @@ export const orderLineItems = pgTable("order_line_items", {
   overrideAt: timestamp("override_at", { withTimezone: true }),
   overrideByUserId: varchar("override_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   overrideReason: text("override_reason"),
+  // Line item production notes (migration 0040)
+  productionNotes: text("production_notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
