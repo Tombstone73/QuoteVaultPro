@@ -232,6 +232,13 @@
       "when": 1771372800000,
       "tag": "0040_add_line_item_production_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1771459200000,
+      "tag": "0041_nullable_pbv2_tree_version_id",
+      "breakpoints": true
     }
   ]
 }
