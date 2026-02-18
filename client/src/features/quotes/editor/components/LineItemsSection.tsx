@@ -832,6 +832,7 @@ export function LineItemsSection({
                     // Meta indicators (best effort with existing fields)
                     const hasNote = !!(item.notes || (item.specsJson as any)?.notes);
                     const hasOverride = !!((item as any).priceOverride || (item as any).manualPrice);
+                    const hasProductionNotes = !!(item.productionNotes && item.productionNotes.trim());
 
                     return (
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
@@ -930,13 +931,19 @@ export function LineItemsSection({
                               </div>
 
                               {/* Optional Meta Row (only if relevant) */}
-                              {(hasNote || hasOverride) && (
+                              {(hasNote || hasOverride || hasProductionNotes) && (
                                 <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
                                   {hasNote && <span>Note</span>}
                                   {hasOverride && (
                                     <>
                                       {hasNote && <span>·</span>}
                                       <span>Overridden</span>
+                                    </>
+                                  )}
+                                  {hasProductionNotes && (
+                                    <>
+                                      {(hasNote || hasOverride) && <span>·</span>}
+                                      <span className="bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 rounded font-medium">Internal</span>
                                     </>
                                   )}
                                 </div>
