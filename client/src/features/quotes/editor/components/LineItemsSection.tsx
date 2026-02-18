@@ -1055,6 +1055,7 @@ export function LineItemsSection({
                                 />
                               </div>
                             }
+                            detailsSide="right"
                             isDirty={isDirty}
                             isSaving={savingItemKey === itemKey}
                             isSaved={!isDirty && savedItemKey === itemKey}
