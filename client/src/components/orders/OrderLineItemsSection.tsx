@@ -53,6 +53,7 @@ import { buildLineItemFlags } from "@/lib/lineItems/lineItemDerivation";
 import { formatLineItemOptionSummary } from "@shared/lineItemOptionSummary";
 import type { PBV2Outputs } from "@/lib/pbv2/pbv2Outputs";
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
+import { LineItemCard } from "@/components/line-items/LineItemCard";
 
 type SortableChildRenderProps = {
   dragAttributes: Record<string, any> | undefined;
@@ -99,6 +100,69 @@ function requiresDimensions(product: Product | null): boolean {
   if (anyProduct.pricingMode === "fee" || anyProduct.pricingMode === "addon") return false;
   if (anyProduct.pricingMode === "area") return true;
   return false;
+}
+
+/**
+ * Generic option chip extractor for collapsed line item display.
+ * Works with any product's option structure without hardcoded keys.
+ */
+function extractOptionChips(
+  selectedOptions: any[] | undefined | null,
+  maxChips: number = 3
+): { chips: string[]; overflowCount: number } {
+  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) {
+    return { chips: [], overflowCount: 0 };
+  }
+
+  const chips: string[] = [];
+  
+  for (const opt of selectedOptions) {
+    if (!opt || typeof opt !== 'object') continue;
+    
+    // Extract name from common fields
+    const name = opt.optionName || opt.label || opt.name || '';
+    
+    // Extract value from common fields, handle booleans
+    let value = opt.displayValue ?? opt.value;
+    if (typeof value === 'boolean') {
+      value = value ? 'Yes' : 'No';
+    }
+    
+    // Convert to string and trim
+    const nameStr = String(name).trim();
+    const valueStr = value != null ? String(value).trim() : '';
+    
+    // Skip empty/meaningless values
+    if (!nameStr) continue;
+    if (!valueStr || valueStr.toLowerCase() === 'none' || valueStr.toLowerCase() === 'n/a' || valueStr === 'false' || valueStr === 'No') continue;
+    
+    // Build chip string: prefer short value-only when possible
+    let chipText: string;
+    
+    if (valueStr && valueStr !== 'true' && valueStr !== 'Yes') {
+      if (valueStr.length <= 12) {
+        // Short value → use value only
+        chipText = valueStr;
+      } else if (nameStr.length <= 12) {
+        // Long value, short name → use name only
+        chipText = nameStr;
+      } else {
+        // Both long → use name with ellipsis
+        chipText = nameStr.substring(0, 9) + '...';
+      }
+    } else {
+      // Boolean yes or empty → use name only
+      chipText = nameStr.length <= 12 ? nameStr : nameStr.substring(0, 9) + '...';
+    }
+    
+    chips.push(chipText);
+  }
+  
+  const totalCount = chips.length;
+  const displayChips = chips.slice(0, maxChips);
+  const overflowCount = Math.max(0, totalCount - maxChips);
+  
+  return { chips: displayChips, overflowCount };
 }
 
 function getPbv2SnapshotFromLineItem(lineItem: any): any | null {
@@ -1044,10 +1108,15 @@ export function OrderLineItemsSection({
 
                   const productName = (item as any).product?.name || item.description || "Item";
 
-                  const optionsSummaryText = formatLineItemOptionSummary(item);
+                  const itemSpecsJson: any =
+                    item.specsJson && typeof item.specsJson === "object" ? (item.specsJson as any) : {};
+
+                  const selectedOptionsForChips = (itemSpecsJson as any)?.selectedOptions || [];
+                  const { chips: optionChips, overflowCount } = extractOptionChips(selectedOptionsForChips, 3);
 
                   const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
                   const subtitleText = persistedDescription;
+                  const optionsSummaryText = formatLineItemOptionSummary(item);
 
                   const total = Number.parseFloat(item.totalPrice || "0") || 0;
                   const parsedUnit = Number.parseFloat(item.unitPrice || "");
@@ -1057,13 +1126,13 @@ export function OrderLineItemsSection({
                       ? total / item.quantity
                       : 0;
 
-                  const itemSpecsJson: any =
-                    item.specsJson && typeof item.specsJson === "object" ? (item.specsJson as any) : {};
                   const itemNotes = (itemSpecsJson as any)?.lineItemNotes as
                     | { sku?: string | null; descShort?: string | null; descLong?: string | null }
                     | undefined;
 
-                  const persistedNotesText = typeof itemNotes?.descLong === "string" ? itemNotes.descLong : "";
+                  const persistedProductionNotes = typeof itemNotes?.descLong === "string" ? itemNotes.descLong : "";
+                  const persistedNotesText = persistedProductionNotes;
+                  const hasProductionNotes = Boolean(persistedProductionNotes && persistedProductionNotes.trim());
 
                   const persistedOverride = Boolean(
                     (itemSpecsJson as any)?.priceOverride &&
@@ -1087,6 +1156,7 @@ export function OrderLineItemsSection({
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
                   const lineItemAttachmentsAssociationKnown =
                     orderFilesAssociationKnown &&
+```
                     ((allOrderFiles as any[]).length === 0 ||
                       (allOrderFiles as any[]).some((f) => Object.prototype.hasOwnProperty.call(f ?? {}, "orderLineItemId")));
 
