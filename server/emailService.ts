@@ -429,19 +429,35 @@ class EmailService {
   }
 
   /**
+   * Simple HTML escape for email template safety
+   */
+  private escapeHtml(text: string | null | undefined): string {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /**
    * Generate HTML email content for a quote
    */
   private generateQuoteEmailHTML(quote: any, customBodyHtml?: string): string {
     const lineItemsHTML = quote.lineItems
       .map((item: any) => {
-        const variantInfo = item.variant ? ` - ${item.variant.name}` : "";
-        const descriptionHTML = item.description
-          ? `<br><span style="color: #666; font-size: 13px; font-style: italic;">${item.description}</span>`
+        const variantInfo = item.variant ? ` - ${this.escapeHtml(item.variant.name)}` : "";
+        const description = item.description && typeof item.description === 'string' && item.description.trim()
+          ? item.description.trim()
+          : null;
+        const descriptionHTML = description
+          ? `<br><span style="color: #666; font-size: 13px; font-style: italic;">${this.escapeHtml(description)}</span>`
           : "";
         return `
           <tr>
             <td style="padding: 12px; border-bottom: 1px solid #eee;">
-              <strong>${item.product?.name || "Unknown Product"}${variantInfo}</strong><br>
+              <strong>${this.escapeHtml(item.product?.name) || "Unknown Product"}${variantInfo}</strong><br>
               <span style="color: #666; font-size: 14px;">
                 ${item.width}" × ${item.height}" × ${item.quantity} qty
               </span>${descriptionHTML}

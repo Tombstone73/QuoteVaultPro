@@ -3716,6 +3716,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Unauthorized" });
       }
 
+      console.log(`[QUOTE_CREATE] Starting quote creation for org ${organizationId}, user ${userId}`);
+
       const {
         hasLineItems,
         hasCustomerId,
@@ -3875,6 +3877,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           },
           materialUsages: item.priceBreakdown?.materialUsages || [],
           displayOrder: item.displayOrder || 0,
+          // Line item enhancements (migration 0039, 0040)
+          description: item.description || null,
+          productionNotes: item.productionNotes || null,
           // Tax fields (convert to string for storage)
           taxAmount: taxData.taxAmount.toString(),
           isTaxableSnapshot: taxData.isTaxableSnapshot,
@@ -5525,6 +5530,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (lineItem.quoteId !== undefined) updateData.quoteId = lineItem.quoteId;
       if (lineItem.isTemporary !== undefined) updateData.isTemporary = lineItem.isTemporary;
       if (lineItem.quoteId !== undefined) updateData.quoteId = lineItem.quoteId;
+      // Line item enhancements (migrations 0039, 0040)
+      if (lineItem.description !== undefined) updateData.description = lineItem.description;
+      if (lineItem.productionNotes !== undefined) updateData.productionNotes = lineItem.productionNotes;
 
       const updatedLineItem = await storage.updateLineItem(lineItemId, updateData);
       res.json(updatedLineItem);
@@ -6812,10 +6820,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/quotes/:id/email", isAuthenticated, tenantContext, async (req: any, res) => {
+    const { id } = req.params;
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const { id } = req.params;
       const { recipientEmail } = req.body;
 
       if (!recipientEmail) {
@@ -6832,12 +6840,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Quote not found" });
       }
 
-      await emailService.sendQuoteEmail(organizationId, id, recipientEmail, isInternalUser ? undefined : userId);
-      res.json({ message: "Quote email sent successfully" });
+      // Wrap email sending in try-catch to prevent quote operations from failing
+      try {
+        await emailService.sendQuoteEmail(organizationId, id, recipientEmail, isInternalUser ? undefined : userId);
+        res.json({ success: true, message: "Quote email sent successfully" });
+      } catch (emailError) {
+        console.error(`[QUOTE_EMAIL] Failed to send email for quote ${id}:`, {
+          quoteId: id,
+          organizationId,
+          userId,
+          recipientEmail,
+          error: emailError instanceof Error ? emailError.message : String(emailError),
+          stack: emailError instanceof Error ? emailError.stack : undefined
+        });
+        // Return error indicating email failed
+        res.status(500).json({
+          success: false,
+          message: emailError instanceof Error ? emailError.message : "Failed to send quote email. Please try again or contact support."
+        });
+      }
     } catch (error) {
-      console.error("Error sending quote email:", error);
+      console.error(`[QUOTE_EMAIL] Error in email endpoint for quote ${id}:`, error);
       res.status(500).json({
-        message: error instanceof Error ? error.message : "Failed to send quote email"
+        success: false,
+        message: error instanceof Error ? error.message : "Failed to process email request"
       });
     }
   });
