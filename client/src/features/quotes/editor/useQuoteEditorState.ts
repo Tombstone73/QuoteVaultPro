@@ -690,6 +690,10 @@ export function useQuoteEditorState() {
             optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
             selectedOptions: item.selectedOptions || [],
             linePrice: parseFloat(item.linePrice),
+            overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
+            overrideAt: item.overrideAt || null,
+            overrideByUserId: item.overrideByUserId || null,
+            overrideReason: item.overrideReason || null,
             // Price override fields are client-side for now; default to formula pricing on load.
             priceOverridden: false,
             overriddenPrice: null,
@@ -751,6 +755,10 @@ export function useQuoteEditorState() {
                 optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
                 selectedOptions: item.selectedOptions || [],
                 linePrice: parseFloat(item.linePrice),
+                overridePriceCents: typeof item.overridePriceCents === "number" ? item.overridePriceCents : null,
+                overrideAt: item.overrideAt || null,
+                overrideByUserId: item.overrideByUserId || null,
+                overrideReason: item.overrideReason || null,
                 priceOverridden: false,
                 overriddenPrice: null,
                 formulaLinePrice: parseFloat(item.linePrice),
@@ -2284,6 +2292,10 @@ export function useQuoteEditorState() {
                 // PBV2 fields are server-authoritative - NOT sent from client
                 selectedOptions: item.selectedOptions || [],
                 linePrice: item.linePrice ?? 0,
+                overridePriceCents: item.overridePriceCents ?? null,
+                overrideAt: item.overrideAt ?? null,
+                overrideByUserId: item.overrideByUserId ?? null,
+                overrideReason: item.overrideReason ?? null,
                 priceBreakdown: item.priceBreakdown || {
                     basePrice: item.linePrice ?? 0,
                     optionsPrice: 0,
