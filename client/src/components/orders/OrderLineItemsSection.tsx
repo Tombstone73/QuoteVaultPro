@@ -744,7 +744,7 @@ export function OrderLineItemsSection({
       optionSelections: selections,
       totalPrice: currentTotal,
     };
-  }, [expandedItem?.id]);
+  }, [expandedItem?.id, expandedItem?.totalPrice, expandedItem?.unitPrice, (expandedItem as any)?.overridePriceCents]);
 
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
@@ -1332,6 +1332,8 @@ export function OrderLineItemsSection({
                                                 overrideReason: null,
                                               },
                                             });
+                                            await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+                                            await onAfterLineItemsChange?.();
                                             setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
                                           } else if (currentOverrideCents !== null) {
                                             await updateLineItemSilent.mutateAsync({
@@ -1341,6 +1343,8 @@ export function OrderLineItemsSection({
                                                 overrideReason: null,
                                               },
                                             });
+                                            await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+                                            await onAfterLineItemsChange?.();
                                             setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
                                           }
                                         } catch (e) {
@@ -1384,6 +1388,8 @@ export function OrderLineItemsSection({
                                               overrideReason: null,
                                             },
                                           });
+                                          await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+                                          await onAfterLineItemsChange?.();
                                           setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
                                         } catch (e) {
                                           toast({
