@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -216,6 +216,28 @@ function buildSelectedOptionsArray(
   return arr;
 }
 
+function buildOptionSelectionsRecordFromSelectedOptions(selectedOptions: any[] | undefined | null): Record<string, OptionSelection> {
+  const selections: Record<string, OptionSelection> = {};
+  if (!Array.isArray(selectedOptions)) return selections;
+
+  for (const opt of selectedOptions) {
+    if (!opt?.optionId) continue;
+    selections[String(opt.optionId)] = {
+      value: opt.value,
+      note: opt.note,
+      grommetsLocation: opt.grommetsLocation,
+      grommetsSpacingCount: opt.grommetsSpacingCount,
+      grommetsPerSign: opt.grommetsPerSign,
+      grommetsSpacingInches: opt.grommetsSpacingInches,
+      customPlacementNote: opt.customPlacementNote,
+      hemsType: opt.hemsType,
+      polePocket: opt.polePocket,
+    };
+  }
+
+  return selections;
+}
+
 function useDebouncedEffect(effect: () => void, deps: any[], delayMs: number) {
   const first = useRef(true);
   useEffect(() => {
@@ -360,6 +382,7 @@ export function LineItemsSection({
   ensureQuoteId,
   ensureLineItemId,
 }: LineItemsSectionProps) {
+  const queryClient = useQueryClient();
   const count = lineItems.filter((li) => li.status !== "canceled").length;
 
   // TEMP UI-only reorder state (not persisted)
@@ -482,8 +505,8 @@ export function LineItemsSection({
   const [calcError, setCalcError] = useState<string | null>(null);
   const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
   const [savedItemKey, setSavedItemKey] = useState<string | null>(null);
-  const [editingPrice, setEditingPrice] = useState(false);
-  const [priceEditText, setPriceEditText] = useState("0.00");
+  const [editingPriceItemKey, setEditingPriceItemKey] = useState<string | null>(null);
+  const [priceEditTextByKey, setPriceEditTextByKey] = useState<Record<string, string>>({});
   
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<
@@ -535,8 +558,8 @@ export function LineItemsSection({
     const displayPrice = expandedItem.overridePriceCents != null 
       ? expandedItem.overridePriceCents / 100 
       : (expandedItem.linePrice || 0);
-    setPriceEditText(displayPrice.toFixed(2));
-    setEditingPrice(false);
+    setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: displayPrice.toFixed(2) }));
+    setEditingPriceItemKey(null);
 
     setCalcError(null);
     
@@ -606,63 +629,71 @@ export function LineItemsSection({
     }
   };
 
-  // Price override handlers
-  const handlePriceClick = () => {
-    if (readOnly) return;
-    setEditingPrice(true);
-  };
+  const refreshQuotePricingAfterOverrideChange = async ({
+    item,
+    itemKey,
+    nextOverrideCents,
+    previousOverrideCents,
+  }: {
+    item: QuoteLineItemDraft;
+    itemKey: string;
+    nextOverrideCents: number | null;
+    previousOverrideCents: number | null;
+  }) => {
+    if (nextOverrideCents === previousOverrideCents) return;
 
-  const handlePriceBlur = () => {
-    if (!expandedItem || !expandedKey) {
-      setEditingPrice(false);
-      return;
-    }
-    const parsed = Number.parseFloat(priceEditText);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      // Reset to current price on invalid input
-      const currentPrice = expandedItem.overridePriceCents != null 
-        ? expandedItem.overridePriceCents / 100 
-        : (expandedItem.linePrice || 0);
-      setPriceEditText(currentPrice.toFixed(2));
-      setEditingPrice(false);
-      return;
-    }
+    const quantity = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
+    const width = Number(item.width) > 0 ? Number(item.width) : 1;
+    const height = Number(item.height) > 0 ? Number(item.height) : 1;
+    const optionSelectionsJson = (item as any)?.optionSelectionsJson;
+    const isTreeV2 = Boolean(optionSelectionsJson && typeof optionSelectionsJson === "object" && optionSelectionsJson.schemaVersion === 2);
 
-    const newCents = Math.round(parsed * 100);
-    const currentCents = expandedItem.overridePriceCents;
-    const calculatedCents = Math.round((expandedItem.linePrice || 0) * 100);
-
-    // Only set override if different from calculated price
-    if (newCents !== calculatedCents) {
-      onUpdateLineItem(expandedKey, {
-        overridePriceCents: newCents,
-        overrideAt: new Date().toISOString(),
-        overrideByUserId: null, // Backend will fill this
-        overrideReason: null,
+    let formulaPrice = Number(item.formulaLinePrice ?? item.linePrice ?? 0) || 0;
+    try {
+      const calculateResponse = await apiRequest("POST", "/api/quotes/calculate", {
+        productId: item.productId,
+        variantId: item.variantId,
+        width,
+        height,
+        quantity,
+        ...(isTreeV2
+          ? { optionSelectionsJson: (optionSelectionsJson as any)?.selected || {} }
+          : { selectedOptions: buildOptionSelectionsRecordFromSelectedOptions(item.selectedOptions) }),
+        customerId,
+        quoteId,
+        debugSource: "LineItemsSection.override-refresh",
       });
-    } else if (currentCents != null) {
-      // Clear override if user set it back to calculated price
-      onUpdateLineItem(expandedKey, {
-        overridePriceCents: null,
-        overrideAt: null,
-        overrideByUserId: null,
-        overrideReason: null,
-      });
+      const calculateData = await calculateResponse.json();
+      const nextFormula = Number(calculateData?.linePrice);
+      if (Number.isFinite(nextFormula)) {
+        formulaPrice = nextFormula;
+      }
+    } catch {
+      // Keep current formula fallback
     }
 
-    setEditingPrice(false);
-  };
+    const effectiveLinePrice =
+      typeof nextOverrideCents === "number" && Number.isFinite(nextOverrideCents)
+        ? nextOverrideCents / 100
+        : formulaPrice;
 
-  const handleUndoOverride = () => {
-    if (!expandedKey) return;
-    onUpdateLineItem(expandedKey, {
-      overridePriceCents: null,
-      overrideAt: null,
+    onUpdateLineItem(itemKey, {
+      formulaLinePrice: formulaPrice,
+      linePrice: effectiveLinePrice,
+      overridePriceCents: nextOverrideCents,
+      overrideAt: nextOverrideCents == null ? null : new Date().toISOString(),
       overrideByUserId: null,
       overrideReason: null,
     });
-    const calcPrice = expandedItem?.linePrice || 0;
-    setPriceEditText(calcPrice.toFixed(2));
+
+    if (onSaveLineItem) {
+      await onSaveLineItem(itemKey);
+    }
+
+    if (quoteId) {
+      await queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+      await queryClient.refetchQueries({ queryKey: ["/api/quotes", quoteId], type: "active" });
+    }
   };
 
   // Keep line item fields in sync as user edits
@@ -832,7 +863,7 @@ export function LineItemsSection({
                     
                     // Meta indicators (best effort with existing fields)
                     const hasNote = !!(item.notes || (item.specsJson as any)?.notes);
-                    const hasOverride = !!((item as any).priceOverride || (item as any).manualPrice);
+                    const hasOverride = typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents);
                     const hasProductionNotes = !!(item.productionNotes && item.productionNotes.trim());
 
                     return (
@@ -873,24 +904,112 @@ export function LineItemsSection({
                             onQuantityIncrement={() => setQty((q) => (q || 1) + 1)}
                             onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
                             dimsRequired={dimsRequired}
-                            price={expandedItem?.linePrice ?? item.linePrice}
-                            priceOverride={expandedItem?.overridePriceCents != null ? expandedItem.overridePriceCents / 100 : null}
-                            editingPrice={editingPrice}
-                            priceEditText={priceEditText}
-                            onPriceClick={readOnly ? undefined : handlePriceClick}
-                            onPriceChange={setPriceEditText}
-                            onPriceBlur={handlePriceBlur}
+                            price={item.linePrice}
+                            priceOverride={item.overridePriceCents != null ? item.overridePriceCents / 100 : null}
+                            editingPrice={editingPriceItemKey === itemKey}
+                            priceEditText={
+                              priceEditTextByKey[itemKey] ??
+                              ((item.overridePriceCents != null ? item.overridePriceCents / 100 : item.linePrice) || 0).toFixed(2)
+                            }
+                            onPriceClick={
+                              readOnly
+                                ? undefined
+                                : () => {
+                                    const currentPrice = item.overridePriceCents != null
+                                      ? item.overridePriceCents / 100
+                                      : item.linePrice;
+                                    setEditingPriceItemKey(itemKey);
+                                    setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: currentPrice.toFixed(2) }));
+                                  }
+                            }
+                            onPriceChange={
+                              readOnly
+                                ? undefined
+                                : (value) => {
+                                    setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: value }));
+                                  }
+                            }
+                            onPriceBlur={
+                              readOnly
+                                ? undefined
+                                : async () => {
+                                    const currentDisplay = item.overridePriceCents != null
+                                      ? item.overridePriceCents / 100
+                                      : item.linePrice;
+                                    const rawValue = priceEditTextByKey[itemKey] ?? currentDisplay.toFixed(2);
+                                    const parsed = Number.parseFloat(rawValue);
+                                    if (!Number.isFinite(parsed) || parsed < 0) {
+                                      setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: currentDisplay.toFixed(2) }));
+                                      setEditingPriceItemKey((prev) => (prev === itemKey ? null : prev));
+                                      return;
+                                    }
+
+                                    const newCents = Math.round(parsed * 100);
+                                    const previousOverrideCents =
+                                      typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
+                                        ? item.overridePriceCents
+                                        : null;
+                                    const formulaCents = Math.round((item.formulaLinePrice ?? item.linePrice ?? 0) * 100);
+
+                                    try {
+                                      if (newCents !== formulaCents) {
+                                        if (previousOverrideCents === newCents) {
+                                          setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: (newCents / 100).toFixed(2) }));
+                                          return;
+                                        }
+                                        await refreshQuotePricingAfterOverrideChange({
+                                          item,
+                                          itemKey,
+                                          nextOverrideCents: newCents,
+                                          previousOverrideCents,
+                                        });
+                                        setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: (newCents / 100).toFixed(2) }));
+                                      } else if (previousOverrideCents !== null) {
+                                        await refreshQuotePricingAfterOverrideChange({
+                                          item,
+                                          itemKey,
+                                          nextOverrideCents: null,
+                                          previousOverrideCents,
+                                        });
+                                        setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: (formulaCents / 100).toFixed(2) }));
+                                      }
+                                    } finally {
+                                      setEditingPriceItemKey((prev) => (prev === itemKey ? null : prev));
+                                    }
+                                  }
+                            }
                             onPriceKeyDown={(e) => {
-                              if (e.key === 'Enter') handlePriceBlur();
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                (e.currentTarget as HTMLInputElement).blur();
+                              }
                               if (e.key === 'Escape') {
-                                setEditingPrice(false);
-                                const currentPrice = expandedItem?.overridePriceCents != null 
-                                  ? expandedItem.overridePriceCents / 100 
-                                  : (expandedItem?.linePrice ?? item.linePrice);
-                                setPriceEditText(currentPrice.toFixed(2));
+                                e.preventDefault();
+                                const currentPrice = item.overridePriceCents != null 
+                                  ? item.overridePriceCents / 100 
+                                  : item.linePrice;
+                                setEditingPriceItemKey((prev) => (prev === itemKey ? null : prev));
+                                setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: currentPrice.toFixed(2) }));
                               }
                             }}
-                            onUndoOverride={readOnly ? undefined : handleUndoOverride}
+                            onUndoOverride={
+                              readOnly || item.overridePriceCents == null
+                                ? undefined
+                                : async () => {
+                                    const previousOverrideCents =
+                                      typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
+                                        ? item.overridePriceCents
+                                        : null;
+                                    await refreshQuotePricingAfterOverrideChange({
+                                      item,
+                                      itemKey,
+                                      nextOverrideCents: null,
+                                      previousOverrideCents,
+                                    });
+                                    const currentFormula = Number(item.formulaLinePrice ?? item.linePrice ?? 0) || 0;
+                                    setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: currentFormula.toFixed(2) }));
+                                  }
+                            }
                             isCalculating={isCalculating}
                             calcError={calcError}
                             description={description}
