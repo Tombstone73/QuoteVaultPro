@@ -239,6 +239,13 @@
       "when": 1771459200000,
       "tag": "0041_nullable_pbv2_tree_version_id",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1771545600000,
+      "tag": "0042_add_order_line_items_priced_at",
+      "breakpoints": true
     }
   ]
 }
