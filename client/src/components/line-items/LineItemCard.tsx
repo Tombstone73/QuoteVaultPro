@@ -98,6 +98,7 @@ export type LineItemCardProps = {
 
   // Expanded view - Artwork slot (right column, above description)
   artworkSlot?: ReactNode;
+  detailsSide?: "left" | "right";
 
   // Actions
   isDirty?: boolean;
@@ -160,6 +161,7 @@ export function LineItemCard({
   onProductionNotesChange,
   optionsSlot,
   artworkSlot,
+  detailsSide = "left",
   isDirty = false,
   isSaving = false,
   isSaved = false,
@@ -172,6 +174,102 @@ export function LineItemCard({
   const hasOverride = Boolean(priceOverride != null);
   const hasProductionNotes = Boolean(productionNotes && productionNotes.trim());
   const dragDisabled = Boolean(dragHandleProps?.disabled);
+  const detailsOnRight = detailsSide === "right";
+
+  const detailsFields = (
+    <>
+      <div className="mt-3 space-y-1.5">
+        <label className="text-sm font-medium text-muted-foreground">Description (optional)</label>
+        <textarea
+          value={description}
+          onChange={(e) => onDescriptionChange?.(e.target.value)}
+          placeholder="Add custom description for this line item..."
+          className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          disabled={readOnly}
+        />
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+          Production Notes (internal)
+          <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
+            Staff only
+          </span>
+        </label>
+        <textarea
+          value={productionNotes}
+          onChange={(e) => onProductionNotesChange?.(e.target.value)}
+          placeholder="Internal production notes (not shown to customers)..."
+          className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          disabled={readOnly}
+        />
+      </div>
+    </>
+  );
+
+  const actionsRow = (
+    <>
+      {!readOnly && (onSave || onDuplicate || onRemove) && (
+        <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
+          <div className="flex items-center gap-2">
+            {onSave && isDirty && (
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                className="h-8"
+                onClick={onSave}
+                disabled={isSaving || isCalculating}
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                    Saving…
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5 mr-1.5" />
+                    Save Item
+                  </>
+                )}
+              </Button>
+            )}
+            {onSave && !isDirty && isSaved && (
+              <div className="flex items-center gap-1.5 text-xs text-green-600">
+                <Check className="w-3.5 h-3.5" />
+                Saved
+              </div>
+            )}
+            {onDuplicate && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8"
+                onClick={onDuplicate}
+              >
+                Duplicate Item
+              </Button>
+            )}
+            {onRemove && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 text-destructive hover:text-destructive"
+                onClick={onRemove}
+              >
+                Remove Item
+              </Button>
+            )}
+          </div>
+          {isDirty && (
+            <div className="text-xs text-amber-600">Unsaved</div>
+          )}
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
@@ -420,100 +518,15 @@ export function LineItemCard({
                 {/* Options slot (passed from container) */}
                 {optionsSlot}
 
-                {/* Description field */}
-                <div className="mt-3 space-y-1.5">
-                  <label className="text-sm font-medium text-muted-foreground">Description (optional)</label>
-                  <textarea
-                    value={description}
-                    onChange={(e) => onDescriptionChange?.(e.target.value)}
-                    placeholder="Add custom description for this line item..."
-                    className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                    disabled={readOnly}
-                  />
-                </div>
-
-                {/* Production Notes field (internal only) */}
-                <div className="mt-3 space-y-1.5">
-                  <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                    Production Notes (internal)
-                    <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
-                      Staff only
-                    </span>
-                  </label>
-                  <textarea
-                    value={productionNotes}
-                    onChange={(e) => onProductionNotesChange?.(e.target.value)}
-                    placeholder="Internal production notes (not shown to customers)..."
-                    className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                    disabled={readOnly}
-                  />
-                </div>
-
-                {/* Bottom actions - Edit mode only */}
-                {!readOnly && (onSave || onDuplicate || onRemove) && (
-                  <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
-                    <div className="flex items-center gap-2">
-                      {onSave && isDirty && (
-                        <Button
-                          type="button"
-                          variant="default"
-                          size="sm"
-                          className="h-8"
-                          onClick={onSave}
-                          disabled={isSaving || isCalculating}
-                        >
-                          {isSaving ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                              Saving…
-                            </>
-                          ) : (
-                            <>
-                              <Save className="w-3.5 h-3.5 mr-1.5" />
-                              Save Item
-                            </>
-                          )}
-                        </Button>
-                      )}
-                      {onSave && !isDirty && isSaved && (
-                        <div className="flex items-center gap-1.5 text-xs text-green-600">
-                          <Check className="w-3.5 h-3.5" />
-                          Saved
-                        </div>
-                      )}
-                      {onDuplicate && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8"
-                          onClick={onDuplicate}
-                        >
-                          Duplicate Item
-                        </Button>
-                      )}
-                      {onRemove && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 text-destructive hover:text-destructive"
-                          onClick={onRemove}
-                        >
-                          Remove Item
-                        </Button>
-                      )}
-                    </div>
-                    {isDirty && (
-                      <div className="text-xs text-amber-600">Unsaved</div>
-                    )}
-                  </div>
-                )}
+                {!detailsOnRight && detailsFields}
+                {!detailsOnRight && actionsRow}
               </div>
 
               {/* Artwork panel (right on desktop, stacks below on small) */}
               <div className="min-w-0 lg:w-[360px] lg:shrink-0">
                 {artworkSlot}
+                {detailsOnRight && detailsFields}
+                {detailsOnRight && actionsRow}
               </div>
             </div>
           </div>
