@@ -144,6 +144,9 @@ export default function OrderDetail() {
 
   const [jobLabelDraft, setJobLabelDraft] = useState("");
   const [poNumberDraft, setPoNumberDraft] = useState("");
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [isSavingOrder, setIsSavingOrder] = useState(false);
+  const [pendingOrderPatch, setPendingOrderPatch] = useState<Record<string, any>>({});
 
   // Order flags (stored in order_list_notes.listLabel as comma-separated values)
   const [flags, setFlags] = useState<string[]>([]);
@@ -212,7 +215,13 @@ export default function OrderDetail() {
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
-  const order = orderRaw as OrderDetailOrder | undefined;
+  let order = orderRaw as OrderDetailOrder | undefined;
+  if (order && Object.keys(pendingOrderPatch).length > 0) {
+    order = {
+      ...order,
+      ...pendingOrderPatch,
+    } as OrderDetailOrder;
+  }
   const deleteOrder = useDeleteOrder();
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
@@ -349,7 +358,13 @@ export default function OrderDetail() {
   const requireLineItemsDone = (preferences?.orders?.requireAllLineItemsDoneToComplete
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
-  const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+  const canEnterEditMode = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+  const canEditOrder = canEnterEditMode && isEditMode;
+
+  const applyOrderPatch = async (patch: Record<string, any>) => {
+    if (!isEditMode) return;
+    setPendingOrderPatch((prev) => ({ ...prev, ...patch }));
+  };
 
   const listNoteQuery = useQuery<{ listLabel: string | null }>(
     {
@@ -411,11 +426,11 @@ export default function OrderDetail() {
     if (!isFulfillmentMethod(value)) return;
     if (value === "pickup") {
       setShippingDraft("");
-      void updateOrder.mutateAsync({ shippingMethod: value, shippingCents: 0 });
+      void applyOrderPatch({ shippingMethod: value, shippingCents: 0 });
       return;
     }
 
-    void updateOrder.mutateAsync({ shippingMethod: value });
+    void applyOrderPatch({ shippingMethod: value });
   };
 
   const handleAddNewShipToAddress = () => {
@@ -676,7 +691,7 @@ export default function OrderDetail() {
 
   const handlePriorityChange = async (newPriority: string) => {
     try {
-      await updateOrder.mutateAsync({ priority: newPriority });
+      await applyOrderPatch({ priority: newPriority });
     } catch (error) {
       // Error toast handled by mutation
     }
@@ -691,7 +706,7 @@ export default function OrderDetail() {
     try {
       // Convert string to Date or null
       const dateValue = tempDueDate ? new Date(tempDueDate) : null;
-      await updateOrder.mutateAsync({ dueDate: dateValue });
+      await applyOrderPatch({ dueDate: dateValue });
       setEditingDueDate(false);
     } catch (error) {
       // Error toast handled by mutation
@@ -712,7 +727,7 @@ export default function OrderDetail() {
     try {
       // Convert string to Date or null
       const dateValue = tempPromisedDate ? new Date(tempPromisedDate) : null;
-      await updateOrder.mutateAsync({ promisedDate: dateValue });
+      await applyOrderPatch({ promisedDate: dateValue });
       setEditingPromisedDate(false);
     } catch (error) {
       // Error toast handled by mutation
@@ -749,16 +764,21 @@ export default function OrderDetail() {
   };
 
   useEffect(() => {
-    setJobLabelDraft(order?.label ?? "");
-  }, [order?.label]);
+    if (isEditMode) return;
+    const persistedOrder = orderRaw as OrderDetailOrder | undefined;
+    setJobLabelDraft(persistedOrder?.label ?? "");
+  }, [isEditMode, orderRaw]);
 
   useEffect(() => {
-    setPoNumberDraft(order?.poNumber ?? "");
-  }, [order?.poNumber]);
+    if (isEditMode) return;
+    const persistedOrder = orderRaw as OrderDetailOrder | undefined;
+    setPoNumberDraft(persistedOrder?.poNumber ?? "");
+  }, [isEditMode, orderRaw]);
 
   useEffect(() => {
+    if (isEditMode) return;
     setFlags(parseFlagsFromLabel(listNoteQuery.data?.listLabel ?? null));
-  }, [listNoteQuery.data?.listLabel]);
+  }, [isEditMode, listNoteQuery.data?.listLabel]);
 
   const commitFlagInput = (raw: string) => {
     const parts = raw
@@ -780,6 +800,7 @@ export default function OrderDetail() {
       setFlags(next);
       setFlagInput("");
 
+      if (!isEditMode) return;
       try {
         await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
@@ -798,6 +819,7 @@ export default function OrderDetail() {
       void (async () => {
         const next = flags.slice(0, -1);
         setFlags(next);
+        if (!isEditMode) return;
         try {
           await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
         } catch {
@@ -811,6 +833,7 @@ export default function OrderDetail() {
     void (async () => {
       const next = flags.filter((f) => f !== flag);
       setFlags(next);
+      if (!isEditMode) return;
       try {
         await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
@@ -820,30 +843,41 @@ export default function OrderDetail() {
   };
 
   const commitJobLabel = async () => {
-    if (!orderId) return;
-    try {
-      await updateOrder.mutateAsync({ label: normalizeNullableString(jobLabelDraft) });
-    } catch {
-      setJobLabelDraft(order?.label ?? "");
-    }
+    if (!orderId || !isEditMode) return;
+    await applyOrderPatch({ label: normalizeNullableString(jobLabelDraft) });
   };
 
   const commitPoNumber = async () => {
-    if (!orderId) return;
-    try {
-      await updateOrder.mutateAsync({ poNumber: normalizeNullableString(poNumberDraft) });
-    } catch {
-      setPoNumberDraft(order?.poNumber ?? "");
-    }
+    if (!orderId || !isEditMode) return;
+    await applyOrderPatch({ poNumber: normalizeNullableString(poNumberDraft) });
   };
 
   const handleSaveOrder = async () => {
     if (!orderId || !order) return;
     try {
+      const persistedOrder = orderRaw as OrderDetailOrder | undefined;
+      const nextPatch: Record<string, any> = { ...pendingOrderPatch };
+      const normalizedLabel = normalizeNullableString(jobLabelDraft);
+      const normalizedPoNumber = normalizeNullableString(poNumberDraft);
+
+      if ((persistedOrder?.label ?? null) !== normalizedLabel) {
+        nextPatch.label = normalizedLabel;
+      }
+      if ((persistedOrder?.poNumber ?? null) !== normalizedPoNumber) {
+        nextPatch.poNumber = normalizedPoNumber;
+      }
+
+      if (Object.keys(nextPatch).length === 0) {
+        setIsEditMode(false);
+        return;
+      }
+
+      setIsSavingOrder(true);
       await updateOrder.mutateAsync({
-        label: normalizeNullableString(jobLabelDraft),
-        poNumber: normalizeNullableString(poNumberDraft),
+        ...nextPatch,
       });
+      setPendingOrderPatch({});
+      setIsEditMode(false);
       await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
       toast({ title: "Order saved" });
     } catch (error: any) {
@@ -852,6 +886,22 @@ export default function OrderDetail() {
         description: error?.message || "Failed to save order",
         variant: "destructive",
       });
+    } finally {
+      setIsSavingOrder(false);
+    }
+  };
+
+  const handleCancelOrderEdits = async () => {
+    setPendingOrderPatch({});
+    setJobLabelDraft((orderRaw as OrderDetailOrder | undefined)?.label ?? "");
+    setPoNumberDraft((orderRaw as OrderDetailOrder | undefined)?.poNumber ?? "");
+    setEditingDueDate(false);
+    setEditingPromisedDate(false);
+    exitAllEditModes();
+    setIsEditMode(false);
+    if (orderId) {
+      await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
     }
   };
 
@@ -876,7 +926,7 @@ export default function OrderDetail() {
 
   const saveShipTo = async (payload: ShipToUpdatePayload) => {
     try {
-      await updateOrder.mutateAsync(payload);
+      await applyOrderPatch(payload);
     } catch (error) {
       // Error toast handled by mutation
     }
@@ -922,7 +972,7 @@ export default function OrderDetail() {
     const total = subtotal - discount + tax + shipping;
     
     // Update order totals
-    await updateOrder.mutateAsync({
+    await applyOrderPatch({
       subtotal: subtotal.toFixed(2),
       total: total.toFixed(2),
     });
@@ -1248,16 +1298,38 @@ export default function OrderDetail() {
           </div>
 
           <div className="flex items-center gap-3">
-            {canEditOrder && (
+            {canEnterEditMode && !isEditMode && (
               <Button
-                variant="default"
+                variant="outline"
                 size="sm"
-                onClick={() => void handleSaveOrder()}
-                disabled={updateOrder.isPending}
+                onClick={() => setIsEditMode(true)}
                 className="rounded-titan-md"
               >
-                {updateOrder.isPending ? "Saving..." : "Save Order"}
+                Edit Order
               </Button>
+            )}
+
+            {canEnterEditMode && isEditMode && (
+              <>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => void handleSaveOrder()}
+                  disabled={updateOrder.isPending || isSavingOrder}
+                  className="rounded-titan-md"
+                >
+                  {updateOrder.isPending || isSavingOrder ? "Saving..." : "Save Order"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleCancelOrderEdits()}
+                  disabled={updateOrder.isPending || isSavingOrder}
+                  className="rounded-titan-md"
+                >
+                  Cancel
+                </Button>
+              </>
             )}
 
             {/* Mark Completed Button */}
@@ -1903,7 +1975,7 @@ export default function OrderDetail() {
               <OrderLineItemsSection
                 orderId={orderId!}
                 customerId={order.customerId}
-                readOnly={!(isAdminOrOwner && canEditLineItems)}
+                readOnly={!(isAdminOrOwner && canEditLineItems && isEditMode)}
                 lineItems={order.lineItems as any}
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
@@ -2215,7 +2287,7 @@ export default function OrderDetail() {
                         onBlur={(e) => {
                           const nextValue = normalizeNullableString(e.target.value);
                           if ((order.shippingInstructions ?? null) === nextValue) return;
-                          void updateOrder.mutateAsync({ shippingInstructions: nextValue });
+                          void applyOrderPatch({ shippingInstructions: nextValue });
                         }}
                       />
                     </div>
@@ -2495,14 +2567,14 @@ export default function OrderDetail() {
                                 const val = e.target.value.trim();
                                 if (val === "" || val === "$") {
                                   setShippingDraft("");
-                                  void updateOrder.mutateAsync({ shippingCents: 0 });
+                                  void applyOrderPatch({ shippingCents: 0 });
                                 } else {
                                   const cleaned = val.replace(/[$,]/g, "");
                                   const dollars = Number.parseFloat(cleaned);
                                   if (Number.isFinite(dollars) && dollars >= 0) {
                                     const cents = Math.round(dollars * 100);
                                     setShippingDraft(dollars > 0 ? dollars.toFixed(2) : "");
-                                    void updateOrder.mutateAsync({ shippingCents: cents });
+                                    void applyOrderPatch({ shippingCents: cents });
                                   } else {
                                     const cents = (order as any)?.shippingCents;
                                     setShippingDraft(typeof cents === "number" && cents > 0 ? (cents / 100).toFixed(2) : "");
