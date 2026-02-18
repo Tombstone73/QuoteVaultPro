@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tantml:react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -285,7 +285,7 @@ function LineItemArtworkStrip({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      {attachments.map((attachment) => {
+      {attachments.map((attachment: AttachmentForPreview) => {
         const thumbUrl = getThumbSrc(attachment);
         const FileIcon = getFileIcon(attachment.mimeType);
         const hasPreviewUrl = isViewableUrl(attachment.previewUrl);

@@ -42,16 +42,12 @@ import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel"
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import { useToast } from "@/hooks/use-toast";
-import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem, useUpdateOrderLineItemStatus } from "@/hooks/useOrders";
+import { useCreateOrderLineItem, useDeleteOrderLineItem, useUpdateOrderLineItem } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
 import { useScheduleOrderLineItemsForProduction } from "@/hooks/useProduction";
 
-import LineItemRowEnterprise, { type LineItemEnterpriseRowModel } from "@/components/line-items/LineItemRowEnterprise";
-import { buildLineItemFlags } from "@/lib/lineItems/lineItemDerivation";
-import { formatLineItemOptionSummary } from "@shared/lineItemOptionSummary";
-import type { PBV2Outputs } from "@/lib/pbv2/pbv2Outputs";
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
 
@@ -168,39 +164,6 @@ function extractOptionChips(
 function getPbv2SnapshotFromLineItem(lineItem: any): any | null {
   if (!lineItem || typeof lineItem !== "object") return null;
   return (lineItem as any).pbv2SnapshotJson ?? (lineItem as any).pbv2_snapshot_json ?? null;
-}
-
-function getAcceptedComponentsFromLineItem(item: any): any[] {
-  if (!item || typeof item !== "object") return [];
-  const comps = (item as any).components;
-  return Array.isArray(comps) ? comps : [];
-}
-
-function mapPbv2SnapshotToOutputs(snapshot: any): PBV2Outputs | undefined {
-  if (!snapshot || typeof snapshot !== "object") return undefined;
-
-  const pricing = (snapshot as any).pricing;
-  const materials = (snapshot as any).materials;
-  const childItems = (snapshot as any).childItems;
-
-  const hasAny = Boolean(pricing || materials || childItems);
-  if (!hasAny) return undefined;
-
-  return {
-    pricingAddons:
-      pricing && typeof pricing === "object"
-        ? {
-            addOnCents: Number((pricing as any).addOnCents) || 0,
-            breakdown: Array.isArray((pricing as any).breakdown) ? (pricing as any).breakdown : [],
-          }
-        : null,
-    materialEffects: {
-      materials: Array.isArray(materials) ? materials : [],
-    },
-    childItemProposals: {
-      childItems: Array.isArray(childItems) ? childItems : [],
-    },
-  };
 }
 
 function formatMoney(n: number): string {
@@ -424,7 +387,6 @@ export function OrderLineItemsSection({
 
   const updateLineItem = useUpdateOrderLineItem(orderId);
   const updateLineItemSilent = useUpdateOrderLineItem(orderId, { toast: false });
-  const updateLineItemStatus = useUpdateOrderLineItemStatus(orderId);
   const createLineItem = useCreateOrderLineItem(orderId);
   const deleteLineItem = useDeleteOrderLineItem(orderId);
 
@@ -602,33 +564,7 @@ export function OrderLineItemsSection({
     setPendingJumpToLineItemId(null);
   }, [expandedId, pendingJumpToLineItemId]);
 
-  const notesEditorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
-  const [pendingNotesFocusId, setPendingNotesFocusId] = useState<string | null>(null);
   const [notesDraftById, setNotesDraftById] = useState<Record<string, string>>({});
-  const [savingNotesId, setSavingNotesId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!pendingNotesFocusId) return;
-    if (expandedId !== pendingNotesFocusId) return;
-
-    const el = notesEditorRefs.current[pendingNotesFocusId];
-    if (el) {
-      try {
-        el.scrollIntoView({ block: "center" });
-      } catch {
-        // ignore
-      }
-      requestAnimationFrame(() => {
-        try {
-          el.focus();
-        } catch {
-          // ignore
-        }
-      });
-    }
-
-    setPendingNotesFocusId(null);
-  }, [expandedId, pendingNotesFocusId]);
 
   const expandedItem = useMemo(
     () => lineItems.find((li) => li.id === expandedId) ?? null,
@@ -673,6 +609,7 @@ export function OrderLineItemsSection({
         height: number;
         quantity: number;
         notes: string;
+        productionNotes: string;
         optionSelections: Record<string, OptionSelection>;
         totalPrice: number;
       }
@@ -740,6 +677,11 @@ export function OrderLineItemsSection({
       "";
     setNotes(nextNotes);
 
+    const nextProductionNotes =
+      (((expandedItem.specsJson as any)?.lineItemNotes as any)?.descLong as string | undefined) ||
+      "";
+    setNotesDraftById((prev) => ({ ...prev, [itemId]: nextProductionNotes }));
+
     const selections: Record<string, OptionSelection> = {};
     const savedSelectedOptions = (expandedItem.specsJson as any)?.selectedOptions;
     if (Array.isArray(savedSelectedOptions)) {
@@ -780,6 +722,7 @@ export function OrderLineItemsSection({
       height: Number.parseFloat(expandedItem.height || "1") || 1,
       quantity: expandedItem.quantity || 1,
       notes: nextNotes,
+      productionNotes: nextProductionNotes,
       optionSelections: selections,
       totalPrice: currentTotal,
     };
@@ -796,6 +739,8 @@ export function OrderLineItemsSection({
 
     const currentNotes = notes || "";
     const savedNotes = saved.notes || "";
+    const currentProductionNotes = expandedItem ? notesDraftById[expandedItem.id] ?? "" : "";
+    const savedProductionNotes = saved.productionNotes || "";
     const currentOptions = JSON.stringify(optionSelections || {});
     const savedOptions = JSON.stringify(saved.optionSelections || {});
 
@@ -804,9 +749,10 @@ export function OrderLineItemsSection({
       Math.abs(heightNum - saved.height) > 0.01 ||
       qtyNum !== saved.quantity ||
       currentNotes !== savedNotes ||
+      currentProductionNotes !== savedProductionNotes ||
       currentOptions !== savedOptions
     );
-  }, [expandedItem, widthNum, heightNum, qtyNum, notes, optionSelections]);
+  }, [expandedItem, widthNum, heightNum, qtyNum, notes, notesDraftById, optionSelections]);
 
   // Debounced price calculation for expanded item
   useDebouncedEffect(
@@ -900,11 +846,16 @@ export function OrderLineItemsSection({
     try {
       const totalPrice = Number.isFinite(computedTotal) ? (computedTotal as number) : Number.parseFloat(expandedItem.totalPrice || "0") || 0;
       const unitPrice = qtyNum > 0 ? totalPrice / qtyNum : 0;
+      const productionNotesDraft = notesDraftById[itemId] ?? "";
 
       const selectedOptionsArray = buildSelectedOptionsArray(expandedProductOptions, optionSelections, widthNum, heightNum, qtyNum);
       const nextSpecsJson = {
         ...(expandedItem.specsJson || {}),
         notes: notes || "",
+        lineItemNotes: {
+          ...(((expandedItem.specsJson as any)?.lineItemNotes as any) || {}),
+          descLong: productionNotesDraft,
+        },
         selectedOptions: selectedOptionsArray,
       };
 
@@ -939,6 +890,7 @@ export function OrderLineItemsSection({
         height: heightNum,
         quantity: qtyNum,
         notes: notes || "",
+        productionNotes: productionNotesDraft,
         optionSelections,
         totalPrice,
       };
@@ -1115,8 +1067,6 @@ export function OrderLineItemsSection({
                   const { chips: optionChips, overflowCount } = extractOptionChips(selectedOptionsForChips, 3);
 
                   const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
-                  const subtitleText = persistedDescription;
-                  const optionsSummaryText = formatLineItemOptionSummary(item);
 
                   const total = Number.parseFloat(item.totalPrice || "0") || 0;
                   const parsedUnit = Number.parseFloat(item.unitPrice || "");
@@ -1131,7 +1081,6 @@ export function OrderLineItemsSection({
                     | undefined;
 
                   const persistedProductionNotes = typeof itemNotes?.descLong === "string" ? itemNotes.descLong : "";
-                  const persistedNotesText = persistedProductionNotes;
                   const hasProductionNotes = Boolean(persistedProductionNotes && persistedProductionNotes.trim());
 
                   const persistedOverride = Boolean(
@@ -1143,20 +1092,10 @@ export function OrderLineItemsSection({
                   const isOverride = overrideById[String(item.id)] ?? persistedOverride;
 
                   const statusValue = item.status || "queued";
-                  const statusLabel = statusValue.charAt(0).toUpperCase() + statusValue.slice(1);
-                  const statusTone: LineItemEnterpriseRowModel["statusTone"] =
-                    statusValue === "done"
-                      ? "green"
-                      : statusValue === "finishing"
-                        ? "purple"
-                        : statusValue === "printing"
-                          ? "blue"
-                          : "neutral";
 
                   const attachmentsForThumb = (allOrderFiles as any[]).filter((f) => f?.orderLineItemId === item.id) as OrderFileWithUser[];
                   const lineItemAttachmentsAssociationKnown =
                     orderFilesAssociationKnown &&
-```
                     ((allOrderFiles as any[]).length === 0 ||
                       (allOrderFiles as any[]).some((f) => Object.prototype.hasOwnProperty.call(f ?? {}, "orderLineItemId")));
 
@@ -1173,22 +1112,6 @@ export function OrderLineItemsSection({
                     products.find((p) => p.id === item.productId) ?? ((item as any).product as Product | undefined) ?? null;
                   const productArtworkPolicy = (productForPolicy as any)?.artworkPolicy ?? null;
 
-                  const derivedFlags = buildLineItemFlags(item, {
-                    notesText: persistedNotesText,
-                    productArtworkPolicy,
-                    artwork: {
-                      lineItemAttachments: {
-                        associationKnown: lineItemAttachmentsAssociationKnown,
-                        count: attachmentsForThumb.length,
-                        items: attachmentsForThumb as any,
-                      },
-                      lineItemAssets: {
-                        associationKnown: lineItemAssetsKnownForItem,
-                        count: assetCountForItem,
-                      },
-                    },
-                  });
-
                   const previewThumbUrls = Array.isArray(previewForLineItem?.thumbUrls) ? previewForLineItem!.thumbUrls! : [];
                   const heroThumbUrls = Array.from(
                     new Set(
@@ -1202,22 +1125,6 @@ export function OrderLineItemsSection({
                   const heroOverflowCount = Math.max(0, heroTotalCount - 1);
 
                   const reorderDisabled = readOnly;
-
-                  const enterpriseItem: LineItemEnterpriseRowModel = {
-                    id: String(item.id),
-                    title: productName,
-                    subtitle: subtitleText,
-                    optionsSummaryText,
-                    flags: derivedFlags,
-                    notes: persistedNotesText,
-                    alertText: null,
-                    statusLabel,
-                    statusTone,
-                    qty: typeof item.quantity === "number" ? item.quantity : null,
-                    unitPrice: perEa,
-                    isOverride,
-                    total,
-                  };
 
                   const thumbnailNode = heroThumbUrls.length ? (
                     <button
@@ -1283,917 +1190,303 @@ export function OrderLineItemsSection({
                               </div>
                             )}
                             <div className="flex-1 min-w-0">
-                          <div
-                            role="button"
-                            tabIndex={0}
-                            className={cn(
-                              "min-w-0 text-left p-0 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-md",
-                              isExpanded && "ring-1 ring-ring/20"
-                            )}
-                            onClick={() => {
-                              setExpandedId(isExpanded ? null : itemKey);
-                            }}
-                            onKeyDown={(e) => {
-                              const target = e.target as HTMLElement | null;
-                              if (target?.closest?.('[data-li-interactive="true"]')) return;
-                              const tag = (target?.tagName || "").toUpperCase();
-                              if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
-
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                setExpandedId(isExpanded ? null : itemKey);
-                              }
-                            }}
-                            aria-expanded={isExpanded}
-                            aria-controls={contentId}
-                            aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
-                          >
-                            <LineItemRowEnterprise
-                              item={enterpriseItem}
-                              pbv2Outputs={mapPbv2SnapshotToOutputs(getPbv2SnapshotFromLineItem(item as any))}
-                              pbv2AcceptedComponents={getAcceptedComponentsFromLineItem(item as any)}
-                              pbv2IsStale={(() => {
-                                const snapshot = getPbv2SnapshotFromLineItem(item as any);
-                                if (!snapshot) return false;
-                                const snapshotSig = pbv2SnapshotSignatureByLineItemId[String(item.id)];
-                                const currentSig = pbv2CurrentSignatureByLineItemId[String(item.id)];
-                                if (!snapshotSig || !currentSig) return false;
-                                const isStale = snapshotSig !== currentSig;
-                                if (!isStale) return false;
-                                return pbv2KeepAckByLineItemId[String(item.id)] !== currentSig;
-                              })()}
-                              onRecomputePbv2={
-                                readOnly
-                                  ? undefined
-                                  : async (lineItemId) => {
-                                      const liAny = item as any;
-                                      const snapshot = getPbv2SnapshotFromLineItem(liAny);
-                                      if (!snapshot || typeof snapshot !== "object") {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Cannot recompute PBV2",
-                                          description: "Missing PBV2 snapshot inputs.",
-                                        });
-                                        return;
+                              <LineItemCard
+                                id={String(item.id)}
+                                itemKey={itemKey}
+                                contentId={contentId}
+                                isExpanded={isExpanded}
+                                onToggleExpand={() => setExpandedId(isExpanded ? null : itemKey)}
+                                title={productName}
+                                sizeLabel={`${item.width || "0"}" × ${item.height || "0"}"`}
+                                qtyLabel={`Qty ${item.quantity || 0}`}
+                                unitPriceLabel={`${formatMoney(perEa)}/ea`}
+                                totalLabel={formatMoney(total)}
+                                badges={{
+                                  queued: statusValue === "queued",
+                                  override: isOverride,
+                                  internal: hasProductionNotes,
+                                }}
+                                descriptionPreview={persistedDescription || undefined}
+                                optionChips={optionChips.map((chip, index) => ({
+                                  text: chip,
+                                  key: `${itemKey}-chip-${index}`,
+                                }))}
+                                overflowCount={overflowCount}
+                                thumbnail={thumbnailNode}
+                                dragHandleProps={{
+                                  attributes: dragAttributes,
+                                  listeners: dragListeners,
+                                  disabled: reorderDisabled,
+                                }}
+                                showDragHandle={!readOnly}
+                                width={widthText}
+                                height={heightText}
+                                quantity={qty}
+                                onWidthChange={setWidthText}
+                                onHeightChange={setHeightText}
+                                onQuantityChange={setQty}
+                                onQuantityIncrement={() => setQty((q) => (q || 1) + 1)}
+                                onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
+                                dimsRequired={dimsRequired}
+                                price={
+                                  isExpanded && expandedItem && expandedItem.id === item.id && Number.isFinite(computedTotal)
+                                    ? (computedTotal as number)
+                                    : total
+                                }
+                                priceOverride={isOverride ? total : null}
+                                isCalculating={isCalculating}
+                                calcError={calcError}
+                                description={isExpanded && expandedItem && expandedItem.id === item.id ? notes : persistedDescription}
+                                productionNotes={notesDraftById[String(item.id)] ?? persistedProductionNotes}
+                                onDescriptionChange={
+                                  isExpanded && expandedItem && expandedItem.id === item.id ? setNotes : undefined
+                                }
+                                onProductionNotesChange={
+                                  isExpanded && expandedItem && expandedItem.id === item.id
+                                    ? (value) => {
+                                        const lineItemId = String(item.id);
+                                        setNotesDraftById((prev) => ({ ...prev, [lineItemId]: value }));
                                       }
+                                    : undefined
+                                }
+                                optionsSlot={
+                                  <>
+                                    {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
+                                      <div className="mb-3">
+                                        {import.meta.env.DEV && (
+                                          <div className="text-xs text-muted-foreground mb-2 font-mono bg-muted/30 p-2 rounded">
+                                            PBV2: snapshot={String(Boolean(pbv2SnapshotJson))}, visibleNodes={pbv2SnapshotJson?.visibleNodeIds?.length || 0}
+                                          </div>
+                                        )}
 
-                                      const explicitSelections =
-                                        (snapshot as any).explicitSelections && typeof (snapshot as any).explicitSelections === "object"
-                                          ? (snapshot as any).explicitSelections
-                                          : {};
-                                      const envSnapshot =
-                                        (snapshot as any).env && typeof (snapshot as any).env === "object" ? (snapshot as any).env : {};
-                                      const computedEnv = buildComputedPbv2Env(liAny);
-                                      const envExtras = pickPbv2EnvExtras(envSnapshot);
-                                      const pbv2Env = { ...computedEnv, ...envExtras };
+                                        <ProductOptionsPanelV2
+                                          tree={pbv2SnapshotJson.treeJson}
+                                          selections={optionSelectionsV2}
+                                          onSelectionsChange={setOptionSelectionsV2}
+                                          onValidityChange={setOptionsV2Valid}
+                                        />
+                                      </div>
+                                    )}
 
-                                      try {
-                                        await recomputePbv2.mutateAsync({
-                                          lineItemId,
-                                          body: {
-                                            pbv2ExplicitSelections: explicitSelections,
-                                            pbv2Env,
-                                          },
-                                        });
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "PBV2 recompute failed",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              onKeepExistingPbv2={
-                                readOnly
-                                  ? undefined
-                                  : async (lineItemId) => {
-                                      const currentSig = pbv2CurrentSignatureByLineItemId[String(item.id)];
-                                      if (!currentSig) return;
+                                    {!pbv2SnapshotJson?.treeJson && expandedProductOptions.length > 0 && (
+                                      <div className="mb-3">
+                                        <ProductOptionsPanel
+                                          product={expandedProduct}
+                                          productOptions={expandedProductOptions}
+                                          optionSelections={optionSelections as any}
+                                          onOptionSelectionsChange={setOptionSelections as any}
+                                        />
+                                      </div>
+                                    )}
+                                  </>
+                                }
+                                artworkSlot={
+                                  <>
+                                    <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                      <div className="flex items-center justify-between mb-2">
+                                        <div className="text-sm font-medium">Artwork</div>
+                                      </div>
+                                      <LineItemAttachmentsPanel
+                                        quoteId={null}
+                                        parentType="order"
+                                        orderId={orderId}
+                                        lineItemId={item.id}
+                                        productName={productName}
+                                        defaultExpanded={readOnly ? true : false}
+                                      />
+                                    </div>
 
-                                      try {
-                                        await keepExistingPbv2.mutateAsync(lineItemId);
-                                        setPbv2KeepAckByLineItemId((prev) => ({ ...prev, [String(lineItemId)]: currentSig }));
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Could not keep existing PBV2",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              onApplyPbv2Updates={
-                                readOnly
-                                  ? undefined
-                                  : async (lineItemId) => {
-                                      await applyPbv2Updates.mutateAsync(lineItemId);
-                                    }
-                              }
-                              onAcceptPbv2Components={
-                                readOnly
-                                  ? undefined
-                                  : async (lineItemId) => {
-                                      try {
-                                        await acceptPbv2Components.mutateAsync(lineItemId);
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Could not accept PBV2 components",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              onVoidPbv2Component={
-                                readOnly
-                                  ? undefined
-                                  : async (componentId) => {
-                                      try {
-                                        await voidComponent.mutateAsync(componentId);
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Could not void component",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              variant="tray"
-                              thumbnail={thumbnailNode}
-                              dragHandleProps={{
-                                attributes: dragAttributes,
-                                listeners: dragListeners,
-                                disabled: reorderDisabled,
-                              }}
-                              onDescriptionCommit={
-                                readOnly
-                                  ? undefined
-                                  : async (_id, nextDescription) => {
-                                      try {
-                                        await updateLineItemSilent.mutateAsync({
-                                          id: String(item.id),
-                                          data: {
-                                            description: nextDescription,
-                                          },
-                                        });
+                                    {(() => {
+                                      const policy =
+                                        productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
+                                          ? productArtworkPolicy
+                                          : null;
 
-                                        await queryClient.invalidateQueries({
-                                          queryKey: ["/api/orders", orderId],
-                                        });
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Could not update description",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              onNotesClick={(lineItemId) => {
-                                setExpandedId(lineItemId);
-                                setPendingNotesFocusId(lineItemId);
-                              }}
-                              onQtyChange={
-                                readOnly
-                                  ? undefined
-                                  : async (_id, nextQty) => {
-                                      const lineItemId = String(item.id);
-                                      const nextQtyInt = Number.isFinite(nextQty)
-                                        ? Math.max(1, Math.trunc(nextQty))
-                                        : 1;
+                                      const suppressedEntry =
+                                        itemSpecsJson?.flags?.suppressed && typeof itemSpecsJson.flags.suppressed === "object"
+                                          ? (itemSpecsJson.flags.suppressed as any)?.missing_artwork
+                                          : null;
+                                      const suppressedReason =
+                                        typeof suppressedEntry?.reason === "string" ? suppressedEntry.reason.trim() : "";
+                                      const suppressedAt = typeof suppressedEntry?.at === "string" ? suppressedEntry.at.trim() : "";
+                                      const isSuppressed = Boolean(suppressedReason && suppressedAt);
 
-                                      if ((item.quantity || 0) === nextQtyInt) return;
+                                      if (policy !== "required" && !isSuppressed) return null;
 
-                                      // If override is active, keep the overridden total and recompute unit price.
-                                      if (isOverride) {
-                                        const nextSpecsJson = {
-                                          ...(itemSpecsJson || {}),
-                                          priceOverride: {
-                                            mode: "total",
-                                            value: total,
-                                          },
-                                        } as any;
+                                      const canDerive = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
+                                      const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
+                                      const isMissingActive = policy === "required" && canDerive && !hasAnyArtwork && !isSuppressed;
 
-                                        const nextUnit = nextQtyInt > 0 ? total / nextQtyInt : 0;
-
-                                        try {
-                                          await updateLineItemSilent.mutateAsync({
-                                            id: lineItemId,
-                                            data: {
-                                              quantity: nextQtyInt,
-                                              unitPrice: nextUnit.toFixed(2),
-                                              totalPrice: total.toFixed(2),
-                                              specsJson: nextSpecsJson,
-                                            },
-                                          });
-                                        } catch (e) {
+                                      const suppress = async () => {
+                                        if (readOnly) return;
+                                        const reason = missingArtworkSuppressReason.trim();
+                                        if (!reason) {
                                           toast({
+                                            title: "Reason required",
+                                            description: "A reason is required to suppress this flag.",
                                             variant: "destructive",
-                                            title: "Could not update quantity",
-                                            description: "Please try again.",
-                                          });
-                                          throw e;
-                                        }
-
-                                        return;
-                                      }
-
-                                      // Otherwise recompute pricing server-side and persist qty/unit/total.
-                                      const productForCalc = products.find((p) => p.id === item.productId) ?? null;
-                                      const dimsRequiredForCalc = requiresDimensions(productForCalc);
-
-                                      const widthForCalc = dimsRequiredForCalc ? Number.parseFloat(item.width || "") || 0 : 1;
-                                      const heightForCalc = dimsRequiredForCalc ? Number.parseFloat(item.height || "") || 0 : 1;
-
-                                      // Detect if this is a PBV2 product to send correct payload format
-                                      const isPbv2 = isPbv2Product(productForCalc);
-                                      
-                                      // Build PBV2 selections if needed
-                                      let pbv2Selections: any = null;
-                                      if (isPbv2) {
-                                        const rawPbv2Selections = (item as any)?.optionSelectionsJson;
-                                        pbv2Selections = rawPbv2Selections && typeof rawPbv2Selections === "object"
-                                          ? rawPbv2Selections
-                                          : { schemaVersion: 2, selected: {} };
-                                      }
-
-                                      // Build legacy selections only for non-PBV2 products
-                                      const selections: Record<string, OptionSelection> = {};
-                                      if (!isPbv2) {
-                                        const savedSelectedOptions = (itemSpecsJson as any)?.selectedOptions;
-                                        if (Array.isArray(savedSelectedOptions)) {
-                                          savedSelectedOptions.forEach((opt: any) => {
-                                            if (!opt?.optionId) return;
-                                            selections[opt.optionId] = {
-                                              value: opt.value,
-                                              grommetsLocation: opt.grommetsLocation,
-                                              grommetsSpacingCount: opt.grommetsSpacingCount,
-                                              grommetsPerSign: opt.grommetsPerSign,
-                                              grommetsSpacingInches: opt.grommetsSpacingInches,
-                                              customPlacementNote: opt.customPlacementNote,
-                                              hemsType: opt.hemsType,
-                                              polePocket: opt.polePocket,
-                                            };
-                                          });
-                                        }
-                                      }
-
-                                      try {
-                                        // If we can't compute (missing dims), still persist qty and leave pricing unchanged.
-                                        if (
-                                          dimsRequiredForCalc &&
-                                          (!Number.isFinite(widthForCalc) ||
-                                            widthForCalc <= 0 ||
-                                            !Number.isFinite(heightForCalc) ||
-                                            heightForCalc <= 0)
-                                        ) {
-                                          await updateLineItemSilent.mutateAsync({
-                                            id: lineItemId,
-                                            data: {
-                                              quantity: nextQtyInt,
-                                            },
                                           });
                                           return;
                                         }
 
-                                        // Build payload with correct options format
-                                        const calcPayload: any = {
-                                          productId: item.productId,
-                                          variantId: item.productVariantId || undefined,
-                                          width: widthForCalc,
-                                          height: heightForCalc,
-                                          quantity: nextQtyInt,
-                                          customerId,
-                                          debugSource: "OrderLineItemsSection.qtyChange",
-                                        };
-                                        
-                                        // Add options in correct format (PBV2 vs legacy)
-                                        if (isPbv2) {
-                                          calcPayload.optionSelectionsJson = pbv2Selections;
-                                        } else {
-                                          calcPayload.selectedOptions = selections;
-                                        }
-                                        
-                                        const calcResponse = await apiRequest("POST", "/api/quotes/calculate", calcPayload);
-
-                                        const calcData = await calcResponse.json();
-                                        const nextTotal = Number(calcData?.price);
-                                        if (!Number.isFinite(nextTotal)) {
-                                          throw new Error("Invalid price returned");
-                                        }
-
-                                        const nextUnit = nextQtyInt > 0 ? nextTotal / nextQtyInt : 0;
-
-                                        await updateLineItemSilent.mutateAsync({
-                                          id: lineItemId,
-                                          data: {
-                                            quantity: nextQtyInt,
-                                            unitPrice: nextUnit.toFixed(2),
-                                            totalPrice: nextTotal.toFixed(2),
+                                        const nextSpecsJson = {
+                                          ...(itemSpecsJson || {}),
+                                          flags: {
+                                            ...((itemSpecsJson?.flags as any) || {}),
+                                            suppressed: {
+                                              ...(((itemSpecsJson?.flags as any)?.suppressed as any) || {}),
+                                              missing_artwork: {
+                                                reason,
+                                                at: new Date().toISOString(),
+                                              },
+                                            },
                                           },
-                                        });
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Could not update quantity",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              onOverrideChange={
-                                readOnly
-                                  ? undefined
-                                  : (_id, nextChecked) => {
-                                      const lineItemId = String(item.id);
-
-                                      setOverrideById((prev) => ({ ...prev, [lineItemId]: nextChecked }));
-
-                                      const nextSpecsJson = { ...(itemSpecsJson || {}) } as any;
-                                      if (nextChecked) {
-                                        nextSpecsJson.priceOverride = {
-                                          mode: "total",
-                                          value: total,
                                         };
-                                      } else {
-                                        delete nextSpecsJson.priceOverride;
-                                      }
 
-                                      void updateLineItemSilent
-                                        .mutateAsync({
-                                          id: lineItemId,
-                                          data: {
-                                            specsJson: nextSpecsJson,
-                                          },
-                                        })
-                                        .then(() => {
-                                          setOverrideById((prev) => {
-                                            const { [lineItemId]: _omit, ...rest } = prev;
-                                            return rest;
+                                        setSavingFlagLineItemId(String(item.id));
+                                        try {
+                                          await updateLineItemSilent.mutateAsync({
+                                            id: String(item.id),
+                                            data: { specsJson: nextSpecsJson },
                                           });
-                                        })
-                                        .catch(() => {
-                                          setOverrideById((prev) => ({ ...prev, [lineItemId]: persistedOverride }));
-                                        });
-                                    }
-                              }
-                              onOverrideTotalCommit={
-                                readOnly
-                                  ? undefined
-                                  : async (_id, nextTotal) => {
-                                      const lineItemId = String(item.id);
-                                      const qty = item.quantity > 0 ? item.quantity : 1;
-                                      const unitPrice = qty > 0 ? nextTotal / qty : 0;
-
-                                      const nextSpecsJson = {
-                                        ...(itemSpecsJson || {}),
-                                        priceOverride: {
-                                          mode: "total",
-                                          value: nextTotal,
-                                        },
+                                          setMissingArtworkSuppressReason("");
+                                          await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+                                        } catch (err: any) {
+                                          toast({
+                                            title: "Failed to suppress flag",
+                                            description: err?.message || "Please try again.",
+                                            variant: "destructive",
+                                          });
+                                        } finally {
+                                          setSavingFlagLineItemId(null);
+                                        }
                                       };
 
-                                      try {
-                                        await updateLineItemSilent.mutateAsync({
-                                          id: lineItemId,
-                                          data: {
-                                            unitPrice: unitPrice.toFixed(2),
-                                            totalPrice: nextTotal.toFixed(2),
-                                            specsJson: nextSpecsJson,
-                                          },
-                                        });
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Could not update total",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              onOverrideUnitCommit={
-                                readOnly
-                                  ? undefined
-                                  : async (_id, nextUnitPrice) => {
-                                      const lineItemId = String(item.id);
-                                      const qty = item.quantity > 0 ? item.quantity : 1;
-                                      const nextTotal = nextUnitPrice * qty;
+                                      const clearSuppression = async () => {
+                                        if (readOnly) return;
 
-                                      const nextSpecsJson = {
-                                        ...(itemSpecsJson || {}),
-                                        priceOverride: {
-                                          mode: "total",
-                                          value: nextTotal,
-                                        },
-                                      };
-
-                                      try {
-                                        await updateLineItemSilent.mutateAsync({
-                                          id: lineItemId,
-                                          data: {
-                                            unitPrice: nextUnitPrice.toFixed(2),
-                                            totalPrice: nextTotal.toFixed(2),
-                                            specsJson: nextSpecsJson,
-                                          },
-                                        });
-                                      } catch (e) {
-                                        toast({
-                                          variant: "destructive",
-                                          title: "Could not update unit price",
-                                          description: "Please try again.",
-                                        });
-                                        throw e;
-                                      }
-                                    }
-                              }
-                              statusOptions={[
-                                { value: "queued", label: "Queued" },
-                                { value: "printing", label: "Printing" },
-                                { value: "finishing", label: "Finishing" },
-                                { value: "done", label: "Done" },
-                                { value: "canceled", label: "Canceled" },
-                              ]}
-                              onStatusChange={
-                                readOnly
-                                  ? undefined
-                                  : (_id, next) => {
-                                      void updateLineItemStatus.mutateAsync({ lineItemId: item.id, status: next });
-                                    }
-                              }
-                              onDuplicate={readOnly ? undefined : () => void handleDuplicateItem(item)}
-                              onDelete={readOnly ? undefined : () => void handleRemoveItem(item.id)}
-                            />
-                          </div>
-
-                          {isExpanded && expandedItem && expandedItem.id === item.id && (
-                            <div id={contentId} className="px-2.5 pb-2.5">
-                              <div className="rounded-md border border-border/40 bg-transparent p-3">
-                                <div className="flex flex-wrap items-end gap-3">
-                                  <div className="flex items-center gap-2">
-                                    <div className="flex items-center gap-2">
-                                      <div className="flex flex-col gap-1">
-                                        <div className="text-xs text-muted-foreground">Width</div>
-                                        <Input
-                                          value={widthText}
-                                          onChange={(e) => setWidthText(e.target.value)}
-                                          className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                                          inputMode="decimal"
-                                          disabled={readOnly || !dimsRequired}
-                                          readOnly={readOnly}
-                                        />
-                                </div>
-                                <span className="text-muted-foreground self-end pb-2">×</span>
-                                <div className="flex flex-col gap-1">
-                                  <div className="text-xs text-muted-foreground">Height</div>
-                                  <Input
-                                    value={heightText}
-                                    onChange={(e) => setHeightText(e.target.value)}
-                                    className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                                    inputMode="decimal"
-                                    disabled={readOnly || !dimsRequired}
-                                    readOnly={readOnly}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <div className="text-xs text-muted-foreground">Qty</div>
-                              <div className="flex items-center rounded-md border border-border/60 bg-background/40">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8"
-                                  onClick={() => setQty((q) => Math.max(1, (q || 1) - 1))}
-                                  disabled={readOnly}
-                                >
-                                  <Minus className="h-4 w-4" />
-                                </Button>
-                                <Input
-                                  value={String(qty)}
-                                  onChange={(e) => setQty(Number.parseInt(e.target.value || "1", 10) || 1)}
-                                  className="h-8 w-16 border-0 text-center font-mono focus-visible:ring-0"
-                                  inputMode="numeric"
-                                  disabled={readOnly}
-                                  readOnly={readOnly}
-                                />
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8"
-                                  onClick={() => setQty((q) => (q || 1) + 1)}
-                                  disabled={readOnly}
-                                >
-                                  <Plus className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            </div>
-
-                            <div className="ml-auto text-right min-h-[60px]">
-                              <div className="text-xs text-muted-foreground">Total</div>
-                              <div className="font-mono text-lg font-bold">
-                                {formatMoney(
-                                  Number.isFinite(computedTotal)
-                                    ? (computedTotal as number)
-                                    : Number.parseFloat(item.totalPrice || "0") || 0
-                                )}
-                              </div>
-                              <div className="h-5 flex items-center justify-end">
-                                {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
-                                {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
-                                  <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
-                                    ⚠️ Outdated PBV2 config
-                                  </div>
-                                )}
-                                {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" && (
-                                  <div className="text-[11px] text-destructive">{calcError}</div>
-                                )}
-                                {!isCalculating && !calcError && <div className="text-[11px] text-transparent">—</div>}
-                              </div>
-                            </div>
-                          </div>
-
-                          <Separator className="my-3" />
-
-                          {/* PBV2 Options Section */}
-                          {pbv2SnapshotJson?.treeJson && pbv2SnapshotJson?.visibleNodeIds?.length > 0 && (
-                            <div className="mb-3">
-                              {/* Dev-only PBV2 diagnostics */}
-                              {import.meta.env.DEV && (
-                                <div className="text-xs text-muted-foreground mb-2 font-mono bg-muted/30 p-2 rounded">
-                                  PBV2: snapshot={String(Boolean(pbv2SnapshotJson))}, visibleNodes={pbv2SnapshotJson?.visibleNodeIds?.length || 0}
-                                </div>
-                              )}
-
-                              <ProductOptionsPanelV2
-                                tree={pbv2SnapshotJson.treeJson}
-                                selections={optionSelectionsV2}
-                                onSelectionsChange={setOptionSelectionsV2}
-                                onValidityChange={setOptionsV2Valid}
-                              />
-                            </div>
-                          )}
-
-                          {/* Legacy Options (non-PBV2 products) */}
-                          {!pbv2SnapshotJson?.treeJson && expandedProductOptions.length > 0 && (
-                            <div className="mb-3">
-                              <ProductOptionsPanel
-                                product={expandedProduct}
-                                productOptions={expandedProductOptions}
-                                optionSelections={optionSelections as any}
-                                onOptionSelectionsChange={setOptionSelections as any}
-                              />
-                            </div>
-                          )}
-
-                          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
-                            <div className="min-w-0">
-
-                              {!readOnly && (
-                                <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
-                                  <div className="flex items-center gap-2">
-                                    {isDirty && (
-                                      <Button
-                                        type="button"
-                                        variant="default"
-                                        size="sm"
-                                        className="h-8"
-                                        onClick={handleSaveItem}
-                                        disabled={savingItemId === item.id || isCalculating || (pbv2SnapshotJson?.treeJson && !optionsV2Valid)}
-                                      >
-                                        {savingItemId === item.id ? (
-                                          <>
-                                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                                            Saving…
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Save className="w-3.5 h-3.5 mr-1.5" />
-                                            Save Item
-                                          </>
-                                        )}
-                                      </Button>
-                                    )}
-                                    {!isDirty && savedItemId === item.id && (
-                                      <div className="flex items-center gap-1.5 text-xs text-green-600">
-                                        <Check className="w-3.5 h-3.5" />
-                                        Saved
-                                      </div>
-                                    )}
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-8"
-                                      onClick={() => void handleDuplicateItem(item)}
-                                    >
-                                      Duplicate Item
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-8 text-destructive hover:text-destructive"
-                                      onClick={() => void handleRemoveItem(item.id)}
-                                    >
-                                      Remove Item
-                                    </Button>
-                                  </div>
-                                  {isDirty && <div className="text-xs text-amber-600">Unsaved</div>}
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="min-w-0 lg:w-[360px] lg:shrink-0">
-                              <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                                <div className="flex items-center justify-between mb-2">
-                                  <div className="text-sm font-medium">Artwork</div>
-                                </div>
-                                <LineItemAttachmentsPanel
-                                  quoteId={null}
-                                  parentType="order"
-                                  orderId={orderId}
-                                  lineItemId={item.id}
-                                  productName={productName}
-                                  defaultExpanded={readOnly ? true : false}
-                                />
-                              </div>
-
-                              {(() => {
-                                const policy =
-                                  productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
-                                    ? productArtworkPolicy
-                                    : null;
-
-                                const suppressedEntry =
-                                  itemSpecsJson?.flags?.suppressed && typeof itemSpecsJson.flags.suppressed === "object"
-                                    ? (itemSpecsJson.flags.suppressed as any)?.missing_artwork
-                                    : null;
-                                const suppressedReason =
-                                  typeof suppressedEntry?.reason === "string" ? suppressedEntry.reason.trim() : "";
-                                const suppressedAt = typeof suppressedEntry?.at === "string" ? suppressedEntry.at.trim() : "";
-                                const isSuppressed = Boolean(suppressedReason && suppressedAt);
-
-                                if (policy !== "required" && !isSuppressed) return null;
-
-                                const canDerive = lineItemAttachmentsAssociationKnown && lineItemAssetsKnownForItem;
-                                const hasAnyArtwork = attachmentsForThumb.length > 0 || assetCountForItem > 0;
-                                const isMissingActive = policy === "required" && canDerive && !hasAnyArtwork && !isSuppressed;
-
-                                const suppress = async () => {
-                                  if (readOnly) return;
-                                  const reason = missingArtworkSuppressReason.trim();
-                                  if (!reason) {
-                                    toast({
-                                      title: "Reason required",
-                                      description: "A reason is required to suppress this flag.",
-                                      variant: "destructive",
-                                    });
-                                    return;
-                                  }
-
-                                  const nextSpecsJson = {
-                                    ...(itemSpecsJson || {}),
-                                    flags: {
-                                      ...((itemSpecsJson?.flags as any) || {}),
-                                      suppressed: {
-                                        ...(((itemSpecsJson?.flags as any)?.suppressed as any) || {}),
-                                        missing_artwork: {
-                                          reason,
-                                          at: new Date().toISOString(),
-                                        },
-                                      },
-                                    },
-                                  };
-
-                                  setSavingFlagLineItemId(String(item.id));
-                                  try {
-                                    await updateLineItemSilent.mutateAsync({
-                                      id: String(item.id),
-                                      data: { specsJson: nextSpecsJson },
-                                    });
-                                    setMissingArtworkSuppressReason("");
-                                    await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-                                  } catch (err: any) {
-                                    toast({
-                                      title: "Failed to suppress flag",
-                                      description: err?.message || "Please try again.",
-                                      variant: "destructive",
-                                    });
-                                  } finally {
-                                    setSavingFlagLineItemId(null);
-                                  }
-                                };
-
-                                const clearSuppression = async () => {
-                                  if (readOnly) return;
-
-                                  const nextSuppressed = { ...(((itemSpecsJson?.flags as any)?.suppressed as any) || {}) };
-                                  delete nextSuppressed.missing_artwork;
-
-                                  const nextSpecsJson = {
-                                    ...(itemSpecsJson || {}),
-                                    flags: {
-                                      ...((itemSpecsJson?.flags as any) || {}),
-                                      suppressed: nextSuppressed,
-                                    },
-                                  };
-
-                                  setSavingFlagLineItemId(String(item.id));
-                                  try {
-                                    await updateLineItemSilent.mutateAsync({
-                                      id: String(item.id),
-                                      data: { specsJson: nextSpecsJson },
-                                    });
-                                    await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-                                  } catch (err: any) {
-                                    toast({
-                                      title: "Failed to clear suppression",
-                                      description: err?.message || "Please try again.",
-                                      variant: "destructive",
-                                    });
-                                  } finally {
-                                    setSavingFlagLineItemId(null);
-                                  }
-                                };
-
-                                return (
-                                  <div className={cn("mt-3 rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                                    <div className="flex items-center justify-between mb-2">
-                                      <div className="text-sm font-medium">Flags</div>
-                                    </div>
-
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <div className="text-sm">Missing artwork</div>
-
-                                        <div className="mt-1">
-                                          {isSuppressed ? (
-                                            <TooltipProvider delayDuration={150}>
-                                              <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                  <Badge variant="outline" className="border-border/60 text-xs">
-                                                    Suppressed
-                                                  </Badge>
-                                                </TooltipTrigger>
-                                                <TooltipContent className="max-w-[420px] whitespace-pre-wrap break-words">
-                                                  {suppressedReason}
-                                                </TooltipContent>
-                                              </Tooltip>
-                                            </TooltipProvider>
-                                          ) : isMissingActive ? (
-                                            <Badge
-                                              variant="outline"
-                                              className="border-amber-500/30 bg-amber-500/10 text-amber-700 text-xs"
-                                            >
-                                              Active
-                                            </Badge>
-                                          ) : null}
-                                        </div>
-                                      </div>
-
-                                      <div className="flex flex-col items-end gap-2">
-                                        {isSuppressed ? (
-                                          <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            className="h-8"
-                                            disabled={readOnly || savingFlagLineItemId === String(item.id)}
-                                            onClick={() => void clearSuppression()}
-                                          >
-                                            Clear
-                                          </Button>
-                                        ) : (
-                                          <div className="flex flex-col gap-2 items-end">
-                                            <div className="w-56">
-                                              <div className="text-xs text-muted-foreground mb-1">Reason</div>
-                                              <Input
-                                                value={missingArtworkSuppressReason}
-                                                onChange={(e) => setMissingArtworkSuppressReason(e.target.value)}
-                                                className="h-8"
-                                                disabled={readOnly || savingFlagLineItemId === String(item.id)}
-                                              />
-                                            </div>
-                                            <Button
-                                              type="button"
-                                              variant="outline"
-                                              size="sm"
-                                              className="h-8"
-                                                disabled={readOnly || savingFlagLineItemId === String(item.id)}
-                                              onClick={() => void suppress()}
-                                            >
-                                              Suppress
-                                            </Button>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })()}
-
-                              <div className={cn("mt-3 rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
-                                <div className="flex items-center justify-between mb-2">
-                                  <div className="text-sm font-medium">Notes</div>
-
-                                  {!readOnly && (
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      className="h-8"
-                                      disabled={savingNotesId === String(item.id)}
-                                      onClick={async () => {
-                                        const lineItemId = String(item.id);
-                                        const draft = notesDraftById[lineItemId] ?? persistedNotesText;
+                                        const nextSuppressed = { ...(((itemSpecsJson?.flags as any)?.suppressed as any) || {}) };
+                                        delete nextSuppressed.missing_artwork;
 
                                         const nextSpecsJson = {
                                           ...(itemSpecsJson || {}),
-                                          lineItemNotes: {
-                                            ...(((itemSpecsJson as any)?.lineItemNotes as any) || {}),
-                                            descLong: draft,
+                                          flags: {
+                                            ...((itemSpecsJson?.flags as any) || {}),
+                                            suppressed: nextSuppressed,
                                           },
-                                        } as any;
+                                        };
 
-                                        setSavingNotesId(lineItemId);
+                                        setSavingFlagLineItemId(String(item.id));
                                         try {
                                           await updateLineItemSilent.mutateAsync({
-                                            id: lineItemId,
-                                            data: {
-                                              specsJson: nextSpecsJson,
-                                            },
+                                            id: String(item.id),
+                                            data: { specsJson: nextSpecsJson },
                                           });
-
-                                          await queryClient.invalidateQueries({
-                                            queryKey: ["/api/orders", orderId],
-                                          });
-                                        } catch (e) {
+                                          await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+                                        } catch (err: any) {
                                           toast({
+                                            title: "Failed to clear suppression",
+                                            description: err?.message || "Please try again.",
                                             variant: "destructive",
-                                            title: "Could not save notes",
-                                            description: "Please try again.",
                                           });
                                         } finally {
-                                          setSavingNotesId((prev) => (prev === lineItemId ? null : prev));
+                                          setSavingFlagLineItemId(null);
                                         }
-                                      }}
-                                    >
-                                      {savingNotesId === String(item.id) ? (
-                                        <>
-                                          <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                                          Saving…
-                                        </>
-                                      ) : (
-                                        "Save"
-                                      )}
-                                    </Button>
-                                  )}
-                                </div>
+                                      };
 
-                                <textarea
-                                  ref={(el) => {
-                                    notesEditorRefs.current[String(item.id)] = el;
-                                  }}
-                                  value={notesDraftById[String(item.id)] ?? persistedNotesText}
-                                  onChange={(e) => {
-                                    const next = e.target.value;
-                                    const lineItemId = String(item.id);
-                                    setNotesDraftById((prev) => ({ ...prev, [lineItemId]: next }));
-                                  }}
-                                  className={cn(
-                                    "w-full min-h-[120px] resize-y rounded-md border border-border bg-background/40 px-3 py-2 text-sm",
-                                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
-                                    readOnly && "opacity-70"
-                                  )}
-                                  placeholder={readOnly ? "" : "Add notes…"}
-                                  disabled={readOnly}
-                                  readOnly={readOnly}
-                                />
-                              </div>
+                                      return (
+                                        <div className={cn("mt-3 rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
+                                          <div className="flex items-center justify-between mb-2">
+                                            <div className="text-sm font-medium">Flags</div>
+                                          </div>
+
+                                          <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                              <div className="text-sm">Missing artwork</div>
+
+                                              <div className="mt-1">
+                                                {isSuppressed ? (
+                                                  <TooltipProvider delayDuration={150}>
+                                                    <Tooltip>
+                                                      <TooltipTrigger asChild>
+                                                        <Badge variant="outline" className="border-border/60 text-xs">
+                                                          Suppressed
+                                                        </Badge>
+                                                      </TooltipTrigger>
+                                                      <TooltipContent className="max-w-[420px] whitespace-pre-wrap break-words">
+                                                        {suppressedReason}
+                                                      </TooltipContent>
+                                                    </Tooltip>
+                                                  </TooltipProvider>
+                                                ) : isMissingActive ? (
+                                                  <Badge
+                                                    variant="outline"
+                                                    className="border-amber-500/30 bg-amber-500/10 text-amber-700 text-xs"
+                                                  >
+                                                    Active
+                                                  </Badge>
+                                                ) : null}
+                                              </div>
+                                            </div>
+
+                                            <div className="flex flex-col items-end gap-2">
+                                              {isSuppressed ? (
+                                                <Button
+                                                  type="button"
+                                                  variant="outline"
+                                                  size="sm"
+                                                  className="h-8"
+                                                  disabled={readOnly || savingFlagLineItemId === String(item.id)}
+                                                  onClick={() => void clearSuppression()}
+                                                >
+                                                  Clear
+                                                </Button>
+                                              ) : (
+                                                <div className="flex flex-col gap-2 items-end">
+                                                  <div className="w-56">
+                                                    <div className="text-xs text-muted-foreground mb-1">Reason</div>
+                                                    <Input
+                                                      value={missingArtworkSuppressReason}
+                                                      onChange={(e) => setMissingArtworkSuppressReason(e.target.value)}
+                                                      className="h-8"
+                                                      disabled={readOnly || savingFlagLineItemId === String(item.id)}
+                                                    />
+                                                  </div>
+                                                  <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="h-8"
+                                                    disabled={readOnly || savingFlagLineItemId === String(item.id)}
+                                                    onClick={() => void suppress()}
+                                                  >
+                                                    Suppress
+                                                  </Button>
+                                                </div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+                                  </>
+                                }
+                                detailsSide="right"
+                                isDirty={isExpanded && expandedItem && expandedItem.id === item.id ? isDirty : false}
+                                isSaving={savingItemId === item.id}
+                                isSaved={!isDirty && savedItemId === item.id}
+                                onSave={readOnly ? undefined : handleSaveItem}
+                                onDuplicate={readOnly ? undefined : () => void handleDuplicateItem(item)}
+                                onRemove={readOnly ? undefined : () => void handleRemoveItem(item.id)}
+                                readOnly={readOnly}
+                              />
                             </div>
                           </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                  </div>
-                  </div>
-                )}
-              </SortableOrderLineItemWrapper>
-            );
-              })}
+                      )}
+                    </SortableOrderLineItemWrapper>
+                  );
+                })}
               </div>
             </SortableContext>
           </DndContext>
@@ -2210,20 +1503,20 @@ export function OrderLineItemsSection({
             >
               <PopoverTrigger asChild>
                 <Button variant="outline" role="combobox" aria-expanded={searchOpen} className="w-full justify-between h-9 font-normal">
-                  <span className="text-muted-foreground">{searchQuery ? `Searching: ${searchQuery}` : "Add Product"}</span>
+                  <span className="text-muted-foreground">{searchQuery ? "Searching: " + searchQuery : "Add Product"}</span>
                   <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[520px] p-0" align="start">
                 <Command shouldFilter={false}>
-                  <CommandInput placeholder="Search by name, SKU, or category…" value={searchQuery} onValueChange={setSearchQuery} />
+                  <CommandInput placeholder="Search by name, SKU, or category..." value={searchQuery} onValueChange={setSearchQuery} />
                   <CommandList>
                     <CommandEmpty>No products found.</CommandEmpty>
                     <CommandGroup>
                       {filteredProducts.map((p) => (
                         <CommandItem
                           key={p.id}
-                          value={`${p.name} ${(p as any).sku || ""} ${(p as any).category || ""}`}
+                          value={p.name + " " + ((p as any).sku || "") + " " + ((p as any).category || "")}
                           onSelect={async () => {
                             try {
                               const created = await createLineItem.mutateAsync({
@@ -2303,7 +1596,7 @@ export function OrderLineItemsSection({
             let iframeViewUrl: string | null = null;
             
             if (isPdf && typeof objectPath === "string" && objectPath.length) {
-              iframeViewUrl = `/objects/${objectPath}?filename=${encodeURIComponent(fileName)}`;
+              iframeViewUrl = "/objects/" + objectPath + "?filename=" + encodeURIComponent(fileName);
             } else if (isPdf && previewFile.originalUrl && previewFile.originalUrl.startsWith('/objects/')) {
               iframeViewUrl = previewFile.originalUrl;
             }
@@ -2315,7 +1608,7 @@ export function OrderLineItemsSection({
             // Construct download URL
             let downloadUrl: string | null = null;
             if (typeof objectPath === "string" && objectPath.length) {
-              downloadUrl = `/objects/${objectPath}?download=1&filename=${encodeURIComponent(fileName)}`;
+              downloadUrl = "/objects/" + objectPath + "?download=1&filename=" + encodeURIComponent(fileName);
             } else if (previewFile.originalUrl) {
               downloadUrl = previewFile.originalUrl;
             }
@@ -2327,7 +1620,7 @@ export function OrderLineItemsSection({
                     {!pdfEmbedError ? (
                       <iframe
                         title={fileName}
-                        src={`${iframeViewUrl}#toolbar=1&navpanes=0`}
+                        src={String(iframeViewUrl) + "#toolbar=1&navpanes=0"}
                         className="w-full h-[60vh] rounded-md border border-border bg-background"
                         style={{ width: '100%', height: '60vh', border: 0 }}
                         allow="fullscreen"
@@ -2449,7 +1742,7 @@ export function OrderLineItemsSection({
       >
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{artworkModalProductName ? `Artwork — ${artworkModalProductName}` : "Artwork"}</DialogTitle>
+            <DialogTitle>{artworkModalProductName ? "Artwork — " + artworkModalProductName : "Artwork"}</DialogTitle>
             <DialogDescription>View and manage artwork for this line item.</DialogDescription>
           </DialogHeader>
 
