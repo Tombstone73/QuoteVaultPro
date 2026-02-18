@@ -45,6 +45,7 @@ export type LineItemCardProps = {
 
   // Description preview (customer-facing)
   descriptionPreview?: string | null;
+  showNoteLabel?: boolean;
   
   // Option chips for collapsed view
   optionChips?: Array<{ text: string; key: string }>;
@@ -130,6 +131,7 @@ export function LineItemCard({
   totalLabel,
   badges,
   descriptionPreview,
+  showNoteLabel = true,
   optionChips = [],
   overflowCount = 0,
   thumbnail,
@@ -170,7 +172,7 @@ export function LineItemCard({
   onRemove,
   readOnly = false,
 }: LineItemCardProps) {
-  const hasNote = Boolean(descriptionPreview);
+  const hasNote = Boolean(descriptionPreview) && showNoteLabel;
   const hasOverride = Boolean(priceOverride != null);
   const hasProductionNotes = Boolean(productionNotes && productionNotes.trim());
   const dragDisabled = Boolean(dragHandleProps?.disabled);
