@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tantml:react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -28,6 +28,7 @@ import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+import { LineItemCard } from "@/components/line-items/LineItemCard";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -837,363 +838,85 @@ export function LineItemsSection({
                     return (
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
                         {({ dragAttributes, dragListeners }) => (
-                          <div className={cn("rounded-lg border border-border/40 bg-background/30", isExpanded && "bg-background/40 border-border/60")}>
-                            {/* Collapsed Summary Row - Enterprise Dense Layout */}
-                            <button
-                              type="button"
-                              className="w-full text-left p-2.5 hover:bg-muted/20 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-lg"
-                              onClick={() => {
-                                onExpandedKeyChange(isExpanded ? null : itemKey);
-                              }}
-                              aria-expanded={isExpanded}
-                              aria-controls={contentId}
-                              aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
-                            >
-                              <div className="grid gap-2 items-center" style={{ gridTemplateColumns: readOnly ? 'minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' : 'auto minmax(240px,1.2fr) minmax(220px,2fr) minmax(140px,0.8fr)' }}>
-                                {/* Drag Handle (edit mode only) */}
-                                {!readOnly && (
-                                  <button
-                                    type="button"
-                                    className="cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded p-0.5 disabled:opacity-30 disabled:cursor-not-allowed self-center"
-                                    {...dragAttributes}
-                                    {...dragListeners}
-                                    disabled={isSavingOrder}
-                                    aria-label="Drag to reorder"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                  >
-                                    <GripVertical className="h-4 w-4" />
-                                  </button>
-                                )}
-                                
-                                {/* Left Zone: Product + Size + Qty */}
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <LineItemThumbnail parentId={quoteId} lineItemId={item.id} parentType="quote" />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-1.5 mb-0.5">
-                                      <span className="text-sm font-semibold truncate">{item.productName}</span>
-                                      {item.status === "draft" && !readOnly && (
-                                        <Badge variant="secondary" className="text-[10px] py-0 px-1.5 shrink-0">
-                                          Draft
-                                        </Badge>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-                                      <span className="font-mono">{item.width}" × {item.height}"</span>
-                                      <span>·</span>
-                                      <span>Qty {item.quantity}</span>
-                                    </div>
-                                    {/* Description preview (customer-facing) */}
-                                    {item.description && (
-                                      <TooltipProvider delayDuration={300}>
-                                        <Tooltip>
-                                          <TooltipTrigger asChild>
-                                            <div className="text-xs text-muted-foreground/80 mt-0.5 truncate max-w-full italic">
-                                              {item.description}
-                                            </div>
-                                          </TooltipTrigger>
-                                          <TooltipContent side="bottom" align="start" className="max-w-sm">
-                                            <p className="text-xs whitespace-pre-wrap">{item.description}</p>
-                                          </TooltipContent>
-                                        </Tooltip>
-                                      </TooltipProvider>
-                                    )}
-                                  </div>
-                                </div>
-
-                                {/* Middle Zone: Option Chips (single line, no wrap) */}
-                                <div className="min-w-0 flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                                  {optionChips.map((chip, idx) => (
-                                    <span
-                                      key={idx}
-                                      className="px-1.5 py-0.5 rounded text-[11px] bg-muted/40 text-muted-foreground whitespace-nowrap shrink-0"
-                                    >
-                                      {chip}
-                                    </span>
-                                  ))}
-                                  {overflowCount > 0 && (
-                                    <span className="text-[11px] text-muted-foreground/60 shrink-0">
-                                      +{overflowCount}
-                                    </span>
-                                  )}
-                                </div>
-
-                                {/* Right Zone: Price + Expand Icon */}
-                                <div className="flex items-center justify-end gap-2 shrink-0">
-                                  <div className="text-right tabular-nums">
-                                    <div className="font-mono text-sm font-semibold">{formatMoney(item.linePrice)}</div>
-                                    <div className="text-[10px] text-muted-foreground">
-                                      {formatMoney(item.linePrice / item.quantity)}/ea
-                                    </div>
-                                  </div>
-                                  <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform shrink-0", isExpanded && "rotate-90")} />
-                                </div>
-                              </div>
-
-                              {/* Optional Meta Row (only if relevant) */}
-                              {(hasNote || hasOverride || hasProductionNotes) && (
-                                <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
-                                  {hasNote && <span>Note</span>}
-                                  {hasOverride && (
-                                    <>
-                                      {hasNote && <span>·</span>}
-                                      <span>Overridden</span>
-                                    </>
-                                  )}
-                                  {hasProductionNotes && (
-                                    <>
-                                      {(hasNote || hasOverride) && <span>·</span>}
-                                      <span className="bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 rounded font-medium">Internal</span>
-                                    </>
-                                  )}
-                                </div>
-                              )}
-                            </button>
-
-                            {/* Expanded Editor - When Expanded (edit mode OR view mode) */}
-                            {isExpanded && (
-                      <div id={contentId} className="px-3 pb-3">
-                        <div className="rounded-md border border-border/40 bg-muted/20 p-3 min-h-[400px]">
-                          {/* Top editing row */}
-                          <div className="flex flex-wrap items-end gap-3">
-                            <div className="flex items-center gap-2">
-                              <div className="flex items-center gap-2">
-                                <div className="flex flex-col gap-1">
-                                  <div className="text-xs text-muted-foreground">Width</div>
-                                  <Input
-                                    value={widthText}
-                                    onChange={(e) => setWidthText(e.target.value)}
-                                    className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                                    inputMode="decimal"
-                                    disabled={readOnly || !dimsRequired}
-                                    readOnly={readOnly}
-                                  />
-                                </div>
-                                <span className="text-muted-foreground self-end pb-2">×</span>
-                                <div className="flex flex-col gap-1">
-                                  <div className="text-xs text-muted-foreground">Height</div>
-                                  <Input
-                                    value={heightText}
-                                    onChange={(e) => setHeightText(e.target.value)}
-                                    className={cn("h-8 w-24 font-mono", !dimsRequired && "opacity-60")}
-                                    inputMode="decimal"
-                                    disabled={readOnly || !dimsRequired}
-                                    readOnly={readOnly}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <div className="text-xs text-muted-foreground">Qty</div>
-                              <div className="flex items-center rounded-md border border-border/60 bg-background/40">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8"
-                                  onClick={() => setQty((q) => Math.max(1, (q || 1) - 1))}
-                                  disabled={readOnly}
-                                >
-                                  <Minus className="h-4 w-4" />
-                                </Button>
-                                <Input
-                                  value={String(qty)}
-                                  onChange={(e) => setQty(Number.parseInt(e.target.value || "1", 10) || 1)}
-                                  className="h-8 w-16 border-0 text-center font-mono focus-visible:ring-0"
-                                  inputMode="numeric"
-                                  disabled={readOnly}
-                                  readOnly={readOnly}
-                                />
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8"
-                                  onClick={() => setQty((q) => (q || 1) + 1)}
-                                  disabled={readOnly}
-                                >
-                                  <Plus className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            </div>
-
-                            <div className="ml-auto text-right min-h-[60px]">
-                              <div className="text-xs text-muted-foreground">Total</div>
-                              <div className="flex items-center gap-2 justify-end">
-                                {editingPrice ? (
-                                  <Input
-                                    type="text"
-                                    value={priceEditText}
-                                    onChange={(e) => setPriceEditText(e.target.value)}
-                                    onBlur={handlePriceBlur}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') handlePriceBlur();
-                                      if (e.key === 'Escape') {
-                                        setEditingPrice(false);
-                                        const currentPrice = expandedItem?.overridePriceCents != null 
-                                          ? expandedItem.overridePriceCents / 100 
-                                          : (expandedItem?.linePrice ?? item.linePrice);
-                                        setPriceEditText(currentPrice.toFixed(2));
-                                      }
-                                    }}
-                                    autoFocus
-                                    className="font-mono text-lg font-bold h-auto px-2 py-1 text-right w-32"
+                          <LineItemCard
+                            id={item.id || ""}
+                            itemKey={itemKey}
+                            contentId={contentId || ""}
+                            isExpanded={isExpanded}
+                            onToggleExpand={() => onExpandedKeyChange(isExpanded ? null : itemKey)}
+                            title={item.productName}
+                            sizeLabel={`${item.width}" × ${item.height}"`}
+                            qtyLabel={`Qty ${item.quantity}`}
+                            unitPriceLabel={`${formatMoney(item.linePrice / item.quantity)}/ea`}
+                            totalLabel={formatMoney(item.linePrice)}
+                            badges={{
+                              draft: item.status === "draft" && !readOnly,
+                              override: hasOverride,
+                              internal: hasProductionNotes,
+                            }}
+                            descriptionPreview={item.description}
+                            optionChips={optionChips.map((chip, idx) => ({ text: chip, key: `${itemKey}-chip-${idx}` }))}
+                            overflowCount={overflowCount}
+                            thumbnail={<LineItemThumbnail parentId={quoteId} lineItemId={item.id} parentType="quote" />}
+                            dragHandleProps={{
+                              attributes: dragAttributes,
+                              listeners: dragListeners,
+                              disabled: isSavingOrder,
+                            }}
+                            showDragHandle={!readOnly}
+                            width={widthText}
+                            height={heightText}
+                            quantity={qty}
+                            onWidthChange={setWidthText}
+                            onHeightChange={setHeightText}
+                            onQuantityChange={setQty}
+                            onQuantityIncrement={() => setQty((q) => (q || 1) + 1)}
+                            onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
+                            dimsRequired={dimsRequired}
+                            price={expandedItem?.linePrice ?? item.linePrice}
+                            priceOverride={expandedItem?.overridePriceCents != null ? expandedItem.overridePriceCents / 100 : null}
+                            editingPrice={editingPrice}
+                            priceEditText={priceEditText}
+                            onPriceClick={readOnly ? undefined : handlePriceClick}
+                            onPriceChange={setPriceEditText}
+                            onPriceBlur={handlePriceBlur}
+                            onPriceKeyDown={(e) => {
+                              if (e.key === 'Enter') handlePriceBlur();
+                              if (e.key === 'Escape') {
+                                setEditingPrice(false);
+                                const currentPrice = expandedItem?.overridePriceCents != null 
+                                  ? expandedItem.overridePriceCents / 100 
+                                  : (expandedItem?.linePrice ?? item.linePrice);
+                                setPriceEditText(currentPrice.toFixed(2));
+                              }
+                            }}
+                            onUndoOverride={readOnly ? undefined : handleUndoOverride}
+                            isCalculating={isCalculating}
+                            calcError={calcError}
+                            description={description}
+                            productionNotes={productionNotes}
+                            onDescriptionChange={setDescription}
+                            onProductionNotesChange={setProductionNotes}
+                            optionsSlot={
+                              <>
+                                {isExpandedTreeV2 && expandedOptionTreeJson ? (
+                                  <ProductOptionsPanelV2
+                                    tree={expandedOptionTreeJson}
+                                    selections={optionSelectionsV2}
+                                    onSelectionsChange={setOptionSelectionsV2}
+                                    onValidityChange={setOptionsV2Valid}
                                   />
                                 ) : (
-                                  <div 
-                                    className={`font-mono text-lg font-bold ${!readOnly ? 'cursor-pointer hover:bg-accent/50 px-2 py-1 rounded transition-colors' : ''}`}
-                                    onClick={handlePriceClick}
-                                  >
-                                    {formatMoney(expandedItem?.overridePriceCents != null ? expandedItem.overridePriceCents / 100 : (expandedItem?.linePrice ?? item.linePrice))}
-                                  </div>
+                                  <ProductOptionsPanel
+                                    product={expandedProduct}
+                                    productOptions={expandedProductOptions}
+                                    optionSelections={optionSelections}
+                                    onOptionSelectionsChange={setOptionSelections}
+                                  />
                                 )}
-                                {expandedItem?.overridePriceCents != null && (
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-xs bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded font-medium">
-                                      Override
-                                    </span>
-                                    {!readOnly && (
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-5 w-5"
-                                        onClick={handleUndoOverride}
-                                        title="Undo override"
-                                      >
-                                        <Undo2 className="h-3 w-3" />
-                                      </Button>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                              <div className="h-5 flex items-center justify-end">
-                                {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
-                                {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (
-                                  <div className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
-                                    ⚠️ Outdated PBV2 config
-                                  </div>
-                                )}
-                                {!!calcError && calcError !== "PBV2_SCHEMA_MISMATCH" && (
-                                  <div className="text-[11px] text-destructive">{calcError}</div>
-                                )}
-                                {!isCalculating && !calcError && <div className="text-[11px] text-transparent">—</div>}
-                              </div>
-                            </div>
-                          </div>
-
-                          <Separator className="my-3" />
-
-                          {/* Options (left) + Artwork (right) */}
-                          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
-                            <div className="min-w-0">
-                              {/* Finishing / options */}
-                              {isExpandedTreeV2 && expandedOptionTreeJson ? (
-                                <ProductOptionsPanelV2
-                                  tree={expandedOptionTreeJson}
-                                  selections={optionSelectionsV2}
-                                  onSelectionsChange={setOptionSelectionsV2}
-                                  onValidityChange={setOptionsV2Valid}
-                                />
-                              ) : (
-                                <ProductOptionsPanel
-                                  product={expandedProduct}
-                                  productOptions={expandedProductOptions}
-                                  optionSelections={optionSelections}
-                                  onOptionSelectionsChange={setOptionSelections}
-                                />
-                              )}
-
-                              {/* Description field */}
-                              <div className="mt-3 space-y-1.5">
-                                <label className="text-sm font-medium text-muted-foreground">Description (optional)</label>
-                                <textarea
-                                  value={description}
-                                  onChange={(e) => setDescription(e.target.value)}
-                                  placeholder="Add custom description for this line item..."
-                                  className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                                  disabled={readOnly}
-                                />
-                              </div>
-
-                              {/* Production Notes field (internal only) */}
-                              <div className="mt-3 space-y-1.5">
-                                <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                                  Production Notes (internal)
-                                  <span className="text-xs text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded">
-                                    Staff only
-                                  </span>
-                                </label>
-                                <textarea
-                                  value={productionNotes}
-                                  onChange={(e) => setProductionNotes(e.target.value)}
-                                  placeholder="Internal production notes (not shown to customers)..."
-                                  className="w-full min-h-[60px] px-3 py-2 text-sm rounded-md border border-input bg-background resize-y focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                                  disabled={readOnly}
-                                />
-                              </div>
-
-                              {/* Bottom actions - Edit mode only */}
-                              {!readOnly && (
-                                <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-sm">
-                                  <div className="flex items-center gap-2">
-                                    {onSaveLineItem && isDirty && (
-                                      <Button
-                                        type="button"
-                                        variant="default"
-                                        size="sm"
-                                        className="h-8"
-                                        onClick={handleSaveItem}
-                                        disabled={savingItemKey === itemKey || isCalculating || (isExpandedTreeV2 && !optionsV2Valid)}
-                                      >
-                                        {savingItemKey === itemKey ? (
-                                          <>
-                                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                                            Saving…
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Save className="w-3.5 h-3.5 mr-1.5" />
-                                            Save Item
-                                          </>
-                                        )}
-                                      </Button>
-                                    )}
-                                    {onSaveLineItem && !isDirty && savedItemKey === itemKey && (
-                                      <div className="flex items-center gap-1.5 text-xs text-green-600">
-                                        <Check className="w-3.5 h-3.5" />
-                                        Saved
-                                      </div>
-                                    )}
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-8"
-                                      onClick={() => onDuplicateLineItem(itemKey)}
-                                    >
-                                      Duplicate Item
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-8 text-destructive hover:text-destructive"
-                                      onClick={() => onRemoveLineItem(itemKey)}
-                                    >
-                                      Remove Item
-                                    </Button>
-                                  </div>
-                                  {isDirty && (
-                                    <div className="text-xs text-amber-600">Unsaved</div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Artwork panel (right on desktop, stacks below on small) */}
-                            <div className="min-w-0 lg:w-[360px] lg:shrink-0">
+                              </>
+                            }
+                            artworkSlot={
                               <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
                                 <div className="flex items-center justify-between mb-2">
                                   <div className="text-sm font-medium">Artwork</div>
@@ -1205,7 +928,6 @@ export function LineItemsSection({
                                   defaultExpanded={readOnly ? true : false}
                                   ensureQuoteId={!readOnly ? ensureQuoteId : undefined}
                                   ensureLineItemId={!readOnly && ensureLineItemId ? () => {
-                                    // Save scroll position AND expansion before ensuring (for restoration after route change)
                                     setPendingScrollPosition(window.scrollY);
                                     setPendingExpandedLineItemId(itemKey, itemIndex);
                                     return ensureLineItemId(itemKey);
@@ -1213,12 +935,15 @@ export function LineItemsSection({
                                   lineItemKey={itemKey}
                                 />
                               </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                            )}
-                          </div>
+                            }
+                            isDirty={isDirty}
+                            isSaving={savingItemKey === itemKey}
+                            isSaved={!isDirty && savedItemKey === itemKey}
+                            onSave={onSaveLineItem ? handleSaveItem : undefined}
+                            onDuplicate={() => onDuplicateLineItem(itemKey)}
+                            onRemove={() => onRemoveLineItem(itemKey)}
+                            readOnly={readOnly}
+                          />
                         )}
                       </SortableLineItemWrapper>
                     );
