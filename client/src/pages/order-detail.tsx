@@ -837,6 +837,24 @@ export default function OrderDetail() {
     }
   };
 
+  const handleSaveOrder = async () => {
+    if (!orderId || !order) return;
+    try {
+      await updateOrder.mutateAsync({
+        label: normalizeNullableString(jobLabelDraft),
+        poNumber: normalizeNullableString(poNumberDraft),
+      });
+      await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      toast({ title: "Order saved" });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to save order",
+        variant: "destructive",
+      });
+    }
+  };
+
   type ShipToUpdatePayload = Partial<Pick<
     OrderDetailOrder,
     | "shipToCompany"
@@ -1230,6 +1248,18 @@ export default function OrderDetail() {
           </div>
 
           <div className="flex items-center gap-3">
+            {canEditOrder && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => void handleSaveOrder()}
+                disabled={updateOrder.isPending}
+                className="rounded-titan-md"
+              >
+                {updateOrder.isPending ? "Saving..." : "Save Order"}
+              </Button>
+            )}
+
             {/* Mark Completed Button */}
             {isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed') && (
               <Button
