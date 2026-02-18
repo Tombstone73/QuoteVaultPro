@@ -227,6 +227,16 @@ function useDebouncedEffect(effect: () => void, deps: any[], delayMs: number) {
   }, deps);
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
+}
+
 type AttachmentForPreview = {
   id: string;
   fileName: string;
@@ -731,6 +741,34 @@ export function OrderLineItemsSection({
   const widthNum = dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
+  const lastCalcKeyRef = useRef<string>("");
+
+  const v1SelectionsKey = useMemo(() => stableStringify(optionSelections || {}), [optionSelections]);
+  const v2SelectionsKey = useMemo(() => stableStringify(optionSelectionsV2?.selected || {}), [optionSelectionsV2]);
+  const pbv2TreeVersionId = String(
+    (pbv2SnapshotJson as any)?.treeVersionId || (expandedItem as any)?.pbv2ActiveTreeVersionId || ""
+  );
+  const overridePriceCents = Number(
+    (((expandedItem as any)?.specsJson as any)?.priceOverride?.value as number | undefined) || 0
+  );
+  const isPbv2Mode = Boolean(pbv2SnapshotJson?.treeJson);
+  const calcKey = useMemo(
+    () =>
+      [
+        expandedItem?.productId || "",
+        pbv2TreeVersionId,
+        String(widthNum),
+        String(heightNum),
+        String(qtyNum),
+        isPbv2Mode ? v2SelectionsKey : v1SelectionsKey,
+        String(overridePriceCents),
+      ].join("|"),
+    [expandedItem?.productId, pbv2TreeVersionId, widthNum, heightNum, qtyNum, isPbv2Mode, v2SelectionsKey, v1SelectionsKey, overridePriceCents]
+  );
+
+  useEffect(() => {
+    lastCalcKeyRef.current = "";
+  }, [expandedId]);
 
   const isDirty = useMemo(() => {
     if (!expandedItem) return false;
@@ -766,6 +804,11 @@ export function OrderLineItemsSection({
         setCalcError(null);
         return;
       }
+
+      if (calcKey === lastCalcKeyRef.current) {
+        return;
+      }
+      lastCalcKeyRef.current = calcKey;
 
       setIsCalculating(true);
       setCalcError(null);
@@ -832,6 +875,7 @@ export function OrderLineItemsSection({
       optionsV2Valid,
       expandedItem?.id,
       customerId,
+      calcKey,
     ],
     400
   );
@@ -1206,6 +1250,7 @@ export function OrderLineItemsSection({
                                   override: isOverride,
                                   internal: hasProductionNotes,
                                 }}
+                                showNoteLabel={false}
                                 descriptionPreview={persistedDescription || undefined}
                                 optionChips={optionChips.map((chip, index) => ({
                                   text: chip,
