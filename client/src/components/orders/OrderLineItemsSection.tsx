@@ -214,6 +214,28 @@ function buildSelectedOptionsArray(
   return arr;
 }
 
+function buildOptionSelectionsRecordFromSpecs(specsJson: any): Record<string, OptionSelection> {
+  const selections: Record<string, OptionSelection> = {};
+  const selectedOptions = specsJson?.selectedOptions;
+  if (!Array.isArray(selectedOptions)) return selections;
+
+  for (const opt of selectedOptions) {
+    if (!opt?.optionId) continue;
+    selections[String(opt.optionId)] = {
+      value: opt.value,
+      grommetsLocation: opt.grommetsLocation,
+      grommetsSpacingCount: opt.grommetsSpacingCount,
+      grommetsPerSign: opt.grommetsPerSign,
+      grommetsSpacingInches: opt.grommetsSpacingInches,
+      customPlacementNote: opt.customPlacementNote,
+      hemsType: opt.hemsType,
+      polePocket: opt.polePocket,
+    };
+  }
+
+  return selections;
+}
+
 function useDebouncedEffect(effect: () => void, deps: any[], delayMs: number) {
   const first = useRef(true);
   useEffect(() => {
@@ -957,6 +979,85 @@ export function OrderLineItemsSection({
     }
   };
 
+  const refreshPricingAfterOverrideChange = async ({
+    item,
+    nextOverrideCents,
+    previousOverrideCents,
+  }: {
+    item: OrderLineItem;
+    nextOverrideCents: number | null;
+    previousOverrideCents: number | null;
+  }) => {
+    if (nextOverrideCents === previousOverrideCents) return;
+
+    const itemSpecsJson: any =
+      item.specsJson && typeof item.specsJson === "object" ? (item.specsJson as any) : {};
+    const quantity = Number(item.quantity) > 0 ? Number(item.quantity) : 1;
+    const width = Number.parseFloat(item.width || "1") || 1;
+    const height = Number.parseFloat(item.height || "1") || 1;
+
+    const pbv2Snapshot = getPbv2SnapshotFromLineItem(item);
+    const optionSelectionsJsonRaw = (item as any)?.optionSelectionsJson;
+    const pbv2Selected =
+      optionSelectionsJsonRaw &&
+      typeof optionSelectionsJsonRaw === "object" &&
+      (optionSelectionsJsonRaw as any)?.schemaVersion === 2
+        ? (optionSelectionsJsonRaw as any).selected || {}
+        : {};
+    const isPbv2 = Boolean((pbv2Snapshot as any)?.treeJson);
+
+    const v1Selections = buildOptionSelectionsRecordFromSpecs(itemSpecsJson);
+
+    let calculatedLinePrice = Number.parseFloat(item.totalPrice || "0") || 0;
+    try {
+      const response = await apiRequest("POST", "/api/quotes/calculate", {
+        productId: item.productId,
+        variantId: item.productVariantId || undefined,
+        width,
+        height,
+        quantity,
+        ...(isPbv2
+          ? { optionSelectionsJson: pbv2Selected }
+          : { selectedOptions: v1Selections }),
+        customerId,
+        debugSource: "OrderLineItemsSection.override-refresh",
+      });
+      const data = await response.json();
+      const price = Number(data?.linePrice);
+      if (Number.isFinite(price)) {
+        calculatedLinePrice = price;
+      }
+    } catch {
+      // keep fallback to existing persisted total
+    }
+
+    const effectiveTotal =
+      typeof nextOverrideCents === "number" && Number.isFinite(nextOverrideCents)
+        ? nextOverrideCents / 100
+        : calculatedLinePrice;
+    const effectiveUnit = quantity > 0 ? effectiveTotal / quantity : effectiveTotal;
+
+    const currentTotal = Number.parseFloat(item.totalPrice || "0") || 0;
+    const currentUnit = Number.parseFloat(item.unitPrice || "0") || 0;
+    const totalChanged = Math.abs(currentTotal - effectiveTotal) > 0.0001;
+    const unitChanged = Math.abs(currentUnit - effectiveUnit) > 0.0001;
+
+    if (totalChanged || unitChanged) {
+      await updateLineItemSilent.mutateAsync({
+        id: String(item.id),
+        data: {
+          unitPrice: effectiveUnit.toFixed(2),
+          totalPrice: effectiveTotal.toFixed(2),
+        },
+      });
+    }
+
+    await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
+    await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+    await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
+    await onAfterLineItemsChange?.();
+  };
+
   const handleDuplicateItem = async (item: OrderLineItem) => {
     try {
       const payload: any = {
@@ -1283,7 +1384,7 @@ export function OrderLineItemsSection({
                                 onQuantityDecrement={() => setQty((q) => Math.max(1, (q || 1) - 1))}
                                 dimsRequired={dimsRequired}
                                 price={
-                                  isExpanded && expandedItem && expandedItem.id === item.id && Number.isFinite(computedTotal)
+                                  isExpanded && expandedItem && expandedItem.id === item.id && !isOverride && Number.isFinite(computedTotal)
                                     ? (computedTotal as number)
                                     : total
                                 }
@@ -1322,9 +1423,14 @@ export function OrderLineItemsSection({
 
                                         const nextCents = Math.round(parsed * 100);
                                         const calculatedCents = Math.round(total * 100);
+                                        const previousOverrideCents = currentOverrideCents;
 
                                         try {
                                           if (nextCents !== calculatedCents) {
+                                            if (previousOverrideCents === nextCents) {
+                                              setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
+                                              return;
+                                            }
                                             await updateLineItemSilent.mutateAsync({
                                               id: lineItemId,
                                               data: {
@@ -1332,8 +1438,11 @@ export function OrderLineItemsSection({
                                                 overrideReason: null,
                                               },
                                             });
-                                            await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-                                            await onAfterLineItemsChange?.();
+                                            await refreshPricingAfterOverrideChange({
+                                              item,
+                                              nextOverrideCents: nextCents,
+                                              previousOverrideCents,
+                                            });
                                             setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
                                           } else if (currentOverrideCents !== null) {
                                             await updateLineItemSilent.mutateAsync({
@@ -1343,8 +1452,11 @@ export function OrderLineItemsSection({
                                                 overrideReason: null,
                                               },
                                             });
-                                            await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-                                            await onAfterLineItemsChange?.();
+                                            await refreshPricingAfterOverrideChange({
+                                              item,
+                                              nextOverrideCents: null,
+                                              previousOverrideCents,
+                                            });
                                             setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
                                           }
                                         } catch (e) {
@@ -1380,6 +1492,7 @@ export function OrderLineItemsSection({
                                     : async () => {
                                         const lineItemId = String(item.id);
                                         const calculatedCents = Math.round(total * 100);
+                                      const previousOverrideCents = currentOverrideCents;
                                         try {
                                           await updateLineItemSilent.mutateAsync({
                                             id: lineItemId,
@@ -1388,8 +1501,11 @@ export function OrderLineItemsSection({
                                               overrideReason: null,
                                             },
                                           });
-                                          await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-                                          await onAfterLineItemsChange?.();
+                                        await refreshPricingAfterOverrideChange({
+                                          item,
+                                          nextOverrideCents: null,
+                                          previousOverrideCents,
+                                        });
                                           setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
                                         } catch (e) {
                                           toast({
