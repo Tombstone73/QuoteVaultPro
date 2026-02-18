@@ -834,7 +834,7 @@ export function LineItemAttachmentsPanel({
               <p className="text-xs text-muted-foreground text-center mt-1">
                 Save line item to upload artwork
               </p>
-            ) : !quoteId && !ensureQuoteId ? (
+            ) : parentType === "quote" && !quoteId && !ensureQuoteId ? (
               <p className="text-xs text-muted-foreground text-center mt-1">
                 Save quote to upload artwork
               </p>
