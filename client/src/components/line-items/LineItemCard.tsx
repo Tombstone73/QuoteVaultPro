@@ -516,20 +516,31 @@ export function LineItemCard({
 
             {/* Options (left) + Artwork (right) */}
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_360px]">
-              <div className="min-w-0">
-                {/* Options slot (passed from container) */}
-                {optionsSlot}
+              {detailsOnRight ? (
+                <>
+                  <div className="min-w-0">
+                    {optionsSlot}
+                  </div>
 
-                {!detailsOnRight && detailsFields}
-                {!detailsOnRight && actionsRow}
-              </div>
+                  <div className="min-w-0 lg:w-[360px] lg:shrink-0">
+                    {artworkSlot}
+                    {detailsFields}
+                    {actionsRow}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="min-w-0">
+                    {optionsSlot}
+                    {detailsFields}
+                    {actionsRow}
+                  </div>
 
-              {/* Artwork panel (right on desktop, stacks below on small) */}
-              <div className="min-w-0 lg:w-[360px] lg:shrink-0">
-                {artworkSlot}
-                {detailsOnRight && detailsFields}
-                {detailsOnRight && actionsRow}
-              </div>
+                  <div className="min-w-0 lg:w-[360px] lg:shrink-0">
+                    {artworkSlot}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
