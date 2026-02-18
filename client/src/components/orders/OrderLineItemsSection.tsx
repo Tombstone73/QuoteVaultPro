@@ -538,7 +538,8 @@ export function OrderLineItemsSection({
   );
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [overrideById, setOverrideById] = useState<Record<string, boolean>>({});
+  const [editingPriceItemId, setEditingPriceItemId] = useState<string | null>(null);
+  const [priceEditTextById, setPriceEditTextById] = useState<Record<string, string>>({});
 
   const [pendingJumpToLineItemId, setPendingJumpToLineItemId] = useState<string | null>(null);
 
@@ -726,6 +727,13 @@ export function OrderLineItemsSection({
 
     const currentTotal = Number.parseFloat(expandedItem.totalPrice || "0") || 0;
     setComputedTotal(Number.isFinite(currentTotal) ? currentTotal : 0);
+    const currentOverrideCents = (expandedItem as any)?.overridePriceCents;
+    const priceForEditor =
+      typeof currentOverrideCents === "number" && Number.isFinite(currentOverrideCents)
+        ? currentOverrideCents / 100
+        : currentTotal;
+    setPriceEditTextById((prev) => ({ ...prev, [itemId]: priceForEditor.toFixed(2) }));
+    setEditingPriceItemId(null);
 
     savedSnapshotRef.current[itemId] = {
       width: Number.parseFloat(expandedItem.width || "1") || 1,
@@ -749,7 +757,7 @@ export function OrderLineItemsSection({
     (pbv2SnapshotJson as any)?.treeVersionId || (expandedItem as any)?.pbv2ActiveTreeVersionId || ""
   );
   const overridePriceCents = Number(
-    (((expandedItem as any)?.specsJson as any)?.priceOverride?.value as number | undefined) || 0
+    ((expandedItem as any)?.overridePriceCents as number | undefined) || 0
   );
   const isPbv2Mode = Boolean(pbv2SnapshotJson?.treeJson);
   const calcKey = useMemo(
@@ -1127,13 +1135,14 @@ export function OrderLineItemsSection({
                   const persistedProductionNotes = typeof itemNotes?.descLong === "string" ? itemNotes.descLong : "";
                   const hasProductionNotes = Boolean(persistedProductionNotes && persistedProductionNotes.trim());
 
-                  const persistedOverride = Boolean(
-                    (itemSpecsJson as any)?.priceOverride &&
-                      (((itemSpecsJson as any).priceOverride as any)?.mode
-                        ? ((itemSpecsJson as any).priceOverride as any)?.mode === "total"
-                        : true)
-                  );
-                  const isOverride = overrideById[String(item.id)] ?? persistedOverride;
+                  const currentOverrideCents =
+                    typeof (item as any)?.overridePriceCents === "number" && Number.isFinite((item as any).overridePriceCents)
+                      ? ((item as any).overridePriceCents as number)
+                      : null;
+                  const isOverride = currentOverrideCents !== null;
+                  const displayPrice = isOverride ? currentOverrideCents / 100 : total;
+                  const priceEditText = priceEditTextById[String(item.id)] ?? displayPrice.toFixed(2);
+                  const isEditingPrice = editingPriceItemId === String(item.id);
 
                   const statusValue = item.status || "queued";
 
@@ -1278,7 +1287,113 @@ export function OrderLineItemsSection({
                                     ? (computedTotal as number)
                                     : total
                                 }
-                                priceOverride={isOverride ? total : null}
+                                priceOverride={isOverride ? currentOverrideCents! / 100 : null}
+                                editingPrice={isEditingPrice}
+                                priceEditText={priceEditText}
+                                onPriceClick={
+                                  readOnly
+                                    ? undefined
+                                    : () => {
+                                        const lineItemId = String(item.id);
+                                        setEditingPriceItemId(lineItemId);
+                                        setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: displayPrice.toFixed(2) }));
+                                      }
+                                }
+                                onPriceChange={
+                                  readOnly
+                                    ? undefined
+                                    : (value) => {
+                                        const lineItemId = String(item.id);
+                                        setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: value }));
+                                      }
+                                }
+                                onPriceBlur={
+                                  readOnly
+                                    ? undefined
+                                    : async () => {
+                                        const lineItemId = String(item.id);
+                                        const rawValue = priceEditTextById[lineItemId] ?? displayPrice.toFixed(2);
+                                        const parsed = Number.parseFloat(rawValue);
+                                        if (!Number.isFinite(parsed) || parsed < 0) {
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: displayPrice.toFixed(2) }));
+                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                          return;
+                                        }
+
+                                        const nextCents = Math.round(parsed * 100);
+                                        const calculatedCents = Math.round(total * 100);
+
+                                        try {
+                                          if (nextCents !== calculatedCents) {
+                                            await updateLineItemSilent.mutateAsync({
+                                              id: lineItemId,
+                                              data: {
+                                                overridePriceCents: nextCents,
+                                                overrideReason: null,
+                                              },
+                                            });
+                                            setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (nextCents / 100).toFixed(2) }));
+                                          } else if (currentOverrideCents !== null) {
+                                            await updateLineItemSilent.mutateAsync({
+                                              id: lineItemId,
+                                              data: {
+                                                overridePriceCents: null,
+                                                overrideReason: null,
+                                              },
+                                            });
+                                            setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
+                                          }
+                                        } catch (e) {
+                                          toast({
+                                            variant: "destructive",
+                                            title: "Could not update price override",
+                                            description: "Please try again.",
+                                          });
+                                        } finally {
+                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                        }
+                                      }
+                                }
+                                onPriceKeyDown={
+                                  readOnly
+                                    ? undefined
+                                    : (e) => {
+                                        const lineItemId = String(item.id);
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          (e.currentTarget as HTMLInputElement).blur();
+                                        }
+                                        if (e.key === "Escape") {
+                                          e.preventDefault();
+                                          setEditingPriceItemId((prev) => (prev === lineItemId ? null : prev));
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: displayPrice.toFixed(2) }));
+                                        }
+                                      }
+                                }
+                                onUndoOverride={
+                                  readOnly || currentOverrideCents === null
+                                    ? undefined
+                                    : async () => {
+                                        const lineItemId = String(item.id);
+                                        const calculatedCents = Math.round(total * 100);
+                                        try {
+                                          await updateLineItemSilent.mutateAsync({
+                                            id: lineItemId,
+                                            data: {
+                                              overridePriceCents: null,
+                                              overrideReason: null,
+                                            },
+                                          });
+                                          setPriceEditTextById((prev) => ({ ...prev, [lineItemId]: (calculatedCents / 100).toFixed(2) }));
+                                        } catch (e) {
+                                          toast({
+                                            variant: "destructive",
+                                            title: "Could not clear price override",
+                                            description: "Please try again.",
+                                          });
+                                        }
+                                      }
+                                }
                                 isCalculating={isCalculating}
                                 calcError={calcError}
                                 description={isExpanded && expandedItem && expandedItem.id === item.id ? notes : persistedDescription}
