@@ -1203,8 +1203,8 @@ export const quoteLineItems = pgTable("quote_line_items", {
   height: decimal("height", { precision: 10, scale: 2 }).notNull(),
   quantity: integer("quantity").notNull(),
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
-  // PBV2 pricing snapshot fields (migration 0036 - NOT NULL, server-authoritative)
-  pbv2TreeVersionId: varchar("pbv2_tree_version_id").notNull().references(() => pbv2TreeVersions.id, { onDelete: 'restrict' }),
+  // PBV2 pricing snapshot fields (migration 0036 - server-authoritative, migration 0041 made pbv2TreeVersionId nullable)
+  pbv2TreeVersionId: varchar("pbv2_tree_version_id").references(() => pbv2TreeVersions.id, { onDelete: 'restrict' }),
   pbv2SnapshotJson: jsonb("pbv2_snapshot_json").$type<Record<string, any>>().notNull(),
   pricedAt: timestamp("priced_at", { withTimezone: true }).notNull().defaultNow(),
   // NEW: v2 canonical option selections (additive)
