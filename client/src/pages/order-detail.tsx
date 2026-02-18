@@ -54,6 +54,7 @@ import { getDisplayOrderNumber } from "@/lib/orderUtils";
 import { cn, formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { resolveInventoryPolicyFromOrgPreferences } from "@shared/inventoryPolicy";
 import { useCreateProductionJobFromOrder } from "@/hooks/useProduction";
+import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 // TitanOS State Architecture
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 import { 
@@ -123,6 +124,10 @@ const isFulfillmentMethod = (value: string): value is FulfillmentMethod =>
 // Future: This will be configurable via organization preferences
 const DATE_DISPLAY_STYLE: "short" | "numeric" = "short";
 
+function hasAnyStagedChanges(stagedPatch: Record<string, any>): boolean {
+  return Object.keys(stagedPatch).length > 0;
+}
+
 export default function OrderDetail() {
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
@@ -130,6 +135,7 @@ export default function OrderDetail() {
   const inventoryReservationsEnabled = inventoryPolicy.mode !== "off";
   const params = useParams();
   const navigate = useNavigate();
+  const { registerGuard, guardedNavigate } = useNavigationGuard();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const createProductionJob = useCreateProductionJobFromOrder();
@@ -144,7 +150,6 @@ export default function OrderDetail() {
 
   const [jobLabelDraft, setJobLabelDraft] = useState("");
   const [poNumberDraft, setPoNumberDraft] = useState("");
-  const [isEditMode, setIsEditMode] = useState(false);
   const [isSavingOrder, setIsSavingOrder] = useState(false);
   const [pendingOrderPatch, setPendingOrderPatch] = useState<Record<string, any>>({});
 
@@ -358,13 +363,41 @@ export default function OrderDetail() {
   const requireLineItemsDone = (preferences?.orders?.requireAllLineItemsDoneToComplete
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
-  const canEnterEditMode = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  const canEditOrder = canEnterEditMode && isEditMode;
+  const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
+  const isDirty = hasAnyStagedChanges(pendingOrderPatch);
+  const isDirtyRef = useRef(isDirty);
+
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+  }, [isDirty]);
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
-    if (!isEditMode) return;
+    if (!canEditOrder) return;
     setPendingOrderPatch((prev) => ({ ...prev, ...patch }));
   };
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!isDirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    const unregister = registerGuard(
+      () => {
+        if (!isDirtyRef.current) return false;
+        return "You have unsaved changes. Leave without saving?";
+      },
+      () => isDirtyRef.current
+    );
+
+    return () => unregister();
+  }, [registerGuard]);
 
   const listNoteQuery = useQuery<{ listLabel: string | null }>(
     {
@@ -764,21 +797,18 @@ export default function OrderDetail() {
   };
 
   useEffect(() => {
-    if (isEditMode) return;
     const persistedOrder = orderRaw as OrderDetailOrder | undefined;
     setJobLabelDraft(persistedOrder?.label ?? "");
-  }, [isEditMode, orderRaw]);
+  }, [orderRaw]);
 
   useEffect(() => {
-    if (isEditMode) return;
     const persistedOrder = orderRaw as OrderDetailOrder | undefined;
     setPoNumberDraft(persistedOrder?.poNumber ?? "");
-  }, [isEditMode, orderRaw]);
+  }, [orderRaw]);
 
   useEffect(() => {
-    if (isEditMode) return;
     setFlags(parseFlagsFromLabel(listNoteQuery.data?.listLabel ?? null));
-  }, [isEditMode, listNoteQuery.data?.listLabel]);
+  }, [listNoteQuery.data?.listLabel]);
 
   const commitFlagInput = (raw: string) => {
     const parts = raw
@@ -800,7 +830,7 @@ export default function OrderDetail() {
       setFlags(next);
       setFlagInput("");
 
-      if (!isEditMode) return;
+      if (!canEditOrder) return;
       try {
         await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
@@ -819,7 +849,7 @@ export default function OrderDetail() {
       void (async () => {
         const next = flags.slice(0, -1);
         setFlags(next);
-        if (!isEditMode) return;
+        if (!canEditOrder) return;
         try {
           await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
         } catch {
@@ -833,7 +863,7 @@ export default function OrderDetail() {
     void (async () => {
       const next = flags.filter((f) => f !== flag);
       setFlags(next);
-      if (!isEditMode) return;
+      if (!canEditOrder) return;
       try {
         await updateListNoteMutation.mutateAsync({ listLabel: formatFlagsToLabel(next) ?? "" });
       } catch {
@@ -843,12 +873,12 @@ export default function OrderDetail() {
   };
 
   const commitJobLabel = async () => {
-    if (!orderId || !isEditMode) return;
+    if (!orderId) return;
     await applyOrderPatch({ label: normalizeNullableString(jobLabelDraft) });
   };
 
   const commitPoNumber = async () => {
-    if (!orderId || !isEditMode) return;
+    if (!orderId) return;
     await applyOrderPatch({ poNumber: normalizeNullableString(poNumberDraft) });
   };
 
@@ -868,7 +898,6 @@ export default function OrderDetail() {
       }
 
       if (Object.keys(nextPatch).length === 0) {
-        setIsEditMode(false);
         return;
       }
 
@@ -877,8 +906,8 @@ export default function OrderDetail() {
         ...nextPatch,
       });
       setPendingOrderPatch({});
-      setIsEditMode(false);
       await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
       toast({ title: "Order saved" });
     } catch (error: any) {
       toast({
@@ -898,7 +927,6 @@ export default function OrderDetail() {
     setEditingDueDate(false);
     setEditingPromisedDate(false);
     exitAllEditModes();
-    setIsEditMode(false);
     if (orderId) {
       await queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
       await queryClient.refetchQueries({ queryKey: ["orders", "detail", orderId], type: "active" });
@@ -1266,16 +1294,15 @@ export default function OrderDetail() {
       <div className="w-full max-w-none">
         <div className="flex items-center justify-between mb-6 pb-3">
           <div className="flex items-center gap-4 min-w-0">
-            <Link to="/orders">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
-              >
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                Back
-              </Button>
-            </Link>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => guardedNavigate("/orders")}
+              className="text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card-elevated rounded-titan-md"
+            >
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back
+            </Button>
 
             <div className="flex flex-col justify-center min-w-0">
               <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
@@ -1298,24 +1325,13 @@ export default function OrderDetail() {
           </div>
 
           <div className="flex items-center gap-3">
-            {canEnterEditMode && !isEditMode && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsEditMode(true)}
-                className="rounded-titan-md"
-              >
-                Edit Order
-              </Button>
-            )}
-
-            {canEnterEditMode && isEditMode && (
+            {canEditOrder && (
               <>
                 <Button
                   variant="default"
                   size="sm"
                   onClick={() => void handleSaveOrder()}
-                  disabled={updateOrder.isPending || isSavingOrder}
+                  disabled={!isDirty || updateOrder.isPending || isSavingOrder}
                   className="rounded-titan-md"
                 >
                   {updateOrder.isPending || isSavingOrder ? "Saving..." : "Save Order"}
@@ -1324,10 +1340,10 @@ export default function OrderDetail() {
                   variant="outline"
                   size="sm"
                   onClick={() => void handleCancelOrderEdits()}
-                  disabled={updateOrder.isPending || isSavingOrder}
+                  disabled={!isDirty || updateOrder.isPending || isSavingOrder}
                   className="rounded-titan-md"
                 >
-                  Cancel
+                  Discard changes
                 </Button>
               </>
             )}
@@ -1975,7 +1991,7 @@ export default function OrderDetail() {
               <OrderLineItemsSection
                 orderId={orderId!}
                 customerId={order.customerId}
-                readOnly={!(isAdminOrOwner && canEditLineItems && isEditMode)}
+                readOnly={!(isAdminOrOwner && canEditLineItems)}
                 lineItems={order.lineItems as any}
                 onAfterLineItemsChange={recalculateOrderTotals}
               />
