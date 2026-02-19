@@ -27,6 +27,7 @@ import {
     inventoryReservations,
     productionJobs,
     productionEvents,
+    productTypes,
     insertOrderSchema,
     updateOrderSchema,
     insertOrderLineItemSchema,
@@ -3878,6 +3879,34 @@ export async function registerOrderRoutes(
                 totalPrice: pricingResult.lineTotalCents / 100,
             });
 
+            // Auto-schedule production job if the product type has sendToProductionDefault=true.
+            // Fail-soft: scheduling failure does not block the line item create response.
+            try {
+                const [ptRow] = await db
+                    .select({ sendToProductionDefault: productTypes.sendToProductionDefault })
+                    .from(products)
+                    .innerJoin(productTypes, eq(products.productTypeId, productTypes.id))
+                    .where(eq(products.id, String(created.productId)))
+                    .limit(1);
+
+                if (ptRow?.sendToProductionDefault === true) {
+                    const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
+                    const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
+                    const scheduleResult = await scheduleOrderLineItemsForProduction({
+                        organizationId,
+                        orderId: String(created.orderId),
+                        lineItemIds: [created.id],
+                        loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
+                        appendEvent,
+                    });
+                    if (process.env.NODE_ENV === 'development') {
+                        console.log(`[AutoProductionSchedule:CREATE] lineItemId=${created.id} productId=${created.productId} sendToProductionDefault=true → auto-scheduled:`, scheduleResult.data);
+                    }
+                }
+            } catch (autoScheduleErr: any) {
+                console.error('[AutoProductionSchedule:CREATE] Failed (non-fatal):', autoScheduleErr?.message ?? autoScheduleErr);
+            }
+
             res.json(created);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
@@ -4155,6 +4184,39 @@ export async function registerOrderRoutes(
                     });
                 }
             }
+
+            // Auto-schedule production job when productId changes and new product type has sendToProductionDefault=true.
+            // Guard: only fires when productId is explicitly changed by this edit.
+            // Fail-soft: scheduling failure does not block the line item update response.
+            if (updateData.productId !== undefined) {
+                try {
+                    const newProductId = String(updateData.productId);
+                    const [ptRow] = await db
+                        .select({ sendToProductionDefault: productTypes.sendToProductionDefault })
+                        .from(products)
+                        .innerJoin(productTypes, eq(products.productTypeId, productTypes.id))
+                        .where(eq(products.id, newProductId))
+                        .limit(1);
+
+                    if (ptRow?.sendToProductionDefault === true) {
+                        const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
+                        const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
+                        const scheduleResult = await scheduleOrderLineItemsForProduction({
+                            organizationId,
+                            orderId: String(lineItem.orderId),
+                            lineItemIds: [lineItem.id],
+                            loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
+                            appendEvent,
+                        });
+                        if (process.env.NODE_ENV === 'development') {
+                            console.log(`[AutoProductionSchedule:PATCH] lineItemId=${lineItem.id} newProductId=${newProductId} sendToProductionDefault=true → auto-scheduled:`, scheduleResult.data);
+                        }
+                    }
+                } catch (autoScheduleErr: any) {
+                    console.error('[AutoProductionSchedule:PATCH] Failed (non-fatal):', autoScheduleErr?.message ?? autoScheduleErr);
+                }
+            }
+
             res.json(finalLineItem ?? lineItem);
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
